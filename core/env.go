@@ -1,0 +1,99 @@
+package core
+
+import "sync"
+
+// Env is a lexical scope: an immutable parent chain with a thread-safe local binding map.
+// Reads walk up the chain; writes are local-only.
+type Env struct {
+	mu     sync.RWMutex
+	parent *Env
+	vars   map[string]Value
+	eval   Evaluator
+}
+
+func NewEnv(parent *Env) *Env {
+	e := &Env{
+		parent: parent,
+		vars:   make(map[string]Value),
+	}
+	if parent != nil {
+		e.eval = parent.eval
+	}
+	return e
+}
+
+// Set binds name in this (local) scope.
+func (e *Env) Set(name string, val Value) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.vars[name] = val
+}
+
+// Get walks the scope chain from innermost to outermost.
+func (e *Env) Get(name string) (Value, bool) {
+	e.mu.RLock()
+	val, ok := e.vars[name]
+	e.mu.RUnlock()
+	if ok {
+		return val, true
+	}
+	if e.parent != nil {
+		return e.parent.Get(name)
+	}
+	return nil, false
+}
+
+// Find returns the scope that owns name (for set!).
+func (e *Env) Find(name string) (*Env, bool) {
+	e.mu.RLock()
+	_, ok := e.vars[name]
+	e.mu.RUnlock()
+	if ok {
+		return e, true
+	}
+	if e.parent != nil {
+		return e.parent.Find(name)
+	}
+	return nil, false
+}
+
+// Child creates a child scope with this env as parent.
+func (e *Env) Child() *Env {
+	return NewEnv(e)
+}
+
+// ChildVariadic creates a child scope binding params to args, with optional variadic rest param.
+func (e *Env) ChildVariadic(params []Symbol, args []Value, variadic Symbol) (*Env, error) {
+	child := e.Child()
+
+	if variadic.V != "" {
+		if len(args) < len(params) {
+			return nil, NewArityError(len(params), len(args))
+		}
+		for i, param := range params {
+			child.Set(param.V, args[i])
+		}
+		child.Set(variadic.V, List{Items: args[len(params):]})
+	} else {
+		if len(args) != len(params) {
+			return nil, NewArityError(len(params), len(args))
+		}
+		for i, param := range params {
+			child.Set(param.V, args[i])
+		}
+	}
+
+	return child, nil
+}
+
+// Evaluator returns the engine bound to this scope (used by plugins for recursive eval).
+func (e *Env) Evaluator() Evaluator {
+	return e.eval
+}
+
+// SetEvaluator binds the evaluator to this scope (called by the runtime after NewEvaluator).
+func (e *Env) SetEvaluator(eval Evaluator) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.eval = eval
+}
