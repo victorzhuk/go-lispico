@@ -1,0 +1,52 @@
+### Go template
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.txt
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# IDEs
+.idea/
+.vscode/
+.zed/
+.claude/
+.opencode/
+.cursor/
+*.swp
+*.swo
+*~
+.DS_Store
+.mcp.json
+
+# Build artifacts
+/build/
+/tmp/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+.worktrees/
