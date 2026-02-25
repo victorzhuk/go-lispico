@@ -51,6 +51,9 @@ func init() {
 		"try":        evalTry,
 		"catch":      evalCatch,
 		"throw":      evalThrow,
+		"and":        evalAnd,
+		"or":         evalOr,
+		"not":        evalNot,
 	}
 }
 
@@ -88,7 +91,7 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 	case Symbol:
 		r, ok := env.Get(val.V)
 		if !ok {
-			return nil, fmt.Errorf("undefined symbol: %s", val.V)
+			return nil, NewUndefinedError(val.V)
 		}
 		return r, nil
 	case List:
@@ -97,7 +100,7 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 		}
 		return e.evalList(ctx, val.Items, env)
 	default:
-		return nil, fmt.Errorf("cannot evaluate: %T", v)
+		return nil, NewTypeError("evaluable", v)
 	}
 }
 
@@ -179,7 +182,7 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 			}
 			return v, nil
 		default:
-			return nil, fmt.Errorf("not a function: %v (%T)", fn, fn)
+			return nil, NewTypeError("function", fn)
 		}
 	}
 }
@@ -659,4 +662,51 @@ func evalThrow(ctx context.Context, e *engine, args []Value, env *Env) (Value, e
 		return nil, fmt.Errorf("%s", s.V)
 	}
 	return nil, fmt.Errorf("%v", val)
+}
+
+func evalAnd(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+	if len(args) == 0 {
+		return Bool{V: true}, nil
+	}
+	var last Value = Bool{V: true}
+	for _, arg := range args {
+		v, err := e.Eval(ctx, arg, env)
+		if err != nil {
+			return nil, err
+		}
+		last = v
+		if !isTruthy(v) {
+			return v, nil
+		}
+	}
+	return last, nil
+}
+
+func evalOr(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+	if len(args) == 0 {
+		return Nil{}, nil
+	}
+	var last Value = Nil{}
+	for _, arg := range args {
+		v, err := e.Eval(ctx, arg, env)
+		if err != nil {
+			return nil, err
+		}
+		last = v
+		if isTruthy(v) {
+			return v, nil
+		}
+	}
+	return last, nil
+}
+
+func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("not requires exactly 1 argument")
+	}
+	v, err := e.Eval(ctx, args[0], env)
+	if err != nil {
+		return nil, err
+	}
+	return Bool{V: !isTruthy(v)}, nil
 }
