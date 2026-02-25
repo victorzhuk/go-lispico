@@ -77,7 +77,7 @@ A clean-slate Lisp interpreter designed for:
 - Line comments `;`
 
 **Evaluator (eval.go)**
-- 19 special forms (def, defn, defmacro, fn, if, cond, when, unless, let, let*, do, quote, quasiquote, set!, loop, recur, try, catch, throw)
+- 22 special forms (def, defn, defmacro, fn, if, cond, when, unless, and, or, not, let, let*, do, quote, quasiquote, set!, loop, recur, try, catch, throw)
 - macroexpand is a stdlib function, not a special form
 - Tail-call optimization
 - Macro expansion with depth limit (100)
@@ -247,7 +247,7 @@ Changes 2-7 will depend on this core package.
 ## 10. Acceptance Criteria
 
 - [ ] All 13 Value types implemented with tests
-- [ ] All 19 special forms (including try/catch/throw, when/unless) implemented with tests
+- [x] All 22 special forms (including try/catch/throw, when/unless, and/or/not) implemented with tests
 - [ ] Reader parses all syntax forms correctly
 - [ ] TCO verified not to grow stack (deep recursion test)
 - [ ] Macro expansion works with nested quasiquote

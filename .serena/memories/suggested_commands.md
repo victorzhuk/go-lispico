@@ -1,0 +1,33 @@
+# Suggested Commands for go-lispico
+
+## Build
+```bash
+go build ./...
+go build ./core/...
+go build -race ./...
+```
+
+## Test
+```bash
+go test ./...
+go test -race ./...
+go test -run TestName ./core/...
+go test -cover ./...
+go test -bench=. ./...
+```
+
+## Lint & Format
+```bash
+go fmt ./...
+go vet ./...
+go mod tidy
+golangci-lint run  # if installed
+```
+
+## OpenSpec Workflow
+```bash
+openspec status
+openspec new change "change-name"
+openspec continue --change "change-name"
+openspec apply --change "change-name"
+```

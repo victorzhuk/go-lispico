@@ -951,3 +951,122 @@ func TestTailCall_ValueInterface(t *testing.T) {
 		t.Error("recurVal.Equals should always return false")
 	}
 }
+
+func TestEval_And_True(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(and true true true)")
+	if !got.Equals(Bool{V: true}) {
+		t.Errorf("(and true true true) = %v, want true", got)
+	}
+}
+
+func TestEval_And_False(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(and true false true)")
+	if !got.Equals(Bool{V: false}) {
+		t.Errorf("(and true false true) = %v, want false", got)
+	}
+}
+
+func TestEval_And_Empty(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(and)")
+	if !got.Equals(Bool{V: true}) {
+		t.Errorf("(and) = %v, want true", got)
+	}
+}
+
+func TestEval_And_ShortCircuit(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, `(and false (throw "should not evaluate"))`)
+	if !got.Equals(Bool{V: false}) {
+		t.Errorf("(and false ...) should short-circuit, got %v", got)
+	}
+}
+
+func TestEval_Or_True(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(or false true false)")
+	if !got.Equals(Bool{V: true}) {
+		t.Errorf("(or false true false) = %v, want true", got)
+	}
+}
+
+func TestEval_Or_False(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(or false false false)")
+	if !got.Equals(Bool{V: false}) {
+		t.Errorf("(or false false false) = %v, want false", got)
+	}
+}
+
+func TestEval_Or_Empty(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(or)")
+	if !got.Equals(Nil{}) {
+		t.Errorf("(or) = %v, want nil", got)
+	}
+}
+
+func TestEval_Or_ShortCircuit(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, `(or true (throw "should not evaluate"))`)
+	if !got.Equals(Bool{V: true}) {
+		t.Errorf("(or true ...) should short-circuit, got %v", got)
+	}
+}
+
+func TestEval_Not_True(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(not true)")
+	if !got.Equals(Bool{V: false}) {
+		t.Errorf("(not true) = %v, want false", got)
+	}
+}
+
+func TestEval_Not_False(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(not false)")
+	if !got.Equals(Bool{V: true}) {
+		t.Errorf("(not false) = %v, want true", got)
+	}
+}
+
+func TestEval_Not_Nil(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(not nil)")
+	if !got.Equals(Bool{V: true}) {
+		t.Errorf("(not nil) = %v, want true", got)
+	}
+}
+
+func TestEval_Not_Truthy(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, "(not 42)")
+	if !got.Equals(Bool{V: false}) {
+		t.Errorf("(not 42) = %v, want false (42 is truthy)", got)
+	}
+}
+
+func TestEval_Not_ArityError(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	if err := evalStrErr(env, "(not)"); err == nil {
+		t.Error("(not) with no args should error")
+	}
+	if err := evalStrErr(env, "(not true false)"); err == nil {
+		t.Error("(not true false) with 2 args should error")
+	}
+}

@@ -954,6 +954,9 @@ var specialForms = map[string]func(context.Context, *engine, []Value, *Env) (Val
     "cond":       evalCond,
     "when":       evalWhen,
     "unless":     evalUnless,
+    "and":        evalAnd,
+    "or":         evalOr,
+    "not":        evalNot,
     "let":        evalLet,
     "let*":       evalLetStar,
     "do":         evalDo,
@@ -1526,6 +1529,52 @@ func evalUnless(ctx context.Context, e *engine, args []Value, env *Env) (Value, 
         return Nil{}, nil
     }
     return e.evalBody(ctx, args[1:], env)
+}
+
+// and / or / not — logical operators with short-circuit evaluation.
+// and returns true if all args are truthy, short-circuits on first falsy.
+// or returns first truthy value, or last value if all falsy.
+// not returns the logical negation.
+
+func evalAnd(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+    if len(args) == 0 {
+        return Bool{V: true}, nil
+    }
+    var last Value = Bool{V: true}
+    for _, arg := range args {
+        v, err := e.Eval(ctx, arg, env)
+        if err != nil { return nil, err }
+        last = v
+        if !isTruthy(v) {
+            return v, nil
+        }
+    }
+    return last, nil
+}
+
+func evalOr(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+    if len(args) == 0 {
+        return Nil{}, nil
+    }
+    var last Value = Nil{}
+    for _, arg := range args {
+        v, err := e.Eval(ctx, arg, env)
+        if err != nil { return nil, err }
+        last = v
+        if isTruthy(v) {
+            return v, nil
+        }
+    }
+    return last, nil
+}
+
+func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+    if len(args) != 1 {
+        return nil, fmt.Errorf("not requires exactly 1 argument")
+    }
+    v, err := e.Eval(ctx, args[0], env)
+    if err != nil { return nil, err }
+    return Bool{V: !isTruthy(v)}, nil
 }
 
 // try / catch / throw — structured error handling.
