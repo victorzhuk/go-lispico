@@ -493,7 +493,7 @@ func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 		if !ok {
 			return nil, fmt.Errorf("let: binding names must be symbols")
 		}
-		val, err := e.Eval(ctx, bindings.Items[i+1], env) // evaluate in parent env
+		val, err := e.Eval(ctx, bindings.Items[i+1], env)
 		if err != nil {
 			return nil, err
 		}
