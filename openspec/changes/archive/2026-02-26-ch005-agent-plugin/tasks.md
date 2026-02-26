@@ -11,18 +11,18 @@
 ## Phase 1: Registry and Types (Days 1-2)
 
 ### Task 1.1: Agent Types
-- [ ] Define Agent struct
-- [ ] Define Registry struct
-- [ ] Define LLMCaller interface
-- [ ] Write tests
+- [x] Define Agent struct
+- [x] Define Registry struct
+- [x] Define LLMCaller interface
+- [x] Write tests
 - **Acceptance**: Types defined
 
 ### Task 1.2: Registry Implementation
-- [ ] Implement Register()
-- [ ] Implement Get()
-- [ ] Implement List()
-- [ ] Thread safety
-- [ ] Write tests
+- [x] Implement Register()
+- [x] Implement Get()
+- [x] Implement List()
+- [x] Thread safety
+- [x] Write tests
 - **Acceptance**: Registry works
 
 ---
@@ -30,31 +30,31 @@
 ## Phase 2: Agent Execution (Days 3-4)
 
 ### Task 2.1: Plugin Structure
-- [ ] Define Plugin struct
-- [ ] Implement Name() and Metadata()
-- [ ] Implement Init()
-- [ ] Write tests
+- [x] Define Plugin struct
+- [x] Implement Name() and Metadata()
+- [x] Implement Init()
+- [x] Write tests
 - **Acceptance**: Plugin skeleton
 
 ### Task 2.2: agent/run
-- [ ] Implement run function
-- [ ] Lookup agent by ID
-- [ ] Call LLM
-- [ ] Write tests
+- [x] Implement run function
+- [x] Lookup agent by ID
+- [x] Call LLM
+- [x] Write tests
 - **Acceptance**: Single agent works
 
 ### Task 2.3: agent/run-parallel
-- [ ] Implement run-parallel
-- [ ] Use errgroup
-- [ ] Configure max parallel
-- [ ] Collect results
-- [ ] Write tests
+- [x] Implement run-parallel
+- [x] Use errgroup
+- [x] Configure max parallel
+- [x] Collect results
+- [x] Write tests
 - **Acceptance**: Parallel execution works
 
 ### Task 2.4: agent/run-with-ctx
-- [ ] Implement run-with-ctx
-- [ ] Merge context into prompt
-- [ ] Write tests
+- [x] Implement run-with-ctx
+- [x] Merge context into prompt
+- [x] Write tests
 - **Acceptance**: Context injection works
 
 ---
@@ -62,15 +62,15 @@
 ## Phase 3: Agent Management (Day 5)
 
 ### Task 3.1: agent/list
-- [ ] Implement list function
-- [ ] Return agent IDs
-- [ ] Write tests
+- [x] Implement list function
+- [x] Return agent IDs
+- [x] Write tests
 - **Acceptance**: Listing works
 
 ### Task 3.2: agent/info
-- [ ] Implement info function
-- [ ] Return agent config map
-- [ ] Write tests
+- [x] Implement info function
+- [x] Return agent config map
+- [x] Write tests
 - **Acceptance**: Info retrieval works
 
 ---
@@ -78,33 +78,33 @@
 ## Phase 4: Routing and Delegation (Days 6-7)
 
 ### Task 4.1: agent/route
-- [ ] Implement route function
-- [ ] Invoke routing function
-- [ ] Write tests
+- [x] Implement route function
+- [x] Invoke routing function
+- [x] Write tests
 - **Acceptance**: Routing works
 
 ### Task 4.2: agent/delegate
-- [ ] Implement delegate function
-- [ ] Check whitelist
-- [ ] Enforce depth limit
-- [ ] Write tests
+- [x] Implement delegate function
+- [x] Check whitelist
+- [x] Enforce depth limit
+- [x] Write tests
 - **Acceptance**: Delegation safe
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] defagent macro registers agents
-- [ ] agent/run executes single agent
-- [ ] agent/run-parallel runs concurrently
-- [ ] Parallelism limit enforced
-- [ ] Context cancellation works
-- [ ] agent/route invokes routing
-- [ ] agent/delegate respects whitelist
-- [ ] Delegation depth limit enforced
-- [ ] Agent registry introspection works
-- [ ] Example workflows documented
-- [ ] Test coverage ≥ 85%
+- [x] defagent macro registers agents
+- [x] agent/run executes single agent
+- [x] agent/run-parallel runs concurrently
+- [x] Parallelism limit enforced
+- [x] Context cancellation works
+- [x] agent/route invokes routing
+- [x] agent/delegate respects whitelist
+- [x] Delegation depth limit enforced
+- [x] Agent registry introspection works
+- [x] Example workflows documented
+- [x] Test coverage ≥ 85%
 
 ---
 
