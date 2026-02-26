@@ -1,8 +1,9 @@
 # Change Proposal: Data Plugin
 
 **Change ID:** 006d-data-plugin
-**Status:** Proposed → Ready for Design
+**Status:** Ready for Development
 **Created:** 2026-02-24
+**Updated:** 2026-02-26
 **Author:** AI Assistant
 **Stakeholders:** go-lispico Core Team
 
@@ -10,13 +11,13 @@
 
 ## 1. Summary
 
-Implement the Data plugin for JSON encoding/decoding, deep data access, and data transformation. Every production use case requires JSON interop.
+Implement the Data plugin for JSON encoding/decoding. Every production use case (config, HTTP, LLM, codegen) requires JSON interop.
 
 **Key Characteristics:**
-- JSON encode/decode with Go value mapping
-- Deep key access via `json/get-in`
-- Value type predicates
+- JSON encode/decode leveraging existing `core.ToGoValue`/`core.FromGoValue`
+- Pretty-print support via `json/pretty-encode`
 - No external dependencies (stdlib `encoding/json`)
+- No duplication — reuses stdlib's `get-in`, `map?`, `vector?`
 
 ---
 
@@ -32,11 +33,11 @@ All production use cases require JSON:
 Without JSON support, none of these use cases work end-to-end.
 
 ### Solution
-A slim data plugin wrapping stdlib `encoding/json` with idiomatic Lisp API.
+A slim data plugin wrapping stdlib `encoding/json` with idiomatic Lisp API, reusing existing `core.ToGoValue`/`core.FromGoValue` converters.
 
 ### Success Metrics
 - JSON round-trip preserves all value types
-- get-in works on nested maps
+- Existing `get-in` works on decoded JSON structures
 - encode/decode under 1ms for 10KB payloads
 
 ---
@@ -46,17 +47,15 @@ A slim data plugin wrapping stdlib `encoding/json` with idiomatic Lisp API.
 ### In Scope
 
 **JSON Operations**
-- `json/encode` - Value → JSON string
-- `json/decode` - JSON string → Value
-- `json/get-in` - deep access with key path
-
-**Type Predicates**
-- `json/object?` - is a HashMap
-- `json/array?` - is a Vector
+- `json/encode` — Value → JSON string (compact)
+- `json/decode` — JSON string → Value
+- `json/pretty-encode` — Value → JSON string (indented)
 
 ### Out of Scope
+- `json/get-in` — **already exists** as stdlib `get-in` (bootstrap.lisp)
+- `json/object?` / `json/array?` — **already exist** as stdlib `map?` / `vector?`
 - JSON Schema validation → Future
-- JSONPath → Future (use get-in)
+- JSONPath → Future (use `get-in`)
 - Streaming JSON → Future
 
 ---
@@ -65,39 +64,56 @@ A slim data plugin wrapping stdlib `encoding/json` with idiomatic Lisp API.
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| D6d.1 | json/encode converts Value to JSON string | P0 |
-| D6d.2 | json/decode parses JSON string to Value | P0 |
-| D6d.3 | Lisp maps → JSON objects (keyword keys serialized without colon) | P0 |
-| D6d.4 | Lisp vectors → JSON arrays | P0 |
-| D6d.5 | JSON null → Lisp nil | P0 |
-| D6d.6 | JSON booleans → Lisp booleans | P0 |
-| D6d.7 | JSON numbers → Lisp int or float64 | P0 |
-| D6d.8 | json/get-in returns nested value or nil | P0 |
-| D6d.9 | All ops accept context | P0 |
+| D6d.1 | `json/encode` converts Value to compact JSON string | P0 |
+| D6d.2 | `json/decode` parses JSON string to Value | P0 |
+| D6d.3 | `json/pretty-encode` converts Value to indented JSON string | P1 |
+| D6d.4 | Keyword keys serialized without colon (`Keyword{V: "foo"}` → `"foo"`) | P0 |
+| D6d.5 | JSON object keys decoded as Keywords | P0 |
+| D6d.6 | JSON null ↔ Lisp nil | P0 |
+| D6d.7 | JSON booleans ↔ Lisp booleans | P0 |
+| D6d.8 | JSON integers → Lisp Int, JSON floats → Lisp Float | P0 |
+| D6d.9 | Lisp maps → JSON objects | P0 |
+| D6d.10 | Lisp vectors AND lists → JSON arrays | P0 |
+| D6d.11 | Context cancellation checked before encode/decode | P0 |
 
 ---
 
-## 5. Design Philosophy
+## 5. Value Mapping
 
-### Value Mapping
+Leverages existing `core.ToGoValue` and `core.FromGoValue`.
 
-| Lisp Value | JSON |
-|------------|------|
-| nil | null |
-| Bool | boolean |
-| Int | number (integer) |
-| Float | number (float) |
-| String | string |
-| Keyword | string (without colon prefix) |
-| Symbol | string |
-| *HashMap | object |
-| *Vector | array |
+### Lisp → JSON (encode direction)
 
-**Key serialization**: Keyword `:foo` → `"foo"` (colon stripped). On decode, JSON object keys become Keywords.
+| Lisp Value | Go intermediate (`ToGoValue`) | JSON |
+|------------|-------------------------------|------|
+| `Nil{}` | `nil` | `null` |
+| `Bool{V: true}` | `true` | `true` |
+| `Int{V: 42}` | `int64(42)` | `42` |
+| `Float{V: 3.14}` | `float64(3.14)` | `3.14` |
+| `String{V: "hi"}` | `"hi"` | `"hi"` |
+| `Keyword{V: "foo"}` | `"foo"` (V has no colon) | `"foo"` |
+| `Symbol{V: "bar"}` | `"bar"` | `"bar"` |
+| `*HashMap` | `map[string]any` | `{"k": v}` |
+| `Vector{Items: [...]}` | `[]any` | `[...]` |
+| `List{Items: [...]}` | `[]any` | `[...]` |
 
-### No External Dependencies
+**Note:** `core.ToGoValue` already handles all these cases. Keyword/Symbol produce bare strings (no colon prefix) because `Keyword.V` = `"foo"`, not `":foo"`.
 
-Use only `encoding/json` from stdlib. Map Lisp values to `any` for marshaling.
+### JSON → Lisp (decode direction)
+
+| JSON | Go `json.Unmarshal` | Lisp Value (`FromGoValue`) |
+|------|---------------------|----------------------------|
+| `null` | `nil` | `Nil{}` |
+| `true`/`false` | `bool` | `Bool{V: x}` |
+| `42` | `float64(42)` | **See note below** |
+| `3.14` | `float64(3.14)` | `Float{V: 3.14}` |
+| `"str"` | `string` | `String{V: "str"}` |
+| `{...}` | `map[string]any` | `*HashMap` (keys as Keywords) |
+| `[...]` | `[]any` | `Vector{Items: [...]}` |
+
+**Integer detection:** Go's `encoding/json` unmarshals all numbers as `float64`. The plugin must detect integers: if `x == float64(int64(x))` and `x` fits in int64, produce `Int{V: int64(x)}`. The existing `core.FromGoValue` already does NOT handle this — it expects `int` or `int64` directly. The plugin adds a `fromJSONValue` wrapper that performs integer detection before delegating to `FromGoValue` for non-numeric types.
+
+**Object key handling:** `core.FromGoValue` for `map[string]any` already produces `Keyword{V: k}` keys — exactly what we want.
 
 ---
 
@@ -109,13 +125,16 @@ Use only `encoding/json` from stdlib. Map Lisp values to `any` for marshaling.
 (json/encode value) → string
 
 (json/encode {:name "Alice" :age 30})
-; => "{\"name\":\"Alice\",\"age\":30}"
+; => "{\"age\":30,\"name\":\"Alice\"}"
 
 (json/encode [1 2 3])
 ; => "[1,2,3]"
 
 (json/encode nil)
 ; => "null"
+
+(json/encode '(1 2 3))
+; => "[1,2,3]"
 ```
 
 ### json/decode
@@ -133,136 +152,51 @@ Use only `encoding/json` from stdlib. Map Lisp values to `any` for marshaling.
 ; => nil
 ```
 
-### json/get-in
+### json/pretty-encode
 
 ```lisp
-(json/get-in value [keys]) → Value
+(json/pretty-encode value) → string
 
-(json/get-in {:a {:b {:c 42}}} [:a :b :c])
+(json/pretty-encode {:name "Alice" :age 30})
+; => "{\n  \"age\": 30,\n  \"name\": \"Alice\"\n}"
+```
+
+### Using existing stdlib with decoded JSON
+
+```lisp
+;; Deep access — use stdlib get-in
+(get-in (json/decode "{\"a\":{\"b\":{\"c\":42}}}") [:a :b :c])
 ; => 42
 
-(json/get-in {:a 1} [:missing])
-; => nil
-```
-
-### json/object?
-
-```lisp
-(json/object? value) → bool
-
-(json/object? {:a 1})
-; => true
-(json/object? [1 2])
-; => false
-```
-
-### json/array?
-
-```lisp
-(json/array? value) → bool
-
-(json/array? [1 2 3])
-; => true
-(json/array? {:a 1})
-; => false
+;; Type checks — use stdlib predicates
+(map? (json/decode "{\"a\":1}"))     ; => true
+(vector? (json/decode "[1,2,3]"))   ; => true
 ```
 
 ---
 
-## 7. Implementation Notes
+## 7. File Structure
 
-### Value → JSON mapping
-
-```go
-func toJSON(v core.Value) (any, error) {
-    switch x := v.(type) {
-    case core.Nil:
-        return nil, nil
-    case core.Bool:
-        return bool(x), nil
-    case core.Int:
-        return int64(x.V), nil
-    case core.Float:
-        return float64(x.V), nil
-    case core.String:
-        return x.V, nil
-    case core.Keyword:
-        return strings.TrimPrefix(x.Name, ":"), nil
-    case core.Symbol:
-        return x.Name, nil
-    case *core.HashMap:
-        m := make(map[string]any)
-        for k, val := range x.Pairs {
-            key := fmt.Sprintf("%v", k)
-            key = strings.TrimPrefix(key, ":")
-            mv, err := toJSON(val)
-            if err != nil {
-                return nil, err
-            }
-            m[key] = mv
-        }
-        return m, nil
-    case *core.Vector:
-        arr := make([]any, len(x.Items))
-        for i, item := range x.Items {
-            mv, err := toJSON(item)
-            if err != nil {
-                return nil, fmt.Errorf("vector index %d: %w", i, err)
-            }
-            arr[i] = mv
-        }
-        return arr, nil
-    default:
-        return nil, fmt.Errorf("json/encode: unsupported type %T", v)
-    }
-}
 ```
-
-### JSON → Value mapping
-
-```go
-func fromJSON(v any) core.Value {
-    switch x := v.(type) {
-    case nil:
-        return core.Nil{}
-    case bool:
-        return core.Bool(x)
-    case float64:
-        if x == float64(int64(x)) {
-            return core.Int{V: int64(x)}
-        }
-        return core.Float{V: x}
-    case string:
-        return core.String{V: x}
-    case map[string]any:
-        hm := core.NewHashMap()
-        for k, val := range x {
-            hm.Set(core.Keyword{Name: ":" + k}, fromJSON(val))
-        }
-        return hm
-    case []any:
-        items := make([]core.Value, len(x))
-        for i, item := range x {
-            items[i] = fromJSON(item)
-        }
-        return core.NewVector(items)
-    default:
-        return core.String{V: fmt.Sprintf("%v", v)}
-    }
-}
+plugins/data/
+├── plugin.go       # Plugin struct, Init, Metadata — registers json/* functions
+├── json.go         # encode, decode, prettyEncode implementations
+└── data_test.go    # Table-driven tests for all functions
 ```
 
 ---
 
 ## 8. Error Handling
 
-```
-JSONError: json/decode: invalid character at position 5
-  → Malformed JSON input
+All errors are lowercase, wrapped with function name context:
 
-JSONError: json/encode: unsupported type *SomeType
-  → Unencodable Lisp value
 ```
+json/decode: invalid character '}' looking for beginning of value
+json/encode: unsupported Lisp type: *core.Macro
+json/pretty-encode: requires 1 argument, got 2
+```
+
+No custom error types needed — stdlib `fmt.Errorf` wrapping is sufficient.
 
 ---
 
@@ -270,29 +204,25 @@ JSONError: json/encode: unsupported type *SomeType
 
 | Operation | Target | Notes |
 |-----------|--------|-------|
-| json/encode 1KB | < 500µs | stdlib encoding |
-| json/decode 1KB | < 500µs | stdlib decoding |
-| json/get-in depth 5 | < 10µs | map lookups |
+| json/encode 1KB | < 500µs | `ToGoValue` + `json.Marshal` |
+| json/decode 1KB | < 500µs | `json.Unmarshal` + `fromJSONValue` |
+| json/pretty-encode 1KB | < 500µs | `ToGoValue` + `json.MarshalIndent` |
 
 ---
 
 ## 10. Dependencies
 
 ### External Dependencies
-
-- `encoding/json` - JSON encoding (stdlib)
-- `strings` - Key manipulation (stdlib)
+- `encoding/json` (stdlib)
 
 ### Internal Dependencies
-
-- **Change 1** (core-engine): Required
-- **Change 2** (stdlib-plugin): Required
+- **core** package: `Value`, `ToGoValue`, `FromGoValue`, `GoFunc`, `Env`, `Evaluator`
+- **stdlib plugin**: required for `get-in`, `map?`, `vector?` (test-time dependency)
 
 ### Dependent Changes
-
-- **Change 4** (llm-plugin): json/encode for tool parameters
-- **Change 6a** (io-plugin): json/decode for config files
-- **Change 6b** (net-plugin): json/decode for HTTP responses
+- **ch006b** (net-plugin): `json/decode` for HTTP responses
+- **ch006c** (exec-crypto-plugin): JSON config parsing
+- **ch007** (fsm-plugin): JSON state serialization
 
 ---
 
@@ -301,23 +231,30 @@ JSONError: json/encode: unsupported type *SomeType
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | Large JSON DoS | Low | Medium | Caller sets context timeout |
-| Keyword collision | Low | Low | Document key stripping |
-| Number precision | Low | Medium | int64 for integers, float64 for floats |
+| Number precision | Low | Medium | int64 for integers ≤ 2^53, float64 for rest |
+| Map key ordering | N/A | None | JSON object key order is unspecified |
 
 ---
 
 ## 12. Acceptance Criteria
 
-- [ ] json/encode produces valid JSON
-- [ ] json/decode parses JSON to Lisp values
+- [ ] `json/encode` produces valid JSON for all Lisp value types
+- [ ] `json/decode` parses JSON to correct Lisp values
+- [ ] `json/pretty-encode` produces indented output
 - [ ] Round-trip encode→decode preserves structure
-- [ ] json/get-in navigates nested maps
 - [ ] Keyword keys serialized without colon
 - [ ] JSON object keys decoded as Keywords
-- [ ] null ↔ nil
+- [ ] JSON integers decoded as `Int` (not `Float`)
+- [ ] null ↔ nil, booleans ↔ Bool
+- [ ] Lists encode to JSON arrays (same as Vectors)
 - [ ] Context cancellation respected
+- [ ] Existing `get-in` works on decoded JSON
+- [ ] Existing `map?`/`vector?` work on decoded JSON
+- [ ] All error messages follow `funcname: message` pattern
 - [ ] Test coverage ≥ 85%
+- [ ] `go test ./plugins/data/...` passes
+- [ ] `go vet ./plugins/data/...` clean
 
 ---
 
-**Next Step:** Create detailed design document (02-design.md) with full encode/decode implementation and error handling.
+**Status: Ready for Development** — design and tasks are complete.
