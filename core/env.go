@@ -97,3 +97,14 @@ func (e *Env) SetEvaluator(eval Evaluator) {
 	defer e.mu.Unlock()
 	e.eval = eval
 }
+
+// MergeInto copies all bindings from this env into target.
+// Does NOT copy parent bindings. Target is locked during merge.
+func (e *Env) MergeInto(target *Env) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for name, val := range e.vars {
+		target.Set(name, val)
+	}
+}

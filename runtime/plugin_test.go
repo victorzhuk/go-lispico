@@ -1,0 +1,280 @@
+package runtime
+
+import (
+	"errors"
+	"log/slog"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/core"
+)
+
+type mockPlugin struct {
+	name       string
+	version    string
+	initErr    error
+	initCalled bool
+	initCount  int
+}
+
+func (m *mockPlugin) Name() string {
+	return m.name
+}
+
+func (m *mockPlugin) Init(env *core.Env) error {
+	m.initCalled = true
+	m.initCount++
+	return m.initErr
+}
+
+func (m *mockPlugin) Metadata() core.PluginMeta {
+	return core.PluginMeta{
+		Version: m.version,
+	}
+}
+
+func TestUse_Success(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p := &mockPlugin{name: "test", version: "1.0.0"}
+
+	err = eng.Use(p)
+
+	assert.NoError(t, err)
+	assert.True(t, p.initCalled)
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 1, stats.ActivePlugins)
+
+	_, exists := eng.registry.Get("test")
+	assert.True(t, exists)
+}
+
+func TestUse_InitFailure(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	initErr := errors.New("init failed")
+	p := &mockPlugin{name: "test", version: "1.0.0", initErr: initErr}
+
+	err = eng.Use(p)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "init plugin test")
+	assert.True(t, p.initCalled)
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 0, stats.ActivePlugins)
+
+	_, exists := eng.registry.Get("test")
+	assert.False(t, exists)
+}
+
+func TestUse_AlreadyRegistered(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p1 := &mockPlugin{name: "test", version: "1.0.0"}
+	p2 := &mockPlugin{name: "test", version: "2.0.0"}
+
+	err = eng.Use(p1)
+	require.NoError(t, err)
+
+	err = eng.Use(p2)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already registered")
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 1, stats.ActivePlugins)
+}
+
+func TestUnloadPlugin_Success(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p := &mockPlugin{name: "test", version: "1.0.0"}
+	require.NoError(t, eng.Use(p))
+
+	err = eng.UnloadPlugin("test")
+
+	assert.NoError(t, err)
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 0, stats.ActivePlugins)
+
+	_, exists := eng.registry.Get("test")
+	assert.False(t, exists)
+}
+
+func TestUnloadPlugin_NotFound(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	err = eng.UnloadPlugin("nonexistent")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestReloadPlugin_NewPlugin(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p := &mockPlugin{name: "test", version: "1.0.0"}
+
+	err = eng.ReloadPlugin(p)
+
+	assert.NoError(t, err)
+	assert.True(t, p.initCalled)
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 1, stats.ActivePlugins)
+}
+
+func TestReloadPlugin_ReplaceExisting(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p1 := &mockPlugin{name: "test", version: "1.0.0"}
+	require.NoError(t, eng.Use(p1))
+	assert.Equal(t, 1, p1.initCount)
+
+	p2 := &mockPlugin{name: "test", version: "2.0.0"}
+
+	err = eng.ReloadPlugin(p2)
+
+	assert.NoError(t, err)
+	assert.True(t, p2.initCalled)
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 1, stats.ActivePlugins)
+
+	loaded, exists := eng.registry.Get("test")
+	require.True(t, exists)
+	assert.Equal(t, "2.0.0", loaded.Metadata().Version)
+}
+
+func TestReloadPlugin_InitFailure_KeepsOld(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p1 := &mockPlugin{name: "test", version: "1.0.0"}
+	require.NoError(t, eng.Use(p1))
+
+	initErr := errors.New("init failed")
+	p2 := &mockPlugin{name: "test", version: "2.0.0", initErr: initErr}
+
+	err = eng.ReloadPlugin(p2)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "init plugin test")
+
+	stats := eng.stats.Snapshot()
+	assert.Equal(t, 1, stats.ActivePlugins)
+
+	loaded, exists := eng.registry.Get("test")
+	require.True(t, exists)
+	assert.Equal(t, "1.0.0", loaded.Metadata().Version)
+}
+
+func TestListPlugins_Empty(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	statuses := eng.ListPlugins()
+
+	assert.Empty(t, statuses)
+}
+
+func TestListPlugins_Sorted(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	pZ := &mockPlugin{name: "zebra", version: "1.0.0"}
+	pA := &mockPlugin{name: "alpha", version: "2.0.0"}
+	pM := &mockPlugin{name: "middle", version: "3.0.0"}
+
+	require.NoError(t, eng.Use(pZ))
+	require.NoError(t, eng.Use(pA))
+	require.NoError(t, eng.Use(pM))
+
+	statuses := eng.ListPlugins()
+
+	require.Len(t, statuses, 3)
+	assert.Equal(t, "alpha", statuses[0].Name)
+	assert.Equal(t, "middle", statuses[1].Name)
+	assert.Equal(t, "zebra", statuses[2].Name)
+
+	assert.Equal(t, "2.0.0", statuses[0].Version)
+	assert.Equal(t, "3.0.0", statuses[1].Version)
+	assert.Equal(t, "1.0.0", statuses[2].Version)
+
+	for _, s := range statuses {
+		assert.Equal(t, "active", s.Status)
+	}
+}
+
+func TestListPlugins_AfterUnload(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	p1 := &mockPlugin{name: "alpha", version: "1.0.0"}
+	p2 := &mockPlugin{name: "beta", version: "1.0.0"}
+
+	require.NoError(t, eng.Use(p1))
+	require.NoError(t, eng.Use(p2))
+
+	require.NoError(t, eng.UnloadPlugin("alpha"))
+
+	statuses := eng.ListPlugins()
+
+	require.Len(t, statuses, 1)
+	assert.Equal(t, "beta", statuses[0].Name)
+}
