@@ -49,10 +49,10 @@ func TestUse_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, p.initCalled)
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 1, stats.ActivePlugins)
 
-	_, exists := eng.registry.Get("test")
+	_, exists := eng.Registry().Get("test")
 	assert.True(t, exists)
 }
 
@@ -73,10 +73,10 @@ func TestUse_InitFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "init plugin test")
 	assert.True(t, p.initCalled)
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 0, stats.ActivePlugins)
 
-	_, exists := eng.registry.Get("test")
+	_, exists := eng.Registry().Get("test")
 	assert.False(t, exists)
 }
 
@@ -99,7 +99,7 @@ func TestUse_AlreadyRegistered(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already registered")
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 1, stats.ActivePlugins)
 }
 
@@ -118,10 +118,10 @@ func TestUnloadPlugin_Success(t *testing.T) {
 
 	assert.NoError(t, err)
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 0, stats.ActivePlugins)
 
-	_, exists := eng.registry.Get("test")
+	_, exists := eng.Registry().Get("test")
 	assert.False(t, exists)
 }
 
@@ -154,7 +154,7 @@ func TestReloadPlugin_NewPlugin(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, p.initCalled)
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 1, stats.ActivePlugins)
 }
 
@@ -177,10 +177,10 @@ func TestReloadPlugin_ReplaceExisting(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, p2.initCalled)
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 1, stats.ActivePlugins)
 
-	loaded, exists := eng.registry.Get("test")
+	loaded, exists := eng.Registry().Get("test")
 	require.True(t, exists)
 	assert.Equal(t, "2.0.0", loaded.Metadata().Version)
 }
@@ -204,10 +204,10 @@ func TestReloadPlugin_InitFailure_KeepsOld(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "init plugin test")
 
-	stats := eng.stats.Snapshot()
+	stats := eng.Stats()
 	assert.Equal(t, 1, stats.ActivePlugins)
 
-	loaded, exists := eng.registry.Get("test")
+	loaded, exists := eng.Registry().Get("test")
 	require.True(t, exists)
 	assert.Equal(t, "1.0.0", loaded.Metadata().Version)
 }

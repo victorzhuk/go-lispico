@@ -15,7 +15,7 @@ type PluginStatus struct {
 	LoadedAt time.Time
 }
 
-func (e *engine) Use(p core.Plugin) error {
+func (e *engineImpl) Use(p core.Plugin) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -34,7 +34,7 @@ func (e *engine) Use(p core.Plugin) error {
 	return nil
 }
 
-func (e *engine) UnloadPlugin(name string) error {
+func (e *engineImpl) UnloadPlugin(name string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -50,7 +50,7 @@ func (e *engine) UnloadPlugin(name string) error {
 	return nil
 }
 
-func (e *engine) ReloadPlugin(p core.Plugin) error {
+func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -63,7 +63,7 @@ func (e *engine) ReloadPlugin(p core.Plugin) error {
 
 	if err := e.registry.Register(p); err != nil {
 		if hadOld {
-			_ = e.registry.RegisterNoCheck(oldPlugin)
+			e.registry.RegisterNoCheck(oldPlugin)
 		}
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
@@ -71,7 +71,7 @@ func (e *engine) ReloadPlugin(p core.Plugin) error {
 	if err := p.Init(e.rootEnv); err != nil {
 		e.registry.Unregister(name)
 		if hadOld {
-			_ = e.registry.RegisterNoCheck(oldPlugin)
+			e.registry.RegisterNoCheck(oldPlugin)
 		}
 		return fmt.Errorf("init plugin %s: %w", name, err)
 	}
@@ -85,7 +85,7 @@ func (e *engine) ReloadPlugin(p core.Plugin) error {
 	return nil
 }
 
-func (e *engine) ListPlugins() []PluginStatus {
+func (e *engineImpl) ListPlugins() []PluginStatus {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 

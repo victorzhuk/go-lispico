@@ -20,13 +20,14 @@ func (i Instruction) String() string {
 }
 
 type Chunk struct {
-	Name      string
-	Arity     int
-	Variadic  bool
-	Locals    int
-	Code      []Instruction
-	Constants []core.Value
-	SubChunks []*Chunk
+	Name       string
+	Arity      int
+	Variadic   bool
+	Locals     int
+	LocalNames []string
+	Code       []Instruction
+	Constants  []core.Value
+	SubChunks  []*Chunk
 }
 
 func (c *Chunk) AddConstant(v core.Value) int {

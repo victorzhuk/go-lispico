@@ -55,11 +55,10 @@ func (r *Registry) Register(p Plugin) error {
 }
 
 // RegisterNoCheck adds plugin p without checking for duplicates. Used for atomic reload.
-func (r *Registry) RegisterNoCheck(p Plugin) error {
+func (r *Registry) RegisterNoCheck(p Plugin) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.plugins[p.Name()] = p
-	return nil
 }
 
 // Get retrieves a plugin by namespace name.

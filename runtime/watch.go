@@ -13,7 +13,7 @@ import (
 )
 
 type fileWatcher struct {
-	engine   *engine
+	engine   *engineImpl
 	dir      string
 	interval time.Duration
 	mtimes   map[string]time.Time
@@ -22,7 +22,7 @@ type fileWatcher struct {
 	wg       sync.WaitGroup
 }
 
-func newFileWatcher(engine *engine, dir string, interval time.Duration) *fileWatcher {
+func newFileWatcher(engine *engineImpl, dir string, interval time.Duration) *fileWatcher {
 	return &fileWatcher{
 		engine:   engine,
 		dir:      dir,
@@ -130,7 +130,7 @@ func (w *fileWatcher) reloadFile(path string) {
 	)
 }
 
-func (e *engine) Watch(ctx context.Context, dir string) error {
+func (e *engineImpl) Watch(ctx context.Context, dir string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -156,7 +156,7 @@ func (e *engine) Watch(ctx context.Context, dir string) error {
 	return nil
 }
 
-func (e *engine) Stop() error {
+func (e *engineImpl) Stop() error {
 	e.stopWatcher()
 	return nil
 }

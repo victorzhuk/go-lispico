@@ -282,10 +282,12 @@ func TestCompiler_Let(t *testing.T) {
 
 	chunk := c.Chunk()
 	assert.Equal(t, 2, chunk.Locals)
-	require.Len(t, chunk.Code, 3)
+	require.Len(t, chunk.Code, 5)
 	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
-	assert.Equal(t, vm.OpGetLocal, chunk.Code[2].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[3].Op())
+	assert.Equal(t, vm.OpGetLocal, chunk.Code[4].Op())
 }
 
 func TestCompiler_Let_Error(t *testing.T) {
@@ -518,8 +520,10 @@ func TestCompiler_Loop(t *testing.T) {
 
 	chunk := c.Chunk()
 	assert.Equal(t, 1, chunk.Locals)
+	require.Len(t, chunk.Code, 3)
 	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
-	assert.Equal(t, vm.OpGetLocal, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpGetLocal, chunk.Code[2].Op())
 }
 
 func TestCompiler_Call(t *testing.T) {

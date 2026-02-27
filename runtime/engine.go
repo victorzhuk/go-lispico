@@ -8,10 +8,53 @@ import (
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
-type engine struct {
+// Engine is the public API for the Lispico interpreter.
+type Engine interface {
+	// Eval evaluates source code with an optional input value.
+	Eval(ctx context.Context, source, input string) (core.Value, error)
+	// EvalFile evaluates a source file.
+	EvalFile(path string) (core.Value, error)
+	// EvalWithBindings evaluates source with additional bindings.
+	EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error)
+	// LoadDir loads all .lisp files from a directory.
+	LoadDir(dir string) error
+	// Call invokes a named function with arguments.
+	Call(ctx context.Context, name string, args ...core.Value) (core.Value, error)
+	// Bind binds a value to a name in the global environment.
+	Bind(name string, v core.Value) error
+	// Use registers and initializes a plugin.
+	Use(p core.Plugin) error
+	// UnloadPlugin removes a plugin by name.
+	UnloadPlugin(name string) error
+	// ReloadPlugin reloads a plugin.
+	ReloadPlugin(p core.Plugin) error
+	// ListPlugins returns status of all loaded plugins.
+	ListPlugins() []PluginStatus
+	// Watch starts watching a directory for file changes.
+	Watch(ctx context.Context, dir string) error
+	// Stop stops the watcher.
+	Stop() error
+	// Close releases resources.
+	Close() error
+	// REPL starts an interactive REPL.
+	REPL(r io.Reader, w io.Writer) error
+	// RootEnv returns the root environment.
+	RootEnv() *core.Env
+	// Registry returns the plugin registry.
+	Registry() *core.Registry
+	// Stats returns runtime statistics.
+	Stats() EngineStats
+	// OnEval registers a callback for evaluation events.
+	OnEval(fn func(EvalEvent))
+	// OnPluginCall registers a callback for plugin call events.
+	OnPluginCall(fn func(PluginCallEvent))
+}
+
+type engineImpl struct {
 	mu              sync.RWMutex
 	rootEnv         *core.Env
 	registry        *core.Registry
@@ -66,7 +109,7 @@ func WithBytecodeCache(dir string) EngineOption {
 	}
 }
 
-func New(log *slog.Logger, opts ...EngineOption) (*engine, error) {
+func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	cfg := engineConfig{
 		maxEvalDepth: 1000,
 		timeout:      30 * time.Second,
@@ -93,7 +136,11 @@ func New(log *slog.Logger, opts ...EngineOption) (*engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		evaluator = vm.New(rootEnv, bc)
+		evaluator = vm.New(rootEnv, bc,
+			vm.WithCompiler(compiler.NewCompiler("<runtime>")),
+			vm.WithMaxDepth(cfg.maxEvalDepth),
+		)
+		rootEnv.SetEvaluator(evaluator)
 	} else {
 		eval := core.NewEvaluator()
 		eval.MaxDepth = cfg.maxEvalDepth
@@ -103,7 +150,7 @@ func New(log *slog.Logger, opts ...EngineOption) (*engine, error) {
 
 	log.Debug("engine created", "maxEvalDepth", cfg.maxEvalDepth, "timeout", cfg.timeout, "bytecode", cfg.bytecode)
 
-	return &engine{
+	return &engineImpl{
 		rootEnv:   rootEnv,
 		registry:  registry,
 		evaluator: evaluator,
@@ -113,13 +160,13 @@ func New(log *slog.Logger, opts ...EngineOption) (*engine, error) {
 	}, nil
 }
 
-func (e *engine) Close() error {
+func (e *engineImpl) Close() error {
 	e.stopWatcher()
 	e.logger.Debug("engine closed")
 	return nil
 }
 
-func (e *engine) stopWatcher() {
+func (e *engineImpl) stopWatcher() {
 	e.mu.Lock()
 	watcher := e.watcher
 	cancel := e.watchCancel
@@ -137,31 +184,31 @@ func (e *engine) stopWatcher() {
 	}
 }
 
-func (e *engine) RootEnv() *core.Env {
+func (e *engineImpl) RootEnv() *core.Env {
 	return e.rootEnv
 }
 
-func (e *engine) Registry() *core.Registry {
+func (e *engineImpl) Registry() *core.Registry {
 	return e.registry
 }
 
-func (e *engine) Stats() EngineStats {
+func (e *engineImpl) Stats() EngineStats {
 	return e.stats.Snapshot()
 }
 
-func (e *engine) OnEval(fn func(EvalEvent)) {
+func (e *engineImpl) OnEval(fn func(EvalEvent)) {
 	e.mu.Lock()
 	e.evalCallbacks = append(e.evalCallbacks, fn)
 	e.mu.Unlock()
 }
 
-func (e *engine) OnPluginCall(fn func(PluginCallEvent)) {
+func (e *engineImpl) OnPluginCall(fn func(PluginCallEvent)) {
 	e.mu.Lock()
 	e.pluginCallbacks = append(e.pluginCallbacks, fn)
 	e.mu.Unlock()
 }
 
-func (e *engine) fireEvalCallbacks(event EvalEvent) {
+func (e *engineImpl) fireEvalCallbacks(event EvalEvent) {
 	e.mu.RLock()
 	callbacks := e.evalCallbacks
 	e.mu.RUnlock()
@@ -171,7 +218,7 @@ func (e *engine) fireEvalCallbacks(event EvalEvent) {
 	}
 }
 
-func (e *engine) firePluginCallbacks(event PluginCallEvent) {
+func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
 	e.mu.RLock()
 	callbacks := e.pluginCallbacks
 	e.mu.RUnlock()

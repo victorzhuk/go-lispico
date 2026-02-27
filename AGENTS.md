@@ -100,7 +100,7 @@ import (
     "sync"
     "sync/atomic"
 
-    "github.com/lispico/core"
+    "github.com/victorzhuk/go-lispico/core"
 )
 ```
 
@@ -259,7 +259,27 @@ core/           # Core interpreter (zero deps)
 ├── reader.go   # Tokenizer and parser
 ├── eval.go     # Evaluator and special forms
 ├── plugin.go   # Plugin interface
-└── error.go    # Error types
+├── error.go    # Error types
+├── compiler/   # Bytecode compiler
+└── vm/         # Stack-based virtual machine
+
+runtime/        # Public Go embedding API
+├── engine.go   # Engine interface (New, Eval, Call, Watch)
+├── eval.go     # Evaluation helpers
+├── repl.go     # Read-Eval-Print Loop
+├── watch.go    # Hot-reload file watching
+├── stats.go    # Runtime statistics
+└── plugin.go   # Plugin loading
+
+plugins/        # Domain plugins (opt-in deps)
+├── stdlib/     # Standard library (pure Lisp + Go builtins)
+├── llm/        # LLM API bindings
+├── agent/      # Agent orchestration
+├── lio/        # File I/O operations
+├── net/        # HTTP client
+├── exec/       # Shell execution + crypto
+├── data/       # Data structures
+└── fsm/        # Finite state machines
 
 openspec/       # OpenSpec workflow
 └── changes/    # Change proposals

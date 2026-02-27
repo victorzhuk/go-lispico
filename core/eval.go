@@ -308,16 +308,6 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 	}
 }
 
-func isTruthy(v Value) bool {
-	if _, ok := v.(Nil); ok {
-		return false
-	}
-	if b, ok := v.(Bool); ok {
-		return b.V
-	}
-	return true
-}
-
 // ── Special Form Implementations ─────────────────────────────────────────────
 
 func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
@@ -418,7 +408,7 @@ func evalIf(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 	if err != nil {
 		return nil, err
 	}
-	if isTruthy(cond) {
+	if IsTruthy(cond) {
 		return e.Eval(ctx, args[1], env)
 	}
 	if len(args) == 3 {
@@ -444,7 +434,7 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		if err != nil {
 			return nil, err
 		}
-		if isTruthy(result) {
+		if IsTruthy(result) {
 			return e.Eval(ctx, list.Items[1], env)
 		}
 	}
@@ -459,7 +449,7 @@ func evalWhen(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	if err != nil {
 		return nil, err
 	}
-	if !isTruthy(cond) {
+	if !IsTruthy(cond) {
 		return Nil{}, nil
 	}
 	return e.evalBody(ctx, args[1:], env)
@@ -473,7 +463,7 @@ func evalUnless(ctx context.Context, e *engine, args []Value, env *Env) (Value, 
 	if err != nil {
 		return nil, err
 	}
-	if isTruthy(cond) {
+	if IsTruthy(cond) {
 		return Nil{}, nil
 	}
 	return e.evalBody(ctx, args[1:], env)
@@ -675,7 +665,7 @@ func evalAnd(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 			return nil, err
 		}
 		last = v
-		if !isTruthy(v) {
+		if !IsTruthy(v) {
 			return v, nil
 		}
 	}
@@ -693,7 +683,7 @@ func evalOr(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 			return nil, err
 		}
 		last = v
-		if isTruthy(v) {
+		if IsTruthy(v) {
 			return v, nil
 		}
 	}
@@ -708,5 +698,5 @@ func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	return Bool{V: !isTruthy(v)}, nil
+	return Bool{V: !IsTruthy(v)}, nil
 }
