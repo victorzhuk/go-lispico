@@ -503,3 +503,66 @@ func TestHashMap_HashableKeyTypes(t *testing.T) {
 		}
 	}
 }
+
+func TestIsTruthy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		val  Value
+		want bool
+	}{
+		{Nil{}, false},
+		{Bool{V: false}, false},
+		{Bool{V: true}, true},
+		{Int{V: 0}, true},
+		{Int{V: 1}, true},
+		{Float{V: 0.0}, true},
+		{String{V: ""}, true},
+		{String{V: "hello"}, true},
+		{List{}, true},
+		{Vector{}, true},
+		{NewHashMap(), true},
+	}
+	for _, tt := range tests {
+		got := IsTruthy(tt.val)
+		if got != tt.want {
+			t.Errorf("IsTruthy(%v) = %v, want %v", tt.val, got, tt.want)
+		}
+	}
+}
+
+func TestHashMap_Set(t *testing.T) {
+	t.Parallel()
+	m := NewHashMap()
+	if err := m.Set(Keyword{V: "a"}, Int{V: 1}); err != nil {
+		t.Fatalf("Set error: %v", err)
+	}
+	v, ok := m.Get(Keyword{V: "a"})
+	if !ok || !v.Equals(Int{V: 1}) {
+		t.Errorf("Get after Set = %v, want 1", v)
+	}
+	if m.Len() != 1 {
+		t.Errorf("Len after Set = %d, want 1", m.Len())
+	}
+}
+
+func TestHashMap_Pairs(t *testing.T) {
+	t.Parallel()
+	m := NewHashMap()
+	m.Set(Keyword{V: "a"}, Int{V: 1})
+	m.Set(Keyword{V: "b"}, Int{V: 2})
+
+	pairs := m.Pairs()
+	if len(pairs) != 2 {
+		t.Fatalf("len(Pairs) = %d, want 2", len(pairs))
+	}
+
+	found := make(map[string]int64)
+	for _, p := range pairs {
+		k := p[0].(Keyword).V
+		v := p[1].(Int).V
+		found[k] = v
+	}
+	if found["a"] != 1 || found["b"] != 2 {
+		t.Errorf("Pairs content = %v, want {a:1, b:2}", found)
+	}
+}
