@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
 type engine struct {
@@ -29,6 +30,8 @@ type engineConfig struct {
 	maxEvalDepth int
 	timeout      time.Duration
 	hotReloadDir string
+	bytecode     bool
+	cacheDir     string
 }
 
 type EngineOption func(*engineConfig)
@@ -51,6 +54,18 @@ func WithHotReloadDir(dir string) EngineOption {
 	}
 }
 
+func WithBytecode() EngineOption {
+	return func(cfg *engineConfig) {
+		cfg.bytecode = true
+	}
+}
+
+func WithBytecodeCache(dir string) EngineOption {
+	return func(cfg *engineConfig) {
+		cfg.cacheDir = dir
+	}
+}
+
 func New(log *slog.Logger, opts ...EngineOption) (*engine, error) {
 	cfg := engineConfig{
 		maxEvalDepth: 1000,
@@ -66,17 +81,32 @@ func New(log *slog.Logger, opts ...EngineOption) (*engine, error) {
 	}
 
 	rootEnv := core.NewEnv(nil)
-	eval := core.NewEvaluator()
-	eval.MaxDepth = cfg.maxEvalDepth
-	rootEnv.SetEvaluator(eval)
 	registry := core.NewRegistry()
 
-	log.Debug("engine created", "maxEvalDepth", cfg.maxEvalDepth, "timeout", cfg.timeout)
+	var evaluator core.Evaluator
+	if cfg.bytecode {
+		cacheDir := cfg.cacheDir
+		if cacheDir == "" {
+			cacheDir = "/tmp/lispico-cache"
+		}
+		bc, err := vm.NewBytecodeCache(cacheDir)
+		if err != nil {
+			return nil, err
+		}
+		evaluator = vm.New(rootEnv, bc)
+	} else {
+		eval := core.NewEvaluator()
+		eval.MaxDepth = cfg.maxEvalDepth
+		rootEnv.SetEvaluator(eval)
+		evaluator = eval
+	}
+
+	log.Debug("engine created", "maxEvalDepth", cfg.maxEvalDepth, "timeout", cfg.timeout, "bytecode", cfg.bytecode)
 
 	return &engine{
 		rootEnv:   rootEnv,
 		registry:  registry,
-		evaluator: eval,
+		evaluator: evaluator,
 		logger:    log,
 		config:    cfg,
 		stats:     newStats(),

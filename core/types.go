@@ -90,8 +90,8 @@ func (s String) Equals(o Value) bool {
 // Symbol — resolves to a value in the environment.
 type Symbol struct{ V string }
 
-func (s Symbol) Type() Keyword    { return Keyword{V: "symbol"} }
-func (s Symbol) String() string   { return s.V }
+func (s Symbol) Type() Keyword  { return Keyword{V: "symbol"} }
+func (s Symbol) String() string { return s.V }
 func (s Symbol) Equals(o Value) bool {
 	if v, ok := o.(Symbol); ok {
 		return s.V == v.V
@@ -269,11 +269,31 @@ func (h *HashMap) Get(key Value) (Value, bool) {
 
 func (h *HashMap) Len() int { return len(h.m) }
 
+// Set mutably inserts a key-value pair. Used during construction.
+func (h *HashMap) Set(key, val Value) error {
+	hk, err := toHashKey(key)
+	if err != nil {
+		return err
+	}
+	h.m[hk] = val
+	h.keys[hk] = key
+	return nil
+}
+
 // Each calls fn for every key-value pair in the map.
 func (h *HashMap) Each(fn func(k, v Value)) {
 	for hk, v := range h.m {
 		fn(h.keys[hk], v)
 	}
+}
+
+// Pairs returns all key-value pairs as [2]Value arrays.
+func (h *HashMap) Pairs() [][2]Value {
+	pairs := make([][2]Value, 0, len(h.m))
+	for hk, v := range h.m {
+		pairs = append(pairs, [2]Value{h.keys[hk], v})
+	}
+	return pairs
 }
 
 // GoFunc — native Go function callable from Lisp.
@@ -327,6 +347,18 @@ func (m Macro) String() string {
 	return "#<macro>"
 }
 func (m Macro) Equals(o Value) bool { return false }
+
+// IsTruthy returns true for all values except Nil and false.
+func IsTruthy(v Value) bool {
+	switch val := v.(type) {
+	case Nil:
+		return false
+	case Bool:
+		return val.V
+	default:
+		return true
+	}
+}
 
 // FromGoValue converts a native Go value to a Lisp Value.
 func FromGoValue(v any) (Value, error) {
