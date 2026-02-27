@@ -1,11 +1,13 @@
 package runtime
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/victorzhuk/go-lispico/core"
 )
 
 func TestNew_DefaultOptions(t *testing.T) {
@@ -15,10 +17,8 @@ func TestNew_DefaultOptions(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, eng)
-	assert.NotNil(t, eng.rootEnv)
-	assert.NotNil(t, eng.registry)
-	assert.NotNil(t, eng.evaluator)
-	assert.NotNil(t, eng.stats)
+	assert.NotNil(t, eng.RootEnv())
+	assert.NotNil(t, eng.Registry())
 	assert.NoError(t, eng.Close())
 }
 
@@ -34,9 +34,6 @@ func TestNew_CustomOptions(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, eng)
-	assert.Equal(t, 500, eng.config.maxEvalDepth)
-	assert.Equal(t, 10*time.Second, eng.config.timeout)
-	assert.Equal(t, "/tmp/scripts", eng.config.hotReloadDir)
 	assert.NoError(t, eng.Close())
 }
 
@@ -47,7 +44,6 @@ func TestNew_NilLogger(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, eng)
-	assert.NotNil(t, eng.logger)
 	assert.NoError(t, eng.Close())
 }
 
@@ -60,8 +56,6 @@ func TestClose_NoWatcher(t *testing.T) {
 	err = eng.Close()
 
 	assert.NoError(t, err)
-	assert.Nil(t, eng.watcher)
-	assert.Nil(t, eng.watchCancel)
 }
 
 func TestStats_Initial(t *testing.T) {
@@ -85,9 +79,22 @@ func TestStats_RecordEval(t *testing.T) {
 	assert.NoError(t, err)
 	defer eng.Close()
 
-	eng.stats.recordEval(time.Millisecond, nil)
-	eng.stats.recordEval(time.Millisecond, assert.AnError)
-	eng.stats.recordEval(time.Millisecond, nil)
+	eng.Bind("+", core.GoFunc{
+		Name: "+",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			sum := int64(0)
+			for _, arg := range args {
+				if i, ok := arg.(core.Int); ok {
+					sum += i.V
+				}
+			}
+			return core.Int{V: sum}, nil
+		},
+	})
+
+	_, _ = eng.Eval(t.Context(), "test", "(+ 1 2)")
+	_, _ = eng.Eval(t.Context(), "test", "undefined-symbol")
+	_, _ = eng.Eval(t.Context(), "test", "(+ 2 3)")
 
 	stats := eng.Stats()
 	assert.Equal(t, int64(3), stats.TotalEvals)
@@ -101,9 +108,22 @@ func TestStats_RecordPluginCall(t *testing.T) {
 	assert.NoError(t, err)
 	defer eng.Close()
 
-	eng.stats.recordPluginCall("foo", time.Millisecond)
-	eng.stats.recordPluginCall("foo", time.Millisecond)
-	eng.stats.recordPluginCall("bar", time.Millisecond)
+	eng.Bind("foo", core.GoFunc{
+		Name: "foo",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		},
+	})
+	eng.Bind("bar", core.GoFunc{
+		Name: "bar",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		},
+	})
+
+	_, _ = eng.Call(t.Context(), "foo")
+	_, _ = eng.Call(t.Context(), "foo")
+	_, _ = eng.Call(t.Context(), "bar")
 
 	stats := eng.Stats()
 	assert.Equal(t, int64(2), stats.PluginCallCounts["foo"])

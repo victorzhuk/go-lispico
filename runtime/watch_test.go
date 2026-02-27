@@ -22,7 +22,8 @@ func TestFileWatcher_DetectsNewFile(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	w.scan()
@@ -48,7 +49,8 @@ func TestFileWatcher_DetectsModifiedFile(t *testing.T) {
 	err = os.WriteFile(file, []byte("(def x 1)"), 0644)
 	require.NoError(t, err)
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	w.scan()
@@ -70,7 +72,8 @@ func TestFileWatcher_IgnoresNonLispFiles(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	txtFile := filepath.Join(dir, "test.txt")
@@ -99,7 +102,8 @@ func TestFileWatcher_IgnoresDirectories(t *testing.T) {
 	err = os.Mkdir(subdir, 0755)
 	require.NoError(t, err)
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	w.scan()
@@ -115,9 +119,10 @@ func TestReloadFile_SyntaxErrorKeepsOldDefinitions(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	eng.rootEnv.Set("existing", core.Int{V: 42})
+	eng.RootEnv().Set("existing", core.Int{V: 42})
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	file := filepath.Join(dir, "bad.lisp")
@@ -126,11 +131,11 @@ func TestReloadFile_SyntaxErrorKeepsOldDefinitions(t *testing.T) {
 
 	w.reloadFile(file)
 
-	val, ok := eng.rootEnv.Get("existing")
+	val, ok := eng.RootEnv().Get("existing")
 	assert.True(t, ok)
 	assert.Equal(t, int64(42), val.(core.Int).V)
 
-	_, hasX := eng.rootEnv.Get("x")
+	_, hasX := eng.RootEnv().Get("x")
 	assert.False(t, hasX)
 }
 
@@ -142,9 +147,10 @@ func TestReloadFile_EvalErrorKeepsOldDefinitions(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	eng.rootEnv.Set("existing", core.Int{V: 42})
+	eng.RootEnv().Set("existing", core.Int{V: 42})
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	file := filepath.Join(dir, "error.lisp")
@@ -153,11 +159,11 @@ func TestReloadFile_EvalErrorKeepsOldDefinitions(t *testing.T) {
 
 	w.reloadFile(file)
 
-	val, ok := eng.rootEnv.Get("existing")
+	val, ok := eng.RootEnv().Get("existing")
 	assert.True(t, ok)
 	assert.Equal(t, int64(42), val.(core.Int).V)
 
-	_, hasX := eng.rootEnv.Get("x")
+	_, hasX := eng.RootEnv().Get("x")
 	assert.False(t, hasX)
 }
 
@@ -169,7 +175,8 @@ func TestReloadFile_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	file := filepath.Join(dir, "good.lisp")
@@ -178,11 +185,11 @@ func TestReloadFile_Success(t *testing.T) {
 
 	w.reloadFile(file)
 
-	xVal, xOk := eng.rootEnv.Get("x")
+	xVal, xOk := eng.RootEnv().Get("x")
 	assert.True(t, xOk)
 	assert.Equal(t, int64(123), xVal.(core.Int).V)
 
-	yVal, yOk := eng.rootEnv.Get("y")
+	yVal, yOk := eng.RootEnv().Get("y")
 	assert.True(t, yOk)
 	assert.Equal(t, int64(456), yVal.(core.Int).V)
 }
@@ -196,7 +203,9 @@ func TestWatch_StartsWatcher(t *testing.T) {
 
 	err = eng.Watch(context.Background(), dir)
 	assert.NoError(t, err)
-	assert.NotNil(t, eng.watcher)
+
+	impl := eng.(*engineImpl)
+	assert.NotNil(t, impl.watcher)
 
 	eng.Stop()
 }
@@ -277,13 +286,14 @@ func TestWatchStop_CleanShutdown(t *testing.T) {
 	err = eng.Watch(context.Background(), dir)
 	require.NoError(t, err)
 
-	assert.NotNil(t, eng.watcher)
-	assert.NotNil(t, eng.watchCancel)
+	impl := eng.(*engineImpl)
+	assert.NotNil(t, impl.watcher)
+	assert.NotNil(t, impl.watchCancel)
 
 	err = eng.Stop()
 	assert.NoError(t, err)
-	assert.Nil(t, eng.watcher)
-	assert.Nil(t, eng.watchCancel)
+	assert.Nil(t, impl.watcher)
+	assert.Nil(t, impl.watchCancel)
 }
 
 func TestWatch_DetectsFileChanges(t *testing.T) {
@@ -305,7 +315,7 @@ func TestWatch_DetectsFileChanges(t *testing.T) {
 
 	time.Sleep(600 * time.Millisecond)
 
-	val, ok := eng.rootEnv.Get("value")
+	val, ok := eng.RootEnv().Get("value")
 	require.True(t, ok)
 	assert.Equal(t, int64(1), val.(core.Int).V)
 
@@ -314,7 +324,7 @@ func TestWatch_DetectsFileChanges(t *testing.T) {
 
 	time.Sleep(600 * time.Millisecond)
 
-	val, ok = eng.rootEnv.Get("value")
+	val, ok = eng.RootEnv().Get("value")
 	require.True(t, ok)
 	assert.Equal(t, int64(2), val.(core.Int).V)
 }
@@ -342,11 +352,11 @@ func TestWatch_MultipleFiles(t *testing.T) {
 
 	time.Sleep(600 * time.Millisecond)
 
-	valA, okA := eng.rootEnv.Get("from-a")
+	valA, okA := eng.RootEnv().Get("from-a")
 	require.True(t, okA)
 	assert.Equal(t, int64(10), valA.(core.Int).V)
 
-	valB, okB := eng.rootEnv.Get("from-b")
+	valB, okB := eng.RootEnv().Get("from-b")
 	require.True(t, okB)
 	assert.Equal(t, int64(20), valB.(core.Int).V)
 }
@@ -360,11 +370,13 @@ func TestClose_StopsWatcher(t *testing.T) {
 
 	err = eng.Watch(context.Background(), dir)
 	require.NoError(t, err)
-	assert.NotNil(t, eng.watcher)
+
+	impl := eng.(*engineImpl)
+	assert.NotNil(t, impl.watcher)
 
 	err = eng.Close()
 	assert.NoError(t, err)
-	assert.Nil(t, eng.watcher)
+	assert.Nil(t, impl.watcher)
 }
 
 func TestReloadFile_ReadError(t *testing.T) {
@@ -374,7 +386,8 @@ func TestReloadFile_ReadError(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	w := newFileWatcher(eng, "/nonexistent", 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, "/nonexistent", 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	w.reloadFile("/nonexistent/file.lisp")
@@ -389,7 +402,8 @@ func TestFileWatcher_ScanNonexistentDirectory(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	w := newFileWatcher(eng, "/nonexistent/dir", 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, "/nonexistent/dir", 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	w.scan()

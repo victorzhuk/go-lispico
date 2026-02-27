@@ -279,7 +279,7 @@ func (p *testPlugin) Metadata() core.PluginMeta {
 	return core.PluginMeta{Description: "test plugin"}
 }
 
-func bindBuiltin(e *engine, name string) {
+func bindBuiltin(e Engine, name string) {
 	switch name {
 	case "+":
 		e.RootEnv().Set("+", core.GoFunc{

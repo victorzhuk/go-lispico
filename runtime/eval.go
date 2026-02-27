@@ -11,7 +11,7 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-func (e *engine) Eval(ctx context.Context, source, input string) (core.Value, error) {
+func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
 	start := time.Now()
 
 	forms, err := core.Read(input)
@@ -44,7 +44,7 @@ func (e *engine) Eval(ctx context.Context, source, input string) (core.Value, er
 	return result, nil
 }
 
-func (e *engine) EvalFile(path string) (core.Value, error) {
+func (e *engineImpl) EvalFile(path string) (core.Value, error) {
 	e.logger.Info("loading file", "path", path)
 
 	content, err := os.ReadFile(path)
@@ -61,7 +61,7 @@ func (e *engine) EvalFile(path string) (core.Value, error) {
 	return result, nil
 }
 
-func (e *engine) LoadDir(dir string) error {
+func (e *engineImpl) LoadDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read dir %s: %w", dir, err)
@@ -89,7 +89,7 @@ func (e *engine) LoadDir(dir string) error {
 	return nil
 }
 
-func (e *engine) Call(ctx context.Context, name string, args ...core.Value) (core.Value, error) {
+func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) (core.Value, error) {
 	start := time.Now()
 
 	select {
@@ -123,7 +123,7 @@ func (e *engine) Call(ctx context.Context, name string, args ...core.Value) (cor
 	return result, err
 }
 
-func (e *engine) Bind(name string, v core.Value) error {
+func (e *engineImpl) Bind(name string, v core.Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -136,7 +136,7 @@ func (e *engine) Bind(name string, v core.Value) error {
 	return nil
 }
 
-func (e *engine) EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error) {
+func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error) {
 	start := time.Now()
 
 	forms, err := core.Read(source)

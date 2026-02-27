@@ -98,20 +98,42 @@ func (bc *BytecodeCache) Store(path string, content []byte, chunks []*Chunk) {
 	}()
 }
 
-type VM struct {
-	stack   []core.Value
-	frames  []Frame
-	globals *core.Env
-	cache   *BytecodeCache
+type FormCompiler interface {
+	Compile(form core.Value) error
+	Chunk() *Chunk
 }
 
-func New(globals *core.Env, bc *BytecodeCache) *VM {
-	return &VM{
+type VM struct {
+	stack    []core.Value
+	frames   []Frame
+	globals  *core.Env
+	cache    *BytecodeCache
+	compiler FormCompiler
+	maxDepth int
+	depth    int
+}
+
+type VMOption func(*VM)
+
+func WithCompiler(c FormCompiler) VMOption {
+	return func(v *VM) { v.compiler = c }
+}
+
+func WithMaxDepth(d int) VMOption {
+	return func(v *VM) { v.maxDepth = d }
+}
+
+func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
+	v := &VM{
 		stack:   make([]core.Value, 0, 256),
 		frames:  make([]Frame, 0, 64),
 		globals: globals,
 		cache:   bc,
 	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
 }
 
 func (vm *VM) Cache() *BytecodeCache { return vm.cache }
@@ -138,7 +160,14 @@ func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *c
 type vmEvaluator struct{ vm *VM }
 
 func (e vmEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
-	return nil, fmt.Errorf("vm: eval not implemented without compiler")
+	if e.vm.compiler == nil {
+		return nil, fmt.Errorf("vm eval: no compiler configured (use vm.WithCompiler)")
+	}
+	if err := e.vm.compiler.Compile(form); err != nil {
+		return nil, fmt.Errorf("vm eval compile: %w", err)
+	}
+	e.vm.compiler.Chunk().Emit(OpReturn, 0)
+	return e.vm.Run(ctx, e.vm.compiler.Chunk())
 }
 
 func (e vmEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
@@ -169,7 +198,7 @@ func (e vmEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value
 }
 
 func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
-	vm.frames = append(vm.frames, Frame{chunk: chunk, base: len(vm.stack)})
+	vm.frames = append(vm.frames, Frame{chunk: chunk, base: len(vm.stack), env: vm.globals})
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -197,11 +226,15 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(vm.stack[frame.base+instr.A()])
 
 		case OpSetLocal:
-			vm.stack[frame.base+instr.A()] = vm.peek()
+			idx := instr.A()
+			vm.stack[frame.base+idx] = vm.peek()
+			if idx < len(frame.chunk.LocalNames) {
+				frame.env.Set(frame.chunk.LocalNames[idx], vm.peek())
+			}
 
 		case OpGetGlobal:
 			sym := frame.chunk.Constants[instr.A()].(core.Symbol)
-			v, ok := vm.globals.Get(sym.V)
+			v, ok := frame.env.Get(sym.V)
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
@@ -235,6 +268,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 		case OpReturn:
 			result := vm.pop()
 			vm.frames = vm.frames[:len(vm.frames)-1]
+			if vm.depth > 0 {
+				vm.depth--
+			}
 			vm.stack = vm.stack[:frame.base]
 			if len(vm.frames) == 0 {
 				return result, nil
@@ -269,7 +305,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpClosure:
 			sub := frame.chunk.SubChunks[instr.A()]
-			vm.push(NewClosure(sub, vm.globals))
+			vm.push(NewClosure(sub, frame.env))
 		}
 	}
 }
@@ -288,12 +324,26 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		vm.push(result)
 
 	case *Closure:
+		if vm.maxDepth > 0 && vm.depth >= vm.maxDepth {
+			return fmt.Errorf("maximum call depth %d exceeded", vm.maxDepth)
+		}
+		vm.depth++
+		callEnv := core.NewEnv(f.Env)
+		paramCount := f.Chunk.Arity
+		if f.Chunk.Variadic {
+			paramCount++
+		}
+		for i := 0; i < len(args) && i < len(f.Chunk.LocalNames); i++ {
+			callEnv.Set(f.Chunk.LocalNames[i], args[i])
+		}
 		if tail && len(vm.frames) > 0 {
+			vm.depth--
 			frame := &vm.frames[len(vm.frames)-1]
 			copy(vm.stack[frame.base:], args)
 			vm.stack = vm.stack[:frame.base+len(args)]
 			frame.chunk = f.Chunk
 			frame.ip = 0
+			frame.env = callEnv
 		} else {
 			base := len(vm.stack) - argc - 1
 			copy(vm.stack[base:], args)
@@ -302,6 +352,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				chunk: f.Chunk,
 				ip:    0,
 				base:  base,
+				env:   callEnv,
 			})
 		}
 

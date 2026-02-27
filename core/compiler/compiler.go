@@ -212,6 +212,7 @@ func (c *Compiler) compileLet(args []core.Value) error {
 		}
 		sym := bindings.Items[i].(core.Symbol)
 		c.addLocal(sym.V)
+		c.chunk.Emit(vm.OpSetLocal, len(c.locals)-1)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -314,6 +315,7 @@ func (c *Compiler) resolveLocal(name string) int {
 func (c *Compiler) addLocal(name string) {
 	c.locals = append(c.locals, local{name: name, depth: c.depth})
 	c.chunk.Locals++
+	c.chunk.LocalNames = append(c.chunk.LocalNames, name)
 }
 
 func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {

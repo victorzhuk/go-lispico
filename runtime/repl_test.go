@@ -241,7 +241,7 @@ func TestIsExitCommand(t *testing.T) {
 	}
 }
 
-func bindPlus(e *engine) {
+func bindPlus(e Engine) {
 	e.RootEnv().Set("+", core.GoFunc{
 		Name: "+",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {

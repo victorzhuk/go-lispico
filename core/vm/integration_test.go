@@ -211,6 +211,46 @@ func TestClosureNested(t *testing.T) {
 	assert.True(t, result.Equals(core.Int{V: 15}), "expected 15, got %v", result)
 }
 
+func TestClosure_LexicalCapture(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `
+(def make-adder (fn [n] (fn [x] (+ x n))))
+(def add5 (make-adder 5))
+(add5 10)`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 15}), "expected 15, got %v", result)
+}
+
+func TestClosure_LexicalCapture_Multiple(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `
+(def make-adder (fn [n] (fn [x] (+ x n))))
+(def add5 (make-adder 5))
+(def add10 (make-adder 10))
+(+ (add5 3) (add10 7))`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 25}), "expected 25, got %v", result)
+}
+
+func TestClosure_LexicalCapture_Let(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `
+(let [n 100]
+  (def get-n (fn [] n)))
+(get-n)`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 100}), "expected 100, got %v", result)
+}
+
 func TestGoFuncCallback(t *testing.T) {
 	t.Parallel()
 

@@ -102,7 +102,8 @@ func BenchmarkEngine_HotReload(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	w := newFileWatcher(eng, dir, 10*time.Millisecond)
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	b.ResetTimer()

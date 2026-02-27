@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func (e *engine) REPL(r io.Reader, w io.Writer) error {
+func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 	fmt.Fprintln(w, "go-lispico REPL")
 	fmt.Fprintln(w, "Type (exit) or Ctrl+D to exit")
 
