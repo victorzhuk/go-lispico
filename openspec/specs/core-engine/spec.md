@@ -1,6 +1,10 @@
-# Technical Specification
+# core-engine Specification
 
-## ADDED Requirements
+## Purpose
+
+The core-engine capability provides the core interpreter functionality for the system, registered and made ready for use when the system initializes.
+
+## Requirements
 
 ### Requirement: core-engine implementation
 The system SHALL implement the core-engine functionality as described in the proposal.
