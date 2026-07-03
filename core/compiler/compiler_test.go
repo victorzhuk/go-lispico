@@ -606,3 +606,34 @@ func TestCompiler_UnknownType(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown form type")
 }
+
+func TestCompiler_LetNonSymbolBinding(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "let"},
+		core.Vector{Items: []core.Value{
+			core.Int{V: 1},
+			core.Int{V: 2},
+		}},
+		core.Int{V: 1},
+	}}
+	err := c.Compile(form)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected symbol")
+}
+
+func TestCompiler_FnNonSymbolRestParam(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{
+			core.Symbol{V: "a"},
+			core.Symbol{V: "&"},
+			core.Int{V: 5},
+		}},
+		core.Symbol{V: "a"},
+	}}
+	err := c.Compile(form)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected symbol")
+}

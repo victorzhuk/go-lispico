@@ -425,6 +425,27 @@ func TestEval_Loop_Recur_ArityError(t *testing.T) {
 	}
 }
 
+func TestEval_Recur_OutsideLoop(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"top level":  `(recur 1)`,
+		"inside fn":  `((fn [] (recur 1)))`,
+		"crosses fn": `(loop [] ((fn [] (recur 1))))`,
+		"inside do":  `(do (recur 1))`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := evalStrErr(newTestEnv(), src)
+			if err == nil {
+				t.Fatalf("%s: expected error, got nil", src)
+			}
+			if !strings.Contains(err.Error(), "recur outside loop") {
+				t.Fatalf("%s: want 'recur outside loop', got %v", src, err)
+			}
+		})
+	}
+}
+
 func TestEval_TCO_DeepRecursion(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()

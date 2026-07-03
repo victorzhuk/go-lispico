@@ -1,3 +1,4 @@
+// Package runtime is the public Go embedding API for the Lispico interpreter.
 package runtime
 
 import (
@@ -77,38 +78,61 @@ type engineConfig struct {
 	cacheDir     string
 }
 
+// EngineOption configures an Engine created by New.
 type EngineOption func(*engineConfig)
 
+// WithMaxEvalDepth sets the maximum recursion depth before evaluation aborts
+// with an error. Defaults to 1000.
 func WithMaxEvalDepth(depth int) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.maxEvalDepth = depth
 	}
 }
 
+// WithTimeout sets the default timeout applied to evaluations. Defaults to
+// 30 seconds.
 func WithTimeout(timeout time.Duration) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.timeout = timeout
 	}
 }
 
+// WithHotReloadDir sets the directory watched for hot-reload when Watch is
+// started.
 func WithHotReloadDir(dir string) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.hotReloadDir = dir
 	}
 }
 
+// WithBytecode switches the engine to the bytecode VM evaluator instead of
+// the default tree-walking one.
+//
+// This path is EXPERIMENTAL and incomplete: loop/recur and several special
+// forms — defn, defmacro, cond, quasiquote, try/catch/throw, and/or, not —
+// are not yet compiled. Use the default tree-walker for anything beyond
+// simple expressions.
 func WithBytecode() EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.bytecode = true
 	}
 }
 
+// WithBytecodeCache sets the on-disk directory used to cache compiled
+// bytecode. It only takes effect when combined with WithBytecode — without
+// it, the bytecode VM (and its cache) is never enabled.
+//
+// This path is EXPERIMENTAL and incomplete: loop/recur and several special
+// forms — defn, defmacro, cond, quasiquote, try/catch/throw, and/or, not —
+// are not yet compiled. Use the default tree-walker for anything beyond
+// simple expressions.
 func WithBytecodeCache(dir string) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.cacheDir = dir
 	}
 }
 
+// New creates an Engine. log may be nil, in which case logging is discarded.
 func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	cfg := engineConfig{
 		maxEvalDepth: 1000,

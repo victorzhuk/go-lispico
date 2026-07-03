@@ -535,3 +535,32 @@ func TestToCommandList(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestExec_EnvIsolation(t *testing.T) {
+	t.Setenv("LISPICO_FAKE_SECRET", "leaked")
+
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	stdoutOf := func(opts ...core.Value) string {
+		args := append([]core.Value{
+			core.String{V: "sh"},
+			core.Vector{Items: []core.Value{core.String{V: "-c"}, core.String{V: "echo $LISPICO_FAKE_SECRET"}}},
+		}, opts...)
+		result, err := p.run(context.Background(), nil, args, env)
+		require.NoError(t, err)
+		stdout, _ := result.(*core.HashMap).Get(core.Keyword{V: "stdout"})
+		return stdout.(core.String).V
+	}
+
+	t.Run("host secret not leaked by default", func(t *testing.T) {
+		assert.Equal(t, "\n", stdoutOf())
+	})
+
+	t.Run("inherit-env opts into the host env", func(t *testing.T) {
+		opts := core.NewHashMap()
+		opts, _ = opts.Assoc(core.Keyword{V: "inherit-env"}, core.Bool{V: true})
+		assert.Equal(t, "leaked\n", stdoutOf(opts))
+	})
+}

@@ -13,12 +13,12 @@ import (
 
 func (p *Plugin) sha256(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) < 1 {
-		return nil, fmt.Errorf("crypto/sha256 requires 1 argument")
+		return nil, fmt.Errorf("crypto/sha256: requires 1 argument")
 	}
 
 	data, ok := args[0].(core.String)
 	if !ok {
-		return nil, fmt.Errorf("crypto/sha256 requires a string argument")
+		return nil, fmt.Errorf("crypto/sha256: requires a string argument")
 	}
 
 	hash := sha256.Sum256([]byte(data.V))

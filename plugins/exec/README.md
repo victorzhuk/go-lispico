@@ -21,6 +21,7 @@ Execute a command and capture output.
 - `:timeout` (int) - Timeout in milliseconds (default: 30000)
 - `:dir` (string) - Working directory for the command
 - `:env` (map) - Additional environment variables
+- `:inherit-env` (bool) - Pass the full host environment to the child (default: `false`)
 
 **Returns:** A map with:
 - `:stdout` (string) - Standard output
@@ -178,12 +179,34 @@ The plugin ensures proper cleanup:
 
 ### Environment Isolation
 
-Custom environment variables are merged with the current process environment. Be careful not to expose sensitive data:
+By default a child process sees only `PATH` and `HOME` plus any variables you pass
+in `:env`. The embedder's own environment — which may hold API keys, cloud
+credentials, or other secrets — is **not** handed to executed commands.
 
 ```lisp
-; Avoid hardcoding secrets
-(exec/run "cmd" [] {:env {"API_KEY" "secret123"}})  ; Not recommended
+; Default: only PATH, HOME, and :env vars reach the child
+(exec/run "sh" ["-c" "echo $HOME:$SOME_HOST_SECRET"])
+; => {:stdout "/home/user:\n" ...}  ; host secret is empty
+
+; Extra variables for this command only
+(exec/run "sh" ["-c" "echo $MY_VAR"] {:env {"MY_VAR" "value"}})
 ```
+
+To run a command with the full host environment, opt in explicitly with
+`:inherit-env`. Only do this for trusted commands — it re-exposes every host
+variable, secrets included:
+
+```lisp
+(exec/run "env" [] {:inherit-env true})  ; child inherits everything
+```
+
+### Trust Model
+
+`exec/run` and `exec/pipe` run arbitrary binaries with the interpreter's own
+privileges — this is effectively remote code execution by design. Only grant the
+`exec` namespace to scripts you trust. Sandboxing (user, cgroups, container,
+seccomp) is the embedder's responsibility; the plugin does not confine what a
+command can do once launched.
 
 ## Error Handling
 

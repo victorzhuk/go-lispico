@@ -1,3 +1,5 @@
+// Package vm implements the stack-based bytecode virtual machine that
+// executes chunks produced by core/compiler.
 package vm
 
 import (
@@ -28,17 +30,25 @@ func init() {
 	gob.Register([]*Chunk{})
 }
 
+// Closure is a compiled function: a Chunk paired with the lexical
+// environment it closed over. It implements core.Value.
 type Closure struct {
 	Chunk *Chunk
 	Env   *core.Env
 }
 
+// NewClosure creates a Closure over chunk in env.
 func NewClosure(chunk *Chunk, env *core.Env) *Closure {
 	return &Closure{Chunk: chunk, Env: env}
 }
 
+// Type implements core.Value.
 func (c *Closure) Type() core.Keyword { return core.Keyword{V: "closure"} }
-func (c *Closure) String() string     { return fmt.Sprintf("#<closure %s>", c.Chunk.Name) }
+
+// String implements core.Value.
+func (c *Closure) String() string { return fmt.Sprintf("#<closure %s>", c.Chunk.Name) }
+
+// Equals implements core.Value. Closures are equal only by identity.
 func (c *Closure) Equals(o core.Value) bool {
 	other, ok := o.(*Closure)
 	return ok && c == other
@@ -51,10 +61,14 @@ type cacheEntry struct {
 	Chunks  []*Chunk
 }
 
+// BytecodeCache persists compiled Chunks to disk, keyed by source path and
+// content hash, so repeated runs can skip recompilation.
 type BytecodeCache struct {
 	dir string
 }
 
+// NewBytecodeCache creates a BytecodeCache rooted at dir, creating the
+// directory if it does not exist.
 func NewBytecodeCache(dir string) (*BytecodeCache, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("bytecode cache mkdir %s: %w", dir, err)
@@ -62,6 +76,7 @@ func NewBytecodeCache(dir string) (*BytecodeCache, error) {
 	return &BytecodeCache{dir: dir}, nil
 }
 
+// Dir returns the cache's root directory.
 func (bc *BytecodeCache) Dir() string { return bc.dir }
 
 func (bc *BytecodeCache) key(path string, content []byte) string {
@@ -70,12 +85,14 @@ func (bc *BytecodeCache) key(path string, content []byte) string {
 	return filepath.Join(bc.dir, fmt.Sprintf("%s.%x.lbc", base, h[:8]))
 }
 
+// Load reads the cached chunks for path/content, if present. It returns an
+// error (including one of type version mismatch) if no valid entry exists.
 func (bc *BytecodeCache) Load(path string, content []byte) ([]*Chunk, error) {
 	f, err := os.Open(bc.key(path, content))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var entry cacheEntry
 	if err := gob.NewDecoder(f).Decode(&entry); err != nil {
 		return nil, err
@@ -86,23 +103,42 @@ func (bc *BytecodeCache) Load(path string, content []byte) ([]*Chunk, error) {
 	return entry.Chunks, nil
 }
 
+// Store persists chunks for path/content asynchronously. The write is
+// atomic: it encodes to a temp file in the cache directory and renames it
+// into place, so a crash or concurrent read never observes a partial file.
+// Errors are swallowed — a failed store just means the next Load misses.
 func (bc *BytecodeCache) Store(path string, content []byte, chunks []*Chunk) {
 	go func() {
 		key := bc.key(path, content)
-		f, err := os.Create(key)
+		tmp, err := os.CreateTemp(bc.dir, "*.lbc.tmp")
 		if err != nil {
 			return
 		}
-		defer f.Close()
-		gob.NewEncoder(f).Encode(cacheEntry{Version: cacheVersion, Chunks: chunks})
+		name := tmp.Name()
+		if err := gob.NewEncoder(tmp).Encode(cacheEntry{Version: cacheVersion, Chunks: chunks}); err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(name)
+			return
+		}
+		if err := tmp.Close(); err != nil {
+			_ = os.Remove(name)
+			return
+		}
+		if err := os.Rename(name, key); err != nil {
+			_ = os.Remove(name)
+			return
+		}
 	}()
 }
 
+// FormCompiler compiles a single form into the compiler's current chunk.
+// Satisfied by *compiler.Compiler.
 type FormCompiler interface {
 	Compile(form core.Value) error
 	Chunk() *Chunk
 }
 
+// VM is a stack-based bytecode virtual machine. It implements core.Evaluator.
 type VM struct {
 	stack    []core.Value
 	frames   []Frame
@@ -113,16 +149,22 @@ type VM struct {
 	depth    int
 }
 
+// VMOption configures a VM created by New.
 type VMOption func(*VM)
 
+// WithCompiler sets the FormCompiler the VM uses to compile forms passed to Eval.
 func WithCompiler(c FormCompiler) VMOption {
 	return func(v *VM) { v.compiler = c }
 }
 
+// WithMaxDepth sets the maximum call depth before the VM aborts with an
+// error. Zero (the default) means unlimited.
 func WithMaxDepth(d int) VMOption {
 	return func(v *VM) { v.maxDepth = d }
 }
 
+// New creates a VM using globals as the root environment and bc as its
+// bytecode cache.
 func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
 	v := &VM{
 		stack:   make([]core.Value, 0, 256),
@@ -136,6 +178,7 @@ func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
 	return v
 }
 
+// Cache returns the VM's bytecode cache, or nil if none was configured.
 func (vm *VM) Cache() *BytecodeCache { return vm.cache }
 func (vm *VM) stackSize() int        { return len(vm.stack) }
 func (vm *VM) frameCount() int       { return len(vm.frames) }
@@ -149,10 +192,12 @@ func (vm *VM) pop() core.Value {
 }
 func (vm *VM) peek() core.Value { return vm.stack[len(vm.stack)-1] }
 
+// Eval compiles form and runs it on the VM. It implements core.Evaluator.
 func (v *VM) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
 	return vmEvaluator{vm: v}.Eval(ctx, form, env)
 }
 
+// Apply calls fn with args on the VM. It implements core.Evaluator.
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
 	return vmEvaluator{vm: v}.Apply(ctx, fn, args, env)
 }
@@ -197,6 +242,8 @@ func (e vmEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value
 	}
 }
 
+// Run pushes a new frame for chunk and executes it to completion, returning
+// the result of its top-level OpReturn.
 func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	vm.frames = append(vm.frames, Frame{chunk: chunk, base: len(vm.stack), env: vm.globals})
 
@@ -329,10 +376,6 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		}
 		vm.depth++
 		callEnv := core.NewEnv(f.Env)
-		paramCount := f.Chunk.Arity
-		if f.Chunk.Variadic {
-			paramCount++
-		}
 		for i := 0; i < len(args) && i < len(f.Chunk.LocalNames); i++ {
 			callEnv.Set(f.Chunk.LocalNames[i], args[i])
 		}

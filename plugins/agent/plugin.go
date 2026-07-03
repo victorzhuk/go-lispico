@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -54,6 +55,11 @@ func (p *Plugin) Init(env *core.Env) error {
 	env.Set("agent/run-with-ctx", core.GoFunc{
 		Name: "agent/run-with-ctx",
 		Fn:   p.runWithCtx,
+	})
+
+	env.Set("agent/run-timeout", core.GoFunc{
+		Name: "agent/run-timeout",
+		Fn:   p.runTimeout,
 	})
 
 	env.Set("agent/list", core.GoFunc{
@@ -291,6 +297,42 @@ func (p *Plugin) runWithCtx(ctx context.Context, eval core.Evaluator, args []cor
 	return core.String{V: response}, nil
 }
 
+func (p *Plugin) runTimeout(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("agent/run-timeout: requires 3 arguments (id, prompt, timeout-ms)")
+	}
+
+	id, ok := args[0].(core.Keyword)
+	if !ok {
+		return nil, fmt.Errorf("agent/run-timeout: first argument must be keyword")
+	}
+
+	prompt, ok := args[1].(core.String)
+	if !ok {
+		return nil, fmt.Errorf("agent/run-timeout: second argument must be string")
+	}
+
+	timeoutMs, ok := args[2].(core.Int)
+	if !ok {
+		return nil, fmt.Errorf("agent/run-timeout: third argument must be integer milliseconds")
+	}
+
+	agent, ok := p.registry.Get(id.V)
+	if !ok {
+		return nil, fmt.Errorf("agent/run-timeout: unknown agent %s", id.V)
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs.V)*time.Millisecond)
+	defer cancel()
+
+	response, err := p.llm.Complete(runCtx, agent.Model, agent.System, prompt.V)
+	if err != nil {
+		return nil, fmt.Errorf("agent/run-timeout: %w", err)
+	}
+
+	return core.String{V: response}, nil
+}
+
 func buildPromptWithContext(prompt string, ctxMap *core.HashMap) string {
 	var ctxStr string
 	ctxMap.Each(func(k, v core.Value) {
@@ -329,28 +371,30 @@ func (p *Plugin) info(ctx context.Context, eval core.Evaluator, args []core.Valu
 		return nil, fmt.Errorf("agent/info: unknown agent %s", id.V)
 	}
 
-	m := core.NewHashMap()
-	m.Assoc(core.Keyword{V: "id"}, core.Keyword{V: agent.ID})
-	m.Assoc(core.Keyword{V: "model"}, core.String{V: agent.Model})
-	m.Assoc(core.Keyword{V: "temperature"}, core.Float{V: agent.Temperature})
-	m.Assoc(core.Keyword{V: "max-tokens"}, core.Int{V: int64(agent.MaxTokens)})
-	m.Assoc(core.Keyword{V: "system"}, core.String{V: agent.System})
-
 	toolsVec := make([]core.Value, len(agent.Tools))
 	for i, t := range agent.Tools {
 		toolsVec[i] = core.String{V: t}
 	}
-	m.Assoc(core.Keyword{V: "tools"}, core.Vector{Items: toolsVec})
 
 	delegateVec := make([]core.Value, len(agent.CanDelegate))
 	for i, d := range agent.CanDelegate {
 		delegateVec[i] = core.Keyword{V: d}
 	}
-	m.Assoc(core.Keyword{V: "can-delegate"}, core.Vector{Items: delegateVec})
+
+	m := core.NewHashMap()
+	m, _ = m.Assoc(core.Keyword{V: "id"}, core.Keyword{V: agent.ID})
+	m, _ = m.Assoc(core.Keyword{V: "model"}, core.String{V: agent.Model})
+	m, _ = m.Assoc(core.Keyword{V: "temperature"}, core.Float{V: agent.Temperature})
+	m, _ = m.Assoc(core.Keyword{V: "max-tokens"}, core.Int{V: int64(agent.MaxTokens)})
+	m, _ = m.Assoc(core.Keyword{V: "system"}, core.String{V: agent.System})
+	m, _ = m.Assoc(core.Keyword{V: "tools"}, core.Vector{Items: toolsVec})
+	m, _ = m.Assoc(core.Keyword{V: "can-delegate"}, core.Vector{Items: delegateVec})
 
 	return m, nil
 }
 
+// route is a placeholder router: it validates arity and always returns the
+// :default route. Task-based routing is not implemented yet.
 func (p *Plugin) route(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("agent/route: requires 1 argument (task)")

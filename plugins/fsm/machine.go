@@ -54,6 +54,9 @@ func (sm *StateMachine) Transition(event Event, ctx map[string]any) (TransitionR
 	}, nil
 }
 
+// TransitionWithEval holds sm.mu across the guard/action Lambda invocations, so
+// a guard or action must not call back into this machine (e.g. fsm/transition on
+// the same id) — the mutex is not reentrant and would deadlock.
 func (sm *StateMachine) TransitionWithEval(goCtx context.Context, event Event, transCtx map[string]any, eval core.Evaluator, env *core.Env) (TransitionResult, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

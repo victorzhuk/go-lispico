@@ -32,7 +32,7 @@ func (p *Plugin) readFile(ctx context.Context, eval core.Evaluator, args []core.
 	if err != nil {
 		return nil, fmt.Errorf("io/read-file: open %s: %w", pathArg.V, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	content, err := io.ReadAll(file)
 	if err != nil {

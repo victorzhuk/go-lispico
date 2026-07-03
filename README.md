@@ -6,8 +6,9 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 
 - **Zero dependencies** in core package (stdlib only)
 - **13 built-in types**: Nil, Bool, Int, Float, String, Symbol, Keyword, List, Vector, HashMap, GoFunc, Lambda, Macro
-- **19 special forms**: if, def, defn, fn, let, let*, do, quote, quasiquote, set!, when, unless, cond, loop, recur, try, catch, throw, and, or
-- **Bytecode VM** with tail-call optimization
+- **22 special forms**: if, def, defn, defmacro, fn, let, let*, do, quote, quasiquote, set!, when, unless, cond, loop, recur, try, catch, throw, and, or, not
+- **Tree-walking evaluator** with `loop`/`recur` tail-call optimization
+- **Bytecode VM** (experimental — see [Bytecode VM](#bytecode-vm-experimental))
 - **Hot-reload** with file watching
 - **Plugin system** for extending functionality
 
@@ -21,30 +22,31 @@ import (
     "fmt"
     "log/slog"
     "os"
-    
-    "github.com/victorzhuk/go-lispico/core"
+
+    "github.com/victorzhuk/go-lispico/plugins/stdlib"
     "github.com/victorzhuk/go-lispico/runtime"
 )
 
 func main() {
     log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-    
-    // Create engine with bytecode VM
-    eng, err := runtime.New(log, 
-        runtime.WithBytecode(),
-        runtime.WithBytecodeCache(".cache"),
-    )
+
+    eng, err := runtime.New(log)
     if err != nil {
         panic(err)
     }
     defer eng.Close()
-    
-    // Evaluate code
-    result, err := eng.Eval(context.Background(), "(+ 1 2 3)", "")
+
+    // Load the standard library so +, map, str, etc. are available
+    if err := eng.Use(stdlib.New()); err != nil {
+        panic(err)
+    }
+
+    // Eval(ctx, source, input): source is a label for logs/stats, input is the code
+    result, err := eng.Eval(context.Background(), "example", "(+ 1 2 3)")
     if err != nil {
         panic(err)
     }
-    fmt.Println(result) // Int{V:6}
+    fmt.Println(result) // 6
 }
 ```
 
@@ -85,10 +87,20 @@ go get github.com/victorzhuk/go-lispico
 | `data` | Data structures (JSON parsing) |
 | `fsm` | Finite state machines |
 
+## Bytecode VM (experimental)
+
+The tree-walking evaluator (`runtime.New` default) is the complete, supported
+execution path. A bytecode compiler and VM are also present behind
+`runtime.WithBytecode()` / `runtime.WithBytecodeCache(dir)`, but the VM path is
+**experimental and incomplete**: `loop`/`recur` and several special forms
+(`defn`, `defmacro`, `cond`, `quasiquote`, `try`/`catch`/`throw`, `and`/`or`,
+`not`) are not yet compiled. Use the default evaluator for anything beyond simple
+expressions.
+
 ## Status
 
 **Alpha** — Core functionality complete, API subject to change.
 
 ## License
 
-[MIT License](LICENSE)
+[Apache License 2.0](LICENSE)

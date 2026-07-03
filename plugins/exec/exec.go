@@ -13,7 +13,7 @@ import (
 
 func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) < 1 {
-		return nil, fmt.Errorf("exec/run requires at least 1 argument")
+		return nil, fmt.Errorf("exec/run: requires at least 1 argument")
 	}
 
 	cmdName, err := expectString(args[0], "command")
@@ -32,11 +32,20 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 	timeout := p.defaultTimeout
 	dir := ""
 	extraEnv := make(map[string]string)
+	inheritEnv := false
 
 	if len(args) >= 3 {
 		opts, ok := args[2].(*core.HashMap)
 		if !ok {
 			return nil, fmt.Errorf("options must be a map")
+		}
+
+		if v, ok := opts.Get(core.Keyword{V: "inherit-env"}); ok {
+			b, ok := v.(core.Bool)
+			if !ok {
+				return nil, fmt.Errorf("exec/run: inherit-env must be a boolean")
+			}
+			inheritEnv = b.V
 		}
 
 		if v, ok := opts.Get(core.Keyword{V: "timeout"}); ok {
@@ -78,10 +87,7 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 		cmd.Dir = dir
 	}
 
-	cmd.Env = os.Environ()
-	for k, v := range extraEnv {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
+	cmd.Env = buildEnv(inheritEnv, extraEnv)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -111,7 +117,7 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 
 func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) < 1 {
-		return nil, fmt.Errorf("exec/pipe requires at least 1 argument")
+		return nil, fmt.Errorf("exec/pipe: requires at least 1 argument")
 	}
 
 	commands, err := toCommandList(args[0])
@@ -120,7 +126,7 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 	}
 
 	if len(commands) == 0 {
-		return nil, fmt.Errorf("exec/pipe requires at least 1 command")
+		return nil, fmt.Errorf("exec/pipe: requires at least 1 command")
 	}
 
 	timeout := p.defaultTimeout
@@ -144,6 +150,7 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 	cmds := make([]*exec.Cmd, len(commands))
 	for i, c := range commands {
 		cmds[i] = exec.CommandContext(cmdCtx, c.name, c.args...)
+		cmds[i].Env = buildEnv(false, nil)
 	}
 
 	for i := 0; i < len(cmds)-1; i++ {
@@ -187,7 +194,7 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 
 func (p *Plugin) which(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if len(args) < 1 {
-		return nil, fmt.Errorf("exec/which requires 1 argument")
+		return nil, fmt.Errorf("exec/which: requires 1 argument")
 	}
 
 	cmdName, err := expectString(args[0], "command")
@@ -201,6 +208,26 @@ func (p *Plugin) which(ctx context.Context, eval core.Evaluator, args []core.Val
 	}
 
 	return core.String{V: path}, nil
+}
+
+// buildEnv returns the child process environment. By default the child sees
+// only PATH and HOME, so host secrets in the embedder's environment are not
+// leaked to executed commands; inherit-env opts back into the full host env.
+func buildEnv(inherit bool, extra map[string]string) []string {
+	var env []string
+	if inherit {
+		env = os.Environ()
+	} else {
+		for _, key := range []string{"PATH", "HOME"} {
+			if v, ok := os.LookupEnv(key); ok {
+				env = append(env, key+"="+v)
+			}
+		}
+	}
+	for k, v := range extra {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+	return env
 }
 
 type command struct {
