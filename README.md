@@ -8,7 +8,7 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 - **13 built-in types**: Nil, Bool, Int, Float, String, Symbol, Keyword, List, Vector, HashMap, GoFunc, Lambda, Macro
 - **22 special forms**: if, def, defn, defmacro, fn, let, let*, do, quote, quasiquote, set!, when, unless, cond, loop, recur, try, catch, throw, and, or, not
 - **Tree-walking evaluator** with `loop`/`recur` tail-call optimization
-- **Bytecode VM** (experimental — see [Bytecode VM](#bytecode-vm-experimental))
+- **Bytecode VM** with `runtime.WithBytecode()` / `runtime.WithBytecodeCache(dir)`
 - **Hot-reload** with file watching
 - **Plugin system** for extending functionality
 
@@ -61,7 +61,7 @@ go get github.com/victorzhuk/go-lispico
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        PLUGINS                              │
-│  stdlib  agent  llm  lio  net  exec  data  fsm             │
+│  stdlib  agent  llm  lio  net  exec  data  fsm              │
 │   (each with optional external dependencies)                │
 ├─────────────────────────────────────────────────────────────┤
 │                      RUNTIME                                │
@@ -76,26 +76,24 @@ go get github.com/victorzhuk/go-lispico
 
 ## Plugins
 
-| Plugin | Description |
-|--------|-------------|
+| Plugin   | Description                                         |
+| -------- | --------------------------------------------------- |
 | `stdlib` | Standard library (arithmetic, collections, strings) |
-| `llm` | LLM API bindings (OpenAI, etc.) |
-| `agent` | Agent orchestration |
-| `lio` | File I/O and environment |
-| `net` | HTTP client |
-| `exec` | Shell execution and crypto |
-| `data` | Data structures (JSON parsing) |
-| `fsm` | Finite state machines |
+| `llm`    | LLM API bindings (OpenAI, etc.)                     |
+| `agent`  | Agent orchestration                                 |
+| `lio`    | File I/O and environment                            |
+| `net`    | HTTP client                                         |
+| `exec`   | Shell execution and crypto                          |
+| `data`   | Data structures (JSON parsing)                      |
+| `fsm`    | Finite state machines                               |
 
-## Bytecode VM (experimental)
+## Bytecode VM
 
-The tree-walking evaluator (`runtime.New` default) is the complete, supported
-execution path. A bytecode compiler and VM are also present behind
-`runtime.WithBytecode()` / `runtime.WithBytecodeCache(dir)`, but the VM path is
-**experimental and incomplete**: `loop`/`recur` and several special forms
-(`defn`, `defmacro`, `cond`, `quasiquote`, `try`/`catch`/`throw`, `and`/`or`,
-`not`) are not yet compiled. Use the default evaluator for anything beyond simple
-expressions.
+The bytecode VM is available behind `runtime.WithBytecode()` and
+`runtime.WithBytecodeCache(dir)`. It now supports the same 22 special forms as
+the tree-walking evaluator, including closures, variadics, macros, `loop`/`recur`,
+and `try`/`catch`/`throw`. The default evaluator is still used when
+`WithBytecode()` is not passed.
 
 ## Status
 

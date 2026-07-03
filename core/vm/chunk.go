@@ -73,9 +73,48 @@ func (c *Chunk) EmitJump(op Opcode) int {
 	return c.Emit(op, 0xFFFFFF)
 }
 
+// EmitLoop appends an OpLoop that jumps back to the instruction at start.
+func (c *Chunk) EmitLoop(start int) int {
+	return c.Emit(OpLoop, start)
+}
+
 // PatchJump rewrites the jump instruction at offset to target the current
 // end of the chunk's code.
 func (c *Chunk) PatchJump(offset int) {
 	target := len(c.Code) - offset - 1
+	c.Code[offset] = Encode(c.Code[offset].Op(), target)
+}
+
+// GetConstant returns the constant at index i, or an error if i is out of range.
+func (c *Chunk) GetConstant(i int) (core.Value, error) {
+	if i < 0 || i >= len(c.Constants) {
+		return nil, fmt.Errorf("constant index %d out of range", i)
+	}
+	return c.Constants[i], nil
+}
+
+// GetSymbolConstant returns the constant at index i as a core.Symbol, or an error.
+func (c *Chunk) GetSymbolConstant(i int) (core.Symbol, error) {
+	v, err := c.GetConstant(i)
+	if err != nil {
+		return core.Symbol{}, err
+	}
+	sym, ok := v.(core.Symbol)
+	if !ok {
+		return core.Symbol{}, fmt.Errorf("expected symbol constant, got %T", v)
+	}
+	return sym, nil
+}
+
+// GetSubChunk returns the sub-chunk at index i, or an error if i is out of range.
+func (c *Chunk) GetSubChunk(i int) (*Chunk, error) {
+	if i < 0 || i >= len(c.SubChunks) {
+		return nil, fmt.Errorf("subchunk index %d out of range", i)
+	}
+	return c.SubChunks[i], nil
+}
+
+// PatchJumpTo rewrites the jump instruction at offset to jump to target.
+func (c *Chunk) PatchJumpTo(offset, target int) {
 	c.Code[offset] = Encode(c.Code[offset].Op(), target)
 }

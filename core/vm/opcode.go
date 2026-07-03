@@ -26,6 +26,11 @@ const (
 	OpNil
 	OpTrue
 	OpFalse
+	OpLoop
+	OpSetupTry
+	OpPopTry
+	OpThrow
+	OpDup
 )
 
 var opNames = [...]string{
@@ -47,6 +52,11 @@ var opNames = [...]string{
 	OpNil:         "NIL",
 	OpTrue:        "TRUE",
 	OpFalse:       "FALSE",
+	OpLoop:        "LOOP",
+	OpSetupTry:    "SETUP_TRY",
+	OpPopTry:      "POP_TRY",
+	OpThrow:       "THROW",
+	OpDup:         "DUP",
 }
 
 // String implements fmt.Stringer.

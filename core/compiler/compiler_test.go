@@ -496,14 +496,9 @@ func TestCompiler_Recur(t *testing.T) {
 		core.Int{V: 1},
 		core.Int{V: 2},
 	}}
-	require.NoError(t, c.Compile(form))
-
-	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 3)
-	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
-	assert.Equal(t, vm.OpTailCall, chunk.Code[2].Op())
-	assert.Equal(t, 2, chunk.Code[2].A())
+	err := c.Compile(form)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "recur outside loop")
 }
 
 func TestCompiler_Loop(t *testing.T) {

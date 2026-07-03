@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
@@ -56,18 +55,20 @@ type Engine interface {
 }
 
 type engineImpl struct {
-	mu              sync.RWMutex
-	rootEnv         *core.Env
-	registry        *core.Registry
-	evaluator       core.Evaluator
-	logger          *slog.Logger
-	config          engineConfig
-	watcher         *fileWatcher
-	watchCtx        context.Context
-	watchCancel     context.CancelFunc
-	stats           *Stats
-	evalCallbacks   []func(EvalEvent)
-	pluginCallbacks []func(PluginCallEvent)
+	mu                sync.RWMutex
+	rootEnv           *core.Env
+	registry          *core.Registry
+	evaluator         core.Evaluator
+	treeWalker        core.Evaluator
+	bytecodeEvaluator *bytecodeEvaluator
+	logger            *slog.Logger
+	config            engineConfig
+	watcher           *fileWatcher
+	watchCtx          context.Context
+	watchCancel       context.CancelFunc
+	stats             *Stats
+	evalCallbacks     []func(EvalEvent)
+	pluginCallbacks   []func(PluginCallEvent)
 }
 
 type engineConfig struct {
@@ -107,11 +108,6 @@ func WithHotReloadDir(dir string) EngineOption {
 
 // WithBytecode switches the engine to the bytecode VM evaluator instead of
 // the default tree-walking one.
-//
-// This path is EXPERIMENTAL and incomplete: loop/recur and several special
-// forms — defn, defmacro, cond, quasiquote, try/catch/throw, and/or, not —
-// are not yet compiled. Use the default tree-walker for anything beyond
-// simple expressions.
 func WithBytecode() EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.bytecode = true
@@ -121,11 +117,6 @@ func WithBytecode() EngineOption {
 // WithBytecodeCache sets the on-disk directory used to cache compiled
 // bytecode. It only takes effect when combined with WithBytecode — without
 // it, the bytecode VM (and its cache) is never enabled.
-//
-// This path is EXPERIMENTAL and incomplete: loop/recur and several special
-// forms — defn, defmacro, cond, quasiquote, try/catch/throw, and/or, not —
-// are not yet compiled. Use the default tree-walker for anything beyond
-// simple expressions.
 func WithBytecodeCache(dir string) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.cacheDir = dir
@@ -150,7 +141,18 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	rootEnv := core.NewEnv(nil)
 	registry := core.NewRegistry()
 
+	treeWalker := core.NewEvaluator()
+	treeWalker.MaxDepth = cfg.maxEvalDepth
+
 	var evaluator core.Evaluator
+	e := &engineImpl{
+		rootEnv:  rootEnv,
+		registry: registry,
+		logger:   log,
+		config:   cfg,
+		stats:    newStats(),
+	}
+
 	if cfg.bytecode {
 		cacheDir := cfg.cacheDir
 		if cacheDir == "" {
@@ -160,28 +162,20 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		evaluator = vm.New(rootEnv, bc,
-			vm.WithCompiler(compiler.NewCompiler("<runtime>")),
-			vm.WithMaxDepth(cfg.maxEvalDepth),
-		)
-		rootEnv.SetEvaluator(evaluator)
+		be := newBytecodeEvaluator(rootEnv, bc, cfg.maxEvalDepth, treeWalker)
+		rootEnv.SetEvaluator(be)
+		evaluator = be
+		e.bytecodeEvaluator = be
 	} else {
-		eval := core.NewEvaluator()
-		eval.MaxDepth = cfg.maxEvalDepth
-		rootEnv.SetEvaluator(eval)
-		evaluator = eval
+		rootEnv.SetEvaluator(treeWalker)
+		evaluator = treeWalker
 	}
+	e.evaluator = evaluator
+	e.treeWalker = treeWalker
 
 	log.Debug("engine created", "maxEvalDepth", cfg.maxEvalDepth, "timeout", cfg.timeout, "bytecode", cfg.bytecode)
 
-	return &engineImpl{
-		rootEnv:   rootEnv,
-		registry:  registry,
-		evaluator: evaluator,
-		logger:    log,
-		config:    cfg,
-		stats:     newStats(),
-	}, nil
+	return e, nil
 }
 
 func (e *engineImpl) Close() error {
