@@ -336,3 +336,170 @@ func TestVMVsTreeWalker_AllTypes(t *testing.T) {
 		})
 	}
 }
+
+func compare(t *testing.T, env *core.Env, src string) {
+	t.Helper()
+
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEval := core.NewEvaluator()
+	var treeResult core.Value = core.Nil{}
+	for _, form := range forms {
+		treeResult, err = treeEval.Eval(context.Background(), form, env)
+		require.NoError(t, err, "tree-walker eval")
+	}
+
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err, "compile")
+
+	v := vm.New(env, nil)
+	var vmResult core.Value = core.Nil{}
+	for _, chunk := range chunks {
+		vmResult, err = v.Run(context.Background(), chunk)
+		require.NoError(t, err, "vm run")
+	}
+
+	assert.True(t, vmResult.Equals(treeResult),
+		"VM result %v (%T) != tree-walker result %v (%T)",
+		vmResult, vmResult, treeResult, treeResult)
+}
+
+func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"cond else", "(cond (false 1) (:else 2))"},
+		{"cond keyword else", "(cond (false 1) (:else 2))"},
+		{"cond no match", "(cond (false 1) (false 2))"},
+		{"and empty", "(and)"},
+		{"and short", "(and 1 false 3)"},
+		{"and last", "(and 1 2 3)"},
+		{"or empty", "(or)"},
+		{"or short", "(or false 2 3)"},
+		{"or last false", "(or false false false)"},
+		{"not true", "(not true)"},
+		{"not nil", "(not nil)"},
+		{"not zero", "(not 0)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_LoopRecur(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"sum to 10", "(loop [i 0 acc 0] (if (< i 10) (recur (+ i 1) (+ acc i)) acc))"},
+		{"factorial", "(loop [n 5 acc 1] (if (= n 0) acc (recur (- n 1) (* acc n))))"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_TryCatch(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"catch throw", "(try (throw \"boom\") (catch e e))"},
+		{"no throw", "(try 42 (catch e e))"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_Variadic(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"fixed plus rest", "((fn [a & rest] a) 1 2 3)"},
+		{"rest only", "((fn [& rest] rest) 1 2 3)"},
+		{"zero rest", "((fn [a & rest] a) 1)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_LetStar(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"sequential", "(let* [x 1 y (+ x 1)] y)"},
+		{"shadow", "(let* [x 1 x (* x 2)] x)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_Macro(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	forms, err := core.Read("(defmacro unless [cond body] `(if (not ~cond) ~body nil)) (unless false 42)")
+	require.NoError(t, err, "read source")
+	require.Len(t, forms, 2)
+
+	treeEval := core.NewEvaluator()
+	_, err = treeEval.Eval(context.Background(), forms[0], env)
+	require.NoError(t, err, "define macro")
+
+	expanded, err := treeEval.MacroExpand(context.Background(), forms[1], env)
+	require.NoError(t, err, "macro expand")
+
+	treeResult, err := treeEval.Eval(context.Background(), forms[1], env)
+	require.NoError(t, err, "tree-walker eval")
+
+	chunks, err := compiler.CompileAll([]core.Value{expanded})
+	require.NoError(t, err, "compile")
+
+	v := vm.New(env, nil)
+	var vmResult core.Value = core.Nil{}
+	for _, chunk := range chunks {
+		vmResult, err = v.Run(context.Background(), chunk)
+		require.NoError(t, err, "vm run")
+	}
+
+	assert.True(t, vmResult.Equals(treeResult),
+		"VM result %v (%T) != tree-walker result %v (%T)",
+		vmResult, vmResult, treeResult, treeResult)
+}
