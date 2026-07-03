@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 **Alpha** — Core functionality is complete. The project includes:
+
 - Core interpreter with 13 types and 22 special forms
 - Bytecode compiler and VM
 - Runtime API with hot-reload support
@@ -97,9 +98,9 @@ The tree-walking evaluator (`eval.go`) optimizes tail calls only through explici
 
 ## Performance Targets
 
-| Operation | Target |
-|-----------|--------|
-| Core boot | < 1ms |
+| Operation              | Target |
+| ---------------------- | ------ |
+| Core boot              | < 1ms  |
 | Simple expression eval | < 10µs |
-| 1000-iteration loop | < 5ms |
-| Memory per Engine | < 10MB |
+| 1000-iteration loop    | < 5ms  |
+| Memory per Engine      | < 10MB |

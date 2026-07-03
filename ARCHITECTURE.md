@@ -377,14 +377,14 @@ Multiple goroutines can safely evaluate code in the same engine, as long as they
 All errors are returned, never panicked:
 
 ```go
-result, err := eng.Eval(ctx, "(invalid", "")
+result, err := eng.Eval(ctx, "repl", "(invalid")
 if err != nil {
-    // Handle parse error
+    // handle read error
 }
 ```
 
-Error types in `core/error.go`:
-
-- `ParseError` — Syntax errors
-- `EvalError` — Runtime errors
-- `CompileError` — Bytecode compilation errors
+Failures are reported as `*core.LispicoError` with a `Code` identifying the
+error class — `ReadError`, `EvalError`, `TypeError`, `ArityError`,
+`UndefinedError` — plus source location (`Source`, `Line`, `Col`) when the
+error can be tied to a position in the input. `Unwrap` exposes the cause for
+`errors.Is`/`errors.As`.
