@@ -9,7 +9,7 @@ go-lispico is designed as an embeddable scripting kernel with three layers:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        PLUGINS                              │
-│  stdlib  agent  llm  lio  net  exec  data  fsm             │
+│  stdlib  agent  llm  lio  net  exec  data  fsm              │
 │   (each with optional external dependencies)                │
 ├─────────────────────────────────────────────────────────────┤
 │                      RUNTIME                                │
@@ -59,21 +59,21 @@ type Value interface {
 
 13 concrete types:
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `Nil` | Null value | `nil` |
-| `Bool` | Boolean | `true`, `false` |
-| `Int` | 64-bit integer | `42` |
-| `Float` | 64-bit float | `3.14` |
-| `String` | UTF-8 string | `"hello"` |
-| `Symbol` | Identifier | `foo` |
-| `Keyword` | Constant key | `:key` |
-| `List` | Linked list | `(1 2 3)` |
-| `Vector` | Indexed array | `[1 2 3]` |
-| `HashMap` | Key-value map | `{:a 1}` |
-| `GoFunc` | Go function | `+`, `map` |
-| `Lambda` | User function | `(fn [x] x)` |
-| `Macro` | Compile-time expansion | `(defmacro ...)` |
+| Type      | Description            | Example          |
+| --------- | ---------------------- | ---------------- |
+| `Nil`     | Null value             | `nil`            |
+| `Bool`    | Boolean                | `true`, `false`  |
+| `Int`     | 64-bit integer         | `42`             |
+| `Float`   | 64-bit float           | `3.14`           |
+| `String`  | UTF-8 string           | `"hello"`        |
+| `Symbol`  | Identifier             | `foo`            |
+| `Keyword` | Constant key           | `:key`           |
+| `List`    | Linked list            | `(1 2 3)`        |
+| `Vector`  | Indexed array          | `[1 2 3]`        |
+| `HashMap` | Key-value map          | `{:a 1}`         |
+| `GoFunc`  | Go function            | `+`, `map`       |
+| `Lambda`  | User function          | `(fn [x] x)`     |
+| `Macro`   | Compile-time expansion | `(defmacro ...)` |
 
 #### Environment
 
@@ -88,6 +88,7 @@ type Env struct {
 ```
 
 Each environment:
+
 - Holds bindings for its scope
 - Has optional parent for lookup chain
 - Is thread-safe with RWMutex
@@ -100,6 +101,7 @@ The reader (`reader.go`) transforms source text into AST:
 2. **Parsing**: Build S-expression tree
 
 Supports:
+
 - Numbers (int, float)
 - Strings (with escape sequences)
 - Symbols and keywords
@@ -111,7 +113,7 @@ Supports:
 Two evaluation modes:
 
 1. **Tree-walking** (`eval.go`): direct AST traversal — the default, complete path
-2. **Bytecode VM** (`vm/`): experimental compiled execution (see the README note)
+2. **Bytecode VM** (`vm/`): compiled execution
 
 Tail-call optimization is explicit: `loop`/`recur` iterate without growing the Go
 stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
@@ -121,29 +123,29 @@ bounded by the configured max eval depth.
 
 22 special forms handled directly by the evaluator:
 
-| Form | Purpose |
-|------|---------|
-| `if` | Conditional |
-| `def` | Define variable |
-| `defn` | Define function |
-| `defmacro` | Define macro |
-| `fn` | Lambda expression |
-| `let` | Local bindings |
-| `let*` | Sequential bindings |
-| `do` | Sequence expressions |
-| `quote` | Prevent evaluation |
-| `quasiquote` | Template quoting |
-| `set!` | Mutate variable |
-| `when` | Conditional with body |
-| `unless` | Negated conditional |
-| `cond` | Multi-way conditional |
-| `loop` | Loop with recur |
-| `recur` | Tail recursion |
-| `try` | Exception handling |
-| `catch` | Catch exception |
-| `throw` | Raise exception |
-| `and`, `or` | Short-circuit logic |
-| `not` | Boolean negation |
+| Form         | Purpose               |
+| ------------ | --------------------- |
+| `if`         | Conditional           |
+| `def`        | Define variable       |
+| `defn`       | Define function       |
+| `defmacro`   | Define macro          |
+| `fn`         | Lambda expression     |
+| `let`        | Local bindings        |
+| `let*`       | Sequential bindings   |
+| `do`         | Sequence expressions  |
+| `quote`      | Prevent evaluation    |
+| `quasiquote` | Template quoting      |
+| `set!`       | Mutate variable       |
+| `when`       | Conditional with body |
+| `unless`     | Negated conditional   |
+| `cond`       | Multi-way conditional |
+| `loop`       | Loop with recur       |
+| `recur`      | Tail recursion        |
+| `try`        | Exception handling    |
+| `catch`      | Catch exception       |
+| `throw`      | Raise exception       |
+| `and`, `or`  | Short-circuit logic   |
+| `not`        | Boolean negation      |
 
 ### runtime/
 
@@ -181,12 +183,13 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
 - `WithMaxEvalDepth(n)` — Cap evaluation call depth
 - `WithTimeout(d)` — Default per-eval timeout
 - `WithHotReloadDir(dir)` — Watch a directory for hot reload
-- `WithBytecode()` — Enable the experimental bytecode VM (see README)
+- `WithBytecode()` — Enable the bytecode VM
 - `WithBytecodeCache(dir)` — Cache compiled bytecode in `dir`
 
 ### plugins/
 
 Domain-specific plugins extend functionality. Each plugin:
+
 - Lives in its own package
 - May have external dependencies
 - Registers functions in a namespace
@@ -263,6 +266,7 @@ Engine ready
 ### 1. Zero Dependencies in Core
 
 The `core/` package imports only Go's standard library. This ensures:
+
 - Maximum portability
 - Minimal attack surface
 - Easy vendoring
@@ -271,6 +275,7 @@ The `core/` package imports only Go's standard library. This ensures:
 ### 2. Immutable Data Structures
 
 Lists, vectors, and hash maps are immutable. Benefits:
+
 - Thread-safe by default
 - Predictable evaluation
 - Easy reasoning about code
@@ -278,12 +283,14 @@ Lists, vectors, and hash maps are immutable. Benefits:
 ### 3. Dual Evaluation Modes
 
 Both tree-walking and bytecode execution are supported:
+
 - Tree-walking: Simple, fast startup, good for REPL
 - Bytecode: Optimized for repeated execution
 
 ### 4. Plugin Isolation
 
 Each plugin:
+
 - Has its own namespace
 - Can be optionally loaded
 - May have its own dependencies
@@ -377,6 +384,7 @@ if err != nil {
 ```
 
 Error types in `core/error.go`:
+
 - `ParseError` — Syntax errors
 - `EvalError` — Runtime errors
 - `CompileError` — Bytecode compilation errors
