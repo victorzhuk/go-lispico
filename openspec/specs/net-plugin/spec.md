@@ -1,6 +1,10 @@
-# Technical Specification
+# net-plugin Specification
 
-## ADDED Requirements
+## Purpose
+
+The net-plugin capability provides HTTP client functionality for the system, registered and made ready for use when the system initializes.
+
+## Requirements
 
 ### Requirement: net-plugin implementation
 The system SHALL implement the net-plugin functionality as described in the proposal.
