@@ -54,7 +54,7 @@ func (c *Closure) Equals(o core.Value) bool {
 	return ok && c == other
 }
 
-const cacheVersion = 1
+const cacheVersion = 2
 
 type cacheEntry struct {
 	Version int
@@ -70,7 +70,7 @@ type BytecodeCache struct {
 // NewBytecodeCache creates a BytecodeCache rooted at dir, creating the
 // directory if it does not exist.
 func NewBytecodeCache(dir string) (*BytecodeCache, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("bytecode cache mkdir %s: %w", dir, err)
 	}
 	return &BytecodeCache{dir: dir}, nil
@@ -131,30 +131,33 @@ func (bc *BytecodeCache) Store(path string, content []byte, chunks []*Chunk) {
 	}()
 }
 
-// FormCompiler compiles a single form into the compiler's current chunk.
-// Satisfied by *compiler.Compiler.
-type FormCompiler interface {
-	Compile(form core.Value) error
-	Chunk() *Chunk
+type handler struct {
+	addr       int
+	frameDepth int
+	stackDepth int
 }
 
-// VM is a stack-based bytecode virtual machine. It implements core.Evaluator.
+// VM is a stack-based bytecode virtual machine.
+// It is not safe for concurrent use on the same instance; callers that need
+// concurrency-safe evaluation should use a fresh VM per evaluation.
 type VM struct {
 	stack    []core.Value
 	frames   []Frame
+	handlers []handler
 	globals  *core.Env
 	cache    *BytecodeCache
-	compiler FormCompiler
 	maxDepth int
 	depth    int
+	eval     core.Evaluator
 }
 
 // VMOption configures a VM created by New.
 type VMOption func(*VM)
 
-// WithCompiler sets the FormCompiler the VM uses to compile forms passed to Eval.
-func WithCompiler(c FormCompiler) VMOption {
-	return func(v *VM) { v.compiler = c }
+// WithEvaluator sets the evaluator passed to GoFunc callbacks invoked by this VM.
+// Defaults to a tree-walking evaluator so GoFuncs can recursively evaluate forms.
+func WithEvaluator(e core.Evaluator) VMOption {
+	return func(v *VM) { v.eval = e }
 }
 
 // WithMaxDepth sets the maximum call depth before the VM aborts with an
@@ -171,6 +174,7 @@ func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
 		frames:  make([]Frame, 0, 64),
 		globals: globals,
 		cache:   bc,
+		eval:    core.NewEvaluator(),
 	}
 	for _, opt := range opts {
 		opt(v)
@@ -182,7 +186,12 @@ func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
 func (vm *VM) Cache() *BytecodeCache { return vm.cache }
 func (vm *VM) stackSize() int        { return len(vm.stack) }
 func (vm *VM) frameCount() int       { return len(vm.frames) }
-func (vm *VM) reset()                { vm.stack = vm.stack[:0]; vm.frames = vm.frames[:0] }
+func (vm *VM) reset() {
+	vm.stack = vm.stack[:0]
+	vm.frames = vm.frames[:0]
+	vm.handlers = vm.handlers[:0]
+	vm.depth = 0
+}
 
 func (vm *VM) push(v core.Value) { vm.stack = append(vm.stack, v) }
 func (vm *VM) pop() core.Value {
@@ -192,30 +201,14 @@ func (vm *VM) pop() core.Value {
 }
 func (vm *VM) peek() core.Value { return vm.stack[len(vm.stack)-1] }
 
-// Eval compiles form and runs it on the VM. It implements core.Evaluator.
-func (v *VM) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
-	return vmEvaluator{vm: v}.Eval(ctx, form, env)
-}
-
-// Apply calls fn with args on the VM. It implements core.Evaluator.
+// Apply calls fn with args in a fresh isolated VM and returns the result.
+// The receiver is used only for configuration (globals, cache, max depth, evaluator).
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	return vmEvaluator{vm: v}.Apply(ctx, fn, args, env)
+	fresh := New(env, v.cache, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval))
+	return fresh.apply(ctx, fn, args, env)
 }
 
-type vmEvaluator struct{ vm *VM }
-
-func (e vmEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
-	if e.vm.compiler == nil {
-		return nil, fmt.Errorf("vm eval: no compiler configured (use vm.WithCompiler)")
-	}
-	if err := e.vm.compiler.Compile(form); err != nil {
-		return nil, fmt.Errorf("vm eval compile: %w", err)
-	}
-	e.vm.compiler.Chunk().Emit(OpReturn, 0)
-	return e.vm.Run(ctx, e.vm.compiler.Chunk())
-}
-
-func (e vmEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
+func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
 	switch f := fn.(type) {
 	case *Closure:
 		if f.Chunk.Variadic {
@@ -227,16 +220,28 @@ func (e vmEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value
 				return nil, core.NewArityError(f.Chunk.Arity, len(args))
 			}
 		}
-		for _, arg := range args {
-			e.vm.push(arg)
+		// Build a tiny wrapper chunk: push closure, push args, call, return.
+		wrapper := &Chunk{
+			Name:       "<apply>",
+			Constants:  make([]core.Value, 0, len(args)+1),
+			Code:       make([]Instruction, 0, len(args)+3),
+			LocalNames: []string{},
+			Arity:      0,
 		}
-		e.vm.push(f)
-		if err := e.vm.call(ctx, len(args), false); err != nil {
-			return nil, err
+		wrapper.Constants = append(wrapper.Constants, f)
+		wrapper.Code = append(wrapper.Code, Encode(OpConst, 0))
+		for i, arg := range args {
+			wrapper.Constants = append(wrapper.Constants, arg)
+			wrapper.Code = append(wrapper.Code, Encode(OpConst, i+1))
 		}
-		return e.vm.pop(), nil
+		wrapper.Code = append(wrapper.Code, Encode(OpCall, len(args)), Encode(OpReturn, 0))
+		return vm.Run(ctx, wrapper)
 	case core.GoFunc:
-		return f.Fn(ctx, e, args, env)
+		eval := vm.eval
+		if eval == nil {
+			eval = core.NewEvaluator()
+		}
+		return f.Fn(ctx, eval, args, env)
 	default:
 		return nil, core.NewTypeError("callable", fn)
 	}
@@ -267,7 +272,11 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(core.Bool{V: false})
 
 		case OpConst:
-			vm.push(frame.chunk.Constants[instr.A()])
+			v, err := frame.chunk.GetConstant(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
+			vm.push(v)
 
 		case OpGetLocal:
 			vm.push(vm.stack[frame.base+instr.A()])
@@ -280,7 +289,10 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 
 		case OpGetGlobal:
-			sym := frame.chunk.Constants[instr.A()].(core.Symbol)
+			sym, err := frame.chunk.GetSymbolConstant(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
 			v, ok := frame.env.Get(sym.V)
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
@@ -288,8 +300,11 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(v)
 
 		case OpSetGlobal:
-			sym := frame.chunk.Constants[instr.A()].(core.Symbol)
-			vm.globals.Set(sym.V, vm.peek())
+			sym, err := frame.chunk.GetSymbolConstant(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
+			frame.env.Set(sym.V, vm.peek())
 
 		case OpPop:
 			vm.pop()
@@ -304,21 +319,28 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpCall:
 			if err := vm.call(ctx, instr.A(), false); err != nil {
-				return nil, err
+				if !vm.throw(core.String{V: err.Error()}) {
+					return nil, err
+				}
 			}
 
 		case OpTailCall:
 			if err := vm.call(ctx, instr.A(), true); err != nil {
-				return nil, err
+				if !vm.throw(core.String{V: err.Error()}) {
+					return nil, err
+				}
 			}
 
 		case OpReturn:
 			result := vm.pop()
-			vm.frames = vm.frames[:len(vm.frames)-1]
-			if vm.depth > 0 {
+			if frame.isClosure && vm.depth > 0 {
 				vm.depth--
 			}
+			vm.frames = vm.frames[:len(vm.frames)-1]
 			vm.stack = vm.stack[:frame.base]
+			for len(vm.handlers) > 0 && vm.handlers[len(vm.handlers)-1].frameDepth > len(vm.frames) {
+				vm.handlers = vm.handlers[:len(vm.handlers)-1]
+			}
 			if len(vm.frames) == 0 {
 				return result, nil
 			}
@@ -351,10 +373,61 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(hm)
 
 		case OpClosure:
-			sub := frame.chunk.SubChunks[instr.A()]
+			sub, err := frame.chunk.GetSubChunk(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
 			vm.push(NewClosure(sub, frame.env))
+
+		case OpDup:
+			vm.push(vm.peek())
+
+		case OpLoop:
+			frame.ip = instr.A()
+
+		case OpSetupTry:
+			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack)})
+
+		case OpPopTry:
+			if len(vm.handlers) > 0 {
+				vm.handlers = vm.handlers[:len(vm.handlers)-1]
+			}
+
+		case OpThrow:
+			value := vm.pop()
+			if !vm.throw(value) {
+				return nil, core.NewTypeError("handler", core.Nil{})
+			}
 		}
 	}
+}
+
+// throw unwinds the VM to the nearest active exception handler and leaves
+// value on the handler frame's stack. It returns true if a handler was found.
+func (vm *VM) throw(value core.Value) bool {
+	for len(vm.handlers) > 0 && vm.handlers[len(vm.handlers)-1].frameDepth > len(vm.frames) {
+		vm.handlers = vm.handlers[:len(vm.handlers)-1]
+	}
+	if len(vm.handlers) == 0 {
+		return false
+	}
+	h := vm.handlers[len(vm.handlers)-1]
+	vm.handlers = vm.handlers[:len(vm.handlers)-1]
+	for len(vm.frames) > h.frameDepth {
+		f := &vm.frames[len(vm.frames)-1]
+		if f.isClosure && vm.depth > 0 {
+			vm.depth--
+		}
+		vm.frames = vm.frames[:len(vm.frames)-1]
+	}
+	if len(vm.frames) == 0 {
+		return false
+	}
+	vm.stack = vm.stack[:h.stackDepth]
+	vm.push(value)
+	frame := &vm.frames[len(vm.frames)-1]
+	frame.ip = h.addr
+	return true
 }
 
 func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
@@ -363,7 +436,11 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 
 	switch f := fn.(type) {
 	case core.GoFunc:
-		result, err := f.Fn(ctx, vmEvaluator{vm: vm}, args, vm.globals)
+		eval := vm.eval
+		if eval == nil {
+			eval = core.NewEvaluator()
+		}
+		result, err := f.Fn(ctx, eval, args, vm.globals)
 		if err != nil {
 			return err
 		}
@@ -371,31 +448,70 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		vm.push(result)
 
 	case *Closure:
+		if f.Chunk.Variadic {
+			if argc < f.Chunk.Arity {
+				return core.NewArityError(f.Chunk.Arity, argc)
+			}
+		} else {
+			if argc != f.Chunk.Arity {
+				return core.NewArityError(f.Chunk.Arity, argc)
+			}
+		}
 		if vm.maxDepth > 0 && vm.depth >= vm.maxDepth {
 			return fmt.Errorf("maximum call depth %d exceeded", vm.maxDepth)
 		}
 		vm.depth++
 		callEnv := core.NewEnv(f.Env)
-		for i := 0; i < len(args) && i < len(f.Chunk.LocalNames); i++ {
-			callEnv.Set(f.Chunk.LocalNames[i], args[i])
-		}
 		if tail && len(vm.frames) > 0 {
 			vm.depth--
 			frame := &vm.frames[len(vm.frames)-1]
-			copy(vm.stack[frame.base:], args)
-			vm.stack = vm.stack[:frame.base+len(args)]
+			target := frame.base
+			if f.Chunk.Variadic {
+				fixed := f.Chunk.Arity
+				rest := core.List{Items: append([]core.Value(nil), args[fixed:]...)}
+				copy(vm.stack[target:], args[:fixed])
+				vm.stack[target+fixed] = rest
+				vm.stack = vm.stack[:target+fixed+1]
+				for i := range fixed {
+					callEnv.Set(f.Chunk.LocalNames[i], args[i])
+				}
+				callEnv.Set(f.Chunk.LocalNames[fixed], rest)
+			} else {
+				copy(vm.stack[target:], args)
+				vm.stack = vm.stack[:target+len(args)]
+				for i := range min(len(args), len(f.Chunk.LocalNames)) {
+					callEnv.Set(f.Chunk.LocalNames[i], args[i])
+				}
+			}
 			frame.chunk = f.Chunk
 			frame.ip = 0
 			frame.env = callEnv
+			frame.isClosure = true
 		} else {
 			base := len(vm.stack) - argc - 1
-			copy(vm.stack[base:], args)
-			vm.stack = vm.stack[:base+argc]
+			if f.Chunk.Variadic {
+				fixed := f.Chunk.Arity
+				rest := core.List{Items: append([]core.Value(nil), args[fixed:]...)}
+				for i := range fixed {
+					vm.stack[base+i] = args[i]
+					callEnv.Set(f.Chunk.LocalNames[i], args[i])
+				}
+				vm.stack[base+fixed] = rest
+				callEnv.Set(f.Chunk.LocalNames[fixed], rest)
+				vm.stack = vm.stack[:base+fixed+1]
+			} else {
+				copy(vm.stack[base:], args)
+				for i := range min(len(args), len(f.Chunk.LocalNames)) {
+					callEnv.Set(f.Chunk.LocalNames[i], args[i])
+				}
+				vm.stack = vm.stack[:base+argc]
+			}
 			vm.frames = append(vm.frames, Frame{
-				chunk: f.Chunk,
-				ip:    0,
-				base:  base,
-				env:   callEnv,
+				chunk:     f.Chunk,
+				ip:        0,
+				base:      base,
+				env:       callEnv,
+				isClosure: true,
 			})
 		}
 

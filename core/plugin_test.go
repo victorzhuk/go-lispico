@@ -9,8 +9,8 @@ type stubPlugin struct {
 	meta PluginMeta
 }
 
-func (s *stubPlugin) Name() string        { return s.name }
-func (s *stubPlugin) Init(_ *Env) error   { return nil }
+func (s *stubPlugin) Name() string         { return s.name }
+func (s *stubPlugin) Init(_ *Env) error    { return nil }
 func (s *stubPlugin) Metadata() PluginMeta { return s.meta }
 
 func newStub(name string) Plugin {

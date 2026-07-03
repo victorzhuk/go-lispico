@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Alpha** — Core functionality is complete. The project includes:
 - Core interpreter with 13 types and 22 special forms
-- Bytecode compiler and VM (experimental, incomplete — see TCO section)
+- Bytecode compiler and VM
 - Runtime API with hot-reload support
 - 8 plugins for common use cases
 
@@ -93,7 +93,7 @@ Only `nil` and `false` are falsy. Everything else is truthy.
 
 ## TCO
 
-The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) is experimental and does not yet compile `loop`/`recur` correctly — use the tree-walker for iterative code.
+The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) compiles and executes the same 22 special forms as the tree-walker, using O(1) stack `loop`/`recur` via the `OpLoop` back-jump.
 
 ## Performance Targets
 
