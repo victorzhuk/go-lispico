@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -710,4 +711,75 @@ func TestContextCancellation(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "context canceled")
 	})
+}
+
+func TestSandboxSiblingPrefixBypass(t *testing.T) {
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, "data")
+	require.NoError(t, os.Mkdir(root, 0o755))
+
+	t.Run("strict rejects sibling sharing the root string prefix", func(t *testing.T) {
+		sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		path := filepath.Join(tmpDir, "data-evil", "secret.txt")
+		_, err = sb.Validate(path, false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "outside sandbox root")
+	})
+
+	t.Run("strict rejects dotdot traversal into sibling", func(t *testing.T) {
+		sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		path := filepath.Join(root, "..", "data-evil", "secret.txt")
+		_, err = sb.Validate(path, false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "outside sandbox root")
+	})
+
+	t.Run("relaxed rejects sibling sharing an allowed prefix", func(t *testing.T) {
+		sb, err := NewSandbox(Config{Mode: ModeRelaxed, AllowRead: []string{root}})
+		require.NoError(t, err)
+
+		path := filepath.Join(tmpDir, "data-evil", "secret.txt")
+		_, err = sb.Validate(path, false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "read not allowed")
+	})
+
+	t.Run("strict allows a filename containing dotdot", func(t *testing.T) {
+		sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		path := filepath.Join(root, "a..b.txt")
+		validated, err := sb.Validate(path, false)
+		assert.NoError(t, err)
+		assert.Equal(t, path, validated)
+	})
+}
+
+func TestSandboxSymlinkCycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	a := filepath.Join(tmpDir, "loop-a")
+	b := filepath.Join(tmpDir, "loop-b")
+	require.NoError(t, os.Symlink(b, a))
+	require.NoError(t, os.Symlink(a, b))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		_, verr := sb.Validate(a, false)
+		done <- verr
+	}()
+
+	select {
+	case verr := <-done:
+		require.Error(t, verr)
+		assert.Contains(t, verr.Error(), "too many symlink levels")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Validate hung on symlink cycle")
+	}
 }

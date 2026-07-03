@@ -75,7 +75,7 @@ func (c *HTTPClient) Complete(ctx context.Context, req LLMRequest) (LLMResponse,
 	if err != nil {
 		return LLMResponse{}, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -124,9 +124,11 @@ func (c *HTTPClient) Complete(ctx context.Context, req LLMRequest) (LLMResponse,
 		if len(tc.Function.Arguments) > 0 {
 			var argsStr string
 			if err := json.Unmarshal(tc.Function.Arguments, &argsStr); err == nil {
-				json.Unmarshal([]byte(argsStr), &args)
-			} else {
-				json.Unmarshal(tc.Function.Arguments, &args)
+				if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+					return LLMResponse{}, fmt.Errorf("parse tool-call %q arguments: %w", tc.Function.Name, err)
+				}
+			} else if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
+				return LLMResponse{}, fmt.Errorf("parse tool-call %q arguments: %w", tc.Function.Name, err)
 			}
 		}
 		toolCalls = append(toolCalls, ToolCall{
@@ -177,7 +179,7 @@ func (c *HTTPClient) Embed(ctx context.Context, text string, model string) ([]fl
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

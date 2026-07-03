@@ -1,3 +1,4 @@
+// Package compiler compiles core AST Values into vm bytecode chunks.
 package compiler
 
 import (
@@ -7,6 +8,8 @@ import (
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
+// Compiler compiles core.Value forms into a single vm.Chunk, tracking local
+// variable scopes as it goes. It implements vm.FormCompiler.
 type Compiler struct {
 	chunk  *vm.Chunk
 	locals []local
@@ -19,12 +22,15 @@ type local struct {
 	depth int
 }
 
+// NewCompiler creates a Compiler that emits into a new chunk named name.
 func NewCompiler(name string) *Compiler {
 	return &Compiler{chunk: &vm.Chunk{Name: name}}
 }
 
+// Chunk returns the chunk the compiler is emitting into.
 func (c *Compiler) Chunk() *vm.Chunk { return c.chunk }
 
+// Compile emits bytecode for form into the compiler's chunk.
 func (c *Compiler) Compile(form core.Value) error {
 	switch f := form.(type) {
 	case core.Nil:
@@ -210,7 +216,10 @@ func (c *Compiler) compileLet(args []core.Value) error {
 		if err := c.Compile(bindings.Items[i+1]); err != nil {
 			return err
 		}
-		sym := bindings.Items[i].(core.Symbol)
+		sym, ok := bindings.Items[i].(core.Symbol)
+		if !ok {
+			return core.NewTypeError("symbol", bindings.Items[i])
+		}
 		c.addLocal(sym.V)
 		c.chunk.Emit(vm.OpSetLocal, len(c.locals)-1)
 	}
@@ -318,6 +327,7 @@ func (c *Compiler) addLocal(name string) {
 	c.chunk.LocalNames = append(c.chunk.LocalNames, name)
 }
 
+// CompileAll compiles each of forms into its own top-level vm.Chunk.
 func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {
 	chunks := make([]*vm.Chunk, 0, len(forms))
 	for _, form := range forms {
@@ -345,7 +355,11 @@ func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err 
 			if i+1 >= len(vec.Items) {
 				return nil, core.Symbol{}, fmt.Errorf("fn: & requires a rest param name")
 			}
-			variadic = vec.Items[i+1].(core.Symbol)
+			rest, ok := vec.Items[i+1].(core.Symbol)
+			if !ok {
+				return nil, core.Symbol{}, core.NewTypeError("symbol", vec.Items[i+1])
+			}
+			variadic = rest
 			break
 		}
 		params = append(params, sym)
@@ -353,10 +367,12 @@ func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err 
 	return params, variadic, nil
 }
 
+// MacroExpander expands macro forms before compilation.
 type MacroExpander interface {
 	Expand(form core.Value) (core.Value, error)
 }
 
+// CompileExpanded expands form through expander, then compiles the result.
 func (c *Compiler) CompileExpanded(expander MacroExpander, form core.Value) error {
 	expanded, err := expander.Expand(form)
 	if err != nil {

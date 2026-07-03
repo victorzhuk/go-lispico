@@ -8,17 +8,13 @@
 ;;   agent/run-with-ctx - run with context hashmap
 ;;   agent/list       - list all registered agents
 ;;   agent/info        - get agent configuration
-;;   agent/route       - route task to appropriate agent
+;;   agent/run-timeout - run an agent with an enforced timeout (ms)
+;;   agent/route       - placeholder router; always returns :default
 ;;   agent/delegate    - delegate task between agents
 
 ;; Helper: check if an agent exists
 (defn agent/exists? [id]
   (some? (agent/info id)))
-
-;; Helper: run agent with timeout context
-;; (agent/run-timeout :my-agent "prompt" 5000)
-(defn agent/run-timeout [id prompt timeout-ms]
-  (agent/run-with-ctx id prompt {:timeout timeout-ms}))
 
 ;; Helper: run multiple prompts on the same agent
 ;; Returns vector of responses

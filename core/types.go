@@ -269,7 +269,10 @@ func (h *HashMap) Get(key Value) (Value, bool) {
 
 func (h *HashMap) Len() int { return len(h.m) }
 
-// Set mutably inserts a key-value pair. Used during construction.
+// Set mutably inserts a key-value pair. It is an in-place escape hatch for
+// building a fresh map before it is shared; callers holding a HashMap that may
+// already be referenced elsewhere must use the copy-on-write Assoc/Dissoc
+// instead to preserve immutability.
 func (h *HashMap) Set(key, val Value) error {
 	hk, err := toHashKey(key)
 	if err != nil {

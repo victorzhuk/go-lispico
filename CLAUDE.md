@@ -9,8 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 **Alpha** — Core functionality is complete. The project includes:
-- Core interpreter with 13 types and 19 special forms
-- Bytecode compiler and VM with TCO
+- Core interpreter with 13 types and 22 special forms
+- Bytecode compiler and VM (experimental, incomplete — see TCO section)
 - Runtime API with hot-reload support
 - 8 plugins for common use cases
 
@@ -79,7 +79,7 @@ type Plugin interface {
 }
 ```
 
-Namespace convention: core functions have no prefix (`+`, `map`, `str`); plugin functions use `namespace/name` (`llm/complete`, `lio/read`).
+Namespace convention: core built-ins (special forms) have no prefix; plugin functions use `namespace/name` (`llm/complete`, `io/read-file`). Note that common functions like `+`, `map`, and `str` are provided by the `stdlib` plugin, not core — load it with `engine.Use(stdlib.New())`.
 
 ## Value Types
 
@@ -89,11 +89,11 @@ Only `nil` and `false` are falsy. Everything else is truthy.
 
 ## Special Forms
 
-19 special forms: `if`, `def`, `defn`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `unless`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`.
+22 special forms: `if`, `def`, `defn`, `defmacro`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `unless`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`, `not`.
 
 ## TCO
 
-Both `eval.go` (tree-walking) and `vm/vm.go` (bytecode) implement tail-call optimization. `loop`/`recur` and tail positions in `if`, `cond`, `do`, `fn` must not grow the stack.
+The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) is experimental and does not yet compile `loop`/`recur` correctly — use the tree-walker for iterative code.
 
 ## Performance Targets
 

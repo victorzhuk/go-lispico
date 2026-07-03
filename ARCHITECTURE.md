@@ -110,20 +110,23 @@ Supports:
 
 Two evaluation modes:
 
-1. **Tree-walking** (`eval.go`): Direct AST traversal
-2. **Bytecode VM** (`vm/`): Compiled bytecode execution
+1. **Tree-walking** (`eval.go`): direct AST traversal — the default, complete path
+2. **Bytecode VM** (`vm/`): experimental compiled execution (see the README note)
 
-Both implement tail-call optimization (TCO) to prevent stack overflow on recursive calls.
+Tail-call optimization is explicit: `loop`/`recur` iterate without growing the Go
+stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
+bounded by the configured max eval depth.
 
 #### Special Forms
 
-19 special forms handled directly by the evaluator:
+22 special forms handled directly by the evaluator:
 
 | Form | Purpose |
 |------|---------|
 | `if` | Conditional |
 | `def` | Define variable |
 | `defn` | Define function |
+| `defmacro` | Define macro |
 | `fn` | Lambda expression |
 | `let` | Local bindings |
 | `let*` | Sequential bindings |
@@ -140,6 +143,7 @@ Both implement tail-call optimization (TCO) to prevent stack overflow on recursi
 | `catch` | Catch exception |
 | `throw` | Raise exception |
 | `and`, `or` | Short-circuit logic |
+| `not` | Boolean negation |
 
 ### runtime/
 
@@ -160,22 +164,25 @@ runtime/
 The main entry point for embedding:
 
 ```go
-eng, err := runtime.New(log,
-    runtime.WithBytecode(),
-    runtime.WithBytecodeCache(".cache"),
-    runtime.WithPlugins(stdlib.New(), lio.New()),
-)
+eng, err := runtime.New(log)
 defer eng.Close()
 
-result, err := eng.Eval(ctx, "(+ 1 2)", "main.lisp")
+// Plugins are loaded after construction with Use.
+if err := eng.Use(stdlib.New()); err != nil {
+    return err
+}
+
+// Eval(ctx, source, input): source labels the run for logs/stats, input is code.
+result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
 ```
 
 #### Options
 
-- `WithBytecode()` — Enable bytecode VM
-- `WithBytecodeCache(path)` — Cache compiled bytecode
-- `WithPlugins(...)` — Load plugins at startup
-- `WithMaxStack(n)` — Set stack limit
+- `WithMaxEvalDepth(n)` — Cap evaluation call depth
+- `WithTimeout(d)` — Default per-eval timeout
+- `WithHotReloadDir(dir)` — Watch a directory for hot reload
+- `WithBytecode()` — Enable the experimental bytecode VM (see README)
+- `WithBytecodeCache(dir)` — Cache compiled bytecode in `dir`
 
 ### plugins/
 
@@ -310,7 +317,11 @@ mkdir plugins/myplugin
 // plugins/myplugin/plugin.go
 package myplugin
 
-import "github.com/victorzhuk/go-lispico/core"
+import (
+    "context"
+
+    "github.com/victorzhuk/go-lispico/core"
+)
 
 type Plugin struct{}
 
@@ -319,22 +330,20 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Name() string { return "myplugin" }
 
 func (p *Plugin) Init(env *core.Env) error {
-    env.Define("myplugin/hello", core.NewGoFunc(
-        "hello",
-        func(args []core.Value) (core.Value, error) {
+    env.Set("myplugin/hello", core.GoFunc{
+        Name: "myplugin/hello",
+        Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
             return core.String{V: "Hello from myplugin!"}, nil
         },
-        0, 0,
-        "Returns a greeting",
-    ))
+    })
     return nil
 }
 
 func (p *Plugin) Metadata() core.PluginMeta {
     return core.PluginMeta{
-        Name:        "myplugin",
         Version:     "1.0.0",
         Description: "My custom plugin",
+        Author:      "you",
     }
 }
 ```
@@ -344,9 +353,8 @@ func (p *Plugin) Metadata() core.PluginMeta {
 ```go
 import "github.com/victorzhuk/go-lispico/plugins/myplugin"
 
-eng, _ := runtime.New(log,
-    runtime.WithPlugins(myplugin.New()),
-)
+eng, _ := runtime.New(log)
+_ = eng.Use(myplugin.New())
 ```
 
 ## Thread Safety

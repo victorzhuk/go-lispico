@@ -87,13 +87,6 @@ func (s *Sandbox) Validate(path string, write bool) (string, error) {
 }
 
 func (s *Sandbox) cleanPath(path string) (string, error) {
-	if strings.Contains(path, "..") {
-		cleaned := filepath.Clean(path)
-		if strings.Contains(cleaned, "..") {
-			return "", fmt.Errorf("path traversal detected: %s", path)
-		}
-	}
-
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve path: %w", err)
@@ -111,7 +104,8 @@ func (s *Sandbox) cleanPath(path string) (string, error) {
 }
 
 func (s *Sandbox) resolveSymlink(path string) (string, error) {
-	for {
+	const maxHops = 40
+	for range maxHops {
 		fi, err := os.Lstat(path)
 		if err != nil {
 			return "", err
@@ -132,6 +126,7 @@ func (s *Sandbox) resolveSymlink(path string) (string, error) {
 
 		path = target
 	}
+	return "", fmt.Errorf("too many symlink levels: %s", path)
 }
 
 func (s *Sandbox) validateStrict(path string, write bool) (string, error) {
@@ -139,11 +134,15 @@ func (s *Sandbox) validateStrict(path string, write bool) (string, error) {
 		return "", fmt.Errorf("strict mode requires root directory")
 	}
 
-	if !strings.HasPrefix(path, s.rootDirAbs) {
+	if !withinRoot(path, s.rootDirAbs) {
 		return "", fmt.Errorf("path outside sandbox root: %s", path)
 	}
 
 	return path, nil
+}
+
+func withinRoot(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(os.PathSeparator))
 }
 
 func (s *Sandbox) validateRelaxed(path string, write bool) (string, error) {
@@ -162,7 +161,7 @@ func (s *Sandbox) validateRelaxed(path string, write bool) (string, error) {
 			continue
 		}
 
-		if strings.HasPrefix(path, absAllowed) || path == absAllowed {
+		if withinRoot(path, absAllowed) {
 			return path, nil
 		}
 	}

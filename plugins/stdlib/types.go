@@ -164,7 +164,7 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			if !ok {
 				return nil, fmt.Errorf("str->keyword: requires string argument")
 			}
-			return core.Keyword{V: s.V}, nil
+			return core.Keyword(s), nil
 		},
 	})
 
@@ -178,7 +178,7 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			if !ok {
 				return nil, fmt.Errorf("keyword->str: requires keyword argument")
 			}
-			return core.String{V: k.V}, nil
+			return core.String(k), nil
 		},
 	})
 

@@ -49,14 +49,14 @@ func (c *HTTPClient) Stream(ctx context.Context, req LLMRequest) (<-chan LLMChun
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		respBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {

@@ -64,6 +64,7 @@ type engine struct {
 	maxMacroDepth int
 	MaxDepth      int
 	callDepth     atomic.Int64
+	loopDepth     atomic.Int64
 }
 
 // NewEvaluator constructs a new tree-walking evaluator.
@@ -162,6 +163,9 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 			result, err := e.evalBody(ctx, f.Body, child)
 			if err != nil {
 				return nil, err
+			}
+			if _, ok := result.(recurVal); ok {
+				return nil, fmt.Errorf("recur outside loop")
 			}
 			tc, ok := result.(tailCall)
 			if !ok {
@@ -578,6 +582,9 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		loopVars = append(loopVars, name)
 	}
 
+	e.loopDepth.Add(1)
+	defer e.loopDepth.Add(-1)
+
 	for {
 		result, err := e.evalBody(ctx, args[1:], loopEnv)
 		if err != nil {
@@ -597,6 +604,9 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 }
 
 func evalRecur(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+	if e.loopDepth.Load() == 0 {
+		return nil, fmt.Errorf("recur outside loop")
+	}
 	vals := make([]Value, len(args))
 	for i, arg := range args {
 		v, err := e.Eval(ctx, arg, env)

@@ -2,8 +2,11 @@ package vm
 
 import "fmt"
 
+// Opcode identifies a bytecode instruction the VM can execute.
 type Opcode uint8
 
+// Bytecode instructions executed by the VM. Each operates on the operand
+// stack and, where noted, the operand A encoded alongside it.
 const (
 	OpConst Opcode = iota
 	OpGetGlobal
@@ -46,6 +49,7 @@ var opNames = [...]string{
 	OpFalse:       "FALSE",
 }
 
+// String implements fmt.Stringer.
 func (o Opcode) String() string {
 	if int(o) < len(opNames) {
 		return opNames[o]

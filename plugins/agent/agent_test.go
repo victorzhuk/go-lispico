@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -520,8 +521,15 @@ func TestAgentInfo(t *testing.T) {
 		result, err := eval(env, `(agent/info :assistant)`)
 
 		require.NoError(t, err)
-		_, ok := result.(*core.HashMap)
-		assert.True(t, ok, "result should be a HashMap")
+		m, ok := result.(*core.HashMap)
+		require.True(t, ok, "result should be a HashMap")
+
+		model, ok := m.Get(core.Keyword{V: "model"})
+		require.True(t, ok, "info map should carry :model")
+		assert.Equal(t, core.String{V: "gpt-4"}, model)
+
+		system, _ := m.Get(core.Keyword{V: "system"})
+		assert.Equal(t, core.String{V: "Be helpful"}, system)
 	})
 
 	t.Run("unknown agent", func(t *testing.T) {
@@ -789,6 +797,43 @@ func TestRoute(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "requires 1 argument")
+	})
+}
+
+type blockingLLM struct{}
+
+func (blockingLLM) Complete(ctx context.Context, model, system, prompt string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestRunTimeout(t *testing.T) {
+	t.Run("enforces deadline instead of blocking", func(t *testing.T) {
+		p := New(blockingLLM{})
+		env := core.NewEnv(nil)
+		env.SetEvaluator(core.NewEvaluator())
+		require.NoError(t, p.Init(env))
+
+		_, err := eval(env, `(defagent :slow :model "gpt-4")`)
+		require.NoError(t, err)
+
+		start := time.Now()
+		_, err = p.runTimeout(context.Background(), nil, []core.Value{
+			core.Keyword{V: "slow"},
+			core.String{V: "hi"},
+			core.Int{V: 50},
+		}, env)
+		require.Error(t, err)
+		assert.Less(t, time.Since(start), 2*time.Second)
+	})
+
+	t.Run("wrong arity", func(t *testing.T) {
+		p := New(&mockLLM{})
+		_, err := p.runTimeout(context.Background(), nil, []core.Value{
+			core.Keyword{V: "x"},
+		}, core.NewEnv(nil))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires 3 arguments")
 	})
 }
 
