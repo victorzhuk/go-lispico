@@ -2,6 +2,7 @@ package vm_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -128,7 +129,7 @@ func TestVMVsTreeWalker(t *testing.T) {
 			chunks, err := compiler.CompileAll(forms)
 			require.NoError(t, err, "compile")
 
-			v := vm.New(vmEnv, nil)
+			v := vm.New(vmEnv)
 			var vmResult core.Value = core.Nil{}
 			for _, chunk := range chunks {
 				vmResult, err = v.Run(context.Background(), chunk)
@@ -167,7 +168,7 @@ func TestVMVsTreeWalker_RecursiveFunctions(t *testing.T) {
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(vmEnv, nil)
+	v := vm.New(vmEnv)
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -204,7 +205,7 @@ func TestVMVsTreeWalker_Loop(t *testing.T) {
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(vmEnv, nil)
+	v := vm.New(vmEnv)
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -239,7 +240,7 @@ func TestVMVsTreeWalker_NestedClosures(t *testing.T) {
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(vmEnv, nil)
+	v := vm.New(vmEnv)
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -280,7 +281,7 @@ result`
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(vmEnv, nil)
+	v := vm.New(vmEnv)
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -325,7 +326,7 @@ func TestVMVsTreeWalker_AllTypes(t *testing.T) {
 			chunks, err := compiler.CompileAll(forms)
 			require.NoError(t, err, "compile")
 
-			v := vm.New(vmEnv, nil)
+			v := vm.New(vmEnv)
 			vmResult, err := v.Run(context.Background(), chunks[0])
 			require.NoError(t, err, "vm run")
 
@@ -353,7 +354,7 @@ func compare(t *testing.T, env *core.Env, src string) {
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(env, nil)
+	v := vm.New(env)
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -492,7 +493,7 @@ func TestVMVsTreeWalker_Macro(t *testing.T) {
 	chunks, err := compiler.CompileAll([]core.Value{expanded})
 	require.NoError(t, err, "compile")
 
-	v := vm.New(env, nil)
+	v := vm.New(env)
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -502,4 +503,81 @@ func TestVMVsTreeWalker_Macro(t *testing.T) {
 	assert.True(t, vmResult.Equals(treeResult),
 		"VM result %v (%T) != tree-walker result %v (%T)",
 		vmResult, vmResult, treeResult, treeResult)
+}
+
+func TestVMVsTreeWalker_NonStringThrow(t *testing.T) {
+	t.Parallel()
+
+	src := "(try (throw 42) (catch e e))"
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEnv := newCrossValEnv()
+	treeEval := core.NewEvaluator()
+	treeResult, err := treeEval.Eval(context.Background(), forms[0], treeEnv)
+	require.NoError(t, err, "tree-walker eval")
+	assert.True(t, treeResult.Equals(core.String{V: "42"}), "tree-walker: expected String(42), got %v (%T)", treeResult, treeResult)
+
+	vmEnv := newCrossValEnv()
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err, "compile")
+
+	v := vm.New(vmEnv)
+	vmResult, err := v.Run(context.Background(), chunks[0])
+	require.NoError(t, err, "vm run")
+	assert.True(t, vmResult.Equals(core.String{V: "42"}), "vm: expected String(42), got %v (%T)", vmResult, vmResult)
+
+	assert.True(t, vmResult.Equals(treeResult),
+		"VM result %v (%T) != tree-walker result %v (%T)",
+		vmResult, vmResult, treeResult, treeResult)
+}
+
+func TestVMVsTreeWalker_NestedDefmacro(t *testing.T) {
+	t.Parallel()
+
+	src := "(do (defmacro id [x] x) (id 42))"
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEnv := newCrossValEnv()
+	treeEval := core.NewEvaluator()
+	treeResult, err := treeEval.Eval(context.Background(), forms[0], treeEnv)
+	require.NoError(t, err, "tree-walker should evaluate a defmacro nested in a do body")
+	assert.True(t, treeResult.Equals(core.Int{V: 42}), "expected 42, got %v", treeResult)
+
+	_, compileErr := compiler.CompileAll(forms)
+	require.Error(t, compileErr, "bytecode compiler should reject a nested defmacro, not miscompile it")
+
+	var lispErr *core.LispicoError
+	require.True(t, errors.As(compileErr, &lispErr), "expected *core.LispicoError, got %T", compileErr)
+	assert.Equal(t, compiler.CodeUnsupported, lispErr.Code, "nested defmacro should be classified as unsupported-in-bytecode")
+}
+
+func TestVMVsTreeWalker_EmptyBodyFnDefn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"empty-body fn", "((fn []))"},
+		{"empty-body defn", "(defn f [])"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			forms, err := core.Read(tt.src)
+			require.NoError(t, err, "read source")
+
+			treeEnv := newCrossValEnv()
+			treeEval := core.NewEvaluator()
+			_, treeErr := treeEval.Eval(context.Background(), forms[0], treeEnv)
+			assert.Error(t, treeErr, "tree-walker should reject an empty-body fn/defn, not panic")
+
+			_, compileErr := compiler.CompileAll(forms)
+			assert.Error(t, compileErr, "bytecode compiler should reject an empty-body fn/defn, not panic")
+		})
+	}
 }

@@ -9,7 +9,7 @@ import (
 
 func TestVM_New(t *testing.T) {
 	env := core.NewEnv(nil)
-	vm := New(env, nil)
+	vm := New(env)
 
 	if vm.stackSize() != 0 {
 		t.Errorf("expected empty stack, got %d", vm.stackSize())
@@ -19,18 +19,8 @@ func TestVM_New(t *testing.T) {
 	}
 }
 
-func TestVM_Cache(t *testing.T) {
-	env := core.NewEnv(nil)
-	bc := &BytecodeCache{}
-	vm := New(env, bc)
-
-	if vm.Cache() != bc {
-		t.Error("expected cache to be set")
-	}
-}
-
 func TestVM_StackOperations(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 
 	vm.push(core.Int{V: 1})
 	vm.push(core.Int{V: 2})
@@ -40,21 +30,34 @@ func TestVM_StackOperations(t *testing.T) {
 		t.Errorf("expected stack size 3, got %d", vm.stackSize())
 	}
 
-	if vm.peek().Equals(core.Int{V: 3}) == false {
-		t.Errorf("expected peek to return 3, got %v", vm.peek())
+	peeked, err := vm.peek()
+	if err != nil || !peeked.Equals(core.Int{V: 3}) {
+		t.Errorf("expected peek to return 3, got %v (err %v)", peeked, err)
 	}
 
-	v := vm.pop()
-	if v.Equals(core.Int{V: 3}) == false {
-		t.Errorf("expected pop to return 3, got %v", v)
+	v, err := vm.pop()
+	if err != nil || !v.Equals(core.Int{V: 3}) {
+		t.Errorf("expected pop to return 3, got %v (err %v)", v, err)
 	}
 	if vm.stackSize() != 2 {
 		t.Errorf("expected stack size 2 after pop, got %d", vm.stackSize())
 	}
 }
 
+func TestVM_PopUnderflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+
+	_, err := vm.pop()
+	if err == nil {
+		t.Fatal("expected error popping empty stack")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
 func TestVM_OpNil(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -74,7 +77,7 @@ func TestVM_OpNil(t *testing.T) {
 }
 
 func TestVM_OpTrue(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -95,7 +98,7 @@ func TestVM_OpTrue(t *testing.T) {
 }
 
 func TestVM_OpFalse(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -116,7 +119,7 @@ func TestVM_OpFalse(t *testing.T) {
 }
 
 func TestVM_OpConst(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -142,7 +145,7 @@ func TestVM_OpGetGlobal(t *testing.T) {
 	env := core.NewEnv(nil)
 	env.Set("x", core.Int{V: 100})
 
-	vm := New(env, nil)
+	vm := New(env)
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -165,7 +168,7 @@ func TestVM_OpGetGlobal(t *testing.T) {
 }
 
 func TestVM_OpGetGlobal_Undefined(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -185,7 +188,7 @@ func TestVM_OpGetGlobal_Undefined(t *testing.T) {
 
 func TestVM_OpSetGlobal(t *testing.T) {
 	env := core.NewEnv(nil)
-	vm := New(env, nil)
+	vm := New(env)
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -214,7 +217,7 @@ func TestVM_OpSetGlobal(t *testing.T) {
 }
 
 func TestVM_OpGetLocal(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name:   "test",
 		Locals: 2,
@@ -237,7 +240,7 @@ func TestVM_OpGetLocal(t *testing.T) {
 }
 
 func TestVM_OpSetLocal(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name:   "test",
 		Locals: 1,
@@ -263,7 +266,7 @@ func TestVM_OpSetLocal(t *testing.T) {
 }
 
 func TestVM_OpPop(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -285,7 +288,7 @@ func TestVM_OpPop(t *testing.T) {
 }
 
 func TestVM_OpJump(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -319,7 +322,7 @@ func TestVM_OpJumpIfFalse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			vm := New(core.NewEnv(nil), nil)
+			vm := New(core.NewEnv(nil))
 			chunk := &Chunk{
 				Name: "test",
 				Constants: []core.Value{
@@ -350,7 +353,7 @@ func TestVM_OpJumpIfFalse(t *testing.T) {
 }
 
 func TestVM_OpMakeList(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -385,7 +388,7 @@ func TestVM_OpMakeList(t *testing.T) {
 }
 
 func TestVM_OpMakeVector(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -415,7 +418,7 @@ func TestVM_OpMakeVector(t *testing.T) {
 }
 
 func TestVM_OpMakeMap(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -456,7 +459,7 @@ func TestVM_OpMakeMap(t *testing.T) {
 }
 
 func TestVM_OpClosure(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	subChunk := &Chunk{
 		Name:  "<fn>",
 		Arity: 1,
@@ -499,7 +502,7 @@ func TestVM_CallGoFunc(t *testing.T) {
 		},
 	})
 
-	vm := New(env, nil)
+	vm := New(env)
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -527,7 +530,7 @@ func TestVM_CallGoFunc(t *testing.T) {
 }
 
 func TestVM_CallClosure(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	fnChunk := &Chunk{
 		Name:  "double",
 		Arity: 1,
@@ -561,7 +564,7 @@ func TestVM_CallClosure(t *testing.T) {
 }
 
 func TestVM_TailCall(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	loopChunk := &Chunk{
 		Name:   "loop",
 		Arity:  1,
@@ -603,7 +606,7 @@ func TestVM_TailCall(t *testing.T) {
 }
 
 func TestVM_CallNonCallable(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Constants: []core.Value{
@@ -623,7 +626,7 @@ func TestVM_CallNonCallable(t *testing.T) {
 }
 
 func TestVM_ContextCancellation(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -642,7 +645,7 @@ func TestVM_ContextCancellation(t *testing.T) {
 }
 
 func TestVM_Reset(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -709,7 +712,7 @@ func TestClosure_Equals(t *testing.T) {
 }
 
 func TestVM_MultipleReturns(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 
 	innerChunk := &Chunk{
 		Name:  "inner",
@@ -742,7 +745,7 @@ func TestVM_MultipleReturns(t *testing.T) {
 }
 
 func TestVM_EmptyList(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -766,7 +769,7 @@ func TestVM_EmptyList(t *testing.T) {
 }
 
 func TestVM_EmptyVector(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -790,7 +793,7 @@ func TestVM_EmptyVector(t *testing.T) {
 }
 
 func TestVM_EmptyMap(t *testing.T) {
-	vm := New(core.NewEnv(nil), nil)
+	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -810,5 +813,119 @@ func TestVM_EmptyMap(t *testing.T) {
 	}
 	if hm.Len() != 0 {
 		t.Errorf("expected empty map, got %d entries", hm.Len())
+	}
+}
+
+func TestVM_MalformedChunk_OutOfRangeLocalSlot(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpGetLocal, 5),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for out-of-range local slot, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_MalformedChunk_OutOfRangeSetLocalSlot(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpTrue, 0),
+			Encode(OpSetLocal, 9),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for out-of-range local slot, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_MalformedChunk_MakeListUnderflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpMakeList, 5),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for make-list exceeding stack, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_MalformedChunk_MakeVectorUnderflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpMakeVector, 3),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for make-vector exceeding stack, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_MalformedChunk_MakeMapUnderflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpMakeMap, 2),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for make-map exceeding stack, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_EmptyReturn_Underflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for bare OpReturn on empty stack, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
 	}
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,16 +22,14 @@ type macroExpander interface {
 // isolation: each Eval gets a fresh compiler and a fresh VM state.
 type bytecodeEvaluator struct {
 	globals  *core.Env
-	cache    *vm.BytecodeCache
 	maxDepth int
 	macro    macroExpander
 	tree     core.Evaluator
 }
 
-func newBytecodeEvaluator(globals *core.Env, cache *vm.BytecodeCache, maxDepth int, treeWalker core.Evaluator) *bytecodeEvaluator {
+func newBytecodeEvaluator(globals *core.Env, maxDepth int, treeWalker core.Evaluator) *bytecodeEvaluator {
 	return &bytecodeEvaluator{
 		globals:  globals,
-		cache:    cache,
 		maxDepth: maxDepth,
 		macro:    treeWalker.(macroExpander),
 		tree:     treeWalker,
@@ -38,38 +37,43 @@ func newBytecodeEvaluator(globals *core.Env, cache *vm.BytecodeCache, maxDepth i
 }
 
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
-	if isDefmacro(form) {
-		return be.tree.Eval(ctx, form, env)
-	}
 	expanded, err := be.macro.MacroExpand(ctx, form, env)
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
 	}
 	comp := compiler.NewCompiler("<eval>")
 	if err := comp.Compile(expanded); err != nil {
+		if isUnsupportedInBytecode(err) {
+			return be.tree.Eval(ctx, form, env)
+		}
 		return nil, fmt.Errorf("compile: %w", err)
 	}
 	comp.Chunk().Emit(vm.OpReturn, 0)
-	fresh := vm.New(env, be.cache, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be))
+	fresh := vm.New(env, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be))
 	return fresh.Run(ctx, comp.Chunk())
 }
 
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := vm.New(env, be.cache, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be))
+	fresh := vm.New(env, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be))
 	return fresh.Apply(ctx, fn, args, env)
 }
 
-func isDefmacro(form core.Value) bool {
-	list, ok := form.(core.List)
-	if !ok || len(list.Items) == 0 {
-		return false
-	}
-	sym, ok := list.Items[0].(core.Symbol)
-	return ok && sym.V == "defmacro"
+// isUnsupportedInBytecode reports whether err is the compiler's typed
+// "unsupported in bytecode" error (defmacro nested in a body, unquote-splicing),
+// so the caller can fall back to the tree-walker instead of failing the eval.
+func isUnsupportedInBytecode(err error) bool {
+	var lispErr *core.LispicoError
+	return errors.As(err, &lispErr) && lispErr.Code == compiler.CodeUnsupported
 }
 
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
 	start := time.Now()
+
+	var cancel context.CancelFunc
+	if e.config.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, e.config.timeout)
+		defer cancel()
+	}
 
 	forms, err := core.Read(input)
 	if err != nil {
@@ -195,6 +199,12 @@ func (e *engineImpl) Bind(name string, v core.Value) error {
 
 func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error) {
 	start := time.Now()
+
+	var cancel context.CancelFunc
+	if e.config.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, e.config.timeout)
+		defer cancel()
+	}
 
 	forms, err := core.Read(source)
 	if err != nil {

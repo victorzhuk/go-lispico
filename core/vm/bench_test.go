@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
@@ -102,7 +101,7 @@ func BenchmarkArithmeticLoop_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -146,7 +145,7 @@ func BenchmarkFunctionCall_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -186,7 +185,7 @@ func BenchmarkMapOverList_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -212,37 +211,6 @@ func BenchmarkMapOverList_TreeWalker(b *testing.B) {
 	}
 }
 
-func BenchmarkFileLoad_Cached(b *testing.B) {
-	dir := b.TempDir()
-	bc, _ := vm.NewBytecodeCache(dir)
-
-	var lines []string
-	for i := range 1000 {
-		lines = append(lines, fmt.Sprintf("(def x%d %d)", i, i))
-	}
-	content := []byte(fmt.Sprintf("%s\n(def result (+ x0 x1))", lines))
-
-	forms, _ := core.Read(string(content))
-	chunks, _ := compiler.CompileAll(forms)
-	bc.Store("test.lisp", content, chunks)
-	time.Sleep(50 * time.Millisecond)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for range b.N {
-		loaded, err := bc.Load("test.lisp", content)
-		if err != nil {
-			b.Fatal(err)
-		}
-		env := newBenchEnv()
-		v := vm.New(env, bc)
-		for _, chunk := range loaded {
-			v.Run(context.Background(), chunk)
-		}
-	}
-}
-
 func BenchmarkFileLoad_Uncached(b *testing.B) {
 	var lines []string
 	for i := range 1000 {
@@ -257,7 +225,7 @@ func BenchmarkFileLoad_Uncached(b *testing.B) {
 		forms, _ := core.Read(content)
 		chunks, _ := compiler.CompileAll(forms)
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -300,7 +268,7 @@ func BenchmarkFibonacci_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -342,7 +310,7 @@ func BenchmarkClosure_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -378,7 +346,7 @@ func BenchmarkSimpleArithmetic_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -411,7 +379,7 @@ func BenchmarkLet_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}
@@ -450,7 +418,7 @@ func BenchmarkTailCall_VM(b *testing.B) {
 
 	for range b.N {
 		env := newBenchEnv()
-		v := vm.New(env, nil)
+		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
 		}

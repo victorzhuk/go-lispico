@@ -148,7 +148,7 @@ func (e *engineImpl) Watch(ctx context.Context, dir string) error {
 
 	w := newFileWatcher(e, dir, 500*time.Millisecond)
 	e.watcher = w
-	e.watchCtx, e.watchCancel = context.WithCancel(context.Background())
+	e.watchCtx, e.watchCancel = context.WithCancel(ctx)
 
 	w.Start(e.watchCtx)
 
