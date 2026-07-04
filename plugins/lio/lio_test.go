@@ -602,8 +602,6 @@ func TestEnvironmentOperations(t *testing.T) {
 		str, ok := result.(core.String)
 		require.True(t, ok)
 		assert.Equal(t, value, str.V)
-
-		os.Unsetenv(key)
 	})
 
 	t.Run("env-get existing variable", func(t *testing.T) {
@@ -614,6 +612,30 @@ func TestEnvironmentOperations(t *testing.T) {
 		_, ok := result.(core.String)
 		assert.True(t, ok)
 	})
+}
+
+func TestEnvironmentIsolationBetweenPlugins(t *testing.T) {
+	p1 := NewUnsafe()
+	p2 := NewUnsafe()
+
+	key := "LISPICO_TEST_ISOLATION"
+
+	_, err := p1.envSet(nil, nil, []core.Value{
+		core.String{V: key},
+		core.String{V: "from-p1"},
+	}, nil)
+	require.NoError(t, err)
+
+	result, err := p1.envGet(nil, nil, []core.Value{core.String{V: key}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "from-p1", result.(core.String).V)
+
+	result, err = p2.envGet(nil, nil, []core.Value{core.String{V: key}}, nil)
+	require.NoError(t, err)
+	assert.IsType(t, core.Nil{}, result)
+
+	_, exists := os.LookupEnv(key)
+	assert.False(t, exists, "env-set must not mutate the real process environment")
 }
 
 func TestContextCancellation(t *testing.T) {
@@ -778,8 +800,72 @@ func TestSandboxSymlinkCycle(t *testing.T) {
 	select {
 	case verr := <-done:
 		require.Error(t, verr)
-		assert.Contains(t, verr.Error(), "too many symlink levels")
+		assert.Contains(t, verr.Error(), "too many links")
 	case <-time.After(2 * time.Second):
 		t.Fatal("Validate hung on symlink cycle")
 	}
+}
+
+func TestSandboxSymlinkEscape(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	root := filepath.Join(tmpDir, "root")
+	require.NoError(t, os.Mkdir(root, 0o755))
+
+	outside := filepath.Join(tmpDir, "outside")
+	require.NoError(t, os.Mkdir(outside, 0o755))
+
+	secret := filepath.Join(outside, "secret.txt")
+	require.NoError(t, os.WriteFile(secret, []byte("top secret"), 0o644))
+
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.Symlink(outside, link))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+
+	t.Run("read through symlinked directory is denied", func(t *testing.T) {
+		_, err := sb.Validate(filepath.Join(link, "secret.txt"), false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "outside sandbox root")
+	})
+
+	t.Run("write through symlinked directory is denied", func(t *testing.T) {
+		_, err := sb.Validate(filepath.Join(link, "new-secret.txt"), true)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "outside sandbox root")
+	})
+
+	t.Run("read inside root still works", func(t *testing.T) {
+		inRoot := filepath.Join(root, "note.txt")
+		require.NoError(t, os.WriteFile(inRoot, []byte("hello"), 0o644))
+
+		validated, err := sb.Validate(inRoot, false)
+		assert.NoError(t, err)
+		assert.Equal(t, inRoot, validated)
+	})
+
+	t.Run("write inside root still works", func(t *testing.T) {
+		inRoot := filepath.Join(root, "new-note.txt")
+
+		validated, err := sb.Validate(inRoot, true)
+		assert.NoError(t, err)
+		assert.Equal(t, inRoot, validated)
+	})
+}
+
+func TestSandboxDanglingSymlinkDenied(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	root := filepath.Join(tmpDir, "root")
+	require.NoError(t, os.Mkdir(root, 0o755))
+
+	dangling := filepath.Join(root, "dangling")
+	require.NoError(t, os.Symlink(filepath.Join(tmpDir, "does-not-exist"), dangling))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+
+	_, err = sb.Validate(filepath.Join(dangling, "file.txt"), true)
+	assert.Error(t, err)
 }
