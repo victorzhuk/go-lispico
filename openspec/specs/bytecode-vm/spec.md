@@ -9,16 +9,24 @@ the language; the tree-walking evaluator is the supported default.
 ## Requirements
 ### Requirement: Bytecode VM execution
 
-The bytecode VM SHALL be a full-language evaluator, selectable with
+The bytecode VM SHALL be an opt-in evaluator, selectable with
 `runtime.WithBytecode()`, that produces results identical to the tree-walking
-evaluator for every program the tree-walker accepts. It SHALL support all 22
-special forms, variadic functions, closures, and macros. Each `Eval` call SHALL
-compile and run in isolation, with no state carried over from a prior call.
+evaluator for every program it compiles. It is a documented subset: for a form it
+does not compile it SHALL return a typed error, and the runtime SHALL fall back to
+the tree-walking evaluator for that form — never panicking, and never producing a
+result that differs from the tree-walker. Each `Eval` call SHALL compile and run in
+isolation, with no state carried over from a prior call. The VM has no on-disk
+bytecode cache.
 
-#### Scenario: All special forms match the tree-walker
+#### Scenario: Supported forms match the tree-walker
 
-- **WHEN** the VM evaluates any of `if`, `def`, `defn`, `defmacro`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `unless`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`, `not`
-- **THEN** the result SHALL equal the tree-walking evaluator's result for the same form and environment
+- **WHEN** the VM evaluates a form it compiles
+- **THEN** the result SHALL equal the tree-walking evaluator's result for the same form and environment, including the runtime type of a value bound by `catch`
+
+#### Scenario: Unsupported form defers to the tree-walker
+
+- **WHEN** a program uses a form the VM does not compile (a `defmacro` nested in a body, or `unquote-splicing`)
+- **THEN** compilation SHALL return a typed "unsupported in bytecode" error and the runtime SHALL evaluate that form with the tree-walker, never panicking
 
 #### Scenario: loop/recur iterates in constant stack
 
@@ -28,12 +36,7 @@ compile and run in isolation, with no state carried over from a prior call.
 #### Scenario: try/catch/throw handles errors
 
 - **WHEN** a `try` body throws a value or a called `GoFunc` returns an error, and a `catch` clause is present
-- **THEN** the caught value SHALL be bound to the catch symbol and the handler result SHALL match the tree-walker
-
-#### Scenario: Macros expand before compilation
-
-- **WHEN** a macro is defined with `defmacro` and then used
-- **THEN** the macro SHALL be expanded prior to compilation and the result SHALL match the tree-walker
+- **THEN** the caught value SHALL be bound to the catch symbol with the same runtime type as under the tree-walker, and the handler result SHALL match
 
 #### Scenario: Variadic functions bind rest arguments
 
@@ -44,11 +47,6 @@ compile and run in isolation, with no state carried over from a prior call.
 
 - **WHEN** two forms are evaluated in sequence on the same engine
 - **THEN** the second evaluation SHALL return its own result, with no instructions or stack state left over from the first
-
-#### Scenario: Bytecode cache hit
-
-- **WHEN** `runtime.WithBytecodeCache(dir)` is set and the same source content is compiled twice
-- **THEN** the second load SHALL read version-gated cached bytecode without recompiling
 
 ### Requirement: Bytecode VM concurrency safety
 
@@ -62,13 +60,18 @@ without data races or cross-call state corruption.
 
 ### Requirement: Bytecode VM robustness
 
-The bytecode VM SHALL never panic on malformed, corrupt, or version-mismatched
-bytecode; it SHALL return an error instead.
+The bytecode VM SHALL never panic on any input — valid source, a malformed form, or
+a structurally malformed chunk; it SHALL return an error instead.
 
-#### Scenario: Corrupt cache entry
+#### Scenario: Empty-body function
 
-- **WHEN** a `.lbc` cache entry is corrupt or was written by an incompatible `cacheVersion`
-- **THEN** the VM SHALL return a graceful error and fall back to recompilation, never panicking
+- **WHEN** an empty-body function such as `((fn []))` or an empty-body `defn` is evaluated under `WithBytecode()`
+- **THEN** the VM SHALL return an error, never panic
+
+#### Scenario: Malformed chunk
+
+- **WHEN** an opcode references an out-of-range stack slot or constant index
+- **THEN** the VM SHALL return a `*core.LispicoError`, never index out of range
 
 ### Requirement: Bytecode VM tree-walker parity verification
 
@@ -78,11 +81,11 @@ assert identical results, and the runtime SHALL be tested end to end through
 
 #### Scenario: Cross-validation corpus passes
 
-- **WHEN** the cross-validation corpus (all special forms, closures, variadics, macros, `loop`/`recur`, `try`/`catch`/`throw`) runs through both evaluators
+- **WHEN** the cross-validation corpus (all compiled special forms, closures, variadics, macros, `loop`/`recur`, `try`/`catch`/`throw` with a non-String throw, and empty-body functions) runs through both evaluators
 - **THEN** every program SHALL produce equal results or the same class of error under both
 
 #### Scenario: Runtime integration through WithBytecode
 
-- **WHEN** the corpus is driven through `runtime.New(..., WithBytecode())`, including cache-hit and hot-reload paths
-- **THEN** all cases SHALL pass
+- **WHEN** the corpus is driven through `runtime.New(..., WithBytecode())`, including sequential and concurrent (`-race`) evaluation
+- **THEN** all cases SHALL pass with no data race
 
