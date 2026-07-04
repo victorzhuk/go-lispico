@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-04
+
+### Added
+
+- Comparison and equality builtins in stdlib: `=` is structural equality via
+  `Equals` (so `(= 1 1.0)` is false); `<`, `>`, `<=`, `>=` are variadic
+  monotonic chains over numbers, comparing int pairs exactly and mixing int
+  and float by the same promotion arithmetic uses.
+- Collection builtins in stdlib: `contains?` (map key presence), `merge`
+  (later maps win, nil skipped), `dissoc`, `sort` (stable natural ordering of
+  numbers, strings, or keywords), and `range`.
+
+### Changed
+
+- The world-touching plugins — `llm`, `agent`, `lio`, `net`, `exec` — are
+  frozen: security and correctness fixes only. Hosts are expected to register
+  their own IO surface (see `docs/adr/0004-kernel-first-mission.md`).
+
 ## [0.2.0] - 2026-07-04
 
 ### Changed
@@ -67,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/victorzhuk/go-lispico/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/victorzhuk/go-lispico/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/victorzhuk/go-lispico/releases/tag/v0.1.0
