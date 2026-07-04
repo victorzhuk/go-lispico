@@ -11,7 +11,7 @@ func TestVM_ApplyClosure(t *testing.T) {
 	t.Parallel()
 
 	env := core.NewEnv(nil)
-	vm := New(env, nil)
+	vm := New(env)
 
 	chunk := &Chunk{
 		Name:       "<fn>",

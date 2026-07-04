@@ -632,3 +632,72 @@ func TestCompiler_FnNonSymbolRestParam(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expected symbol")
 }
+
+func TestCompiler_Fn_EmptyBody(t *testing.T) {
+	t.Run("no body forms", func(t *testing.T) {
+		c := NewCompiler("test")
+		form := core.List{Items: []core.Value{
+			core.Symbol{V: "fn"},
+			core.Vector{},
+		}}
+		err := c.Compile(form)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least 2 arguments")
+	})
+
+	t.Run("no params at all", func(t *testing.T) {
+		c := NewCompiler("test")
+		form := core.List{Items: []core.Value{
+			core.Symbol{V: "fn"},
+		}}
+		err := c.Compile(form)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least 2 arguments")
+	})
+}
+
+func TestCompiler_Defn_EmptyBody(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "defn"},
+		core.Symbol{V: "f"},
+		core.Vector{},
+	}}
+	err := c.Compile(form)
+	require.Error(t, err)
+}
+
+func TestCompiler_Defmacro_Unsupported(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "defmacro"},
+		core.Symbol{V: "id"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.Symbol{V: "x"},
+	}}
+	err := c.Compile(form)
+	require.Error(t, err)
+
+	var lispErr *core.LispicoError
+	require.ErrorAs(t, err, &lispErr)
+	assert.Equal(t, CodeUnsupported, lispErr.Code)
+}
+
+func TestCompiler_UnquoteSplicing_Unsupported(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "quasiquote"},
+		core.List{Items: []core.Value{
+			core.List{Items: []core.Value{
+				core.Symbol{V: "unquote-splicing"},
+				core.Symbol{V: "xs"},
+			}},
+		}},
+	}}
+	err := c.Compile(form)
+	require.Error(t, err)
+
+	var lispErr *core.LispicoError
+	require.ErrorAs(t, err, &lispErr)
+	assert.Equal(t, CodeUnsupported, lispErr.Code)
+}

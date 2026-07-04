@@ -15,7 +15,7 @@ import (
 func TestBytecodeRuntime_SequentialIsolation(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode(), WithBytecodeCache(t.TempDir()))
+	eng, err := New(nil, WithBytecode())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -33,7 +33,7 @@ func TestBytecodeRuntime_SequentialIsolation(t *testing.T) {
 func TestBytecodeRuntime_Concurrent_Race(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode(), WithBytecodeCache(t.TempDir()))
+	eng, err := New(nil, WithBytecode())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -168,20 +168,52 @@ func TestBytecodeRuntime_Macro(t *testing.T) {
 	assert.True(t, result.Equals(core.Int{V: 42}), "macro expansion result, got %v", result)
 }
 
-func TestBytecodeRuntime_CacheHit(t *testing.T) {
+func TestBytecodeRuntime_NestedDefmacroFallsBackToTreeWalker(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	eng, err := New(nil, WithBytecode(), WithBytecodeCache(dir))
+	eng, err := New(nil, WithBytecode())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
 	ctx := context.Background()
-	result1, err := eng.Eval(ctx, "cached", "42")
+	result, err := eng.Eval(ctx, "nested-macro", "(do (defmacro id [x] x) (id 42))")
 	require.NoError(t, err)
-	assert.True(t, result1.Equals(core.Int{V: 42}), "first eval, got %v", result1)
+	assert.True(t, result.Equals(core.Int{V: 42}), "nested defmacro deferred to tree-walker, got %v", result)
+}
 
-	result2, err := eng.Eval(ctx, "cached", "42")
+func TestBytecodeRuntime_ThrowNonString(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode())
 	require.NoError(t, err)
-	assert.True(t, result2.Equals(core.Int{V: 42}), "cache hit, got %v", result2)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	ctx := context.Background()
+	result, err := eng.Eval(ctx, "throw-int", "(try (throw 42) (catch e e))")
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.String{V: "42"}), "non-string throw coerced to string, got %v", result)
+}
+
+func TestBytecodeRuntime_EmptyBodyFn(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "empty-fn", "((fn []))")
+	require.Error(t, err, "empty-body fn should error, not panic")
+}
+
+func TestBytecodeRuntime_EmptyBodyDefn(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "empty-defn", "(defn f [])")
+	require.Error(t, err, "empty-body defn should error, not panic")
 }

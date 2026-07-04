@@ -204,6 +204,18 @@ func TestCall_Timeout(t *testing.T) {
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 }
 
+func TestEval_Timeout(t *testing.T) {
+	e, err := New(nil, WithTimeout(10*time.Millisecond))
+	require.NoError(t, err)
+	defer e.Close()
+
+	bindBuiltin(e, "=")
+	bindBuiltin(e, "-")
+
+	_, err = e.Eval(context.Background(), "test", "(loop [n 1000000] (if (= n 0) n (recur (- n 1))))")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+}
+
 func TestBind_CreatesBinding(t *testing.T) {
 	e, err := New(nil)
 	require.NoError(t, err)
