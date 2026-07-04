@@ -78,7 +78,7 @@ func compileAndRun(t *testing.T, env *core.Env, src string) core.Value {
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(env, nil)
+	v := vm.New(env)
 	var result core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		result, err = v.Run(context.Background(), chunk)
@@ -293,53 +293,6 @@ result`
 	assert.True(t, result.Equals(core.Int{V: 10}), "expected 10, got %v", result)
 }
 
-func TestCacheHit(t *testing.T) {
-	t.Parallel()
-
-	bc, err := vm.NewBytecodeCache(t.TempDir())
-	require.NoError(t, err)
-
-	env := newTestEnv()
-	content := []byte("(+ 1 2)")
-
-	forms, err := core.Read(string(content))
-	require.NoError(t, err)
-	chunks, err := compiler.CompileAll(forms)
-	require.NoError(t, err)
-
-	bc.Store("test.lisp", content, chunks)
-	time.Sleep(50 * time.Millisecond)
-
-	loaded, err := bc.Load("test.lisp", content)
-	require.NoError(t, err)
-	require.Len(t, loaded, 1)
-
-	v := vm.New(env, bc)
-	result, err := v.Run(context.Background(), loaded[0])
-	require.NoError(t, err)
-	assert.True(t, result.Equals(core.Int{V: 3}), "expected 3, got %v", result)
-}
-
-func TestCacheVersionMismatch(t *testing.T) {
-	t.Parallel()
-
-	bc, err := vm.NewBytecodeCache(t.TempDir())
-	require.NoError(t, err)
-
-	content := []byte("(+ 1 2)")
-	forms, err := core.Read(string(content))
-	require.NoError(t, err)
-	chunks, err := compiler.CompileAll(forms)
-	require.NoError(t, err)
-
-	bc.Store("test.lisp", content, chunks)
-	time.Sleep(50 * time.Millisecond)
-
-	loaded, err := bc.Load("test.lisp", []byte("different content"))
-	assert.Error(t, err, "should fail with different content hash")
-	assert.Nil(t, loaded)
-}
-
 func TestContextCancellationHalt(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
@@ -365,7 +318,7 @@ func TestContextCancellationHalt(t *testing.T) {
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(env, nil)
+	v := vm.New(env)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
@@ -385,7 +338,7 @@ func TestContextCancellation_BeforeRun(t *testing.T) {
 		},
 	}
 
-	v := vm.New(env, nil)
+	v := vm.New(env)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

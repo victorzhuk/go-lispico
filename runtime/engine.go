@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
 // Engine is the public API for the Lispico interpreter.
 type Engine interface {
-	// Eval evaluates source code with an optional input value.
+	// Eval evaluates input as Lisp source, labeling the call source for
+	// stats and OnEval events.
 	Eval(ctx context.Context, source, input string) (core.Value, error)
 	// EvalFile evaluates a source file.
 	EvalFile(path string) (core.Value, error)
@@ -74,9 +74,7 @@ type engineImpl struct {
 type engineConfig struct {
 	maxEvalDepth int
 	timeout      time.Duration
-	hotReloadDir string
 	bytecode     bool
-	cacheDir     string
 }
 
 // EngineOption configures an Engine created by New.
@@ -98,28 +96,11 @@ func WithTimeout(timeout time.Duration) EngineOption {
 	}
 }
 
-// WithHotReloadDir sets the directory watched for hot-reload when Watch is
-// started.
-func WithHotReloadDir(dir string) EngineOption {
-	return func(cfg *engineConfig) {
-		cfg.hotReloadDir = dir
-	}
-}
-
 // WithBytecode switches the engine to the bytecode VM evaluator instead of
 // the default tree-walking one.
 func WithBytecode() EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.bytecode = true
-	}
-}
-
-// WithBytecodeCache sets the on-disk directory used to cache compiled
-// bytecode. It only takes effect when combined with WithBytecode — without
-// it, the bytecode VM (and its cache) is never enabled.
-func WithBytecodeCache(dir string) EngineOption {
-	return func(cfg *engineConfig) {
-		cfg.cacheDir = dir
 	}
 }
 
@@ -154,15 +135,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	if cfg.bytecode {
-		cacheDir := cfg.cacheDir
-		if cacheDir == "" {
-			cacheDir = "/tmp/lispico-cache"
-		}
-		bc, err := vm.NewBytecodeCache(cacheDir)
-		if err != nil {
-			return nil, err
-		}
-		be := newBytecodeEvaluator(rootEnv, bc, cfg.maxEvalDepth, treeWalker)
+		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, treeWalker)
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be

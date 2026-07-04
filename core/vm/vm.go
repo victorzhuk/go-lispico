@@ -4,31 +4,10 @@ package vm
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/gob"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
-
-func init() {
-	gob.Register(&Chunk{})
-	gob.Register(&cacheEntry{})
-	gob.Register(core.Nil{})
-	gob.Register(core.Bool{})
-	gob.Register(core.Int{})
-	gob.Register(core.Float{})
-	gob.Register(core.String{})
-	gob.Register(core.Symbol{})
-	gob.Register(core.Keyword{})
-	gob.Register(core.List{})
-	gob.Register(core.Vector{})
-	gob.Register(&core.HashMap{})
-	gob.Register([]core.Value{})
-	gob.Register([]*Chunk{})
-}
 
 // Closure is a compiled function: a Chunk paired with the lexical
 // environment it closed over. It implements core.Value.
@@ -54,83 +33,6 @@ func (c *Closure) Equals(o core.Value) bool {
 	return ok && c == other
 }
 
-const cacheVersion = 2
-
-type cacheEntry struct {
-	Version int
-	Chunks  []*Chunk
-}
-
-// BytecodeCache persists compiled Chunks to disk, keyed by source path and
-// content hash, so repeated runs can skip recompilation.
-type BytecodeCache struct {
-	dir string
-}
-
-// NewBytecodeCache creates a BytecodeCache rooted at dir, creating the
-// directory if it does not exist.
-func NewBytecodeCache(dir string) (*BytecodeCache, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("bytecode cache mkdir %s: %w", dir, err)
-	}
-	return &BytecodeCache{dir: dir}, nil
-}
-
-// Dir returns the cache's root directory.
-func (bc *BytecodeCache) Dir() string { return bc.dir }
-
-func (bc *BytecodeCache) key(path string, content []byte) string {
-	h := sha256.Sum256(content)
-	base := filepath.Base(path)
-	return filepath.Join(bc.dir, fmt.Sprintf("%s.%x.lbc", base, h[:8]))
-}
-
-// Load reads the cached chunks for path/content, if present. It returns an
-// error (including one of type version mismatch) if no valid entry exists.
-func (bc *BytecodeCache) Load(path string, content []byte) ([]*Chunk, error) {
-	f, err := os.Open(bc.key(path, content))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var entry cacheEntry
-	if err := gob.NewDecoder(f).Decode(&entry); err != nil {
-		return nil, err
-	}
-	if entry.Version != cacheVersion {
-		return nil, fmt.Errorf("cache version mismatch: %d != %d", entry.Version, cacheVersion)
-	}
-	return entry.Chunks, nil
-}
-
-// Store persists chunks for path/content asynchronously. The write is
-// atomic: it encodes to a temp file in the cache directory and renames it
-// into place, so a crash or concurrent read never observes a partial file.
-// Errors are swallowed — a failed store just means the next Load misses.
-func (bc *BytecodeCache) Store(path string, content []byte, chunks []*Chunk) {
-	go func() {
-		key := bc.key(path, content)
-		tmp, err := os.CreateTemp(bc.dir, "*.lbc.tmp")
-		if err != nil {
-			return
-		}
-		name := tmp.Name()
-		if err := gob.NewEncoder(tmp).Encode(cacheEntry{Version: cacheVersion, Chunks: chunks}); err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(name)
-			return
-		}
-		if err := tmp.Close(); err != nil {
-			_ = os.Remove(name)
-			return
-		}
-		if err := os.Rename(name, key); err != nil {
-			_ = os.Remove(name)
-			return
-		}
-	}()
-}
-
 type handler struct {
 	addr       int
 	frameDepth int
@@ -145,7 +47,6 @@ type VM struct {
 	frames   []Frame
 	handlers []handler
 	globals  *core.Env
-	cache    *BytecodeCache
 	maxDepth int
 	depth    int
 	eval     core.Evaluator
@@ -166,14 +67,12 @@ func WithMaxDepth(d int) VMOption {
 	return func(v *VM) { v.maxDepth = d }
 }
 
-// New creates a VM using globals as the root environment and bc as its
-// bytecode cache.
-func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
+// New creates a VM using globals as the root environment.
+func New(globals *core.Env, opts ...VMOption) *VM {
 	v := &VM{
 		stack:   make([]core.Value, 0, 256),
 		frames:  make([]Frame, 0, 64),
 		globals: globals,
-		cache:   bc,
 		eval:    core.NewEvaluator(),
 	}
 	for _, opt := range opts {
@@ -182,10 +81,8 @@ func New(globals *core.Env, bc *BytecodeCache, opts ...VMOption) *VM {
 	return v
 }
 
-// Cache returns the VM's bytecode cache, or nil if none was configured.
-func (vm *VM) Cache() *BytecodeCache { return vm.cache }
-func (vm *VM) stackSize() int        { return len(vm.stack) }
-func (vm *VM) frameCount() int       { return len(vm.frames) }
+func (vm *VM) stackSize() int  { return len(vm.stack) }
+func (vm *VM) frameCount() int { return len(vm.frames) }
 func (vm *VM) reset() {
 	vm.stack = vm.stack[:0]
 	vm.frames = vm.frames[:0]
@@ -194,17 +91,25 @@ func (vm *VM) reset() {
 }
 
 func (vm *VM) push(v core.Value) { vm.stack = append(vm.stack, v) }
-func (vm *VM) pop() core.Value {
+func (vm *VM) pop() (core.Value, error) {
+	if len(vm.stack) == 0 {
+		return nil, &core.LispicoError{Code: "BytecodeError", Message: "stack underflow"}
+	}
 	top := vm.stack[len(vm.stack)-1]
 	vm.stack = vm.stack[:len(vm.stack)-1]
-	return top
+	return top, nil
 }
-func (vm *VM) peek() core.Value { return vm.stack[len(vm.stack)-1] }
+func (vm *VM) peek() (core.Value, error) {
+	if len(vm.stack) == 0 {
+		return nil, &core.LispicoError{Code: "BytecodeError", Message: "stack underflow"}
+	}
+	return vm.stack[len(vm.stack)-1], nil
+}
 
 // Apply calls fn with args in a fresh isolated VM and returns the result.
-// The receiver is used only for configuration (globals, cache, max depth, evaluator).
+// The receiver is used only for configuration (globals, max depth, evaluator).
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := New(env, v.cache, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval))
+	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval))
 	return fresh.apply(ctx, fn, args, env)
 }
 
@@ -279,13 +184,25 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(v)
 
 		case OpGetLocal:
-			vm.push(vm.stack[frame.base+instr.A()])
+			slot := frame.base + instr.A()
+			if slot < 0 || slot >= len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("local slot %d out of range", instr.A())}
+			}
+			vm.push(vm.stack[slot])
 
 		case OpSetLocal:
 			idx := instr.A()
-			vm.stack[frame.base+idx] = vm.peek()
+			slot := frame.base + idx
+			if slot < 0 || slot >= len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("local slot %d out of range", idx)}
+			}
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			vm.stack[slot] = top
 			if idx < len(frame.chunk.LocalNames) {
-				frame.env.Set(frame.chunk.LocalNames[idx], vm.peek())
+				frame.env.Set(frame.chunk.LocalNames[idx], top)
 			}
 
 		case OpGetGlobal:
@@ -304,16 +221,26 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			if err != nil {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
 			}
-			frame.env.Set(sym.V, vm.peek())
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			frame.env.Set(sym.V, top)
 
 		case OpPop:
-			vm.pop()
+			if _, err := vm.pop(); err != nil {
+				return nil, err
+			}
 
 		case OpJump:
 			frame.ip += instr.A()
 
 		case OpJumpIfFalse:
-			if !core.IsTruthy(vm.pop()) {
+			top, err := vm.pop()
+			if err != nil {
+				return nil, err
+			}
+			if !core.IsTruthy(top) {
 				frame.ip += instr.A()
 			}
 
@@ -332,7 +259,10 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 
 		case OpReturn:
-			result := vm.pop()
+			result, err := vm.pop()
+			if err != nil {
+				return nil, err
+			}
 			if frame.isClosure && vm.depth > 0 {
 				vm.depth--
 			}
@@ -348,6 +278,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpMakeList:
 			n := instr.A()
+			if n < 0 || n > len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-list: %d items exceeds stack", n)}
+			}
 			items := make([]core.Value, n)
 			copy(items, vm.stack[len(vm.stack)-n:])
 			vm.stack = vm.stack[:len(vm.stack)-n]
@@ -355,6 +288,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpMakeVector:
 			n := instr.A()
+			if n < 0 || n > len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-vector: %d items exceeds stack", n)}
+			}
 			items := make([]core.Value, n)
 			copy(items, vm.stack[len(vm.stack)-n:])
 			vm.stack = vm.stack[:len(vm.stack)-n]
@@ -362,6 +298,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpMakeMap:
 			n := instr.A() * 2
+			if n < 0 || n > len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-map: %d items exceeds stack", n)}
+			}
 			pairs := vm.stack[len(vm.stack)-n:]
 			hm := core.NewHashMap()
 			for i := 0; i < len(pairs); i += 2 {
@@ -380,7 +319,11 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(NewClosure(sub, frame.env))
 
 		case OpDup:
-			vm.push(vm.peek())
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			vm.push(top)
 
 		case OpLoop:
 			frame.ip = instr.A()
@@ -394,12 +337,25 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 
 		case OpThrow:
-			value := vm.pop()
-			if !vm.throw(value) {
+			value, err := vm.pop()
+			if err != nil {
+				return nil, err
+			}
+			if !vm.throw(coerceThrow(value)) {
 				return nil, core.NewTypeError("handler", core.Nil{})
 			}
 		}
 	}
+}
+
+// coerceThrow mirrors the tree-walker's throw/catch coercion (evalThrow in
+// core/eval.go): a thrown String keeps its raw text, anything else is
+// formatted with %v, so catch binds the same core.String under both evaluators.
+func coerceThrow(value core.Value) core.String {
+	if s, ok := value.(core.String); ok {
+		return core.String{V: s.V}
+	}
+	return core.String{V: fmt.Sprintf("%v", value)}
 }
 
 // throw unwinds the VM to the nearest active exception handler and leaves
