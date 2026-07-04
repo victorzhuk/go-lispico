@@ -163,6 +163,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 		}
 
 		frame := &vm.frames[len(vm.frames)-1]
+		if frame.ip < 0 || frame.ip >= len(frame.chunk.Code) {
+			return nil, &core.LispicoError{Code: "BytecodeError", Message: "instruction pointer out of range"}
+		}
 		instr := frame.chunk.Code[frame.ip]
 		frame.ip++
 
@@ -387,6 +390,9 @@ func (vm *VM) throw(value core.Value) bool {
 }
 
 func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
+	if argc < 0 || argc+1 > len(vm.stack) {
+		return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("call: %d args exceeds stack", argc)}
+	}
 	fn := vm.stack[len(vm.stack)-argc-1]
 	args := vm.stack[len(vm.stack)-argc:]
 

@@ -929,3 +929,59 @@ func TestVM_EmptyReturn_Underflow(t *testing.T) {
 		t.Errorf("expected *core.LispicoError, got %T", err)
 	}
 }
+
+func TestVM_MalformedChunk_CallUnderflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpCall, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for OpCall on empty stack, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_MalformedChunk_TailCallUnderflow(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpTailCall, 2),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for OpTailCall exceeding stack, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
+
+func TestVM_MalformedChunk_InstructionPointerOutOfRange(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "test",
+		Code: []Instruction{
+			Encode(OpJump, 100),
+		},
+	}
+
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error for instruction pointer running off the chunk, got nil")
+	}
+	if _, ok := err.(*core.LispicoError); !ok {
+		t.Errorf("expected *core.LispicoError, got %T", err)
+	}
+}
