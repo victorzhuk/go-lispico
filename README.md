@@ -76,16 +76,22 @@ go get github.com/victorzhuk/go-lispico
 
 ## Plugins
 
-| Plugin   | Description                                         |
-| -------- | --------------------------------------------------- |
-| `stdlib` | Standard library (arithmetic, collections, strings) |
-| `llm`    | LLM API bindings (OpenAI, etc.)                     |
-| `agent`  | Agent orchestration                                 |
-| `lio`    | File I/O and environment                            |
-| `net`    | HTTP client                                         |
-| `exec`   | Shell execution and crypto                          |
-| `data`   | Data structures (JSON parsing)                      |
-| `fsm`    | Finite state machines                               |
+go-lispico is a language kernel first: the embedding host is expected to
+register its own IO primitives, so the pure-computation plugins (`stdlib`,
+`data`) are the actively developed surface. The world-touching plugins are
+**frozen** — security and correctness fixes only
+(see `docs/adr/0004-kernel-first-mission.md`).
+
+| Plugin   | Status | Description                                                      |
+| -------- | ------ | ---------------------------------------------------------------- |
+| `stdlib` | active | Standard library (arithmetic, comparison, collections, strings) |
+| `data`   | active | Data structures (JSON parsing)                                   |
+| `fsm`    | idle   | Finite state machines (pure, no consumer)                        |
+| `llm`    | frozen | LLM API bindings (OpenAI, etc.)                                  |
+| `agent`  | frozen | Agent orchestration                                              |
+| `lio`    | frozen | File I/O and environment                                         |
+| `net`    | frozen | HTTP client                                                      |
+| `exec`   | frozen | Shell execution and crypto                                       |
 
 ## Bytecode VM
 
