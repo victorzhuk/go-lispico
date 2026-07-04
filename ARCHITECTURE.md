@@ -194,16 +194,20 @@ Domain-specific plugins extend functionality. Each plugin:
 - May have external dependencies
 - Registers functions in a namespace
 
+The pure-computation plugins (`stdlib`, `data`) are the actively developed
+surface; the world-touching plugins are frozen — security and correctness
+fixes only (see `docs/adr/0004-kernel-first-mission.md`).
+
 ```
 plugins/
 ├── stdlib/    # Standard library (pure Lisp + Go builtins)
-├── llm/       # LLM API bindings (OpenAI, etc.)
-├── agent/     # Agent orchestration
-├── lio/       # File I/O and environment
-├── net/       # HTTP client
-├── exec/      # Shell execution + crypto
 ├── data/      # Data structures (JSON)
-└── fsm/       # Finite state machines
+├── fsm/       # Finite state machines (pure, idle)
+├── llm/       # LLM API bindings (frozen)
+├── agent/     # Agent orchestration (frozen)
+├── lio/       # File I/O and environment (frozen)
+├── net/       # HTTP client (frozen)
+└── exec/      # Shell execution + crypto (frozen)
 ```
 
 ## Data Flow
