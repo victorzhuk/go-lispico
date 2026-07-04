@@ -129,9 +129,14 @@ defer cancel()
 
 ### 5. Environment Variables
 
-`env-get` and `env-set` are not sandboxed. In production:
+`env-set` writes to a per-`Plugin` overlay, never to the real process
+environment: two `Plugin` instances (e.g. two engines) never see each other's
+writes, and the host process's own environment is unaffected. `env-get` checks
+that overlay first, then falls through to the real process environment for
+keys the script never set — so `env-get` can still read real secrets present
+in the process environment. In production:
 - Use `ModeStrict` or `ModeRelaxed` to restrict filesystem
-- Be aware that environment access is unrestricted
+- Be aware that `env-get` can still read the real process environment
 - Consider using deny patterns for sensitive env keys if needed
 
 ## Functions

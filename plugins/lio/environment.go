@@ -8,6 +8,12 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+// envGet and envSet keep script-visible environment changes scoped to this
+// Plugin instance: writes land in envOverlay only, never in the real process
+// environment, so two engines (or concurrent scripts sharing one) cannot
+// clobber each other's or the host's variables. Reads check the overlay
+// first and fall through to the real process environment.
+
 func (p *Plugin) envGet(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return nil, fmt.Errorf("io/env-get: %w", ctx.Err())
@@ -19,6 +25,14 @@ func (p *Plugin) envGet(ctx context.Context, eval core.Evaluator, args []core.Va
 	keyArg, ok := args[0].(core.String)
 	if !ok {
 		return nil, fmt.Errorf("io/env-get: key must be string")
+	}
+
+	p.envMu.RLock()
+	val, overlaid := p.envOverlay[keyArg.V]
+	p.envMu.RUnlock()
+
+	if overlaid {
+		return core.String{V: val}, nil
 	}
 
 	val, exists := os.LookupEnv(keyArg.V)
@@ -47,9 +61,9 @@ func (p *Plugin) envSet(ctx context.Context, eval core.Evaluator, args []core.Va
 		return nil, fmt.Errorf("io/env-set: value must be string")
 	}
 
-	if err := os.Setenv(keyArg.V, valArg.V); err != nil {
-		return nil, fmt.Errorf("io/env-set: set %s: %w", keyArg.V, err)
-	}
+	p.envMu.Lock()
+	p.envOverlay[keyArg.V] = valArg.V
+	p.envMu.Unlock()
 
 	return core.Nil{}, nil
 }

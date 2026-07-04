@@ -165,8 +165,9 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 	cmds[len(cmds)-1].Stdout = &finalStdout
 	cmds[len(cmds)-1].Stderr = &finalStderr
 
-	for _, cmd := range cmds {
+	for i, cmd := range cmds {
 		if err := cmd.Start(); err != nil {
+			killStarted(cmds[:i])
 			return nil, fmt.Errorf("start command: %w", err)
 		}
 	}
@@ -190,6 +191,18 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 	result, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: 0})
 
 	return result, nil
+}
+
+// killStarted reaps already-started pipeline stages after a later stage
+// fails to start, so they don't linger as zombies until the pipeline's
+// context timeout kills them.
+func killStarted(cmds []*exec.Cmd) {
+	for _, cmd := range cmds {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	}
 }
 
 func (p *Plugin) which(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
