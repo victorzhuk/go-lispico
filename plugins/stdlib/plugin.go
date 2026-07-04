@@ -24,6 +24,7 @@ func (p *Plugin) Metadata() core.PluginMeta {
 
 func (p *Plugin) Init(env *core.Env) error {
 	p.registerArithmetic(env)
+	p.registerComparison(env)
 	p.registerStrings(env)
 	p.registerCollections(env)
 	p.registerHigherOrder(env)

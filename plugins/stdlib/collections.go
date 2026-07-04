@@ -3,6 +3,7 @@ package stdlib
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -381,4 +382,188 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			return core.List{Items: items}, nil
 		},
 	})
+
+	env.Set("contains?", core.GoFunc{
+		Name: "contains?",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("contains?: requires 2 arguments")
+			}
+
+			m, ok := args[0].(*core.HashMap)
+			if !ok {
+				return nil, fmt.Errorf("contains?: expected map, got %T", args[0])
+			}
+
+			_, found := m.Get(args[1])
+			return core.Bool{V: found}, nil
+		},
+	})
+
+	env.Set("merge", core.GoFunc{
+		Name: "merge",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			result := core.NewHashMap()
+			for _, arg := range args {
+				switch m := arg.(type) {
+				case *core.HashMap:
+					var err error
+					m.Each(func(k, v core.Value) {
+						if err != nil {
+							return
+						}
+						result, err = result.Assoc(k, v)
+					})
+					if err != nil {
+						return nil, fmt.Errorf("merge: %w", err)
+					}
+				case core.Nil:
+				default:
+					return nil, fmt.Errorf("merge: expected map, got %T", arg)
+				}
+			}
+			return result, nil
+		},
+	})
+
+	env.Set("dissoc", core.GoFunc{
+		Name: "dissoc",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			if len(args) < 1 {
+				return nil, fmt.Errorf("dissoc: requires at least 1 argument")
+			}
+
+			m, ok := args[0].(*core.HashMap)
+			if !ok {
+				return nil, fmt.Errorf("dissoc: expected map, got %T", args[0])
+			}
+
+			result := m
+			for _, k := range args[1:] {
+				var err error
+				result, err = result.Dissoc(k)
+				if err != nil {
+					return nil, fmt.Errorf("dissoc: %w", err)
+				}
+			}
+			return result, nil
+		},
+	})
+
+	env.Set("sort", core.GoFunc{
+		Name: "sort",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			if len(args) != 1 {
+				return nil, fmt.Errorf("sort: requires 1 argument")
+			}
+
+			var items []core.Value
+			switch c := args[0].(type) {
+			case core.List:
+				items = c.Items
+			case core.Vector:
+				items = c.Items
+			case core.Nil:
+				return core.List{Items: []core.Value{}}, nil
+			default:
+				return nil, fmt.Errorf("sort: expected collection, got %T", args[0])
+			}
+
+			sorted := make([]core.Value, len(items))
+			copy(sorted, items)
+
+			var sortErr error
+			sort.SliceStable(sorted, func(i, j int) bool {
+				if sortErr != nil {
+					return false
+				}
+				cmp, err := naturalCmp(sorted[i], sorted[j])
+				if err != nil {
+					sortErr = err
+					return false
+				}
+				return cmp < 0
+			})
+			if sortErr != nil {
+				return nil, sortErr
+			}
+
+			return core.List{Items: sorted}, nil
+		},
+	})
+
+	env.Set("range", core.GoFunc{
+		Name: "range",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			if len(args) < 1 || len(args) > 3 {
+				return nil, fmt.Errorf("range: requires 1 to 3 arguments")
+			}
+
+			bounds := make([]int64, len(args))
+			for i, arg := range args {
+				n, ok := arg.(core.Int)
+				if !ok {
+					return nil, fmt.Errorf("range: requires integer arguments, got %T", arg)
+				}
+				bounds[i] = n.V
+			}
+
+			var start, end, step int64 = 0, 0, 1
+			switch len(bounds) {
+			case 1:
+				end = bounds[0]
+			case 2:
+				start, end = bounds[0], bounds[1]
+			case 3:
+				start, end, step = bounds[0], bounds[1], bounds[2]
+				if step == 0 {
+					return nil, fmt.Errorf("range: step must not be zero")
+				}
+			}
+
+			var items []core.Value
+			if step > 0 {
+				for i := start; i < end; i += step {
+					items = append(items, core.Int{V: i})
+				}
+			} else {
+				for i := start; i > end; i += step {
+					items = append(items, core.Int{V: i})
+				}
+			}
+			return core.List{Items: items}, nil
+		},
+	})
+}
+
+// naturalCmp orders two values of the same kind: numbers by numCmp, strings
+// and keywords lexicographically. Mixed kinds (beyond int/float) are an error.
+func naturalCmp(a, b core.Value) (int, error) {
+	if as, ok := a.(core.String); ok {
+		bs, ok := b.(core.String)
+		if !ok {
+			return 0, fmt.Errorf("sort: cannot compare %T with %T", a, b)
+		}
+		switch {
+		case as.V < bs.V:
+			return -1, nil
+		case as.V > bs.V:
+			return 1, nil
+		}
+		return 0, nil
+	}
+	if ak, ok := a.(core.Keyword); ok {
+		bk, ok := b.(core.Keyword)
+		if !ok {
+			return 0, fmt.Errorf("sort: cannot compare %T with %T", a, b)
+		}
+		switch {
+		case ak.V < bk.V:
+			return -1, nil
+		case ak.V > bk.V:
+			return 1, nil
+		}
+		return 0, nil
+	}
+	return numCmp("sort", a, b)
 }

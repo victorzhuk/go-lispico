@@ -36,6 +36,10 @@ _Avoid_: special form, function
 A vector `[...]` or map `{...}` written in source; its elements are evaluated when the literal is evaluated.
 _Avoid_: constant, data literal
 
+**Equality**:
+`=` is structural equality via `Equals`, strict across types — `(= 1 1.0)` is false. Ordering (`<`, `>`, `<=`, `>=`) is numeric-only, variadic monotonic, mixing int and float by the same promotion arithmetic uses. A numeric `==` does not exist until something needs it.
+_Avoid_: numeric equality (as a meaning for `=`), identity
+
 ### Embedding
 
 **Engine**:
