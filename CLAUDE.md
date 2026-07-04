@@ -94,7 +94,7 @@ Only `nil` and `false` are falsy. Everything else is truthy.
 
 ## TCO
 
-The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) compiles and executes the same 22 special forms as the tree-walker, using O(1) stack `loop`/`recur` via the `OpLoop` back-jump.
+The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) is an opt-in optimizer for a documented subset of forms, using O(1) stack `loop`/`recur` via the `OpLoop` back-jump; forms it does not compile fall back to the tree-walker, which is the default and complete path.
 
 ## Performance Targets
 

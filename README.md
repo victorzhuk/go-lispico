@@ -8,8 +8,8 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 - **13 built-in types**: Nil, Bool, Int, Float, String, Symbol, Keyword, List, Vector, HashMap, GoFunc, Lambda, Macro
 - **22 special forms**: if, def, defn, defmacro, fn, let, let*, do, quote, quasiquote, set!, when, unless, cond, loop, recur, try, catch, throw, and, or, not
 - **Tree-walking evaluator** with `loop`/`recur` tail-call optimization
-- **Bytecode VM** with `runtime.WithBytecode()` / `runtime.WithBytecodeCache(dir)`
-- **Hot-reload** with file watching
+- **Bytecode VM** with `runtime.WithBytecode()` — opt-in optimizer for hot loops
+- **Hot-reload** via `eng.Watch(ctx, dir)`
 - **Plugin system** for extending functionality
 
 ## Quick Start
@@ -89,11 +89,12 @@ go get github.com/victorzhuk/go-lispico
 
 ## Bytecode VM
 
-The bytecode VM is available behind `runtime.WithBytecode()` and
-`runtime.WithBytecodeCache(dir)`. It now supports the same 22 special forms as
-the tree-walking evaluator, including closures, variadics, macros, `loop`/`recur`,
-and `try`/`catch`/`throw`. The default evaluator is still used when
-`WithBytecode()` is not passed.
+The bytecode VM is available behind `runtime.WithBytecode()`. It is an opt-in
+optimizer for loop- and recursion-heavy code, covering a documented subset of
+forms — closures, variadics, macros, `loop`/`recur`, and `try`/`catch`/`throw`.
+Forms it does not compile (a `defmacro` nested in a body, `unquote-splicing`)
+fall back to the tree-walking evaluator, which remains the default and complete
+path when `WithBytecode()` is not passed.
 
 ## Status
 

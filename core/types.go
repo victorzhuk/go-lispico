@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -204,10 +205,28 @@ func NewHashMap() *HashMap {
 }
 
 func (h *HashMap) Type() Keyword { return Keyword{V: "map"} }
+
+// sortedKeys returns the map's hash keys in a deterministic order, so
+// iteration, rendering, and literal evaluation do not depend on Go's
+// randomized map order.
+func (h *HashMap) sortedKeys() []hashKey {
+	ks := make([]hashKey, 0, len(h.m))
+	for hk := range h.m {
+		ks = append(ks, hk)
+	}
+	sort.Slice(ks, func(i, j int) bool {
+		if ks[i].typ != ks[j].typ {
+			return ks[i].typ < ks[j].typ
+		}
+		return ks[i].val < ks[j].val
+	})
+	return ks
+}
+
 func (h *HashMap) String() string {
 	parts := make([]string, 0, len(h.m)*2)
-	for hk, v := range h.m {
-		parts = append(parts, h.keys[hk].String()+" "+v.String())
+	for _, hk := range h.sortedKeys() {
+		parts = append(parts, h.keys[hk].String()+" "+h.m[hk].String())
 	}
 	return "{" + strings.Join(parts, " ") + "}"
 }
@@ -283,18 +302,19 @@ func (h *HashMap) Set(key, val Value) error {
 	return nil
 }
 
-// Each calls fn for every key-value pair in the map.
+// Each calls fn for every key-value pair in the map, in deterministic order.
 func (h *HashMap) Each(fn func(k, v Value)) {
-	for hk, v := range h.m {
-		fn(h.keys[hk], v)
+	for _, hk := range h.sortedKeys() {
+		fn(h.keys[hk], h.m[hk])
 	}
 }
 
-// Pairs returns all key-value pairs as [2]Value arrays.
+// Pairs returns all key-value pairs as [2]Value arrays, in deterministic order.
 func (h *HashMap) Pairs() [][2]Value {
-	pairs := make([][2]Value, 0, len(h.m))
-	for hk, v := range h.m {
-		pairs = append(pairs, [2]Value{h.keys[hk], v})
+	ks := h.sortedKeys()
+	pairs := make([][2]Value, 0, len(ks))
+	for _, hk := range ks {
+		pairs = append(pairs, [2]Value{h.keys[hk], h.m[hk]})
 	}
 	return pairs
 }

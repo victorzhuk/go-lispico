@@ -869,3 +869,23 @@ func TestSandboxDanglingSymlinkDenied(t *testing.T) {
 	_, err = sb.Validate(filepath.Join(dangling, "file.txt"), true)
 	assert.Error(t, err)
 }
+
+func TestSandboxDanglingSymlinkLeafDenied(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	root := filepath.Join(tmpDir, "root")
+	require.NoError(t, os.Mkdir(root, 0o755))
+
+	// A symlink whose leaf IS the write target, pointing outside root at a path
+	// that does not exist yet. Writing through it must be denied, not resolved
+	// to an in-root name.
+	outside := filepath.Join(tmpDir, "outside", "evil.txt")
+	leaf := filepath.Join(root, "escape")
+	require.NoError(t, os.Symlink(outside, leaf))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+
+	_, err = sb.Validate(leaf, true)
+	assert.Error(t, err)
+}
