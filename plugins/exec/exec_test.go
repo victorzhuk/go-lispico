@@ -2,7 +2,11 @@ package exec
 
 import (
 	"context"
+	"os"
 	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,6 +337,73 @@ func TestExec_Pipe(t *testing.T) {
 		_, err := p.pipe(context.Background(), nil, args, env)
 		assert.Error(t, err)
 	})
+}
+
+func TestExec_PipeStartFailureReapsStartedStages(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("zombie check relies on /proc")
+	}
+
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	commands := core.Vector{Items: []core.Value{
+		core.Vector{Items: []core.Value{core.String{V: "sleep"}, core.String{V: "5"}}},
+		core.Vector{Items: []core.Value{core.String{V: "lispico-test-nonexistent-cmd-xyz"}}},
+	}}
+	args := []core.Value{commands}
+
+	start := time.Now()
+	_, err := p.pipe(context.Background(), nil, args, env)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Less(t, elapsed, 2*time.Second, "pipe should reap the started stage instead of waiting out the sleep")
+
+	assert.Eventually(t, func() bool {
+		return !hasZombieChild(t)
+	}, time.Second, 10*time.Millisecond, "started pipeline stage leaked as a zombie")
+}
+
+func hasZombieChild(t *testing.T) bool {
+	t.Helper()
+
+	entries, err := os.ReadDir("/proc")
+	require.NoError(t, err)
+
+	self := os.Getpid()
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+
+		data, err := os.ReadFile("/proc/" + e.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+
+		idx := strings.LastIndex(string(data), ")")
+		if idx == -1 {
+			continue
+		}
+
+		fields := strings.Fields(string(data)[idx+1:])
+		if len(fields) < 2 {
+			continue
+		}
+
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil || ppid != self {
+			continue
+		}
+
+		if fields[0] == "Z" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func TestExec_Which(t *testing.T) {

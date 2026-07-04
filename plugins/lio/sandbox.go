@@ -50,13 +50,21 @@ func NewSandbox(cfg Config) (*Sandbox, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve root dir: %w", err)
 		}
-		s.rootDirAbs = abs
+		root, err := resolveReal(abs)
+		if err != nil {
+			return nil, fmt.Errorf("resolve root dir: %w", err)
+		}
+		s.rootDirAbs = root
 	} else if cfg.Mode == ModeStrict {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return nil, fmt.Errorf("get working directory: %w", err)
 		}
-		s.rootDirAbs = cwd
+		root, err := resolveReal(cwd)
+		if err != nil {
+			return nil, fmt.Errorf("resolve working directory: %w", err)
+		}
+		s.rootDirAbs = root
 	}
 
 	return s, nil
@@ -92,41 +100,50 @@ func (s *Sandbox) cleanPath(path string) (string, error) {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}
 
-	realPath, err := s.resolveSymlink(abs)
-	if err != nil && !os.IsNotExist(err) {
+	resolved, err := resolveReal(abs)
+	if err != nil {
 		return "", fmt.Errorf("resolve symlink: %w", err)
 	}
-	if realPath != "" {
-		abs = realPath
-	}
 
-	return abs, nil
+	return resolved, nil
 }
 
-func (s *Sandbox) resolveSymlink(path string) (string, error) {
-	const maxHops = 40
-	for range maxHops {
-		fi, err := os.Lstat(path)
-		if err != nil {
+// resolveReal resolves every symlink in path, including intermediate
+// directory components, so a symlink cannot make a path outside the sandbox
+// root look like it is inside. When path (a write target, typically) does
+// not exist yet, it walks up to the nearest existing ancestor, resolves
+// that, and rejoins the missing suffix onto the real ancestor.
+func resolveReal(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	var suffix []string
+	dir := path
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
 			return "", err
 		}
+		suffix = append([]string{filepath.Base(dir)}, suffix...)
+		dir = parent
 
-		if fi.Mode()&os.ModeSymlink == 0 {
-			return path, nil
+		resolvedParent, perr := filepath.EvalSymlinks(dir)
+		if perr == nil {
+			return filepath.Join(append([]string{resolvedParent}, suffix...)...), nil
+		}
+		if !os.IsNotExist(perr) {
+			return "", perr
 		}
 
-		target, err := os.Readlink(path)
-		if err != nil {
-			return "", fmt.Errorf("read symlink: %w", err)
+		if fi, lerr := os.Lstat(dir); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("broken symlink: %s", dir)
 		}
-
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
-		}
-
-		path = target
 	}
-	return "", fmt.Errorf("too many symlink levels: %s", path)
 }
 
 func (s *Sandbox) validateStrict(path string, write bool) (string, error) {

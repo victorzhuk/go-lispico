@@ -12,6 +12,11 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+// maxResponseBytes caps how much of a response body doRequest reads, so a
+// malicious or misbehaving server cannot exhaust memory via an unbounded
+// response.
+const maxResponseBytes = 32 << 20
+
 func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.HashMap) (core.Value, error) {
 	client := p.client
 
@@ -36,9 +41,12 @@ func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.Ha
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("http: read response: %w", err)
+	}
+	if len(body) > maxResponseBytes {
+		return nil, fmt.Errorf("http: response body exceeds %d byte limit", maxResponseBytes)
 	}
 
 	result := core.NewHashMap()
