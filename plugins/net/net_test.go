@@ -560,6 +560,22 @@ func TestPlugin_EmptyBody(t *testing.T) {
 	assert.Equal(t, "", body.(core.String).V)
 }
 
+func TestPlugin_ResponseBodyTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		chunk := make([]byte, 1<<20)
+		for written := 0; written <= maxResponseBytes; written += len(chunk) {
+			w.Write(chunk)
+		}
+	}))
+	defer srv.Close()
+
+	p := New()
+	_, err := p.get(context.Background(), nil, []core.Value{core.String{V: srv.URL}}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
 func TestPlugin_ExistingContentTypeNotOverridden(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "text/plain", r.Header.Get("Content-Type"))
