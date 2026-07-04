@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-04
+
 ### Changed
 
 - **Breaking:** vector `[...]` and map `{...}` literals now evaluate their
@@ -41,8 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The `lio` file sandbox resolves symlinks before enforcing its root, closing an
-  escape that allowed reads and writes outside the sandbox via an intermediate
-  symlink.
+  escape that allowed reads and writes outside the sandbox through a symlink.
 - HTTP responses in the `net` plugin are read under a size cap to prevent
   memory exhaustion.
 
@@ -66,5 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/victorzhuk/go-lispico/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/victorzhuk/go-lispico/releases/tag/v0.1.0
