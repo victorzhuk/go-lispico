@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** vector `[...]` and map `{...}` literals now evaluate their
+  elements, so `(let [x 99] [1 x])` yields `[1 99]`. Use `quote` to keep a
+  literal unevaluated.
+- Evaluation errors are now `*core.LispicoError` values carrying a `Code`, so
+  `errors.As` and `errors.Is` work against them.
+- The bytecode VM (`runtime.WithBytecode()`) is an opt-in optimizer for a
+  documented subset of forms; forms it cannot compile fall back to the
+  tree-walking evaluator instead of failing.
+
+### Removed
+
+- `runtime.WithBytecodeCache` — the on-disk bytecode cache was never used on the
+  evaluation path and has been removed.
+
+### Fixed
+
+- Concurrent `Eval` on a single engine no longer shares call/loop/macro depth
+  state across goroutines; `recur` outside a loop is detected reliably and macro
+  expansion is race-free.
+- The bytecode VM no longer panics on an empty-body function such as `((fn []))`.
+- `WithTimeout` now bounds `Eval` and `EvalWithBindings`, not only `Call`.
+- `Watch` stops when the context passed to it is cancelled.
+
+### Security
+
+- The `lio` file sandbox resolves symlinks before enforcing its root, closing an
+  escape that allowed reads and writes outside the sandbox via an intermediate
+  symlink.
+- HTTP responses in the `net` plugin are read under a size cap to prevent
+  memory exhaustion.
+
 ## [0.1.0] - 2026-07-04
 
 ### Added

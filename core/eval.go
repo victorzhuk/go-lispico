@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 )
 
 // tailCall is returned by special forms to signal that the trampoline should
@@ -60,11 +59,8 @@ func init() {
 // engine is the concrete tree-walking evaluator.
 // It implements the Evaluator interface from types.go.
 type engine struct {
-	macroDepth    int
 	maxMacroDepth int
 	MaxDepth      int
-	callDepth     atomic.Int64
-	loopDepth     atomic.Int64
 }
 
 // NewEvaluator constructs a new tree-walking evaluator.
@@ -72,14 +68,48 @@ func NewEvaluator() *engine {
 	return &engine{maxMacroDepth: 100, MaxDepth: 1000}
 }
 
+// evalState holds the depth counters for a single top-level evaluation. It is
+// carried in the context so concurrent evaluations on one engine never share
+// call/loop/macro state.
+type evalState struct {
+	callDepth  int
+	loopDepth  int
+	macroDepth int
+}
+
+type evalStateKey struct{}
+
+// ensureEvalState attaches a fresh evalState to ctx on the first (top-level)
+// call and returns the existing one on nested calls.
+func ensureEvalState(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, evalStateKey{}, &evalState{})
+}
+
+func evalStateFrom(ctx context.Context) *evalState {
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		return st
+	}
+	return &evalState{}
+}
+
+func evalErrorf(format string, args ...any) *LispicoError {
+	return &LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
+}
+
 // Apply is the public entry point for calling a Lisp value as a function.
 // Used by the runtime API and plugins that invoke Lambdas from Go.
 func (e *engine) Apply(ctx context.Context, fn Value, args []Value, env *Env) (Value, error) {
+	ctx = ensureEvalState(ctx)
 	return e.apply(ctx, fn, args, env)
 }
 
 // Eval evaluates form in env, returning the result.
 func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
+	ctx = ensureEvalState(ctx)
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -87,8 +117,20 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 	}
 
 	switch val := v.(type) {
-	case Nil, Bool, Int, Float, String, Keyword, *HashMap, Vector, GoFunc, Lambda, Macro:
+	case Nil, Bool, Int, Float, String, Keyword, GoFunc, Lambda, Macro:
 		return val, nil
+	case Vector:
+		items := make([]Value, len(val.Items))
+		for i, item := range val.Items {
+			r, err := e.Eval(ctx, item, env)
+			if err != nil {
+				return nil, err
+			}
+			items[i] = r
+		}
+		return Vector{Items: items}, nil
+	case *HashMap:
+		return e.evalMap(ctx, val, env)
 	case Symbol:
 		r, ok := env.Get(val.V)
 		if !ok {
@@ -103,6 +145,26 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 	default:
 		return nil, NewTypeError("evaluable", v)
 	}
+}
+
+// evalMap evaluates every key and value of a map literal, producing a new map.
+func (e *engine) evalMap(ctx context.Context, m *HashMap, env *Env) (Value, error) {
+	result := NewHashMap()
+	for _, pair := range m.Pairs() {
+		k, err := e.Eval(ctx, pair[0], env)
+		if err != nil {
+			return nil, err
+		}
+		v, err := e.Eval(ctx, pair[1], env)
+		if err != nil {
+			return nil, err
+		}
+		result, err = result.Assoc(k, v)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (e *engine) evalList(ctx context.Context, items []Value, env *Env) (Value, error) {
@@ -138,11 +200,12 @@ func (e *engine) evalList(ctx context.Context, items []Value, env *Env) (Value, 
 // apply is the TCO trampoline. Each call represents one stack frame;
 // Lambda tail-call returns a tailCall value which loops back without recursing.
 func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (Value, error) {
-	depth := e.callDepth.Add(1)
-	defer e.callDepth.Add(-1)
+	st := evalStateFrom(ctx)
+	st.callDepth++
+	defer func() { st.callDepth-- }()
 
-	if e.MaxDepth > 0 && int(depth) > e.MaxDepth {
-		return nil, fmt.Errorf("max call depth %d exceeded", e.MaxDepth)
+	if e.MaxDepth > 0 && st.callDepth > e.MaxDepth {
+		return nil, evalErrorf("max call depth %d exceeded", e.MaxDepth)
 	}
 
 	for {
@@ -165,7 +228,7 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 				return nil, err
 			}
 			if _, ok := result.(recurVal); ok {
-				return nil, fmt.Errorf("recur outside loop")
+				return nil, evalErrorf("recur outside loop")
 			}
 			tc, ok := result.(tailCall)
 			if !ok {
@@ -174,7 +237,7 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 			fn, args, env = tc.fn, tc.args, tc.env
 		case Keyword:
 			if len(args) != 1 {
-				return nil, fmt.Errorf("keyword lookup requires exactly 1 argument, got %d", len(args))
+				return nil, evalErrorf("keyword lookup requires exactly 1 argument, got %d", len(args))
 			}
 			m, ok := args[0].(*HashMap)
 			if !ok {
@@ -207,6 +270,8 @@ func (e *engine) evalBody(ctx context.Context, body []Value, env *Env) (Value, e
 // MacroExpand fully expands all macros in form without evaluating the result.
 // Used by tooling and the bytecode compiler (ch008).
 func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, error) {
+	ctx = ensureEvalState(ctx)
+
 	list, ok := form.(List)
 	if !ok || len(list.Items) == 0 {
 		return form, nil
@@ -229,15 +294,16 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 // expandMacroForm runs the macro body with unevaluated args and returns the
 // expansion as a Value. Does NOT evaluate the result — that is the caller's job.
 func (e *engine) expandMacroForm(ctx context.Context, m Macro, args []Value) (Value, error) {
-	if e.macroDepth >= e.maxMacroDepth {
-		return nil, fmt.Errorf("macro expansion depth %d exceeded", e.maxMacroDepth)
+	st := evalStateFrom(ctx)
+	if st.macroDepth >= e.maxMacroDepth {
+		return nil, evalErrorf("macro expansion depth %d exceeded", e.maxMacroDepth)
 	}
-	e.macroDepth++
-	defer func() { e.macroDepth-- }()
+	st.macroDepth++
+	defer func() { st.macroDepth-- }()
 
 	macroEnv, err := m.Env.ChildVariadic(m.Params, args, m.Variadic)
 	if err != nil {
-		return nil, fmt.Errorf("macro %s: %w", m.Name, err)
+		return nil, &LispicoError{Code: "EvalError", Message: fmt.Sprintf("macro %s: %s", m.Name, err), Cause: err}
 	}
 	return e.evalBody(ctx, m.Body, macroEnv)
 }
@@ -260,11 +326,11 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 				switch sym.V {
 				case "unquote":
 					if len(val.Items) != 2 {
-						return nil, fmt.Errorf("unquote requires 1 argument")
+						return nil, evalErrorf("unquote requires 1 argument")
 					}
 					return e.Eval(ctx, val.Items[1], env)
 				case "unquote-splicing":
-					return nil, fmt.Errorf("unquote-splicing used outside of list context")
+					return nil, evalErrorf("unquote-splicing used outside of list context")
 				}
 			}
 		}
@@ -273,7 +339,7 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			if list, ok := item.(List); ok && len(list.Items) > 0 {
 				if sym, ok := list.Items[0].(Symbol); ok && sym.V == "unquote-splicing" {
 					if len(list.Items) != 2 {
-						return nil, fmt.Errorf("unquote-splicing requires 1 argument")
+						return nil, evalErrorf("unquote-splicing requires 1 argument")
 					}
 					expanded, err := e.Eval(ctx, list.Items[1], env)
 					if err != nil {
@@ -285,7 +351,7 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 					case Vector:
 						result = append(result, seq.Items...)
 					default:
-						return nil, fmt.Errorf("unquote-splicing requires a sequence, got %T", expanded)
+						return nil, evalErrorf("unquote-splicing requires a sequence, got %T", expanded)
 					}
 					continue
 				}
@@ -307,6 +373,23 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			result[i] = expanded
 		}
 		return Vector{Items: result}, nil
+	case *HashMap:
+		result := NewHashMap()
+		for _, pair := range val.Pairs() {
+			k, err := e.expandQuasiquote(ctx, pair[0], env)
+			if err != nil {
+				return nil, err
+			}
+			v, err := e.expandQuasiquote(ctx, pair[1], env)
+			if err != nil {
+				return nil, err
+			}
+			result, err = result.Assoc(k, v)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
 	default:
 		return val, nil
 	}
@@ -316,11 +399,11 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 
 func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("def requires 2 arguments, got %d", len(args))
+		return nil, evalErrorf("def requires 2 arguments, got %d", len(args))
 	}
 	name, ok := args[0].(Symbol)
 	if !ok {
-		return nil, fmt.Errorf("def: first argument must be a symbol, got %T", args[0])
+		return nil, evalErrorf("def: first argument must be a symbol, got %T", args[0])
 	}
 	val, err := e.Eval(ctx, args[1], env)
 	if err != nil {
@@ -332,19 +415,19 @@ func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 
 func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 3 {
-		return nil, fmt.Errorf("defn requires at least 3 arguments (name params body...)")
+		return nil, evalErrorf("defn requires at least 3 arguments (name params body...)")
 	}
 	name, ok := args[0].(Symbol)
 	if !ok {
-		return nil, fmt.Errorf("defn: first argument must be a symbol")
+		return nil, evalErrorf("defn: first argument must be a symbol")
 	}
 	params, ok := args[1].(Vector)
 	if !ok {
-		return nil, fmt.Errorf("defn: second argument must be a parameter vector")
+		return nil, evalErrorf("defn: second argument must be a parameter vector")
 	}
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
-		return nil, fmt.Errorf("defn %s: %w", name.V, err)
+		return nil, &LispicoError{Code: "EvalError", Message: fmt.Sprintf("defn %s: %s", name.V, err), Cause: err}
 	}
 	lambda := Lambda{
 		Name:     name.V,
@@ -359,19 +442,19 @@ func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 
 func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 3 {
-		return nil, fmt.Errorf("defmacro requires at least 3 arguments (name params body...)")
+		return nil, evalErrorf("defmacro requires at least 3 arguments (name params body...)")
 	}
 	name, ok := args[0].(Symbol)
 	if !ok {
-		return nil, fmt.Errorf("defmacro: first argument must be a symbol")
+		return nil, evalErrorf("defmacro: first argument must be a symbol")
 	}
 	params, ok := args[1].(Vector)
 	if !ok {
-		return nil, fmt.Errorf("defmacro: second argument must be a parameter vector")
+		return nil, evalErrorf("defmacro: second argument must be a parameter vector")
 	}
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
-		return nil, fmt.Errorf("defmacro %s: %w", name.V, err)
+		return nil, &LispicoError{Code: "EvalError", Message: fmt.Sprintf("defmacro %s: %s", name.V, err), Cause: err}
 	}
 	macro := Macro{
 		Name:     name.V,
@@ -386,15 +469,15 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 
 func evalFn(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("fn requires at least 2 arguments (params body...)")
+		return nil, evalErrorf("fn requires at least 2 arguments (params body...)")
 	}
 	params, ok := args[0].(Vector)
 	if !ok {
-		return nil, fmt.Errorf("fn: first argument must be a parameter vector")
+		return nil, evalErrorf("fn: first argument must be a parameter vector")
 	}
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
-		return nil, fmt.Errorf("fn: %w", err)
+		return nil, &LispicoError{Code: "EvalError", Message: fmt.Sprintf("fn: %s", err), Cause: err}
 	}
 	return Lambda{
 		Params:   fixed,
@@ -406,7 +489,7 @@ func evalFn(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 
 func evalIf(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 || len(args) > 3 {
-		return nil, fmt.Errorf("if requires 2 or 3 arguments")
+		return nil, evalErrorf("if requires 2 or 3 arguments")
 	}
 	cond, err := e.Eval(ctx, args[0], env)
 	if err != nil {
@@ -425,7 +508,7 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	for _, clause := range args {
 		list, ok := clause.(List)
 		if !ok || len(list.Items) != 2 {
-			return nil, fmt.Errorf("cond: clauses must be (test expr) pairs")
+			return nil, evalErrorf("cond: clauses must be (test expr) pairs")
 		}
 		test := list.Items[0]
 		if sym, ok := test.(Symbol); ok && (sym.V == "else" || sym.V == ":else") {
@@ -447,7 +530,7 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 
 func evalWhen(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("when requires at least 2 arguments")
+		return nil, evalErrorf("when requires at least 2 arguments")
 	}
 	cond, err := e.Eval(ctx, args[0], env)
 	if err != nil {
@@ -461,7 +544,7 @@ func evalWhen(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 
 func evalUnless(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("unless requires at least 2 arguments")
+		return nil, evalErrorf("unless requires at least 2 arguments")
 	}
 	cond, err := e.Eval(ctx, args[0], env)
 	if err != nil {
@@ -475,17 +558,17 @@ func evalUnless(ctx context.Context, e *engine, args []Value, env *Env) (Value, 
 
 func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("let requires at least 2 arguments")
+		return nil, evalErrorf("let requires at least 2 arguments")
 	}
 	bindings, ok := args[0].(Vector)
 	if !ok || len(bindings.Items)%2 != 0 {
-		return nil, fmt.Errorf("let: first argument must be an even-length binding vector")
+		return nil, evalErrorf("let: first argument must be an even-length binding vector")
 	}
 	child := env.Child()
 	for i := 0; i < len(bindings.Items); i += 2 {
 		name, ok := bindings.Items[i].(Symbol)
 		if !ok {
-			return nil, fmt.Errorf("let: binding names must be symbols")
+			return nil, evalErrorf("let: binding names must be symbols")
 		}
 		val, err := e.Eval(ctx, bindings.Items[i+1], env)
 		if err != nil {
@@ -498,17 +581,17 @@ func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 
 func evalLetStar(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("let* requires at least 2 arguments")
+		return nil, evalErrorf("let* requires at least 2 arguments")
 	}
 	bindings, ok := args[0].(Vector)
 	if !ok || len(bindings.Items)%2 != 0 {
-		return nil, fmt.Errorf("let*: first argument must be an even-length binding vector")
+		return nil, evalErrorf("let*: first argument must be an even-length binding vector")
 	}
 	child := env.Child()
 	for i := 0; i < len(bindings.Items); i += 2 {
 		name, ok := bindings.Items[i].(Symbol)
 		if !ok {
-			return nil, fmt.Errorf("let*: binding names must be symbols")
+			return nil, evalErrorf("let*: binding names must be symbols")
 		}
 		val, err := e.Eval(ctx, bindings.Items[i+1], child) // evaluate in child env (sees previous)
 		if err != nil {
@@ -525,29 +608,29 @@ func evalDo(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 
 func evalQuote(_ context.Context, _ *engine, args []Value, _ *Env) (Value, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("quote requires exactly 1 argument")
+		return nil, evalErrorf("quote requires exactly 1 argument")
 	}
 	return args[0], nil
 }
 
 func evalQuasiquote(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("quasiquote requires exactly 1 argument")
+		return nil, evalErrorf("quasiquote requires exactly 1 argument")
 	}
 	return e.expandQuasiquote(ctx, args[0], env)
 }
 
 func evalSet(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 2 {
-		return nil, fmt.Errorf("set! requires exactly 2 arguments")
+		return nil, evalErrorf("set! requires exactly 2 arguments")
 	}
 	name, ok := args[0].(Symbol)
 	if !ok {
-		return nil, fmt.Errorf("set!: first argument must be a symbol")
+		return nil, evalErrorf("set!: first argument must be a symbol")
 	}
 	defEnv, ok := env.Find(name.V)
 	if !ok {
-		return nil, fmt.Errorf("set!: cannot mutate undefined variable %q", name.V)
+		return nil, evalErrorf("set!: cannot mutate undefined variable %q", name.V)
 	}
 	val, err := e.Eval(ctx, args[1], env)
 	if err != nil {
@@ -559,11 +642,11 @@ func evalSet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 
 func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("loop requires at least 2 arguments")
+		return nil, evalErrorf("loop requires at least 2 arguments")
 	}
 	bindings, ok := args[0].(Vector)
 	if !ok || len(bindings.Items)%2 != 0 {
-		return nil, fmt.Errorf("loop: first argument must be an even-length binding vector")
+		return nil, evalErrorf("loop: first argument must be an even-length binding vector")
 	}
 
 	loopEnv := env.Child()
@@ -572,7 +655,7 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	for i := 0; i < len(bindings.Items); i += 2 {
 		name, ok := bindings.Items[i].(Symbol)
 		if !ok {
-			return nil, fmt.Errorf("loop: binding names must be symbols")
+			return nil, evalErrorf("loop: binding names must be symbols")
 		}
 		val, err := e.Eval(ctx, bindings.Items[i+1], env)
 		if err != nil {
@@ -582,8 +665,9 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		loopVars = append(loopVars, name)
 	}
 
-	e.loopDepth.Add(1)
-	defer e.loopDepth.Add(-1)
+	st := evalStateFrom(ctx)
+	st.loopDepth++
+	defer func() { st.loopDepth-- }()
 
 	for {
 		result, err := e.evalBody(ctx, args[1:], loopEnv)
@@ -595,7 +679,7 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 			return result, nil
 		}
 		if len(rv.args) != len(loopVars) {
-			return nil, fmt.Errorf("recur: expected %d args, got %d", len(loopVars), len(rv.args))
+			return nil, evalErrorf("recur: expected %d args, got %d", len(loopVars), len(rv.args))
 		}
 		for i, v := range loopVars {
 			loopEnv.Set(v.V, rv.args[i])
@@ -604,8 +688,9 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 }
 
 func evalRecur(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
-	if e.loopDepth.Load() == 0 {
-		return nil, fmt.Errorf("recur outside loop")
+	st := evalStateFrom(ctx)
+	if st.loopDepth == 0 {
+		return nil, evalErrorf("recur outside loop")
 	}
 	vals := make([]Value, len(args))
 	for i, arg := range args {
@@ -620,20 +705,20 @@ func evalRecur(ctx context.Context, e *engine, args []Value, env *Env) (Value, e
 
 func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("try: requires a body and a (catch ...) clause")
+		return nil, evalErrorf("try: requires a body and a (catch ...) clause")
 	}
 
 	catchClause, ok := args[len(args)-1].(List)
 	if !ok || len(catchClause.Items) < 3 {
-		return nil, fmt.Errorf("try: last argument must be (catch <sym> <handler>)")
+		return nil, evalErrorf("try: last argument must be (catch <sym> <handler>)")
 	}
 	catchSym, ok := catchClause.Items[0].(Symbol)
 	if !ok || catchSym.V != "catch" {
-		return nil, fmt.Errorf("try: expected catch clause, got %v", catchClause.Items[0])
+		return nil, evalErrorf("try: expected catch clause, got %v", catchClause.Items[0])
 	}
 	errSym, ok := catchClause.Items[1].(Symbol)
 	if !ok {
-		return nil, fmt.Errorf("catch: error binding must be a symbol")
+		return nil, evalErrorf("catch: error binding must be a symbol")
 	}
 
 	body := args[:len(args)-1]
@@ -647,12 +732,12 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 }
 
 func evalCatch(_ context.Context, _ *engine, _ []Value, _ *Env) (Value, error) {
-	return nil, fmt.Errorf("catch used outside of try")
+	return nil, evalErrorf("catch used outside of try")
 }
 
 func evalThrow(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("throw requires exactly 1 argument")
+		return nil, evalErrorf("throw requires exactly 1 argument")
 	}
 	val, err := e.Eval(ctx, args[0], env)
 	if err != nil {
@@ -702,7 +787,7 @@ func evalOr(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 
 func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("not requires exactly 1 argument")
+		return nil, evalErrorf("not requires exactly 1 argument")
 	}
 	v, err := e.Eval(ctx, args[0], env)
 	if err != nil {
