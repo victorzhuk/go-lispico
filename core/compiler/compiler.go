@@ -8,6 +8,16 @@ import (
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
+// CodeUnsupported identifies a *core.LispicoError for a form the bytecode
+// compiler does not support (defmacro nested in a body, unquote-splicing).
+// Callers use it to distinguish "fall back to the tree-walker" from a real
+// compile error.
+const CodeUnsupported = "BytecodeUnsupported"
+
+func unsupportedErr(msg string) error {
+	return &core.LispicoError{Code: CodeUnsupported, Message: msg}
+}
+
 // Compiler compiles core.Value forms into a single vm.Chunk, tracking local
 // variable scopes as it goes. It implements vm.FormCompiler.
 type Compiler struct {
@@ -140,6 +150,8 @@ func (c *Compiler) compileList(f core.List) error {
 			return c.compileThrow(f.Items[1:])
 		case "catch":
 			return fmt.Errorf("catch used outside of try")
+		case "defmacro":
+			return unsupportedErr("defmacro is not supported by the bytecode compiler")
 		}
 	}
 	return c.compileCall(f.Items)
@@ -182,9 +194,15 @@ func (c *Compiler) compileDef(args []core.Value) error {
 }
 
 func (c *Compiler) compileFn(args []core.Value) error {
+	if len(args) == 0 {
+		return fmt.Errorf("fn requires at least 2 arguments (params body...)")
+	}
 	params, variadic, err := parseParams(args[0])
 	if err != nil {
 		return err
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("fn requires at least 2 arguments (params body...)")
 	}
 	sub := NewCompiler("<fn>")
 	sub.parent = c
@@ -608,7 +626,7 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 					return c.Compile(val.Items[1])
 				}
 				if sym.V == "unquote-splicing" {
-					return fmt.Errorf("unquote-splicing: not yet supported in bytecode compiler")
+					return unsupportedErr("unquote-splicing: not yet supported in bytecode compiler")
 				}
 			}
 		}

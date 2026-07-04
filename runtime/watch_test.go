@@ -210,6 +210,37 @@ func TestWatch_StartsWatcher(t *testing.T) {
 	eng.Stop()
 }
 
+func TestWatch_CtxCancelStopsWatcher(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	eng, err := New(slog.Default())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	err = eng.Watch(ctx, dir)
+	require.NoError(t, err)
+
+	impl := eng.(*engineImpl)
+	w := impl.watcher
+	require.NotNil(t, w)
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		w.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watcher did not stop after context cancellation")
+	}
+}
+
 func TestWatch_DoubleWatchReturnsError(t *testing.T) {
 	t.Parallel()
 

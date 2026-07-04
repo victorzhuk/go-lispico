@@ -29,7 +29,6 @@ func TestNew_CustomOptions(t *testing.T) {
 	eng, err := New(log,
 		WithMaxEvalDepth(500),
 		WithTimeout(10*time.Second),
-		WithHotReloadDir("/tmp/scripts"),
 	)
 
 	assert.NoError(t, err)
