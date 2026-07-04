@@ -44,7 +44,7 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	comp := compiler.NewCompiler("<eval>")
 	if err := comp.Compile(expanded); err != nil {
 		if isUnsupportedInBytecode(err) {
-			return be.tree.Eval(ctx, form, env)
+			return be.tree.Eval(ctx, expanded, env)
 		}
 		return nil, fmt.Errorf("compile: %w", err)
 	}

@@ -134,6 +134,10 @@ func resolveReal(path string) (string, error) {
 
 		resolvedParent, perr := filepath.EvalSymlinks(dir)
 		if perr == nil {
+			child := filepath.Join(resolvedParent, suffix[0])
+			if fi, lerr := os.Lstat(child); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("broken symlink: %s", child)
+			}
 			return filepath.Join(append([]string{resolvedParent}, suffix...)...), nil
 		}
 		if !os.IsNotExist(perr) {

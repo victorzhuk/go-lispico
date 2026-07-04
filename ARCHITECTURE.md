@@ -181,10 +181,10 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
 #### Options
 
 - `WithMaxEvalDepth(n)` — Cap evaluation call depth
-- `WithTimeout(d)` — Default per-eval timeout
-- `WithHotReloadDir(dir)` — Watch a directory for hot reload
+- `WithTimeout(d)` — Per-eval timeout applied to `Eval` and `Call`
 - `WithBytecode()` — Enable the bytecode VM
-- `WithBytecodeCache(dir)` — Cache compiled bytecode in `dir`
+
+Hot reload is started explicitly with `eng.Watch(ctx, dir)`.
 
 ### plugins/
 

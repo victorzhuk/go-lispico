@@ -17,11 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bytecode VM (`runtime.WithBytecode()`) is an opt-in optimizer for a
   documented subset of forms; forms it cannot compile fall back to the
   tree-walking evaluator instead of failing.
+- `io/env-set` writes to a per-plugin overlay instead of the process
+  environment; `io/env-get` reads the overlay and falls through to the real
+  environment. `exec/run` with `:inherit-env` no longer sees variables set by
+  `io/env-set`.
 
 ### Removed
 
 - `runtime.WithBytecodeCache` — the on-disk bytecode cache was never used on the
   evaluation path and has been removed.
+- `runtime.WithHotReloadDir` — the option never started watching; call
+  `Watch(ctx, dir)` to enable hot reload.
 
 ### Fixed
 
