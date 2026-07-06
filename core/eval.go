@@ -716,7 +716,13 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if !ok || catchSym.V != "catch" {
 		return nil, evalErrorf("try: expected catch clause, got %v", catchClause.Items[0])
 	}
-	errSym, ok := catchClause.Items[1].(Symbol)
+	errSymIndex := 1
+	bodyStart := 2
+	if len(catchClause.Items) >= 4 {
+		errSymIndex = 2
+		bodyStart = 3
+	}
+	errSym, ok := catchClause.Items[errSymIndex].(Symbol)
 	if !ok {
 		return nil, evalErrorf("catch: error binding must be a symbol")
 	}
@@ -726,7 +732,7 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		catchEnv := env.Child()
 		catchEnv.Set(errSym.V, String{V: err.Error()})
-		return e.evalBody(ctx, catchClause.Items[2:], catchEnv)
+		return e.evalBody(ctx, catchClause.Items[bodyStart:], catchEnv)
 	}
 	return result, nil
 }
