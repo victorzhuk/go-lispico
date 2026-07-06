@@ -478,6 +478,24 @@ func TestEval_TryCatch(t *testing.T) {
 	}
 }
 
+func TestEval_TryCatch_WithClass(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, `(try (throw "oops") (catch Exception e e))`)
+	if !got.Equals(String{V: "oops"}) {
+		t.Errorf("(try (throw \"oops\") (catch Exception e e)) = %v, want \"oops\"", got)
+	}
+}
+
+func TestEval_TryCatch_WithClassMultiBody(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, `(try (throw "oops") (catch Exception e (do 1 e)))`)
+	if !got.Equals(String{V: "oops"}) {
+		t.Errorf("catch with class multi-body = %v, want \"oops\"", got)
+	}
+}
+
 func TestEval_TryCatch_NoError(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()

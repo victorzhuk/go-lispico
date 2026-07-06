@@ -411,7 +411,13 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	if !ok || head.V != "catch" {
 		return fmt.Errorf("try: expected catch clause, got %v", catchClause.Items[0])
 	}
-	errSym, ok := catchClause.Items[1].(core.Symbol)
+	errSymIndex := 1
+	bodyStart := 2
+	if len(catchClause.Items) >= 4 {
+		errSymIndex = 2
+		bodyStart = 3
+	}
+	errSym, ok := catchClause.Items[errSymIndex].(core.Symbol)
 	if !ok {
 		return fmt.Errorf("catch: error binding must be a symbol")
 	}
@@ -430,7 +436,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	handlerAddr := len(c.chunk.Code)
 	c.chunk.PatchJumpTo(setup, handlerAddr)
 	c.chunk.Emit(vm.OpSetLocal, catchSlot)
-	if err := c.compileDo(catchClause.Items[2:]); err != nil {
+	if err := c.compileDo(catchClause.Items[bodyStart:]); err != nil {
 		return err
 	}
 	c.chunk.PatchJump(skip)
