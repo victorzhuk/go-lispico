@@ -75,7 +75,7 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 		defer cancel()
 	}
 
-	forms, err := core.Read(input)
+	forms, err := e.config.dialect.Read(input)
 	if err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
@@ -206,7 +206,7 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 		defer cancel()
 	}
 
-	forms, err := core.Read(source)
+	forms, err := e.config.dialect.Read(source)
 	if err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
