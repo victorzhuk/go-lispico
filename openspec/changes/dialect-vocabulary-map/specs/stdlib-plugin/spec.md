@@ -1,0 +1,14 @@
+# stdlib-plugin Specification
+
+## ADDED Requirements
+
+### Requirement: Builtins have a single shared implementation
+Each stdlib operation SHALL have exactly one implementation, reusable across Dialects under different visible names. The stdlib SHALL NOT provide duplicate implementations that differ only by the name a Dialect exposes.
+
+#### Scenario: One implementation serves multiple dialect names
+- **WHEN** two Dialects expose the same operation under different names
+- **THEN** both names SHALL resolve to the one shared implementation
+
+#### Scenario: Adding a dialect name does not add an implementation
+- **WHEN** a Dialect adds a new visible name for an existing operation
+- **THEN** no new implementation of that operation SHALL be introduced in the stdlib
