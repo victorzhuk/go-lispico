@@ -18,5 +18,5 @@ No language surface changes for existing embedders in this slice. It is behavior
 ## Impact
 
 - Affected specs: `dialect` (new capability), `runtime-api`.
-- Affected code: `core/eval.go` (dispatch), `core/env.go` (table ownership), `runtime/engine.go` (option + wiring). The compiler and VM are untouched — an identity dialect maps one-to-one to canonical forms.
+- Affected code: `core/eval.go` (dispatch + per-Engine table), `core/dialect.go` (new Dialect value + kernel table), `runtime/engine.go` (option + wiring). The compiler and VM are untouched — an identity dialect maps one-to-one to canonical forms, and a non-identity dialect combined with the bytecode evaluator is rejected at construction.
 - Existing behavior is pinned by characterization tests before the refactor moves it.
