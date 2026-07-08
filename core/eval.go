@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync/atomic"
 )
 
@@ -25,48 +26,38 @@ func (r recurVal) Type() Keyword       { return Keyword{V: "recur"} }
 func (r recurVal) String() string      { return "#<recur>" }
 func (r recurVal) Equals(_ Value) bool { return false }
 
-// specialForms is the dispatch table for all built-in syntax.
-// Populated in init() to break the initialization cycle:
-// specialForms → evalDef → engine.Eval → evalList → specialForms.
-var specialForms map[string]func(context.Context, *engine, []Value, *Env) (Value, error)
-
-func init() {
-	specialForms = map[string]func(context.Context, *engine, []Value, *Env) (Value, error){
-		"def":        evalDef,
-		"defn":       evalDefn,
-		"defmacro":   evalDefmacro,
-		"fn":         evalFn,
-		"if":         evalIf,
-		"cond":       evalCond,
-		"when":       evalWhen,
-		"unless":     evalUnless,
-		"let":        evalLet,
-		"let*":       evalLetStar,
-		"do":         evalDo,
-		"quote":      evalQuote,
-		"quasiquote": evalQuasiquote,
-		"set!":       evalSet,
-		"loop":       evalLoop,
-		"recur":      evalRecur,
-		"try":        evalTry,
-		"catch":      evalCatch,
-		"throw":      evalThrow,
-		"and":        evalAnd,
-		"or":         evalOr,
-		"not":        evalNot,
-	}
-}
-
 // engine is the concrete tree-walking evaluator.
 // It implements the Evaluator interface from types.go.
 type engine struct {
 	maxMacroDepth int
 	MaxDepth      int
+	// forms is this Engine's effective special-form dispatch table, resolved
+	// from its Dialect at construction. It is read-only after construction, so
+	// evaluated code cannot change which forms are available.
+	forms map[string]formFn
 }
 
-// NewEvaluator constructs a new tree-walking evaluator.
+// NewEvaluator constructs a tree-walking evaluator running the identity
+// dialect — the full kernel table under its canonical names.
 func NewEvaluator() *engine {
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000}
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: copyKernel()}
+}
+
+// NewEvaluatorWithDialect constructs a tree-walking evaluator whose special
+// forms are the resolved effective table of d. It fails if d references a
+// canonical form absent from the kernel.
+func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
+	forms, err := d.resolve()
+	if err != nil {
+		return nil, err
+	}
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: forms}, nil
+}
+
+func copyKernel() map[string]formFn {
+	forms := make(map[string]formFn, len(kernel))
+	maps.Copy(forms, kernel)
+	return forms
 }
 
 // evalState holds the depth counters for a single top-level evaluation. It is
@@ -172,7 +163,7 @@ func (e *engine) evalList(ctx context.Context, items []Value, env *Env) (Value, 
 	head := items[0]
 
 	if sym, ok := head.(Symbol); ok {
-		if fn, ok := specialForms[sym.V]; ok {
+		if fn, ok := e.forms[sym.V]; ok {
 			return fn(ctx, e, items[1:], env)
 		}
 	}
