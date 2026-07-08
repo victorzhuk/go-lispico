@@ -35,12 +35,15 @@ type engine struct {
 	// from its Dialect at construction. It is read-only after construction, so
 	// evaluated code cannot change which forms are available.
 	forms map[string]formFn
+	// truthy is the Dialect's falsy rule — the single hook every conditional
+	// special form consults instead of hardcoding IsTruthy.
+	truthy func(Value) bool
 }
 
 // NewEvaluator constructs a tree-walking evaluator running the identity
 // dialect — the full kernel table under its canonical names.
 func NewEvaluator() *engine {
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: copyKernel()}
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: copyKernel(), truthy: IsTruthy}
 }
 
 // NewEvaluatorWithDialect constructs a tree-walking evaluator whose special
@@ -51,7 +54,7 @@ func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: forms}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: forms, truthy: d.isTruthy}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -487,7 +490,7 @@ func evalIf(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 	if err != nil {
 		return nil, err
 	}
-	if IsTruthy(cond) {
+	if e.truthy(cond) {
 		return e.Eval(ctx, args[1], env)
 	}
 	if len(args) == 3 {
@@ -513,7 +516,7 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		if err != nil {
 			return nil, err
 		}
-		if IsTruthy(result) {
+		if e.truthy(result) {
 			return e.Eval(ctx, list.Items[1], env)
 		}
 	}
@@ -528,7 +531,7 @@ func evalWhen(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	if err != nil {
 		return nil, err
 	}
-	if !IsTruthy(cond) {
+	if !e.truthy(cond) {
 		return Nil{}, nil
 	}
 	return e.evalBody(ctx, args[1:], env)
@@ -542,7 +545,7 @@ func evalUnless(ctx context.Context, e *engine, args []Value, env *Env) (Value, 
 	if err != nil {
 		return nil, err
 	}
-	if IsTruthy(cond) {
+	if e.truthy(cond) {
 		return Nil{}, nil
 	}
 	return e.evalBody(ctx, args[1:], env)
@@ -758,7 +761,7 @@ func evalAnd(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 			return nil, err
 		}
 		last = v
-		if !IsTruthy(v) {
+		if !e.truthy(v) {
 			return v, nil
 		}
 	}
@@ -776,7 +779,7 @@ func evalOr(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 			return nil, err
 		}
 		last = v
-		if IsTruthy(v) {
+		if e.truthy(v) {
 			return v, nil
 		}
 	}
@@ -791,5 +794,5 @@ func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	return Bool{V: !IsTruthy(v)}, nil
+	return Bool{V: !e.truthy(v)}, nil
 }
