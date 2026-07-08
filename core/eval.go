@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
 
 // tailCall is returned by special forms to signal that the trampoline should
@@ -72,9 +73,9 @@ func NewEvaluator() *engine {
 // carried in the context so concurrent evaluations on one engine never share
 // call/loop/macro state.
 type evalState struct {
-	callDepth  int
-	loopDepth  int
-	macroDepth int
+	callDepth  atomic.Int64
+	loopDepth  atomic.Int64
+	macroDepth atomic.Int64
 }
 
 type evalStateKey struct{}
@@ -201,10 +202,10 @@ func (e *engine) evalList(ctx context.Context, items []Value, env *Env) (Value, 
 // Lambda tail-call returns a tailCall value which loops back without recursing.
 func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (Value, error) {
 	st := evalStateFrom(ctx)
-	st.callDepth++
-	defer func() { st.callDepth-- }()
+	st.callDepth.Add(1)
+	defer func() { st.callDepth.Add(-1) }()
 
-	if e.MaxDepth > 0 && st.callDepth > e.MaxDepth {
+	if e.MaxDepth > 0 && int(st.callDepth.Load()) > e.MaxDepth {
 		return nil, evalErrorf("max call depth %d exceeded", e.MaxDepth)
 	}
 
@@ -295,11 +296,11 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 // expansion as a Value. Does NOT evaluate the result — that is the caller's job.
 func (e *engine) expandMacroForm(ctx context.Context, m Macro, args []Value) (Value, error) {
 	st := evalStateFrom(ctx)
-	if st.macroDepth >= e.maxMacroDepth {
+	if int(st.macroDepth.Load()) >= e.maxMacroDepth {
 		return nil, evalErrorf("macro expansion depth %d exceeded", e.maxMacroDepth)
 	}
-	st.macroDepth++
-	defer func() { st.macroDepth-- }()
+	st.macroDepth.Add(1)
+	defer func() { st.macroDepth.Add(-1) }()
 
 	macroEnv, err := m.Env.ChildVariadic(m.Params, args, m.Variadic)
 	if err != nil {
@@ -666,8 +667,8 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	}
 
 	st := evalStateFrom(ctx)
-	st.loopDepth++
-	defer func() { st.loopDepth-- }()
+	st.loopDepth.Add(1)
+	defer func() { st.loopDepth.Add(-1) }()
 
 	for {
 		result, err := e.evalBody(ctx, args[1:], loopEnv)
@@ -689,7 +690,7 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 
 func evalRecur(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	st := evalStateFrom(ctx)
-	if st.loopDepth == 0 {
+	if st.loopDepth.Load() == 0 {
 		return nil, evalErrorf("recur outside loop")
 	}
 	vals := make([]Value, len(args))
