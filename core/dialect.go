@@ -59,6 +59,16 @@ const (
 	truthNilOnly                    // only nil is falsy (Common Lisp-style)
 )
 
+// namespace is the Dialect's symbol-namespace rule. The zero value is Lisp-1: a
+// symbol names one binding, and a Dialect built without touching the axis
+// behaves as before.
+type namespace int
+
+const (
+	nsLisp1 namespace = iota // single binding namespace (Clojure-style)
+	nsLisp2                  // separate function cell (Common Lisp-style)
+)
+
 type deltaKind int
 
 const (
@@ -82,6 +92,7 @@ type Dialect struct {
 	base  dialectBase
 	ops   []deltaOp
 	truth truthiness
+	ns    namespace
 }
 
 // FullDialect starts from the full kernel table. With no delta it is the
@@ -126,11 +137,27 @@ func (d Dialect) isTruthy(v Value) bool {
 	return IsTruthy(v)
 }
 
+// Lisp2 sets the namespace axis so a symbol may name a function and a value at
+// once: head position resolves through the function cell, definition forms bind
+// functions there, and the funcall and function (#') forms become available.
+// The default axis is Lisp-1, a single namespace.
+func (d Dialect) Lisp2() Dialect {
+	d.ns = nsLisp2
+	return d
+}
+
+// isLisp2 reports whether the Dialect uses a separate function cell. It is the
+// single hook eval consults to split head from argument resolution.
+func (d Dialect) isLisp2() bool {
+	return d.ns == nsLisp2
+}
+
 // IsIdentity reports whether d is the identity dialect — the full kernel base
 // with no delta. The bytecode VM dispatches canonical form names directly, so
 // only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
-	return d.base == baseFull && len(d.ops) == 0 && d.truth == truthNilFalse
+	return d.base == baseFull && len(d.ops) == 0 &&
+		d.truth == truthNilFalse && d.ns == nsLisp1
 }
 
 func (d Dialect) with(op deltaOp) Dialect {
@@ -166,6 +193,13 @@ func (d Dialect) resolve() (map[string]formFn, error) {
 		case opRemove:
 			delete(table, op.name)
 		}
+	}
+	// funcall and function are intrinsic to the Lisp-2 axis, not kernel forms, so
+	// they are injected here rather than referenced through Add/Rename/Remove.
+	// Injecting after the delta means the axis owns these two names.
+	if d.ns == nsLisp2 {
+		table["funcall"] = evalFuncall
+		table["function"] = evalFunction
 	}
 	return table, nil
 }
