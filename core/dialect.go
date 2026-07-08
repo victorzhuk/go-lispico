@@ -50,6 +50,15 @@ const (
 	baseEmpty
 )
 
+// truthiness is the Dialect's falsy rule. The zero value keeps both nil and
+// false falsy, so a Dialect built without touching the axis behaves as before.
+type truthiness int
+
+const (
+	truthNilFalse truthiness = iota // nil and false are falsy (Clojure-style)
+	truthNilOnly                    // only nil is falsy (Common Lisp-style)
+)
+
 type deltaKind int
 
 const (
@@ -70,8 +79,9 @@ type deltaOp struct {
 // Engine dispatches through. A Dialect is an immutable value: the builder
 // methods return a new Dialect and never mutate the receiver.
 type Dialect struct {
-	base dialectBase
-	ops  []deltaOp
+	base  dialectBase
+	ops   []deltaOp
+	truth truthiness
 }
 
 // FullDialect starts from the full kernel table. With no delta it is the
@@ -99,11 +109,28 @@ func (d Dialect) Remove(name string) Dialect {
 	return d.with(deltaOp{kind: opRemove, name: name})
 }
 
+// NilOnlyFalsy sets the truthiness axis so only nil is falsy; false becomes a
+// true value. The default axis keeps both nil and false falsy.
+func (d Dialect) NilOnlyFalsy() Dialect {
+	d.truth = truthNilOnly
+	return d
+}
+
+// isTruthy reports whether v is a true value under the Dialect's truthiness
+// axis. It is the single hook the conditional special forms consult.
+func (d Dialect) isTruthy(v Value) bool {
+	if d.truth == truthNilOnly {
+		_, isNil := v.(Nil)
+		return !isNil
+	}
+	return IsTruthy(v)
+}
+
 // IsIdentity reports whether d is the identity dialect — the full kernel base
 // with no delta. The bytecode VM dispatches canonical form names directly, so
 // only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
-	return d.base == baseFull && len(d.ops) == 0
+	return d.base == baseFull && len(d.ops) == 0 && d.truth == truthNilFalse
 }
 
 func (d Dialect) with(op deltaOp) Dialect {
