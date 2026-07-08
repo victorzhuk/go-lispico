@@ -8,6 +8,7 @@ type Env struct {
 	mu     sync.RWMutex
 	parent *Env
 	vars   map[string]Value
+	funcs  map[string]Value // function cell; nil until first SetFunc (Lisp-2 only)
 	eval   Evaluator
 }
 
@@ -39,6 +40,31 @@ func (e *Env) Get(name string) (Value, bool) {
 	}
 	if e.parent != nil {
 		return e.parent.Get(name)
+	}
+	return nil, false
+}
+
+// SetFunc binds name in this scope's function cell (Lisp-2 only). The cell is
+// allocated on first use so Lisp-1 scopes never carry it.
+func (e *Env) SetFunc(name string, val Value) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.funcs == nil {
+		e.funcs = make(map[string]Value)
+	}
+	e.funcs[name] = val
+}
+
+// GetFunc walks the scope chain reading the function cell (Lisp-2 only).
+func (e *Env) GetFunc(name string) (Value, bool) {
+	e.mu.RLock()
+	val, ok := e.funcs[name]
+	e.mu.RUnlock()
+	if ok {
+		return val, true
+	}
+	if e.parent != nil {
+		return e.parent.GetFunc(name)
 	}
 	return nil, false
 }
@@ -106,5 +132,8 @@ func (e *Env) MergeInto(target *Env) {
 
 	for name, val := range e.vars {
 		target.Set(name, val)
+	}
+	for name, val := range e.funcs {
+		target.SetFunc(name, val)
 	}
 }

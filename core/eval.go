@@ -38,6 +38,9 @@ type engine struct {
 	// truthy is the Dialect's falsy rule — the single hook every conditional
 	// special form consults instead of hardcoding IsTruthy.
 	truthy func(Value) bool
+	// lisp2 selects the namespace axis. When true, head symbols resolve against
+	// the environment's function cell and definition forms bind functions there.
+	lisp2 bool
 }
 
 // NewEvaluator constructs a tree-walking evaluator running the identity
@@ -54,7 +57,7 @@ func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: forms, truthy: d.isTruthy}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2()}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -165,15 +168,27 @@ func (e *engine) evalMap(ctx context.Context, m *HashMap, env *Env) (Value, erro
 func (e *engine) evalList(ctx context.Context, items []Value, env *Env) (Value, error) {
 	head := items[0]
 
+	var fn Value
+	resolved := false
 	if sym, ok := head.(Symbol); ok {
-		if fn, ok := e.forms[sym.V]; ok {
-			return fn(ctx, e, items[1:], env)
+		if form, ok := e.forms[sym.V]; ok {
+			return form(ctx, e, items[1:], env)
+		}
+		if e.lisp2 {
+			f, ok := env.GetFunc(sym.V)
+			if !ok {
+				return nil, NewUndefinedError(sym.V)
+			}
+			fn, resolved = f, true
 		}
 	}
 
-	fn, err := e.Eval(ctx, head, env)
-	if err != nil {
-		return nil, err
+	if !resolved {
+		var err error
+		fn, err = e.Eval(ctx, head, env)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if macro, ok := fn.(Macro); ok {
@@ -392,6 +407,17 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 
 // ── Special Form Implementations ─────────────────────────────────────────────
 
+// bindOperator binds a function-defining form's result. Under Lisp-2 it lands in
+// the function cell so head position can find it; under Lisp-1 it shares the
+// single value namespace, exactly as before.
+func (e *engine) bindOperator(env *Env, name string, val Value) {
+	if e.lisp2 {
+		env.SetFunc(name, val)
+		return
+	}
+	env.Set(name, val)
+}
+
 func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 2 {
 		return nil, evalErrorf("def requires 2 arguments, got %d", len(args))
@@ -431,7 +457,7 @@ func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		Body:     args[2:],
 		Env:      env,
 	}
-	env.Set(name.V, lambda)
+	e.bindOperator(env, name.V, lambda)
 	return lambda, nil
 }
 
@@ -458,7 +484,7 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 		Body:     args[2:],
 		Env:      env,
 	}
-	env.Set(name.V, macro)
+	e.bindOperator(env, name.V, macro)
 	return macro, nil
 }
 
@@ -795,4 +821,42 @@ func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 		return nil, err
 	}
 	return Bool{V: !e.truthy(v)}, nil
+}
+
+// evalFuncall implements the Lisp-2 funcall form: it applies a function value
+// taken from value position to the remaining, evaluated arguments.
+func evalFuncall(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
+	if len(args) < 1 {
+		return nil, evalErrorf("funcall requires at least 1 argument")
+	}
+	fn, err := e.Eval(ctx, args[0], env)
+	if err != nil {
+		return nil, err
+	}
+	callArgs := make([]Value, len(args)-1)
+	for i, arg := range args[1:] {
+		v, err := e.Eval(ctx, arg, env)
+		if err != nil {
+			return nil, err
+		}
+		callArgs[i] = v
+	}
+	return e.apply(ctx, fn, callArgs, env)
+}
+
+// evalFunction implements the Lisp-2 function form — the #'name reference. It
+// yields the function-cell binding of its symbol argument.
+func evalFunction(_ context.Context, _ *engine, args []Value, env *Env) (Value, error) {
+	if len(args) != 1 {
+		return nil, evalErrorf("function requires exactly 1 argument")
+	}
+	name, ok := args[0].(Symbol)
+	if !ok {
+		return nil, evalErrorf("function: argument must be a symbol, got %T", args[0])
+	}
+	fn, ok := env.GetFunc(name.V)
+	if !ok {
+		return nil, NewUndefinedError(name.V)
+	}
+	return fn, nil
 }
