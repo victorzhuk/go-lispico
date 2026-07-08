@@ -19,3 +19,5 @@ The tree-walker's `evalList` currently evaluates the head as a value (`e.Eval(ct
 ## Out of scope
 
 Reader syntax for `#'` (slice `dialect-reader-flags`) and assembling the full CL dialect (slice `dialect-common-lisp-default`).
+
+Plugins and `Engine.Bind` register into the value cell, so under Lisp-2 their functions are not reachable in head position without `funcall`. Registering plugin functions into the function cell is part of `dialect-common-lisp-default`; the default Lisp-1 Dialect is unaffected.
