@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -75,6 +76,7 @@ type engineConfig struct {
 	maxEvalDepth int
 	timeout      time.Duration
 	bytecode     bool
+	dialect      core.Dialect
 }
 
 // EngineOption configures an Engine created by New.
@@ -104,15 +106,29 @@ func WithBytecode() EngineOption {
 	}
 }
 
+// WithDialect selects the Dialect the Engine runs. The Dialect is resolved once
+// at New and is immutable for the Engine's lifetime. Without this option the
+// Engine runs the identity dialect, preserving default behavior.
+func WithDialect(d core.Dialect) EngineOption {
+	return func(cfg *engineConfig) {
+		cfg.dialect = d
+	}
+}
+
 // New creates an Engine. log may be nil, in which case logging is discarded.
 func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	cfg := engineConfig{
 		maxEvalDepth: 1000,
 		timeout:      30 * time.Second,
+		dialect:      core.FullDialect(),
 	}
 
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+
+	if cfg.bytecode && !cfg.dialect.IsIdentity() {
+		return nil, errors.New("runtime: the bytecode evaluator supports only the identity dialect")
 	}
 
 	if log == nil {
@@ -122,7 +138,10 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	rootEnv := core.NewEnv(nil)
 	registry := core.NewRegistry()
 
-	treeWalker := core.NewEvaluator()
+	treeWalker, err := core.NewEvaluatorWithDialect(cfg.dialect)
+	if err != nil {
+		return nil, err
+	}
 	treeWalker.MaxDepth = cfg.maxEvalDepth
 
 	var evaluator core.Evaluator
