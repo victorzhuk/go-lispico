@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/victorzhuk/go-lispico/core"
 )
 
 type fileWatcher struct {
@@ -105,7 +103,7 @@ func (w *fileWatcher) reloadFile(path string) {
 		return
 	}
 
-	forms, err := core.Read(string(content))
+	forms, err := w.engine.config.dialect.Read(string(content))
 	if err != nil {
 		w.engine.logger.Error("parse file", "path", path, "error", err)
 		return

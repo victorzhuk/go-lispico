@@ -9,22 +9,24 @@ import (
 type tokenType int
 
 const (
-	tokenLParen   tokenType = iota // (
-	tokenRParen                    // )
-	tokenLBracket                  // [
-	tokenRBracket                  // ]
-	tokenLBrace                    // {
-	tokenRBrace                    // }
-	tokenQuote                     // '
-	tokenBacktick                  // `
-	tokenTilde                     // ~
-	tokenTildeAt                   // ~@
-	tokenAt                        // @
-	tokenHash                      // #
-	tokenString                    // "..."
-	tokenNumber                    // 123, 3.14
-	tokenSymbol                    // foo, my-fn, +
-	tokenKeyword                   // :foo
+	tokenLParen      tokenType = iota // (
+	tokenRParen                       // )
+	tokenLBracket                     // [
+	tokenRBracket                     // ]
+	tokenLBrace                       // {
+	tokenRBrace                       // }
+	tokenQuote                        // '
+	tokenBacktick                     // `
+	tokenTilde                        // ~
+	tokenTildeAt                      // ~@
+	tokenAt                           // @
+	tokenHash                         // #
+	tokenFunctionRef                  // #'
+	tokenHashParen                    // #(
+	tokenString                       // "..."
+	tokenNumber                       // 123, 3.14
+	tokenSymbol                       // foo, my-fn, +
+	tokenKeyword                      // :foo
 	tokenEOF
 )
 
@@ -35,16 +37,35 @@ type token struct {
 	col  int
 }
 
+// readerFlags gates the reader syntax a Dialect turns on or off. Its zero value
+// disables every flag, including bracket literals; NewReader instead applies
+// defaultReaderFlags, which reproduces the pre-Dialect reader (bracket literals
+// on, #' and #(...) off).
+type readerFlags struct {
+	bracketLiterals bool // [..]/{..} read as vector/map literals
+	functionRef     bool // #'x reads as (function x)
+	readerVector    bool // #(...) reads as a vector
+}
+
+func defaultReaderFlags() readerFlags {
+	return readerFlags{bracketLiterals: true}
+}
+
 // Reader tokenizes a Lisp source string.
 type Reader struct {
 	input string
 	pos   int
 	line  int
 	col   int
+	flags readerFlags
 }
 
 func NewReader(input string) *Reader {
-	return &Reader{input: input, line: 1, col: 1}
+	return NewReaderWithFlags(input, defaultReaderFlags())
+}
+
+func NewReaderWithFlags(input string, flags readerFlags) *Reader {
+	return &Reader{input: input, line: 1, col: 1, flags: flags}
 }
 
 func (r *Reader) next() byte {
@@ -107,18 +128,12 @@ func (r *Reader) Tokenize() ([]token, error) {
 		case ')':
 			r.next()
 			tokens = append(tokens, token{typ: tokenRParen, line: line, col: col})
-		case '[':
+		case '[', ']', '{', '}':
+			if !r.flags.bracketLiterals {
+				return nil, NewReadError(fmt.Sprintf("unexpected character: %c", ch), line, col)
+			}
 			r.next()
-			tokens = append(tokens, token{typ: tokenLBracket, line: line, col: col})
-		case ']':
-			r.next()
-			tokens = append(tokens, token{typ: tokenRBracket, line: line, col: col})
-		case '{':
-			r.next()
-			tokens = append(tokens, token{typ: tokenLBrace, line: line, col: col})
-		case '}':
-			r.next()
-			tokens = append(tokens, token{typ: tokenRBrace, line: line, col: col})
+			tokens = append(tokens, token{typ: bracketToken(ch), line: line, col: col})
 		case '\'':
 			r.next()
 			tokens = append(tokens, token{typ: tokenQuote, line: line, col: col})
@@ -138,7 +153,16 @@ func (r *Reader) Tokenize() ([]token, error) {
 			tokens = append(tokens, token{typ: tokenAt, line: line, col: col})
 		case '#':
 			r.next()
-			tokens = append(tokens, token{typ: tokenHash, line: line, col: col})
+			switch {
+			case r.flags.functionRef && r.peek() == '\'':
+				r.next()
+				tokens = append(tokens, token{typ: tokenFunctionRef, line: line, col: col})
+			case r.flags.readerVector && r.peek() == '(':
+				r.next()
+				tokens = append(tokens, token{typ: tokenHashParen, line: line, col: col})
+			default:
+				tokens = append(tokens, token{typ: tokenHash, line: line, col: col})
+			}
 		case ';':
 			r.readComment()
 		case '"':
@@ -244,6 +268,19 @@ func (r *Reader) readKeyword() token {
 	return token{typ: tokenKeyword, val: r.input[start:r.pos]}
 }
 
+func bracketToken(ch byte) tokenType {
+	switch ch {
+	case '[':
+		return tokenLBracket
+	case ']':
+		return tokenRBracket
+	case '{':
+		return tokenLBrace
+	default:
+		return tokenRBrace
+	}
+}
+
 func (r *Reader) readComment() {
 	for r.peek() != '\n' && r.peek() != 0 {
 		r.next()
@@ -303,6 +340,10 @@ func (p *Parser) parseForm() (Value, error) {
 		return p.parseVector()
 	case tokenLBrace:
 		return p.parseHashMap()
+	case tokenFunctionRef:
+		return p.parseFunctionRef()
+	case tokenHashParen:
+		return p.parseReaderVector()
 	case tokenQuote:
 		return p.parseQuote()
 	case tokenBacktick:
@@ -410,6 +451,34 @@ func (p *Parser) parseHashMap() (Value, error) {
 	return m, nil
 }
 
+func (p *Parser) parseFunctionRef() (Value, error) {
+	p.next() // consume #'
+	form, err := p.parseForm()
+	if err != nil {
+		return nil, err
+	}
+	return List{Items: []Value{Symbol{V: "function"}, form}}, nil
+}
+
+func (p *Parser) parseReaderVector() (Value, error) {
+	p.next() // consume #(
+	var items []Value
+
+	for p.peek().typ != tokenRParen && p.peek().typ != tokenEOF {
+		item, err := p.parseForm()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	if _, err := p.expect(tokenRParen); err != nil {
+		return nil, err
+	}
+
+	return Vector{Items: items}, nil
+}
+
 func (p *Parser) parseQuote() (Value, error) {
 	p.next() // consume '
 	form, err := p.parseForm()
@@ -503,23 +572,11 @@ func parseParams(params Vector) (fixed []Symbol, variadic Symbol, err error) {
 	return fixed, Symbol{}, nil
 }
 
-// Read parses all forms from src and returns them as a slice.
+// Read parses all forms from src under the default reader flags and returns them
+// as a slice. It is the identity-dialect reader; callers that run a specific
+// Dialect read through [Dialect.Read].
 func Read(src string) ([]Value, error) {
-	r := NewReader(src)
-	tokens, err := r.Tokenize()
-	if err != nil {
-		return nil, err
-	}
-	p := NewParser(tokens)
-	var forms []Value
-	for p.peek().typ != tokenEOF {
-		form, err := p.Parse()
-		if err != nil {
-			return nil, err
-		}
-		forms = append(forms, form)
-	}
-	return forms, nil
+	return FullDialect().Read(src)
 }
 
 // ReadOne parses the first form from src.

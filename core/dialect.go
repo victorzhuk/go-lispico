@@ -69,6 +69,34 @@ const (
 	nsLisp2                  // separate function cell (Common Lisp-style)
 )
 
+// bracketSyntax is the Dialect's rule for [..]/{..} literals. The zero value
+// keeps them on (Clojure-style), so a Dialect built without touching the axis
+// parses brackets as before.
+type bracketSyntax int
+
+const (
+	bracketsOn  bracketSyntax = iota // [..]/{..} read as vector/map literals
+	bracketsOff                      // brackets are not literal syntax (CL-style)
+)
+
+// funcRefSyntax is the Dialect's rule for #'. The zero value is off, so #' is
+// not special unless the axis enables it.
+type funcRefSyntax int
+
+const (
+	funcRefOff funcRefSyntax = iota // # is not the function-reference reader
+	funcRefOn                       // #'x reads as (function x)
+)
+
+// readerVecSyntax is the Dialect's rule for #(...). The zero value is off, so
+// #(...) is not special unless the axis enables it.
+type readerVecSyntax int
+
+const (
+	readerVecOff readerVecSyntax = iota // #( is not the reader-vector opener
+	readerVecOn                         // #(...) reads as a vector
+)
+
 type deltaKind int
 
 const (
@@ -89,10 +117,13 @@ type deltaOp struct {
 // Engine dispatches through. A Dialect is an immutable value: the builder
 // methods return a new Dialect and never mutate the receiver.
 type Dialect struct {
-	base  dialectBase
-	ops   []deltaOp
-	truth truthiness
-	ns    namespace
+	base      dialectBase
+	ops       []deltaOp
+	truth     truthiness
+	ns        namespace
+	brackets  bracketSyntax
+	funcRef   funcRefSyntax
+	readerVec readerVecSyntax
 }
 
 // FullDialect starts from the full kernel table. With no delta it is the
@@ -152,12 +183,66 @@ func (d Dialect) isLisp2() bool {
 	return d.ns == nsLisp2
 }
 
+// WithoutBracketLiterals turns off [..]/{..} literal syntax, so those brackets
+// stop reading as vector/map literals (Common Lisp-style). The default axis
+// keeps bracket literals on.
+func (d Dialect) WithoutBracketLiterals() Dialect {
+	d.brackets = bracketsOff
+	return d
+}
+
+// WithFunctionRef enables the #' reader syntax, so #'x reads as (function x).
+// The default axis leaves # non-special. What (function x) means once read is
+// defined by the namespace axis; this flag only makes it parse.
+func (d Dialect) WithFunctionRef() Dialect {
+	d.funcRef = funcRefOn
+	return d
+}
+
+// WithReaderVector enables the #(...) reader syntax, so #(...) reads as a
+// vector. The default axis leaves # non-special.
+func (d Dialect) WithReaderVector() Dialect {
+	d.readerVec = readerVecOn
+	return d
+}
+
+// readerFlags projects the reader axes onto the flag set the tokenizer consults.
+func (d Dialect) readerFlags() readerFlags {
+	return readerFlags{
+		bracketLiterals: d.brackets == bracketsOn,
+		functionRef:     d.funcRef == funcRefOn,
+		readerVector:    d.readerVec == readerVecOn,
+	}
+}
+
+// Read tokenizes and parses src under the Dialect's reader flags, returning all
+// top-level forms. Engines read source through this so parsing honors the
+// running Dialect.
+func (d Dialect) Read(src string) ([]Value, error) {
+	r := NewReaderWithFlags(src, d.readerFlags())
+	tokens, err := r.Tokenize()
+	if err != nil {
+		return nil, err
+	}
+	p := NewParser(tokens)
+	var forms []Value
+	for p.peek().typ != tokenEOF {
+		form, err := p.Parse()
+		if err != nil {
+			return nil, err
+		}
+		forms = append(forms, form)
+	}
+	return forms, nil
+}
+
 // IsIdentity reports whether d is the identity dialect — the full kernel base
 // with no delta. The bytecode VM dispatches canonical form names directly, so
 // only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
 	return d.base == baseFull && len(d.ops) == 0 &&
-		d.truth == truthNilFalse && d.ns == nsLisp1
+		d.truth == truthNilFalse && d.ns == nsLisp1 &&
+		d.brackets == bracketsOn && d.funcRef == funcRefOff && d.readerVec == readerVecOff
 }
 
 func (d Dialect) with(op deltaOp) Dialect {
