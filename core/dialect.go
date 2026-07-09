@@ -246,6 +246,9 @@ func (d Dialect) isLisp2() bool {
 	return d.ns == nsLisp2
 }
 
+// IsLisp2 reports whether d uses a separate function cell (Lisp-2).
+func (d Dialect) IsLisp2() bool { return d.isLisp2() }
+
 // WithoutBracketLiterals turns off [..]/{..} literal syntax, so those brackets
 // stop reading as vector/map literals (Common Lisp-style). The default axis
 // keeps bracket literals on.

@@ -442,6 +442,22 @@ func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	return val, nil
 }
 
+// paramsAsVector accepts a parameter declaration as either a Vector
+// (Clojure-style [a b & rest]) or a List (Common Lisp-style (a b & rest))
+// and returns the canonical Vector form. defn/fn/defmacro accept both
+// for dialect portability: the CL reader disables bracket literals, so
+// a List is the only on-disk representation.
+func paramsAsVector(v Value) (Vector, error) {
+	switch p := v.(type) {
+	case Vector:
+		return p, nil
+	case List:
+		return Vector{Items: append([]Value(nil), p.Items...)}, nil
+	default:
+		return Vector{}, evalErrorf("parameters must be a vector or list, got %T", v)
+	}
+}
+
 func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 3 {
 		return nil, evalErrorf("defn requires at least 3 arguments (name params body...)")
@@ -450,9 +466,9 @@ func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	if !ok {
 		return nil, evalErrorf("defn: first argument must be a symbol")
 	}
-	params, ok := args[1].(Vector)
-	if !ok {
-		return nil, evalErrorf("defn: second argument must be a parameter vector")
+	params, paramErr := paramsAsVector(args[1])
+	if paramErr != nil {
+		return nil, paramErr
 	}
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
@@ -477,9 +493,9 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 	if !ok {
 		return nil, evalErrorf("defmacro: first argument must be a symbol")
 	}
-	params, ok := args[1].(Vector)
-	if !ok {
-		return nil, evalErrorf("defmacro: second argument must be a parameter vector")
+	params, paramErr := paramsAsVector(args[1])
+	if paramErr != nil {
+		return nil, paramErr
 	}
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
@@ -500,9 +516,9 @@ func evalFn(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 	if len(args) < 2 {
 		return nil, evalErrorf("fn requires at least 2 arguments (params body...)")
 	}
-	params, ok := args[0].(Vector)
-	if !ok {
-		return nil, evalErrorf("fn: first argument must be a parameter vector")
+	params, paramErr := paramsAsVector(args[0])
+	if paramErr != nil {
+		return nil, paramErr
 	}
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
