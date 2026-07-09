@@ -53,3 +53,14 @@ The runtime SHALL provide a `WithDialect` construction option that selects the D
 - **WHEN** an Engine is created with a Dialect whose delta references a canonical form absent from the kernel
 - **THEN** construction SHALL return an error rather than a partially-resolved Engine
 
+### Requirement: Default dialect is Common Lisp
+An Engine created via `runtime.New()` without a `WithDialect` option SHALL run the Common Lisp dialect. Embedders requiring the prior surface SHALL select it explicitly with `WithDialect(clojure.Dialect())`.
+
+#### Scenario: Zero-config Engine speaks Common Lisp
+- **WHEN** an Engine is created with no dialect option
+- **THEN** it SHALL evaluate source using the Common Lisp dialect
+
+#### Scenario: Prior surface available by explicit selection
+- **WHEN** an Engine is created with `WithDialect(clojure.Dialect())`
+- **THEN** it SHALL reproduce the interpreter's behavior prior to the default flip
+
