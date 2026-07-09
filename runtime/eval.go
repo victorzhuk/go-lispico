@@ -226,6 +226,9 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 
 	for name, val := range bindings {
 		childEnv.Set(name, val)
+		if e.config.dialect.IsLisp2() {
+			childEnv.SetFunc(name, val)
+		}
 	}
 
 	var result core.Value = core.Nil{}
