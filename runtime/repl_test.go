@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -173,7 +174,7 @@ func TestREPL_FnDefinition(t *testing.T) {
 	input := "(defn add [a b] (+ a b))\n(add 2 3)\n(exit)\n"
 	output := &bytes.Buffer{}
 
-	eng, err := New(nil)
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	bindPlus(eng)
 

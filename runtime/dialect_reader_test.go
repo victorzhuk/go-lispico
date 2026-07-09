@@ -1,3 +1,5 @@
+// Tests that rely on the default reader flags are pinned to Clojure; the default flips to Common Lisp in shard-C.
+
 package runtime
 
 import (
@@ -6,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -21,7 +24,7 @@ func TestDialect_Reader_FunctionRefGatedByFlag(t *testing.T) {
 	want := core.List{Items: []core.Value{core.Symbol{V: "function"}, core.Symbol{V: "foo"}}}
 	assert.True(t, want.Equals(got), "want (function foo), got %v", got)
 
-	off, err := New(nil)
+	off, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer off.Close()
 
@@ -40,7 +43,7 @@ func TestDialect_Reader_ReaderVectorGatedByFlag(t *testing.T) {
 	want := core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}}
 	assert.True(t, want.Equals(got), "want #(1 2 3) vector, got %v", got)
 
-	off, err := New(nil)
+	off, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer off.Close()
 
@@ -51,7 +54,7 @@ func TestDialect_Reader_ReaderVectorGatedByFlag(t *testing.T) {
 // [..] literals read as vectors only while enabled; disabling the flag makes
 // [1 2] fail to read as a vector literal.
 func TestDialect_Reader_BracketLiteralsGatedByFlag(t *testing.T) {
-	on, err := New(nil)
+	on, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer on.Close()
 

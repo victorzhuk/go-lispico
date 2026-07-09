@@ -9,13 +9,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
+
+// All tests pinned to Clojure dialect; the default flips to Common Lisp in shard-C.
 
 func TestBytecodeRuntime_SequentialIsolation(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -33,7 +36,7 @@ func TestBytecodeRuntime_SequentialIsolation(t *testing.T) {
 func TestBytecodeRuntime_Concurrent_Race(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -67,7 +70,7 @@ func TestBytecodeRuntime_Concurrent_Race(t *testing.T) {
 func TestBytecodeRuntime_EvalWithBindings(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -81,7 +84,7 @@ func TestBytecodeRuntime_EvalWithBindings(t *testing.T) {
 func TestBytecodeRuntime_Call(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -98,7 +101,7 @@ func TestBytecodeRuntime_Call(t *testing.T) {
 func TestBytecodeRuntime_LoopRecur(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -114,7 +117,7 @@ func TestBytecodeRuntime_LoopRecur(t *testing.T) {
 func TestBytecodeRuntime_TryCatch(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -127,7 +130,7 @@ func TestBytecodeRuntime_TryCatch(t *testing.T) {
 func TestBytecodeRuntime_Variadic(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -141,7 +144,7 @@ func TestBytecodeRuntime_Variadic(t *testing.T) {
 func TestBytecodeRuntime_LetStar(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -156,7 +159,7 @@ func TestBytecodeRuntime_LetStar(t *testing.T) {
 func TestBytecodeRuntime_Macro(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -171,7 +174,7 @@ func TestBytecodeRuntime_Macro(t *testing.T) {
 func TestBytecodeRuntime_NestedDefmacroFallsBackToTreeWalker(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -184,7 +187,7 @@ func TestBytecodeRuntime_NestedDefmacroFallsBackToTreeWalker(t *testing.T) {
 func TestBytecodeRuntime_ThrowNonString(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -197,7 +200,7 @@ func TestBytecodeRuntime_ThrowNonString(t *testing.T) {
 func TestBytecodeRuntime_EmptyBodyFn(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
@@ -209,7 +212,7 @@ func TestBytecodeRuntime_EmptyBodyFn(t *testing.T) {
 func TestBytecodeRuntime_EmptyBodyDefn(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 

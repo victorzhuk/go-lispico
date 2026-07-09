@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name is absent from the map is uncallable, and a builtin added later does
   not leak in. The identity Dialect is unchanged; existing embedders see no
   difference.
+- `runtime.WithDialect(d core.Dialect)` — explicitly select the Lisp dialect
+  for an Engine. The `clojure` and `cl` packages ship the two composed
+  dialects: `WithDialect(clojure.Dialect())` selects the pre-flip Clojure
+  surface; `WithDialect(cl.Dialect())` selects the Common Lisp surface.
+
+### Changed
+
+- **Breaking:** An Engine created via `runtime.New()` without `WithDialect`
+  now runs the Common Lisp dialect. Embedders that need the prior Clojure
+  surface select it explicitly with `WithDialect(clojure.Dialect())`.
+- **Breaking:** `New(nil, WithBytecode())` (no `WithDialect`) now errors at
+  construction because the bytecode VM requires an identity dialect. The CL
+  default is non-identity. Pin to `WithDialect(clojure.Dialect())` to keep
+  using the bytecode VM.
 
 ## [0.4.2] - 2026-07-09
 

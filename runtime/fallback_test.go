@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -14,8 +15,9 @@ import (
 // nested defmacro) must fall back to the tree-walker on the already-expanded
 // form, so the macro body runs exactly once — not once during expansion and
 // again during the fallback.
+// Pinned to Clojure dialect; the default flips to Common Lisp in shard-C.
 func TestBytecodeRuntime_UnsupportedFallbackExpandsOnce(t *testing.T) {
-	eng, err := New(nil, WithBytecode())
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 	ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -76,8 +77,8 @@ func TestDialect_BytecodeRejectsNonIdentity(t *testing.T) {
 	_, err := New(nil, WithBytecode(), WithDialect(core.EmptyDialect().Add("if", "if")))
 	require.Error(t, err, "bytecode + non-identity dialect must be rejected at construction")
 
-	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect()))
-	require.NoError(t, err, "bytecode + identity dialect is allowed")
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err, "bytecode + Clojure (identity) dialect is allowed")
 	e.Close()
 }
 
@@ -87,7 +88,7 @@ func TestDialect_NewSurfacesResolutionError(t *testing.T) {
 }
 
 func TestDialect_EvaluatedCodeCannotChangeDialect(t *testing.T) {
-	e, err := New(nil)
+	e, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer e.Close()
 
