@@ -1,4 +1,4 @@
-package cl
+package cl_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 	"github.com/victorzhuk/go-lispico/runtime"
@@ -16,7 +17,7 @@ import (
 // resolution work under Lisp-2 automatically.
 func newEngine(t *testing.T) runtime.Engine {
 	t.Helper()
-	e, err := runtime.New(nil, runtime.WithDialect(Dialect()))
+	e, err := runtime.New(nil, runtime.WithDialect(cl.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { e.Close() })
 
@@ -27,7 +28,7 @@ func newEngine(t *testing.T) runtime.Engine {
 // TestCL_IsNotIdentity asserts that the CL dialect is non-identity because of
 // its non-default axes (Lisp-2, nil-only truthiness, CL reader flags).
 func TestCL_IsNotIdentity(t *testing.T) {
-	assert.False(t, Dialect().IsIdentity(), "CL dialect must be non-identity")
+	assert.False(t, cl.Dialect().IsIdentity(), "CL dialect must be non-identity")
 }
 
 // TestCL_Vocab_DrivesDialect exercises the spec scenarios from the dialect spec.
