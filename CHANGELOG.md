@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-09
+
+### Added
+
+- `core.DetachEvalState(ctx) context.Context`: returns ctx with a fresh
+  `evalState` attached, preserving cancellation and any other context values.
+  Embedders that start a new evaluation goroutine (e.g. a routine scheduler)
+  call this so the goroutine owns its own depth counters and cannot race or
+  trip `MaxDepth` against the caller.
+
 ## [0.4.1] - 2026-07-08
 
 ### Fixed
@@ -102,7 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.4.1...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/victorzhuk/go-lispico/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/victorzhuk/go-lispico/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/victorzhuk/go-lispico/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/victorzhuk/go-lispico/compare/v0.2.0...v0.3.0

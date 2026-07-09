@@ -135,3 +135,71 @@ func TestConcurrent_RecurIsolation(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestDetachEvalState_AttachesFreshState(t *testing.T) {
+	t.Parallel()
+
+	type marker struct{}
+	parent := context.WithValue(context.Background(), marker{}, "preserved")
+
+	detached := DetachEvalState(parent)
+	if v := detached.Value(marker{}); v != "preserved" {
+		t.Fatalf("custom value not preserved: %v", v)
+	}
+
+	state, ok := detached.Value(evalStateKey{}).(*evalState)
+	if !ok || state == nil {
+		t.Fatalf("detached ctx missing evalState: ok=%v", ok)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := DetachEvalState(cancelled).Err(); err == nil {
+		t.Fatalf("cancellation not preserved through detach")
+	}
+
+	sharedState := &evalState{}
+	shared := context.WithValue(context.Background(), evalStateKey{}, sharedState)
+	detachedFromShared := DetachEvalState(shared)
+	if detachedFromShared.Value(evalStateKey{}) == sharedState {
+		t.Fatalf("detached ctx reuses parent evalState")
+	}
+}
+
+func TestDetachEvalState_ApplyIsolatesCallDepth(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	e := NewEvaluator()
+
+	if _, err := e.Eval(context.Background(), readForm(t, "(defn deep [n] (if n (deep false) n))"), env); err != nil {
+		t.Fatalf("defn deep: %v", err)
+	}
+	deepVal, ok := env.Get("deep")
+	if !ok {
+		t.Fatalf("deep not bound in env")
+	}
+
+	sharedState := &evalState{}
+	parent := context.WithValue(context.Background(), evalStateKey{}, sharedState)
+	detached := DetachEvalState(parent)
+
+	var wg sync.WaitGroup
+	for i, ctx := range []context.Context{parent, detached} {
+		wg.Add(1)
+		go func(i int, ctx context.Context) {
+			defer wg.Done()
+			for range 200 {
+				got, err := e.Apply(ctx, deepVal, []Value{Bool{V: true}}, env)
+				if err != nil {
+					t.Errorf("goroutine %d Apply: %v", i, err)
+					return
+				}
+				if !got.Equals(Bool{V: false}) {
+					t.Errorf("goroutine %d got %s, want false", i, got)
+					return
+				}
+			}
+		}(i, ctx)
+	}
+	wg.Wait()
+}
