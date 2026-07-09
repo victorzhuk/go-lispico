@@ -28,7 +28,8 @@ func TestREPL_MultiLineExpression(t *testing.T) {
 	input := "(do\n  1\n  2)\n(exit)\n"
 	output := &bytes.Buffer{}
 
-	eng, err := New(nil)
+	// Pinned to Clojure dialect: source uses (do ...) which CL renames to (progn).
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 
 	err = eng.REPL(strings.NewReader(input), output)
@@ -111,7 +112,8 @@ func TestREPL_WithArithmetic(t *testing.T) {
 	input := "(+ 1 2)\n(exit)\n"
 	output := &bytes.Buffer{}
 
-	eng, err := New(nil)
+	// Pinned to Clojure dialect: source uses (do ...) which CL renames to (progn).
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 
 	bindPlus(eng)
@@ -125,7 +127,8 @@ func TestREPL_MultiLineWithArithmetic(t *testing.T) {
 	input := "(+ 1\n  2\n  3)\n(exit)\n"
 	output := &bytes.Buffer{}
 
-	eng, err := New(nil)
+	// Pinned to Clojure dialect: source uses (do ...) which CL renames to (progn).
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 
 	bindPlus(eng)

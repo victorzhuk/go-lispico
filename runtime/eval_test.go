@@ -266,7 +266,8 @@ func TestEvalWithBindings_Isolation(t *testing.T) {
 }
 
 func TestEvalWithBindings_DoesNotAffectRoot(t *testing.T) {
-	e, err := New(nil)
+	// Pinned to Clojure dialect: source uses (do ...) which CL renames to (progn).
+	e, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer e.Close()
 
