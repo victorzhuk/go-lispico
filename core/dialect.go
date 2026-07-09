@@ -111,6 +111,14 @@ type deltaOp struct {
 	canonical string
 }
 
+// VocabEntry is one entry in a Dialect's vocabulary map. A canonical name
+// resolves to the GoFunc the engine already has under that name (a rename).
+// A non-nil Adapter binds the visible name directly to that Value (an adapter).
+type VocabEntry struct {
+	Canonical string
+	Adapter   Value
+}
+
 // Dialect describes an Engine's special-form table as a delta over a base. The
 // base is either the full kernel table or empty; the delta renames, adds, or
 // removes forms. Resolving a Dialect yields the effective name→form table an
@@ -124,6 +132,12 @@ type Dialect struct {
 	brackets  bracketSyntax
 	funcRef   funcRefSyntax
 	readerVec readerVecSyntax
+	// vocab is the dialect's vocabulary: a map from a dialect-visible name to
+	// either a canonical shared builtin name (a rename) or a GoFunc that wraps
+	// the shared implementation (an adapter). A nil vocab means the identity
+	// dialect — no vocabulary filtering, every builtin plugins register is
+	// callable under its registered name.
+	vocab map[string]VocabEntry
 }
 
 // FullDialect starts from the full kernel table. With no delta it is the
@@ -149,6 +163,55 @@ func (d Dialect) Rename(canonical, to string) Dialect {
 // Remove makes name uncallable.
 func (d Dialect) Remove(name string) Dialect {
 	return d.with(deltaOp{kind: opRemove, name: name})
+}
+
+// Vocabulary sets a name→canonical-name map: each visible name resolves to
+// the GoFunc the canonical name was registered under. A nil vocab (the zero
+// value, the identity Dialect) leaves every registered builtin callable under
+// its registered name. On an EmptyDialect the vocabulary is fail-closed: a
+// builtin whose registered name is not in the map is removed from the env.
+func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
+	d.vocab = make(map[string]VocabEntry, len(vocab))
+	for name, canonical := range vocab {
+		d.vocab[name] = VocabEntry{Canonical: canonical}
+	}
+	return d
+}
+
+// WithAdapter binds a visible name to a GoFunc that wraps a shared
+// implementation. Use it for semantics-differing names where a plain rename
+// is not enough; the adapter itself is expected to delegate to a shared
+// builtin rather than reimplement the operation. Calling WithAdapter on a
+// Dialect that already has vocabulary entries returns a new Dialect whose
+// vocab is a fresh copy plus the adapter — the receiver is not mutated.
+func (d Dialect) WithAdapter(name string, fn Value) Dialect {
+	d.vocab = copyVocab(d.vocab)
+	d.vocab[name] = VocabEntry{Adapter: fn}
+	return d
+}
+
+// copyVocab returns a fresh map containing the receiver's entries, or an empty
+// map if the receiver is nil. It exists so vocab-mutating builders
+// (WithAdapter and any future ones) never share the underlying map with the
+// previous Dialect.
+func copyVocab(src map[string]VocabEntry) map[string]VocabEntry {
+	dst := make(map[string]VocabEntry, len(src)+1)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// Vocab returns the vocabulary map the Dialect was configured with. It is nil
+// for the identity dialect. Each visible name maps to either a canonical
+// shared builtin name (Canonical) or an adapter (Adapter non-nil).
+func (d Dialect) Vocab() map[string]VocabEntry {
+	return d.vocab
+}
+
+// IsBaseEmpty reports whether the Dialect starts from an empty base.
+func (d Dialect) IsBaseEmpty() bool {
+	return d.base == baseEmpty
 }
 
 // NilOnlyFalsy sets the truthiness axis so only nil is falsy; false becomes a
@@ -237,12 +300,13 @@ func (d Dialect) Read(src string) ([]Value, error) {
 }
 
 // IsIdentity reports whether d is the identity dialect — the full kernel base
-// with no delta. The bytecode VM dispatches canonical form names directly, so
-// only the identity dialect is safe to run under it.
+// with no delta and no vocabulary. The bytecode VM dispatches canonical form
+// names directly, so only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
 	return d.base == baseFull && len(d.ops) == 0 &&
 		d.truth == truthNilFalse && d.ns == nsLisp1 &&
-		d.brackets == bracketsOn && d.funcRef == funcRefOff && d.readerVec == readerVecOff
+		d.brackets == bracketsOn && d.funcRef == funcRefOff && d.readerVec == readerVecOff &&
+		d.vocab == nil
 }
 
 func (d Dialect) with(op deltaOp) Dialect {

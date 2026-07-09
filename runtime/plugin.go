@@ -28,6 +28,8 @@ func (e *engineImpl) Use(p core.Plugin) error {
 		return fmt.Errorf("init plugin %s: %w", p.Name(), err)
 	}
 
+	e.applyVocabulary()
+
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", p.Name(), "version", p.Metadata().Version)
 
@@ -75,6 +77,8 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		}
 		return fmt.Errorf("init plugin %s: %w", name, err)
 	}
+
+	e.applyVocabulary()
 
 	if !hadOld {
 		e.stats.incPlugins()

@@ -124,6 +124,26 @@ func (e *Env) SetEvaluator(eval Evaluator) {
 	e.eval = eval
 }
 
+// Delete removes name from this scope's local bindings. It is a no-op if name
+// is not bound locally.
+func (e *Env) Delete(name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.vars, name)
+}
+
+// VarNames returns a snapshot of the names bound in this scope's local frame.
+// The order is unspecified. Parent bindings are not included.
+func (e *Env) VarNames() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	names := make([]string, 0, len(e.vars))
+	for name := range e.vars {
+		names = append(names, name)
+	}
+	return names
+}
+
 // MergeInto copies all bindings from this env into target.
 // Does NOT copy parent bindings. Target is locked during merge.
 func (e *Env) MergeInto(target *Env) {

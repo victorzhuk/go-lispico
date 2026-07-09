@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `core.Dialect.Vocabulary(map[string]string)` and `core.Dialect.WithAdapter(name, fn)`:
+  bind dialect-visible names to shared builtin implementations registered by
+  plugins, with thin adapters for semantics-differing names. On an
+  `EmptyDialect` the vocabulary is an allowlist: a builtin whose registered
+  name is absent from the map is uncallable, and a builtin added later does
+  not leak in. The identity Dialect is unchanged; existing embedders see no
+  difference.
+
 ## [0.4.2] - 2026-07-09
 
 ### Added

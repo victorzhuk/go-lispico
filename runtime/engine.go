@@ -237,3 +237,54 @@ func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
 		cb(event)
 	}
 }
+
+// applyVocabulary reconciles the root environment with the configured Dialect's
+// vocabulary map. It is invoked after each plugin's Init so plugin-registered
+// GoFuncs are then renamed, exposed under adapter wrappers, or stripped
+// according to the Dialect's base and vocab.
+//
+// On a FullDialect with a vocab, the operation is purely additive: every
+// registered GoFunc remains, and the vocab entries either rename a canonical
+// name to a visible name or bind a visible name to a GoFunc adapter.
+//
+// On an EmptyDialect, the vocabulary is an allowlist. Every GoFunc whose name
+// is not in the vocab is removed from the env, and the vocab entries are then
+// applied. Macros, Lambdas, and any non-GoFunc values are left alone so
+// bootstrap macros survive the allowlist pass. A snapshot of every GoFunc is
+// taken before the strip so the apply phase can resolve renames whose
+// canonical name is absent from the allowlist and would otherwise be deleted.
+func (e *engineImpl) applyVocabulary() {
+	vocab := e.config.dialect.Vocab()
+	if vocab == nil {
+		return
+	}
+
+	goFuncs := make(map[string]core.Value)
+	for _, name := range e.rootEnv.VarNames() {
+		v, ok := e.rootEnv.Get(name)
+		if !ok {
+			continue
+		}
+		if _, isGoFunc := v.(core.GoFunc); isGoFunc {
+			goFuncs[name] = v
+		}
+	}
+
+	if e.config.dialect.IsBaseEmpty() {
+		for name := range goFuncs {
+			if _, allowed := vocab[name]; !allowed {
+				e.rootEnv.Delete(name)
+			}
+		}
+	}
+
+	for visibleName, entry := range vocab {
+		if entry.Adapter != nil {
+			e.rootEnv.Set(visibleName, entry.Adapter)
+			continue
+		}
+		if val, ok := goFuncs[entry.Canonical]; ok {
+			e.rootEnv.Set(visibleName, val)
+		}
+	}
+}
