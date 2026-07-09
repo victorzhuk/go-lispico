@@ -243,7 +243,7 @@ func TestIsExitCommand(t *testing.T) {
 }
 
 func bindPlus(e Engine) {
-	e.RootEnv().Set("+", core.GoFunc{
+	if err := e.Bind("+", core.GoFunc{
 		Name: "+",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			sum := int64(0)
@@ -254,5 +254,7 @@ func bindPlus(e Engine) {
 			}
 			return core.Int{V: sum}, nil
 		},
-	})
+	}); err != nil {
+		panic(err) // bindPlus is test-only; a bind error is a test bug
+	}
 }
