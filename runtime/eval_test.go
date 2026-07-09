@@ -50,15 +50,15 @@ func TestEval_Arithmetic(t *testing.T) {
 	defer e.Close()
 
 	t.Run("addition", func(t *testing.T) {
-		bindBuiltin(e, "+")
+		bindBuiltin(t, e, "+")
 		result, err := e.Eval(context.Background(), "test", "(+ 1 2)")
 		require.NoError(t, err)
 		assert.True(t, core.Int{V: 3}.Equals(result))
 	})
 
 	t.Run("nested", func(t *testing.T) {
-		bindBuiltin(e, "+")
-		bindBuiltin(e, "*")
+		bindBuiltin(t, e, "+")
+		bindBuiltin(t, e, "*")
 		result, err := e.Eval(context.Background(), "test", "(+ (* 2 3) 4)")
 		require.NoError(t, err)
 		assert.True(t, core.Int{V: 10}.Equals(result))
@@ -83,7 +83,7 @@ func TestEvalFile_ValidFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.lisp")
 	content := `(def x 42)`
-	require.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filePath, []byte(content), 0o644))
 
 	result, err := e.EvalFile(filePath)
 	require.NoError(t, err)
@@ -118,10 +118,10 @@ func TestLoadDir_Alphabetical(t *testing.T) {
 	}
 
 	for name, content := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644))
 	}
 
-	bindBuiltin(e, "conj")
+	bindBuiltin(t, e, "conj")
 	require.NoError(t, e.LoadDir(tmpDir))
 
 	val, ok := e.RootEnv().Get("order")
@@ -140,8 +140,8 @@ func TestLoadDir_SkipsNonLisp(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("not lisp"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "valid.lisp"), []byte("(def x 1)"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("not lisp"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "valid.lisp"), []byte("(def x 1)"), 0o644))
 
 	require.NoError(t, e.LoadDir(tmpDir))
 
@@ -157,7 +157,7 @@ func TestCall_DefinedFunction(t *testing.T) {
 	_, err = e.Eval(context.Background(), "test", "(defn add [a b] (+ a b))")
 	require.NoError(t, err)
 
-	bindBuiltin(e, "+")
+	bindBuiltin(t, e, "+")
 	result, err := e.Call(context.Background(), "add", core.Int{V: 2}, core.Int{V: 3})
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 5}.Equals(result))
@@ -181,8 +181,8 @@ func TestCall_ContextCancellation(t *testing.T) {
 	_, err = e.Eval(context.Background(), "test", "(defn slow [] (loop [n 1000000] (if (= n 0) n (recur (- n 1)))))")
 	require.NoError(t, err)
 
-	bindBuiltin(e, "=")
-	bindBuiltin(e, "-")
+	bindBuiltin(t, e, "=")
+	bindBuiltin(t, e, "-")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -199,8 +199,8 @@ func TestCall_Timeout(t *testing.T) {
 	_, err = e.Eval(context.Background(), "test", "(defn slow [] (loop [n 1000000] (if (= n 0) n (recur (- n 1)))))")
 	require.NoError(t, err)
 
-	bindBuiltin(e, "=")
-	bindBuiltin(e, "-")
+	bindBuiltin(t, e, "=")
+	bindBuiltin(t, e, "-")
 
 	ctx := context.Background()
 	_, err = e.Call(ctx, "slow")
@@ -212,8 +212,8 @@ func TestEval_Timeout(t *testing.T) {
 	require.NoError(t, err)
 	defer e.Close()
 
-	bindBuiltin(e, "=")
-	bindBuiltin(e, "-")
+	bindBuiltin(t, e, "=")
+	bindBuiltin(t, e, "-")
 
 	_, err = e.Eval(context.Background(), "test", "(loop [n 1000000] (if (= n 0) n (recur (- n 1))))")
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
@@ -294,10 +294,11 @@ func (p *testPlugin) Metadata() core.PluginMeta {
 	return core.PluginMeta{Description: "test plugin"}
 }
 
-func bindBuiltin(e Engine, name string) {
+func bindBuiltin(t testing.TB, e Engine, name string) {
+	t.Helper()
 	switch name {
 	case "+":
-		e.RootEnv().Set("+", core.GoFunc{
+		if err := e.Bind("+", core.GoFunc{
 			Name: "+",
 			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 				sum := int64(0)
@@ -308,9 +309,11 @@ func bindBuiltin(e Engine, name string) {
 				}
 				return core.Int{V: sum}, nil
 			},
-		})
+		}); err != nil {
+			t.Fatalf("bindBuiltin %s: %v", name, err)
+		}
 	case "*":
-		e.RootEnv().Set("*", core.GoFunc{
+		if err := e.Bind("*", core.GoFunc{
 			Name: "*",
 			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 				prod := int64(1)
@@ -321,9 +324,11 @@ func bindBuiltin(e Engine, name string) {
 				}
 				return core.Int{V: prod}, nil
 			},
-		})
+		}); err != nil {
+			t.Fatalf("bindBuiltin %s: %v", name, err)
+		}
 	case "-":
-		e.RootEnv().Set("-", core.GoFunc{
+		if err := e.Bind("-", core.GoFunc{
 			Name: "-",
 			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 				if len(args) == 0 {
@@ -335,9 +340,11 @@ func bindBuiltin(e Engine, name string) {
 				}
 				return core.Int{V: result}, nil
 			},
-		})
+		}); err != nil {
+			t.Fatalf("bindBuiltin %s: %v", name, err)
+		}
 	case "=":
-		e.RootEnv().Set("=", core.GoFunc{
+		if err := e.Bind("=", core.GoFunc{
 			Name: "=",
 			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 				if len(args) < 2 {
@@ -351,9 +358,11 @@ func bindBuiltin(e Engine, name string) {
 				}
 				return core.Bool{V: true}, nil
 			},
-		})
+		}); err != nil {
+			t.Fatalf("bindBuiltin %s: %v", name, err)
+		}
 	case "conj":
-		e.RootEnv().Set("conj", core.GoFunc{
+		if err := e.Bind("conj", core.GoFunc{
 			Name: "conj",
 			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 				if len(args) < 2 {
@@ -368,6 +377,8 @@ func bindBuiltin(e Engine, name string) {
 				}
 				return coll, nil
 			},
-		})
+		}); err != nil {
+			t.Fatalf("bindBuiltin %s: %v", name, err)
+		}
 	}
 }
