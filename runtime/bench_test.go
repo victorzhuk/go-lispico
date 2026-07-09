@@ -31,7 +31,7 @@ func BenchmarkEngine_EvalSimple(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(b, eng, "+")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -46,10 +46,10 @@ func BenchmarkEngine_EvalComplex(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
-	bindBuiltin(eng, "-")
-	bindBuiltin(eng, "=")
-	bindBuiltin(eng, "<")
+	bindBuiltin(b, eng, "+")
+	bindBuiltin(b, eng, "-")
+	bindBuiltin(b, eng, "=")
+	bindBuiltin(b, eng, "<")
 
 	_, _ = eng.Eval(context.Background(), "setup", `
 (defn fib [n]
@@ -73,7 +73,7 @@ func BenchmarkEngine_LoadDir(b *testing.B) {
 		for j := 0; j < 100; j++ {
 			content += fmt.Sprintf("(def var-%d-%d %d)\n", i, j, j)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -101,7 +101,7 @@ func BenchmarkEngine_HotReload(b *testing.B) {
 	dir := b.TempDir()
 	file := filepath.Join(dir, "reload.lisp")
 
-	if err := os.WriteFile(file, []byte("(def x 1)"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("(def x 1)"), 0o644); err != nil {
 		b.Fatal(err)
 	}
 
@@ -112,7 +112,7 @@ func BenchmarkEngine_HotReload(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		content := fmt.Sprintf("(def x %d)", i)
-		if err := os.WriteFile(file, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
 			b.Fatal(err)
 		}
 		w.scan()
@@ -126,7 +126,7 @@ func BenchmarkEngine_Stats(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(b, eng, "+")
 
 	for i := 0; i < 1000; i++ {
 		_, _ = eng.Eval(context.Background(), "setup", "(+ 1 2)")
@@ -145,7 +145,7 @@ func BenchmarkEngine_Call(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(b, eng, "+")
 
 	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
 
@@ -175,7 +175,7 @@ func BenchmarkEngine_ParallelEval(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(b, eng, "+")
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -191,7 +191,7 @@ func BenchmarkEngine_ParallelCall(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(b, eng, "+")
 
 	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
 
@@ -211,7 +211,7 @@ func BenchmarkEngine_ParallelStats(b *testing.B) {
 	}
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(b, eng, "+")
 
 	for i := 0; i < 1000; i++ {
 		_, _ = eng.Eval(context.Background(), "setup", "(+ 1 2)")

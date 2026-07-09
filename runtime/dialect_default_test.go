@@ -17,8 +17,6 @@ import (
 //   - [1 2] is a parse error (no bracket literals under CL).
 //   - #'f and #(1 2) parse.
 func TestRuntime_DefaultIsCL(t *testing.T) {
-	t.Skip("engine default flips in shard-C; skip removed after merge")
-	// TODO(zapply): remove skip after shard-C merge
 	eng, err := New(nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
@@ -87,8 +85,6 @@ func TestRuntime_ClojureDialectReproducesPriorSurface(t *testing.T) {
 // default is the CL dialect, which is non-identity, and the bytecode
 // VM guard rejects non-identity at construction.
 func TestRuntime_DefaultCL_RejectsBytecode(t *testing.T) {
-	t.Skip("engine default flips in shard-C; skip removed after merge")
-	// TODO(zapply): remove skip after shard-C merge
 	_, err := New(nil, WithBytecode())
 	require.Error(t, err,
 		"default (CL) is non-identity; bytecode must be rejected at construction")

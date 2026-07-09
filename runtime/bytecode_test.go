@@ -105,8 +105,8 @@ func TestBytecodeRuntime_LoopRecur(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
-	bindBuiltin(eng, "+")
-	bindBuiltin(eng, "=")
+	bindBuiltin(t, eng, "+")
+	bindBuiltin(t, eng, "=")
 
 	ctx := context.Background()
 	result, err := eng.Eval(ctx, "sum", "(loop [i 0 acc 0] (if (= i 10) acc (recur (+ i 1) (+ acc i))))")
@@ -148,7 +148,7 @@ func TestBytecodeRuntime_LetStar(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(t, eng, "+")
 
 	ctx := context.Background()
 	result, err := eng.Eval(ctx, "let*", "(let* [x 1 y (+ x 1)] y)")
