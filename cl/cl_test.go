@@ -11,11 +11,9 @@ import (
 	"github.com/victorzhuk/go-lispico/runtime"
 )
 
-// newEngine builds a CL engine with stdlib loaded and bridges the value →
-// function cell for Lisp-2 head-position resolution.  Under Lisp-2,
-// applyVocabulary sets the value cell (env.Set) but head position resolves
-// through the function cell (env.GetFunc), so vocab entries and adapters that
-// are GoFuncs need a copy into the function cell.
+// newEngine builds a CL engine with stdlib loaded. Fix 3 in the runtime
+// (applyVocabulary GoFunc-to-function-cell bridge) makes function-head
+// resolution work under Lisp-2 automatically.
 func newEngine(t *testing.T) runtime.Engine {
 	t.Helper()
 	e, err := runtime.New(nil, runtime.WithDialect(Dialect()))
@@ -23,33 +21,7 @@ func newEngine(t *testing.T) runtime.Engine {
 	t.Cleanup(func() { e.Close() })
 
 	require.NoError(t, e.Use(stdlib.New()))
-
-	bridgeGoFuncsToFuncCells(t, e.RootEnv())
 	return e
-}
-
-func bridgeGoFuncsToFuncCells(t *testing.T, env *core.Env) {
-	t.Helper()
-	for _, name := range env.VarNames() {
-		if val, ok := env.Get(name); ok {
-			if _, isGoFunc := val.(core.GoFunc); isGoFunc {
-				env.SetFunc(name, val)
-			}
-		}
-	}
-}
-
-// evalPreRead parses src with the identity reader (so [x] vector syntax works)
-// and evaluates it through the engine's evaluator under the CL dialect.
-func evalPreRead(t *testing.T, eng runtime.Engine, src string) core.Value {
-	t.Helper()
-	forms, err := core.Read(src)
-	require.NoError(t, err, "core.Read: %s", src)
-	require.Len(t, forms, 1, "expected one form")
-	evaluator := eng.RootEnv().Evaluator()
-	got, err := evaluator.Eval(context.Background(), forms[0], eng.RootEnv())
-	require.NoError(t, err, "eval: %s", src)
-	return got
 }
 
 // TestCL_IsNotIdentity asserts that the CL dialect is non-identity because of
@@ -63,7 +35,8 @@ func TestCL_Vocab_DrivesDialect(t *testing.T) {
 	e := newEngine(t)
 
 	t.Run("defun defines a function", func(t *testing.T) {
-		got := evalPreRead(t, e, "(defun f [x] x)")
+		got, err := e.Eval(context.Background(), "cl", "(defun f (x) x)")
+		require.NoError(t, err)
 		assert.True(t, core.Keyword{V: "fn"}.Equals(got.Type()), "defun must return fn, got %T", got)
 	})
 
@@ -74,7 +47,8 @@ func TestCL_Vocab_DrivesDialect(t *testing.T) {
 	})
 
 	t.Run("funcall applies a function", func(t *testing.T) {
-		evalPreRead(t, e, "(defun f [x] x)")
+		_, err := e.Eval(context.Background(), "cl", "(defun f (x) x)")
+		require.NoError(t, err)
 		got, err := e.Eval(context.Background(), "cl", "(progn (funcall #'f 42))")
 		require.NoError(t, err)
 		assert.True(t, core.Int{V: 42}.Equals(got), "funcall #'f: got %v", got)
@@ -129,16 +103,18 @@ func TestCL_SpecScenario_SurfaceForms(t *testing.T) {
 	e := newEngine(t)
 
 	// "defun SHALL define a function"
-	got := evalPreRead(t, e, "(defun square [x] (* x x))")
+	got, err := e.Eval(context.Background(), "cl", "(defun square (x) (* x x))")
+	require.NoError(t, err)
 	t.Logf("defun square => %s", got)
 
 	// "(if false :y :n) SHALL evaluate to :y" (nil-only truthiness)
-	got, err := e.Eval(context.Background(), "cl", "(if false :y :n)")
+	got, err = e.Eval(context.Background(), "cl", "(if false :y :n)")
 	require.NoError(t, err)
 	assert.True(t, core.Keyword{V: "y"}.Equals(got), "nil-only: (if false :y :n) => %v", got)
 
 	// "(funcall #'f args...) SHALL apply f"
-	evalPreRead(t, e, "(defun id [x] x)")
+	_, err = e.Eval(context.Background(), "cl", "(defun id (x) x)")
+	require.NoError(t, err)
 	got, err = e.Eval(context.Background(), "cl", "(funcall #'id 7)")
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 7}.Equals(got), "funcall #'id => %v", got)

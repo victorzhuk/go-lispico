@@ -287,4 +287,20 @@ func (e *engineImpl) applyVocabulary() {
 			e.rootEnv.Set(visibleName, val)
 		}
 	}
+
+	// Bridge every GoFunc to the function cell under Lisp-2 so they are
+	// callable in head position. Without this, head lookup of a GoFunc (e.g.
+	// `(* x x)`, `(car '...)`) returns undefined because the value cell is
+	// not consulted for head resolution in Lisp-2.
+	if e.config.dialect.IsLisp2() {
+		for _, name := range e.rootEnv.VarNames() {
+			v, ok := e.rootEnv.Get(name)
+			if !ok {
+				continue
+			}
+			if _, isGoFunc := v.(core.GoFunc); isGoFunc {
+				e.rootEnv.SetFunc(name, v)
+			}
+		}
+	}
 }
