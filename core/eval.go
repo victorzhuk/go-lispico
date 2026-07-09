@@ -93,6 +93,14 @@ func evalStateFrom(ctx context.Context) *evalState {
 	return &evalState{}
 }
 
+// DetachEvalState returns a copy of ctx with a fresh evalState attached,
+// preserving cancellation and any other context values. Use this when a new
+// goroutine should evaluate with its own depth counters so it cannot race or
+// trip MaxDepth against another evaluation that shares the same ancestor ctx.
+func DetachEvalState(ctx context.Context) context.Context {
+	return context.WithValue(ctx, evalStateKey{}, &evalState{})
+}
+
 func evalErrorf(format string, args ...any) *LispicoError {
 	return &LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
 }
