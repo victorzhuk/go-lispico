@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -108,7 +109,8 @@ func WithBytecode() EngineOption {
 
 // WithDialect selects the Dialect the Engine runs. The Dialect is resolved once
 // at New and is immutable for the Engine's lifetime. Without this option the
-// Engine runs the identity dialect, preserving default behavior.
+// Engine runs the Common Lisp dialect. Select the prior Clojure-style surface
+// with WithDialect(clojure.Dialect()).
 func WithDialect(d core.Dialect) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.dialect = d
@@ -120,7 +122,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	cfg := engineConfig{
 		maxEvalDepth: 1000,
 		timeout:      30 * time.Second,
-		dialect:      core.FullDialect(),
+		dialect:      cl.Dialect(),
 	}
 
 	for _, opt := range opts {
