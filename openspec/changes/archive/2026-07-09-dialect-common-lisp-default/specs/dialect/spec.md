@@ -19,3 +19,7 @@ The system SHALL provide a Clojure dialect reproducing the interpreter's behavio
 #### Scenario: Clojure dialect matches the old default
 - **WHEN** an Engine runs the Clojure dialect
 - **THEN** conditionals SHALL treat `false` as falsy, symbols SHALL resolve from a single namespace, and `[..]`/`{..}` literals SHALL parse as before this change
+
+#### Scenario: Clojure dialect is identity-compatible with the bytecode VM
+- **WHEN** an Engine is constructed with `New(nil, WithBytecode(), WithDialect(clojure.Dialect()))`
+- **THEN** the construction SHALL succeed and the Engine SHALL run the bytecode evaluator; the `clojure.Dialect()` value SHALL report `IsIdentity() == true`
