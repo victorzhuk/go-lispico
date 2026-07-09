@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -39,10 +40,9 @@ func TestDialect_Lisp2_FuncallAndFunctionRef(t *testing.T) {
 	assert.True(t, core.Int{V: 7}.Equals(got), "funcall value-cell fn: got %v", got)
 }
 
-// funcall and #' exist only under Lisp-2; the default Lisp-1 Dialect leaves both
-// names undefined.
+// Pinned to Clojure dialect (Lisp-1); the default flips to Common Lisp (Lisp-2) in shard-C.
 func TestDialect_Lisp1_FuncallAndFunctionUndefined(t *testing.T) {
-	e, err := New(nil)
+	e, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer e.Close()
 

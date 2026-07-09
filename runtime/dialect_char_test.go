@@ -6,15 +6,17 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+// Pinned to Clojure dialect; the default flips to Common Lisp in shard-C.
 // Characterization: pins the current special-form behavior at the Engine seam
 // so the dialect refactor is provably behavior-preserving.
 func TestDialect_Characterization_DefaultForms(t *testing.T) {
 	eval := func(t *testing.T, setup func(Engine), src string) core.Value {
 		t.Helper()
-		e, err := New(nil)
+		e, err := New(nil, WithDialect(clojure.Dialect()))
 		require.NoError(t, err)
 		defer e.Close()
 		if setup != nil {

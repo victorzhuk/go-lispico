@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
+
+// Benchmarks using bracket literals are pinned to Clojure; the default flips to Common Lisp in shard-C.
 
 func BenchmarkEngine_Creation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
@@ -37,7 +40,7 @@ func BenchmarkEngine_EvalSimple(b *testing.B) {
 }
 
 func BenchmarkEngine_EvalComplex(b *testing.B) {
-	eng, err := New(nil)
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -136,7 +139,7 @@ func BenchmarkEngine_Stats(b *testing.B) {
 }
 
 func BenchmarkEngine_Call(b *testing.B) {
-	eng, err := New(nil)
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -182,7 +185,7 @@ func BenchmarkEngine_ParallelEval(b *testing.B) {
 }
 
 func BenchmarkEngine_ParallelCall(b *testing.B) {
-	eng, err := New(nil)
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	if err != nil {
 		b.Fatal(err)
 	}

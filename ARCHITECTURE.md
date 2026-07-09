@@ -183,9 +183,9 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
 - `WithMaxEvalDepth(n)` — Cap evaluation call depth
 - `WithTimeout(d)` — Per-eval timeout applied to `Eval` and `Call`
 - `WithBytecode()` — Enable the bytecode VM
-
-Hot reload is started explicitly with `eng.Watch(ctx, dir)`.
-
+- `WithDialect(d)` — Select a custom dialect; the default is the Common Lisp
+  dialect (`cl.Dialect()`). Select the Clojure-style surface with
+  `WithDialect(clojure.Dialect())`.
 ### plugins/
 
 Domain-specific plugins extend functionality. Each plugin:

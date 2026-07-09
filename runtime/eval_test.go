@@ -1,3 +1,5 @@
+// Tests using bracket literals are pinned to Clojure; the default flips to Common Lisp in shard-C.
+
 package runtime
 
 import (
@@ -10,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -102,7 +105,7 @@ func TestEvalFile_NonExistent(t *testing.T) {
 }
 
 func TestLoadDir_Alphabetical(t *testing.T) {
-	e, err := New(nil)
+	e, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -147,7 +150,7 @@ func TestLoadDir_SkipsNonLisp(t *testing.T) {
 }
 
 func TestCall_DefinedFunction(t *testing.T) {
-	e, err := New(nil)
+	e, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -171,7 +174,7 @@ func TestCall_UndefinedFunction(t *testing.T) {
 }
 
 func TestCall_ContextCancellation(t *testing.T) {
-	e, err := New(nil)
+	e, err := New(nil, WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -189,7 +192,7 @@ func TestCall_ContextCancellation(t *testing.T) {
 }
 
 func TestCall_Timeout(t *testing.T) {
-	e, err := New(nil, WithTimeout(10*time.Millisecond))
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithTimeout(10*time.Millisecond))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -205,7 +208,7 @@ func TestCall_Timeout(t *testing.T) {
 }
 
 func TestEval_Timeout(t *testing.T) {
-	e, err := New(nil, WithTimeout(10*time.Millisecond))
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithTimeout(10*time.Millisecond))
 	require.NoError(t, err)
 	defer e.Close()
 

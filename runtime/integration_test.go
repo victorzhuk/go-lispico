@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -20,6 +21,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	t.Parallel()
 
 	eng, err := New(slog.Default(),
+		WithDialect(clojure.Dialect()),
 		WithMaxEvalDepth(500),
 		WithTimeout(5*time.Second),
 	)
@@ -119,7 +121,7 @@ func TestIntegration_HotReloadUnderLoad(t *testing.T) {
 func TestIntegration_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(slog.Default())
+	eng, err := New(slog.Default(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer eng.Close()
 
@@ -292,7 +294,7 @@ func TestIntegration_NoGoroutineLeak(t *testing.T) {
 func TestIntegration_LoadDirAndEval(t *testing.T) {
 	t.Parallel()
 
-	eng, err := New(slog.Default())
+	eng, err := New(slog.Default(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	defer eng.Close()
 
