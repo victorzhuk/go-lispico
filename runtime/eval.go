@@ -193,6 +193,12 @@ func (e *engineImpl) Bind(name string, v core.Value) error {
 	}
 
 	e.rootEnv.Set(name, v)
+	// Under Lisp-2, head-position resolution goes through the function cell.
+	// Mirror the value-cell binding into the function cell so embedders can
+	// call bound names in head position regardless of the active dialect.
+	if e.config.dialect.IsLisp2() {
+		e.rootEnv.SetFunc(name, v)
+	}
 	e.logger.Debug("bind", "name", name)
 	return nil
 }
