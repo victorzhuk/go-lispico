@@ -30,8 +30,8 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	p := &mockPlugin{name: "test", version: "1.0.0"}
 	require.NoError(t, eng.Use(p))
 
-	bindBuiltin(eng, "+")
-	bindBuiltin(eng, "*")
+	bindBuiltin(t, eng, "+")
+	bindBuiltin(t, eng, "*")
 
 	_, err = eng.Eval(context.Background(), "init", "(def x 10)")
 	require.NoError(t, err)
@@ -66,10 +66,10 @@ func TestIntegration_HotReloadUnderLoad(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(t, eng, "+")
 
 	file := filepath.Join(dir, "counter.lisp")
-	err = os.WriteFile(file, []byte("(def counter 0)"), 0644)
+	err = os.WriteFile(file, []byte("(def counter 0)"), 0o644)
 	require.NoError(t, err)
 
 	require.NoError(t, eng.Watch(context.Background(), dir))
@@ -99,7 +99,7 @@ func TestIntegration_HotReloadUnderLoad(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
-	err = os.WriteFile(file, []byte("(def counter 100)"), 0644)
+	err = os.WriteFile(file, []byte("(def counter 100)"), 0o644)
 	require.NoError(t, err)
 
 	time.Sleep(600 * time.Millisecond)
@@ -125,8 +125,8 @@ func TestIntegration_ConcurrentAccess(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
-	bindBuiltin(eng, "*")
+	bindBuiltin(t, eng, "+")
+	bindBuiltin(t, eng, "*")
 
 	_, err = eng.Eval(context.Background(), "init", "(defn add [a b] (+ a b))")
 	require.NoError(t, err)
@@ -221,7 +221,7 @@ func TestIntegration_Callbacks(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(t, eng, "+")
 
 	var evalEvents []EvalEvent
 	var evalMu sync.Mutex
@@ -298,8 +298,8 @@ func TestIntegration_LoadDirAndEval(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
-	bindBuiltin(eng, "conj")
+	bindBuiltin(t, eng, "+")
+	bindBuiltin(t, eng, "conj")
 
 	dir := t.TempDir()
 
@@ -310,7 +310,7 @@ func TestIntegration_LoadDirAndEval(t *testing.T) {
 	}
 
 	for name, content := range files {
-		err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644)
+		err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
 		require.NoError(t, err)
 	}
 
@@ -332,7 +332,7 @@ func TestIntegration_StatsAccuracy(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	bindBuiltin(eng, "+")
+	bindBuiltin(t, eng, "+")
 
 	initial := eng.Stats()
 	assert.Equal(t, int64(0), initial.TotalEvals)

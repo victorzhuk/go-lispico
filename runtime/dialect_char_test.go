@@ -28,9 +28,9 @@ func TestDialect_Characterization_DefaultForms(t *testing.T) {
 	}
 
 	arith := func(e Engine) {
-		bindBuiltin(e, "+")
-		bindBuiltin(e, "-")
-		bindBuiltin(e, "=")
+		bindBuiltin(t, e, "+")
+		bindBuiltin(t, e, "-")
+		bindBuiltin(t, e, "=")
 	}
 
 	t.Run("if truthy", func(t *testing.T) {
