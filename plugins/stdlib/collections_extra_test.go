@@ -1,10 +1,13 @@
 package stdlib
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -208,4 +211,54 @@ func TestRange_ExtremeBoundsNoOverflow(t *testing.T) {
 	i1, _ := list.Items[1].(core.Int)
 	require.Equal(t, int64(9223372036854775805), i0.V)
 	require.Equal(t, int64(9223372036854775806), i1.V)
+}
+
+// cancelAfterN is a context.Context whose Err() returns nil for the first
+// `after` calls and context.Canceled afterward, closing its Done channel once
+// at the threshold. It drives deterministic mid-loop cancellation with no
+// timing and no large allocation.
+type cancelAfterN struct {
+	n, after int
+	done     chan struct{}
+}
+
+func newCancelAfterN(after int) *cancelAfterN {
+	return &cancelAfterN{after: after, done: make(chan struct{})}
+}
+func (c *cancelAfterN) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *cancelAfterN) Done() <-chan struct{}       { return c.done }
+func (c *cancelAfterN) Value(any) any               { return nil }
+func (c *cancelAfterN) Err() error {
+	c.n++
+	if c.n > c.after {
+		select {
+		case <-c.done:
+		default:
+			close(c.done)
+		}
+		return context.Canceled
+	}
+	return nil
+}
+
+// TestRange_CancelledMidBuild invokes the registered range GoFunc directly
+// (bypassing the evaluator's entry ctx check) with a context that cancels after
+// a fixed number of Err() probes. range's first probe is its pre-loop check;
+// later probes are inside the build loop. With after=50, cancellation fires
+// inside the loop, proving the cooperative check aborts mid-build before the
+// list is produced. (stdlib-plugin spec: cancellation/time-out mid-build.)
+func TestRange_CancelledMidBuild(t *testing.T) {
+	env := setupEnv(t)
+	fnVal, ok := env.Get("range")
+	require.True(t, ok)
+	gfn, ok := fnVal.(core.GoFunc)
+	require.True(t, ok)
+
+	ctx := newCancelAfterN(50)
+	v, err := gfn.Fn(ctx, nil, []core.Value{core.Int{V: 0}, core.Int{V: 1000}}, env)
+	require.Error(t, err, "mid-build cancellation must abort range")
+	assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
+	if list, ok := v.(core.List); ok {
+		assert.Less(t, len(list.Items), 1000, "range must not complete the list on mid-build cancel")
+	}
 }
