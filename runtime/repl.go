@@ -73,10 +73,18 @@ func isBalanced(input string) bool {
 	var stack []rune
 	inString := false
 	escape := false
+	comment := false
 
 	for _, ch := range input {
 		if escape {
 			escape = false
+			continue
+		}
+
+		if comment {
+			if ch == '\n' {
+				comment = false
+			}
 			continue
 		}
 
@@ -91,6 +99,11 @@ func isBalanced(input string) bool {
 		}
 
 		if inString {
+			continue
+		}
+
+		if ch == ';' {
+			comment = true
 			continue
 		}
 
