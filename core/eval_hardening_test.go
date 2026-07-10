@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -202,4 +203,218 @@ func TestDetachEvalState_ApplyIsolatesCallDepth(t *testing.T) {
 		}(i, ctx)
 	}
 	wg.Wait()
+}
+
+func TestEval_StructuralDepthVectorExceeded(t *testing.T) {
+	t.Parallel()
+	e := NewEvaluator()
+	e.MaxStructuralDepth = 50
+
+	n := 200
+	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
+	// Parse with reader ceiling ABOVE eval default so reader does not reject first
+	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	if err != nil {
+		t.Fatalf("reader rejected depth %d with maxDepth=5000: %v", n, err)
+	}
+	env := newTestEnv()
+	_, err = e.Eval(context.Background(), forms[0], env)
+	if err == nil {
+		t.Fatal("expected structural depth error")
+	}
+	var le *LispicoError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *LispicoError, got %T: %v", err, err)
+	}
+	if le.Code != CodeResourceLimit {
+		t.Fatalf("expected Code=%q, got %q", CodeResourceLimit, le.Code)
+	}
+}
+
+func TestEval_StructuralDepthVectorUnderLimitOK(t *testing.T) {
+	t.Parallel()
+	e := NewEvaluator()
+	e.MaxStructuralDepth = 2048
+
+	n := 200
+	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
+	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	if err != nil {
+		t.Fatalf("reader rejected depth %d: %v", n, err)
+	}
+	env := newTestEnv()
+	_, err = e.Eval(context.Background(), forms[0], env)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+}
+
+func TestEval_StructuralDepthHashMapExceeded(t *testing.T) {
+	t.Parallel()
+	e := NewEvaluator()
+	e.MaxStructuralDepth = 50
+
+	var build func(depth int) Value
+	build = func(depth int) Value {
+		if depth == 0 {
+			return Keyword{V: "done"}
+		}
+		m := NewHashMap()
+		m.Set(Keyword{V: "k"}, build(depth-1))
+		return m
+	}
+	deep := build(200)
+
+	env := newTestEnv()
+	_, err := e.Eval(context.Background(), deep, env)
+	if err == nil {
+		t.Fatal("expected structural depth error from deep HashMap literal")
+	}
+	var le *LispicoError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *LispicoError, got %T: %v", err, err)
+	}
+	if le.Code != CodeResourceLimit {
+		t.Fatalf("expected Code=%q, got %q", CodeResourceLimit, le.Code)
+	}
+}
+
+func TestEval_StructuralDepthQuasiquoteExceeded(t *testing.T) {
+	t.Parallel()
+	e := NewEvaluator()
+	e.MaxStructuralDepth = 50
+
+	env := newTestEnv()
+
+	// Build a quasiquoted form with 200 levels of list nesting.
+	// (quasiquote ( ... (quasiquote (x)) ... ))
+	var build func(depth int) string
+	build = func(depth int) string {
+		if depth == 0 {
+			return "x"
+		}
+		return "(quasiquote " + build(depth-1) + ")"
+	}
+	src := build(100)
+	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	if err != nil {
+		t.Fatalf("reader rejected deep quasiquote source: %v", err)
+	}
+	_, err = e.Eval(context.Background(), forms[0], env)
+	if err == nil {
+		t.Fatal("expected structural depth error from deep quasiquote")
+	}
+	var le *LispicoError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *LispicoError, got %T: %v", err, err)
+	}
+	if le.Code != CodeResourceLimit {
+		t.Fatalf("expected Code=%q, got %q", CodeResourceLimit, le.Code)
+	}
+}
+
+func TestEval_StructuralDepthDirectEvaluatorEnforces(t *testing.T) {
+	t.Parallel()
+	// Parse with reader ceiling ABOVE eval default so reader does NOT reject first
+	n := 2000
+	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
+	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	if err != nil {
+		t.Fatalf("reader rejected depth %d with maxDepth=5000: %v", n, err)
+	}
+
+	e := NewEvaluator()
+	// Default MaxStructuralDepth is 1024, so depth 2000 should exceed it
+	env := newTestEnv()
+	_, err = e.Eval(context.Background(), forms[0], env)
+	if err == nil {
+		t.Fatal("expected structural depth error: default MaxStructuralDepth=1024 < depth 2000")
+	}
+	var le *LispicoError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *LispicoError, got %T: %v", err, err)
+	}
+	if le.Code != CodeResourceLimit {
+		t.Fatalf("expected Code=%q, got %q", CodeResourceLimit, le.Code)
+	}
+}
+
+func TestConcurrent_StructuralDepthIsolation(t *testing.T) {
+	// DISCRIMINATING isolation proof: each goroutine evaluates a structure whose
+	// depth (150) is UNDER the limit (200), so each succeeds on its own. If the
+	// structDepth counter were a shared engine field instead of per-call evalState,
+	// two concurrent evaluations would combine past 200 and fail. Asserting all
+	// succeed proves per-call isolation; run under -race to catch any data race.
+	const depth, limit, workers = 150, 200, 8
+	src := strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth)
+	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	if err != nil {
+		t.Fatalf("reader: %v", err)
+	}
+
+	e := NewEvaluator()
+	e.MaxStructuralDepth = limit
+
+	env := newTestEnv()
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Each goroutine uses its own context → its own evalState. Run several
+			// iterations to maximize temporal overlap with the other goroutines.
+			for range 20 {
+				ctx := context.Background()
+				if _, err := e.Eval(ctx, forms[0], env); err != nil {
+					errs <- err
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("under-limit concurrent evaluation must succeed in isolation; got shared-counter leak: %v", err)
+		}
+	}
+}
+
+func TestEval_QuasiquoteAgreementPin(t *testing.T) {
+	t.Parallel()
+	// With MaxStructuralDepth=1 in tree-walker:
+	// - (quasiquote a) succeeds (atom → depth 0)
+	// - (quasiquote ((a))) fails (list depth 2 > 1)
+	e := NewEvaluator()
+	e.MaxStructuralDepth = 1
+
+	env := newTestEnv()
+
+	// (quasiquote a) — atom, no struct depth increment
+	val, err := e.Eval(context.Background(), List{Items: []Value{Symbol{V: "quasiquote"}, Symbol{V: "a"}}}, env)
+	if err != nil {
+		t.Fatalf("(quasiquote a) should succeed with MaxStructuralDepth=1: %v", err)
+	}
+	if !val.Equals(Symbol{V: "a"}) {
+		t.Fatalf("(quasiquote a) = %s, want a", val.String())
+	}
+
+	// (quasiquote ((a))) — list/list/atom → depth 2
+	inner := List{Items: []Value{Symbol{V: "a"}}}
+	mid := List{Items: []Value{inner}}
+	_, err = e.Eval(context.Background(), List{Items: []Value{Symbol{V: "quasiquote"}, mid}}, env)
+	if err == nil {
+		t.Fatal("(quasiquote ((a))) should error with MaxStructuralDepth=1")
+	}
+	var le *LispicoError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *LispicoError, got %T: %v", err, err)
+	}
+	if le.Code != CodeResourceLimit {
+		t.Fatalf("expected Code=%q, got %q", CodeResourceLimit, le.Code)
+	}
 }

@@ -158,6 +158,27 @@ Forms it does not compile (a `defmacro` nested in a body, `unquote-splicing`)
 fall back to the tree-walking evaluator, which remains the default and complete
 path when `WithBytecode()` is not passed.
 
+## Resource limits
+
+`runtime.WithResourceLimits(runtime.ResourceLimits{…})` configures four
+resource ceilings before construction:
+
+| Field             | Default     | Effect                                  |
+| ----------------- | ----------- | --------------------------------------- |
+| `MaxReaderDepth`  | 1024        | Maximum nesting depth of s-expressions  |
+| `MaxStructuralDepth` | 1024     | Maximum structural depth of evaluated/   |
+|                   |             | compiled Vector, HashMap, and           |
+|                   |             | quasiquote List literals                |
+| `MaxCollectionLen`| 10,000,000  | Maximum length of `range`-produced list |
+| `MaxCacheEntries` | 4096        | Maximum bytecode chunk cache entries    |
+
+A zero field selects the default. Ceilings are immutable after `New`.
+Exceeding one returns a `*core.LispicoError` with `Code: "ResourceLimitError"`.
+Structural depth is enforced at evaluation time in both evaluators so
+a dead-branch over-limit literal (`(if false <deep> 1)`) is not rejected.
+The evaluators share a single counter across GoFunc callbacks (`map`, `filter`,
+`reduce`) so nested constructors inside callbacks do not bypass the limit.
+
 ## Status
 
 **Alpha** — Core functionality complete, API subject to change.

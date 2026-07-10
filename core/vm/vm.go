@@ -5,6 +5,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -43,14 +44,16 @@ type handler struct {
 // It is not safe for concurrent use on the same instance; callers that need
 // concurrency-safe evaluation should use a fresh VM per evaluation.
 type VM struct {
-	stack       []core.Value
-	frames      []Frame
-	handlers    []handler
-	globals     *core.Env
-	maxDepth    int
-	depth       int
-	eval        core.Evaluator
-	canonicalAt []Opcode
+	stack              []core.Value
+	frames             []Frame
+	handlers           []handler
+	globals            *core.Env
+	maxDepth           int
+	depth              int
+	eval               core.Evaluator
+	canonicalAt        []Opcode
+	structDepth        *atomic.Int64
+	maxStructuralDepth int
 }
 
 // VMOption configures a VM created by New.
@@ -68,13 +71,30 @@ func WithMaxDepth(d int) VMOption {
 	return func(v *VM) { v.maxDepth = d }
 }
 
+// WithMaxStructuralDepth sets the maximum structural depth before the VM
+// aborts with a resource limit error. Zero (the default) means unlimited.
+func WithMaxStructuralDepth(n int) VMOption {
+	return func(v *VM) { v.maxStructuralDepth = n }
+}
+
+// WithStructuralDepthCounter sets the shared structural-depth counter. When
+// nil the VM uses its own private counter (set automatically in New).
+func WithStructuralDepthCounter(c *atomic.Int64) VMOption {
+	return func(v *VM) {
+		if c != nil {
+			v.structDepth = c
+		}
+	}
+}
+
 // New creates a VM using globals as the root environment.
 func New(globals *core.Env, opts ...VMOption) *VM {
 	v := &VM{
-		stack:   make([]core.Value, 0, 256),
-		frames:  make([]Frame, 0, 64),
-		globals: globals,
-		eval:    core.NewEvaluator(),
+		stack:       make([]core.Value, 0, 256),
+		frames:      make([]Frame, 0, 64),
+		globals:     globals,
+		eval:        core.NewEvaluator(),
+		structDepth: &atomic.Int64{},
 	}
 	for _, opt := range opts {
 		opt(v)
@@ -136,7 +156,8 @@ func (vm *VM) peek() (core.Value, error) {
 // Apply calls fn with args in a fresh isolated VM and returns the result.
 // The receiver is used only for configuration (globals, max depth, evaluator).
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval))
+	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth))
+	fresh.structDepth = v.structDepth
 	return fresh.apply(ctx, fn, args, env)
 }
 
@@ -386,6 +407,21 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 			vm.stack = vm.stack[:len(vm.stack)-n]
 			vm.push(hm)
+
+		case OpStructEnter:
+			n := instr.A()
+			vm.structDepth.Add(int64(n))
+			if vm.maxStructuralDepth > 0 && int(vm.structDepth.Load()) > vm.maxStructuralDepth {
+				vm.structDepth.Add(-int64(n))
+				return nil, &core.LispicoError{
+					Code:    core.CodeResourceLimit,
+					Message: fmt.Sprintf("structural depth limit %d exceeded", vm.maxStructuralDepth),
+				}
+			}
+
+		case OpStructLeave:
+			n := instr.A()
+			vm.structDepth.Add(-int64(n))
 
 		case OpClosure:
 			sub, err := frame.chunk.GetSubChunk(instr.A())

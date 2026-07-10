@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sync/atomic"
@@ -29,8 +30,10 @@ func (r recurVal) Equals(_ Value) bool { return false }
 // engine is the concrete tree-walking evaluator.
 // It implements the Evaluator interface from types.go.
 type engine struct {
-	maxMacroDepth int
-	MaxDepth      int
+	maxMacroDepth      int
+	MaxDepth           int
+	MaxStructuralDepth int
+	MaxCollectionLen   int
 	// forms is this Engine's effective special-form dispatch table, resolved
 	// from its Dialect at construction. It is read-only after construction, so
 	// evaluated code cannot change which forms are available.
@@ -43,10 +46,11 @@ type engine struct {
 	lisp2 bool
 }
 
+const defaultMaxStructuralDepth = 1024
+
 // NewEvaluator constructs a tree-walking evaluator running the identity
-// dialect — the full kernel table under its canonical names.
 func NewEvaluator() *engine {
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: copyKernel(), truthy: IsTruthy}
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: defaultMaxStructuralDepth, forms: copyKernel(), truthy: IsTruthy}
 }
 
 // NewEvaluatorWithDialect constructs a tree-walking evaluator whose special
@@ -57,7 +61,7 @@ func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2()}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: defaultMaxStructuralDepth, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2()}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -70,9 +74,10 @@ func copyKernel() map[string]formFn {
 // carried in the context so concurrent evaluations on one engine never share
 // call/loop/macro state.
 type evalState struct {
-	callDepth  atomic.Int64
-	loopDepth  atomic.Int64
-	macroDepth atomic.Int64
+	callDepth   atomic.Int64
+	loopDepth   atomic.Int64
+	macroDepth  atomic.Int64
+	structDepth atomic.Int64
 }
 
 type evalStateKey struct{}
@@ -101,8 +106,29 @@ func DetachEvalState(ctx context.Context) context.Context {
 	return context.WithValue(ctx, evalStateKey{}, &evalState{})
 }
 
+// EnsureEvalState returns a context with a fresh evalState attached if one
+// is not already present. Callers that propagate ctx through evaluator
+// callbacks (VM GoFuncs, Apply) should call this at every entry point so
+// the shared structural-depth counter is available.
+func EnsureEvalState(ctx context.Context) context.Context {
+	return ensureEvalState(ctx)
+}
+
+// EvalStructCounter returns the shared structDepth atomic from the eval state
+// in ctx. Returns a private zero-valued atomic when ctx has no eval state (the
+// pointer is never nil), enabling the VM to share a single structural depth
+// counter with the tree-walker across Apply callbacks.
+func EvalStructCounter(ctx context.Context) *atomic.Int64 {
+	st := evalStateFrom(ctx)
+	return &st.structDepth
+}
+
 func evalErrorf(format string, args ...any) *LispicoError {
 	return &LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
+}
+
+func resourceLimitErrorf(format string, args ...any) *LispicoError {
+	return &LispicoError{Code: CodeResourceLimit, Message: fmt.Sprintf(format, args...)}
 }
 
 // Apply is the public entry point for calling a Lisp value as a function.
@@ -126,6 +152,12 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 	case Nil, Bool, Int, Float, String, Keyword, GoFunc, Lambda, Macro:
 		return val, nil
 	case Vector:
+		st := evalStateFrom(ctx)
+		st.structDepth.Add(1)
+		defer func() { st.structDepth.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
 		items := make([]Value, len(val.Items))
 		for i, item := range val.Items {
 			r, err := e.Eval(ctx, item, env)
@@ -155,6 +187,12 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 
 // evalMap evaluates every key and value of a map literal, producing a new map.
 func (e *engine) evalMap(ctx context.Context, m *HashMap, env *Env) (Value, error) {
+	st := evalStateFrom(ctx)
+	st.structDepth.Add(1)
+	defer func() { st.structDepth.Add(-1) }()
+	if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+		return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+	}
 	result := NewHashMap()
 	for _, pair := range m.Pairs() {
 		k, err := e.Eval(ctx, pair[0], env)
@@ -352,6 +390,12 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 				}
 			}
 		}
+		st := evalStateFrom(ctx)
+		st.structDepth.Add(1)
+		defer func() { st.structDepth.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
 		var result []Value
 		for _, item := range val.Items {
 			if list, ok := item.(List); ok && len(list.Items) > 0 {
@@ -382,6 +426,12 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		}
 		return List{Items: result}, nil
 	case Vector:
+		st := evalStateFrom(ctx)
+		st.structDepth.Add(1)
+		defer func() { st.structDepth.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
 		result := make([]Value, len(val.Items))
 		for i, item := range val.Items {
 			expanded, err := e.expandQuasiquote(ctx, item, env)
@@ -392,6 +442,12 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		}
 		return Vector{Items: result}, nil
 	case *HashMap:
+		st := evalStateFrom(ctx)
+		st.structDepth.Add(1)
+		defer func() { st.structDepth.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
 		result := NewHashMap()
 		for _, pair := range val.Pairs() {
 			k, err := e.expandQuasiquote(ctx, pair[0], env)
@@ -412,6 +468,8 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		return val, nil
 	}
 }
+
+func (e *engine) CollectionLimit() int { return e.MaxCollectionLen }
 
 // ── Special Form Implementations ─────────────────────────────────────────────
 
@@ -776,6 +834,14 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	body := args[:len(args)-1]
 	result, err := e.evalBody(ctx, body, env)
 	if err != nil {
+		// Resource-limit breaches are a hard safety boundary: never catchable,
+		// so a program cannot recover from resource exhaustion and continue.
+		// This matches the bytecode VM, whose structural-depth opcode returns
+		// the error directly rather than routing it through throw.
+		var lerr *LispicoError
+		if errors.As(err, &lerr) && lerr.Code == CodeResourceLimit {
+			return nil, err
+		}
 		catchEnv := env.Child()
 		catchEnv.Set(errSym.V, String{V: err.Error()})
 		return e.evalBody(ctx, catchClause.Items[bodyStart:], catchEnv)

@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const defaultReaderDepth = 1024
+
 type tokenType int
 
 const (
@@ -282,12 +284,21 @@ func (r *Reader) readComment() {
 
 // Parser converts a token slice into Value trees.
 type Parser struct {
-	tokens []token
-	pos    int
+	tokens   []token
+	pos      int
+	maxDepth int
+	depth    int
 }
 
 func NewParser(tokens []token) *Parser {
-	return &Parser{tokens: tokens}
+	return NewParserWithDepth(tokens, defaultReaderDepth)
+}
+
+func NewParserWithDepth(tokens []token, maxDepth int) *Parser {
+	if maxDepth <= 0 {
+		maxDepth = defaultReaderDepth
+	}
+	return &Parser{tokens: tokens, maxDepth: maxDepth}
 }
 
 func (p *Parser) peek() token {
@@ -322,6 +333,18 @@ func (p *Parser) Parse() (Value, error) {
 }
 
 func (p *Parser) parseForm() (Value, error) {
+	p.depth++
+	defer func() { p.depth-- }()
+	if p.depth > p.maxDepth {
+		tok := p.peek()
+		return nil, &LispicoError{
+			Code:    CodeResourceLimit,
+			Message: fmt.Sprintf("reader nesting depth limit %d exceeded", p.maxDepth),
+			Line:    tok.line,
+			Col:     tok.col,
+		}
+	}
+
 	tok := p.peek()
 
 	switch tok.typ {

@@ -8,7 +8,17 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+const defaultStdlibCollectionLen = 10_000_000
+
 func (p *Plugin) registerCollections(env *core.Env) {
+	maxCollectionLen := defaultStdlibCollectionLen
+	if ev := env.Evaluator(); ev != nil {
+		if cl, ok := ev.(core.CollectionLimiter); ok {
+			if n := cl.CollectionLimit(); n > 0 {
+				maxCollectionLen = n
+			}
+		}
+	}
 	env.Set("list", core.GoFunc{
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -519,14 +529,38 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				}
 			}
 
-			var items []core.Value
+			var span, stepMag uint64
 			if step > 0 {
-				for i := start; i < end; i += step {
-					items = append(items, core.Int{V: i})
+				stepMag = uint64(step)
+				if end > start {
+					span = uint64(end) - uint64(start)
 				}
 			} else {
-				for i := start; i > end; i += step {
-					items = append(items, core.Int{V: i})
+				stepMag = uint64(-step)
+				if start > end {
+					span = uint64(start) - uint64(end)
+				}
+			}
+			count := span / stepMag
+			if span%stepMag != 0 {
+				count++
+			}
+			maxLen := maxCollectionLen
+			if count > uint64(maxLen) {
+				return nil, core.NewResourceLimitError(fmt.Sprintf("range length %d exceeds collection limit %d", count, maxLen))
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			items := make([]core.Value, 0, count)
+			cur := start
+			for k := uint64(0); k < count; k++ {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				items = append(items, core.Int{V: cur})
+				if k+1 < count {
+					cur += step
 				}
 			}
 			return core.List{Items: items}, nil

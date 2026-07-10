@@ -31,36 +31,43 @@ type cacheKey struct {
 // bytecodeEvaluator runs Lisp forms through the bytecode VM with chunk caching
 // and VM pool reuse for concurrent safety and reduced allocation.
 type bytecodeEvaluator struct {
-	globals   *core.Env
-	maxDepth  int
-	macro     macroExpander
-	tree      core.Evaluator
-	dialect   core.Dialect
-	mu        sync.Mutex
-	cache     map[cacheKey]*vm.Chunk
-	dialectFP string
-	vmPool    sync.Pool
+	globals            *core.Env
+	maxDepth           int
+	macro              macroExpander
+	tree               core.Evaluator
+	dialect            core.Dialect
+	mu                 sync.Mutex
+	cache              map[cacheKey]*vm.Chunk
+	dialectFP          string
+	vmPool             sync.Pool
+	maxStructuralDepth int
+	maxCollectionLen   int
+	maxCacheEntries    int
 }
 
-func newBytecodeEvaluator(globals *core.Env, maxDepth int, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
+func newBytecodeEvaluator(globals *core.Env, maxDepth int, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
 	be := &bytecodeEvaluator{
-		globals:   globals,
-		maxDepth:  maxDepth,
-		macro:     treeWalker.(macroExpander),
-		tree:      treeWalker,
-		dialect:   dialect,
-		dialectFP: dialect.Fingerprint(),
-		cache:     make(map[cacheKey]*vm.Chunk),
+		globals:            globals,
+		maxDepth:           maxDepth,
+		maxStructuralDepth: limits.MaxStructuralDepth,
+		maxCollectionLen:   limits.MaxCollectionLen,
+		maxCacheEntries:    limits.MaxCacheEntries,
+		macro:              treeWalker.(macroExpander),
+		tree:               treeWalker,
+		dialect:            dialect,
+		dialectFP:          dialect.Fingerprint(),
+		cache:              make(map[cacheKey]*vm.Chunk),
 	}
 	be.vmPool = sync.Pool{
 		New: func() any {
-			return vm.New(globals, vm.WithMaxDepth(maxDepth), vm.WithEvaluator(be))
+			return vm.New(globals, vm.WithMaxDepth(maxDepth), vm.WithEvaluator(be), vm.WithMaxStructuralDepth(be.maxStructuralDepth))
 		},
 	}
 	return be
 }
 
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
+	ctx = core.EnsureEvalState(ctx)
 	expanded, err := be.macro.MacroExpand(ctx, form, env)
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
@@ -78,14 +85,18 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 }
 
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := vm.New(env, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be))
+	ctx = core.EnsureEvalState(ctx)
+	fresh := vm.New(env, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be), vm.WithMaxStructuralDepth(be.maxStructuralDepth), vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx)))
 	return fresh.Apply(ctx, fn, args, env)
 }
+
+func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen }
 
 // EvalCached evaluates form with caching: macro-expands, checks the chunk cache
 // by key (sourceHash, formIndex, dialectFP, macroEpoch), compiles on miss, and
 // runs via a pooled VM.
 func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash string, formIndex int) (core.Value, error) {
+	ctx = core.EnsureEvalState(ctx)
 	expanded, err := be.macro.MacroExpand(ctx, form, env)
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
@@ -103,6 +114,15 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 	be.mu.Unlock()
 
 	if !hit {
+		currentEpoch := be.globals.MacroEpoch()
+		be.mu.Lock()
+		for k := range be.cache {
+			if k.macroEpoch != currentEpoch {
+				delete(be.cache, k)
+			}
+		}
+		be.mu.Unlock()
+
 		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 		if err := comp.Compile(expanded); err != nil {
 			if isUnsupportedInBytecode(err) {
@@ -118,6 +138,12 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 			chunk = cached
 		} else {
 			be.cache[key] = chunk
+			for len(be.cache) > be.maxCacheEntries {
+				for k := range be.cache {
+					delete(be.cache, k)
+					break
+				}
+			}
 		}
 		be.mu.Unlock()
 	}
@@ -130,6 +156,7 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 	v := be.vmPool.Get().(*vm.VM)
 	v.Reset()
 	v.SetGlobals(env)
+	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
 	result, err := v.Run(ctx, chunk)
 	be.vmPool.Put(v)
 	return result, err
@@ -152,7 +179,7 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 		defer cancel()
 	}
 
-	forms, err := e.config.dialect.Read(input)
+	forms, err := e.config.dialect.ReadWithMaxDepth(input, e.config.limits.MaxReaderDepth)
 	if err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
@@ -316,7 +343,7 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 		defer cancel()
 	}
 
-	forms, err := e.config.dialect.Read(source)
+	forms, err := e.config.dialect.ReadWithMaxDepth(source, e.config.limits.MaxReaderDepth)
 	if err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)

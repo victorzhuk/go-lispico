@@ -22,6 +22,13 @@ type Evaluator interface {
 	Apply(ctx context.Context, fn Value, args []Value, env *Env) (Value, error)
 }
 
+// CollectionLimiter is implemented by an Evaluator whose Engine caps the
+// length of collections built by builtins such as range. Read-only: the value
+// is fixed at Engine construction.
+type CollectionLimiter interface {
+	CollectionLimit() int
+}
+
 // Nil — the empty value; the only falsy value besides false.
 type Nil struct{}
 

@@ -78,14 +78,16 @@ func (c *Compiler) Compile(form core.Value) error {
 		return c.compileList(f)
 
 	case core.Vector:
+		c.chunk.Emit(vm.OpStructEnter, 1)
 		for _, item := range f.Items {
 			if err := c.Compile(item); err != nil {
 				return err
 			}
 		}
 		c.chunk.Emit(vm.OpMakeVector, len(f.Items))
-
+		c.chunk.Emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
+		c.chunk.Emit(vm.OpStructEnter, 1)
 		var pairs [][2]core.Value
 		f.Each(func(k, v core.Value) {
 			pairs = append(pairs, [2]core.Value{k, v})
@@ -99,7 +101,7 @@ func (c *Compiler) Compile(form core.Value) error {
 			}
 		}
 		c.chunk.Emit(vm.OpMakeMap, len(pairs))
-
+		c.chunk.Emit(vm.OpStructLeave, 1)
 	default:
 		return fmt.Errorf("compile: unknown form type %T", form)
 	}
@@ -842,23 +844,66 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 				}
 			}
 		}
+		c.chunk.Emit(vm.OpStructEnter, 1)
 		for _, item := range val.Items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
 				return err
 			}
 		}
 		c.chunk.Emit(vm.OpMakeList, len(val.Items))
+		c.chunk.Emit(vm.OpStructLeave, 1)
 	case core.Vector:
+		c.chunk.Emit(vm.OpStructEnter, 1)
 		for _, item := range val.Items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
 				return err
 			}
 		}
 		c.chunk.Emit(vm.OpMakeVector, len(val.Items))
+		c.chunk.Emit(vm.OpStructLeave, 1)
+	case *core.HashMap:
+		d := literalDepth(val)
+		c.chunk.Emit(vm.OpStructEnter, d)
+		c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(val))
+		c.chunk.Emit(vm.OpStructLeave, d)
 	default:
 		c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(val))
 	}
 	return nil
+}
+
+func literalDepth(v core.Value) int {
+	switch val := v.(type) {
+	case core.List:
+		max := 0
+		for _, item := range val.Items {
+			if d := literalDepth(item); d > max {
+				max = d
+			}
+		}
+		return max + 1
+	case core.Vector:
+		max := 0
+		for _, item := range val.Items {
+			if d := literalDepth(item); d > max {
+				max = d
+			}
+		}
+		return max + 1
+	case *core.HashMap:
+		max := 0
+		for _, pair := range val.Pairs() {
+			if d := literalDepth(pair[0]); d > max {
+				max = d
+			}
+			if d := literalDepth(pair[1]); d > max {
+				max = d
+			}
+		}
+		return max + 1
+	default:
+		return 0
+	}
 }
 
 // CompileAll compiles each of forms into its own top-level vm.Chunk.

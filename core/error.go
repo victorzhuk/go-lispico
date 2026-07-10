@@ -53,3 +53,14 @@ func NewArityError(expected, got int) *LispicoError {
 func NewUndefinedError(name string) *LispicoError {
 	return &LispicoError{Code: "UndefinedError", Message: fmt.Sprintf("undefined: %s", name)}
 }
+
+// CodeResourceLimit classifies a *LispicoError reporting that a resource
+// ceiling (reader depth, structural depth, collection length, cache size)
+// was exceeded.
+const CodeResourceLimit = "ResourceLimitError"
+
+// NewResourceLimitError builds a LispicoError reporting a resource ceiling
+// was exceeded.
+func NewResourceLimitError(msg string) *LispicoError {
+	return &LispicoError{Code: CodeResourceLimit, Message: msg}
+}

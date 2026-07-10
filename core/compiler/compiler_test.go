@@ -116,12 +116,14 @@ func TestCompiler_Vector(t *testing.T) {
 	require.NoError(t, c.Compile(vec))
 
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
+	require.Len(t, chunk.Code, 6)
+	assert.Equal(t, vm.OpStructEnter, chunk.Code[0].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
-	assert.Equal(t, vm.OpMakeVector, chunk.Code[3].Op())
-	assert.Equal(t, 3, chunk.Code[3].A())
+	assert.Equal(t, vm.OpConst, chunk.Code[3].Op())
+	assert.Equal(t, vm.OpMakeVector, chunk.Code[4].Op())
+	assert.Equal(t, 3, chunk.Code[4].A())
+	assert.Equal(t, vm.OpStructLeave, chunk.Code[5].Op())
 }
 
 func TestCompiler_List_Empty(t *testing.T) {
@@ -738,15 +740,16 @@ func TestCompiler_HashMap(t *testing.T) {
 	hm, _ = hm.Assoc(core.Keyword{V: "b"}, core.Int{V: 2})
 
 	require.NoError(t, c.Compile(hm))
-
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 5)
-	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
+	require.Len(t, chunk.Code, 7)
+	assert.Equal(t, vm.OpStructEnter, chunk.Code[0].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[3].Op())
-	assert.Equal(t, vm.OpMakeMap, chunk.Code[4].Op())
-	assert.Equal(t, 2, chunk.Code[4].A())
+	assert.Equal(t, vm.OpConst, chunk.Code[4].Op())
+	assert.Equal(t, vm.OpMakeMap, chunk.Code[5].Op())
+	assert.Equal(t, 2, chunk.Code[5].A())
+	assert.Equal(t, vm.OpStructLeave, chunk.Code[6].Op())
 }
 
 func TestCompiler_CaptureAnalysis_Uncaptured(t *testing.T) {

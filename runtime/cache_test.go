@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,4 +123,55 @@ func TestCache_ConcurrentSafety(t *testing.T) {
 			}
 		}
 	})
+}
+
+func cacheCount(t *testing.T, e Engine) int {
+	t.Helper()
+	ei, ok := e.(*engineImpl)
+	require.True(t, ok)
+	require.NotNil(t, ei.bytecodeEvaluator)
+	be := ei.bytecodeEvaluator
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	return len(be.cache)
+}
+
+// TestCache_BoundedSize: a low MaxCacheEntries keeps the entry count at or below
+// the ceiling while many distinct sources are evaluated (eviction recompiles on
+// demand without corrupting results).
+func TestCache_BoundedSize(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()),
+		WithResourceLimits(ResourceLimits{MaxCacheEntries: 4, MaxCollectionLen: 1 << 30}))
+	require.NoError(t, err)
+	defer e.Close()
+	bindBuiltin(t, e, "+")
+	for i := range 30 {
+		r, err := e.Eval(context.Background(), "s", fmt.Sprintf("(+ %d 1)", i))
+		require.NoError(t, err)
+		assert.True(t, core.Int{V: int64(i + 1)}.Equals(r))
+	}
+	assert.LessOrEqual(t, cacheCount(t, e), 4, "cache must stay at or below MaxCacheEntries")
+}
+
+// TestCache_StaleEpochEvictionBounded: repeatedly redefining a macro orphans
+// old-epoch chunks; they must be reclaimed so the cache stays bounded while
+// results stay correct.
+func TestCache_StaleEpochEvictionBounded(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()),
+		WithResourceLimits(ResourceLimits{MaxCacheEntries: 5, MaxCollectionLen: 1 << 30}))
+	require.NoError(t, err)
+	defer e.Close()
+	bindBuiltin(t, e, "+")
+	ctx := context.Background()
+	for i := range 30 {
+		_, err := e.Eval(ctx, "dm", fmt.Sprintf("(defmacro m [x] (+ x %d))", i))
+		require.NoError(t, err)
+		_, err = e.Eval(ctx, "u", fmt.Sprintf("(m %d)", i))
+		require.NoError(t, err)
+	}
+	// (m 1) under the last macro (+ x 29) => 30; proves correctness survived eviction.
+	r, err := e.Eval(ctx, "final", "(m 1)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 30}.Equals(r), "(m 1) under (+ x 29) => 30")
+	assert.LessOrEqual(t, cacheCount(t, e), 5, "stale-epoch orphaned entries must be reclaimed")
 }

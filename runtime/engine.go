@@ -78,6 +78,7 @@ type engineConfig struct {
 	timeout      time.Duration
 	bytecode     bool
 	dialect      core.Dialect
+	limits       ResourceLimits
 }
 
 // EngineOption configures an Engine created by New.
@@ -107,6 +108,45 @@ func WithBytecode() EngineOption {
 	}
 }
 
+// ResourceLimits configures resource ceilings for an Engine. All fields are
+// immutable after construction. A zero field is replaced with its default.
+type ResourceLimits struct {
+	MaxReaderDepth     int
+	MaxStructuralDepth int
+	MaxCollectionLen   int
+	MaxCacheEntries    int
+}
+
+const (
+	defaultMaxReaderDepth     = 1024
+	defaultMaxStructuralDepth = 1024
+	defaultMaxCollectionLen   = 10_000_000
+	defaultMaxCacheEntries    = 4096
+)
+
+func resolveLimits(l ResourceLimits) ResourceLimits {
+	if l.MaxReaderDepth <= 0 {
+		l.MaxReaderDepth = defaultMaxReaderDepth
+	}
+	if l.MaxStructuralDepth <= 0 {
+		l.MaxStructuralDepth = defaultMaxStructuralDepth
+	}
+	if l.MaxCollectionLen <= 0 {
+		l.MaxCollectionLen = defaultMaxCollectionLen
+	}
+	if l.MaxCacheEntries <= 0 {
+		l.MaxCacheEntries = defaultMaxCacheEntries
+	}
+	return l
+}
+
+// WithResourceLimits sets resource ceilings for the Engine. Passed to New.
+func WithResourceLimits(limits ResourceLimits) EngineOption {
+	return func(cfg *engineConfig) {
+		cfg.limits = limits
+	}
+}
+
 // WithDialect selects the Dialect the Engine runs. The Dialect is resolved once
 // at New and is immutable for the Engine's lifetime. Without this option the
 // Engine runs the Common Lisp dialect. Select the prior Clojure-style surface
@@ -129,6 +169,8 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		opt(&cfg)
 	}
 
+	cfg.limits = resolveLimits(cfg.limits)
+
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -141,6 +183,8 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		return nil, err
 	}
 	treeWalker.MaxDepth = cfg.maxEvalDepth
+	treeWalker.MaxStructuralDepth = cfg.limits.MaxStructuralDepth
+	treeWalker.MaxCollectionLen = cfg.limits.MaxCollectionLen
 
 	var evaluator core.Evaluator
 	e := &engineImpl{
@@ -152,7 +196,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	if cfg.bytecode {
-		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, treeWalker, cfg.dialect)
+		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.limits, treeWalker, cfg.dialect)
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be

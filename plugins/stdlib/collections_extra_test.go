@@ -1,9 +1,11 @@
 package stdlib
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -175,4 +177,35 @@ func TestCollections_ExtraErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRange_StandaloneDefaultCap: with no Engine evaluator on the env, range
+// uses the safe stdlib default, so an oversized range fails closed and a normal
+// one works.
+func TestRange_StandaloneDefaultCap(t *testing.T) {
+	env := setupEnv(t)
+	err := evalErr(t, env, "(range 0 99999999)")
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.True(t, errors.As(err, &lerr) && lerr.Code == core.CodeResourceLimit, "expected ResourceLimitError, got %v", err)
+
+	v := eval(t, env, "(range 0 5)")
+	list, ok := v.(core.List)
+	require.True(t, ok)
+	require.Len(t, list.Items, 5)
+}
+
+// TestRange_ExtremeBoundsNoOverflow: a 2-element span just below MaxInt64 must
+// compute its cardinality via uint64 magnitudes (no int64 overflow) and return
+// the two correct elements.
+func TestRange_ExtremeBoundsNoOverflow(t *testing.T) {
+	env := setupEnv(t)
+	v := eval(t, env, "(range 9223372036854775805 9223372036854775807)")
+	list, ok := v.(core.List)
+	require.True(t, ok)
+	require.Len(t, list.Items, 2)
+	i0, _ := list.Items[0].(core.Int)
+	i1, _ := list.Items[1].(core.Int)
+	require.Equal(t, int64(9223372036854775805), i0.V)
+	require.Equal(t, int64(9223372036854775806), i1.V)
 }

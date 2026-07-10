@@ -334,12 +334,19 @@ func (d Dialect) readerFlags() readerFlags {
 // top-level forms. Engines read source through this so parsing honors the
 // running Dialect.
 func (d Dialect) Read(src string) ([]Value, error) {
+	return d.ReadWithMaxDepth(src, defaultReaderDepth)
+}
+
+// ReadWithMaxDepth tokenizes and parses src under the Dialect's reader flags,
+// limiting the parser's nesting depth to maxDepth. maxDepth ≤ 0 selects the
+// default (1024).
+func (d Dialect) ReadWithMaxDepth(src string, maxDepth int) ([]Value, error) {
 	r := NewReaderWithFlags(src, d.readerFlags())
 	tokens, err := r.Tokenize()
 	if err != nil {
 		return nil, err
 	}
-	p := NewParser(tokens)
+	p := NewParserWithDepth(tokens, maxDepth)
 	var forms []Value
 	for p.peek().typ != tokenEOF {
 		form, err := p.Parse()

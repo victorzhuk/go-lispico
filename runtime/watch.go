@@ -103,7 +103,7 @@ func (w *fileWatcher) reloadFile(path string) {
 		return
 	}
 
-	forms, err := w.engine.config.dialect.Read(string(content))
+	forms, err := w.engine.config.dialect.ReadWithMaxDepth(string(content), w.engine.config.limits.MaxReaderDepth)
 	if err != nil {
 		w.engine.logger.Error("parse file", "path", path, "error", err)
 		return
@@ -121,7 +121,8 @@ func (w *fileWatcher) reloadFile(path string) {
 
 	childEnv.MergeInto(w.engine.rootEnv)
 
-	w.engine.logger.Info("reloaded file",
+	w.engine.logger.Info(
+		"reloaded file",
 		"path", path,
 		"forms", len(forms),
 		"duration", time.Since(start),

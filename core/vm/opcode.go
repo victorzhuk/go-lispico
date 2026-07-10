@@ -42,6 +42,9 @@ const (
 	OpEq
 	OpGetFunc
 	OpSetFunc
+
+	OpStructEnter
+	OpStructLeave
 )
 
 var opNames = [...]string{
@@ -79,6 +82,8 @@ var opNames = [...]string{
 	OpLe:          "LE",
 	OpGe:          "GE",
 	OpEq:          "EQ",
+	OpStructEnter: "STRUCT_ENTER",
+	OpStructLeave: "STRUCT_LEAVE",
 }
 
 // String implements fmt.Stringer.
