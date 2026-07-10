@@ -73,12 +73,13 @@ func TestDialect_RemoveMakesFormUncallable(t *testing.T) {
 	assert.True(t, core.Int{V: 1}.Equals(got))
 }
 
-func TestDialect_BytecodeRejectsNonIdentity(t *testing.T) {
-	_, err := New(nil, WithBytecode(), WithDialect(core.EmptyDialect().Add("if", "if")))
-	require.Error(t, err, "bytecode + non-identity dialect must be rejected at construction")
+func TestDialect_BytecodeAllowsNonIdentity(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(core.EmptyDialect().Add("if", "if")))
+	require.NoError(t, err, "bytecode + non-identity dialect must be allowed")
+	e.Close()
 
-	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
-	require.NoError(t, err, "bytecode + Clojure (identity) dialect is allowed")
+	e, err = New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err, "bytecode + Clojure (identity) dialect still allowed")
 	e.Close()
 }
 

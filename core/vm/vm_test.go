@@ -2,8 +2,11 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -984,4 +987,679 @@ func TestVM_MalformedChunk_InstructionPointerOutOfRange(t *testing.T) {
 	if _, ok := err.(*core.LispicoError); !ok {
 		t.Errorf("expected *core.LispicoError, got %T", err)
 	}
+}
+
+func TestVM_NativeOpAdd(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			s += a.(core.Int).V
+		}
+		return core.Int{V: s}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0), // +
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 3}, core.Int{V: 4}}
+
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 7}) {
+		t.Errorf("expected 7, got %v", result)
+	}
+}
+
+func TestVM_NativeOpSub(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("-", core.GoFunc{Name: "-", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		r := args[0].(core.Int).V
+		for _, a := range args[1:] {
+			r -= a.(core.Int).V
+		}
+		return core.Int{V: r}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpSub, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "-"}, core.Int{V: 10}, core.Int{V: 3}}
+
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 7}) {
+		t.Errorf("expected 7, got %v", result)
+	}
+}
+
+func TestVM_NativeOpMul(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("*", core.GoFunc{Name: "*", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		r := int64(1)
+		for _, a := range args {
+			r *= a.(core.Int).V
+		}
+		return core.Int{V: r}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpMul, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "*"}, core.Int{V: 6}, core.Int{V: 7}}
+
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 42}) {
+		t.Errorf("expected 42, got %v", result)
+	}
+}
+
+func TestVM_NativeOpDiv(t *testing.T) {
+	t.Parallel()
+	fn := func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("/: requires at least 2 arguments")
+		}
+		d := float64(args[0].(core.Int).V)
+		for _, a := range args[1:] {
+			div := float64(a.(core.Int).V)
+			if div == 0 {
+				return nil, fmt.Errorf("/: division by zero")
+			}
+			d /= div
+		}
+		return core.Float{V: d}, nil
+	}
+	env := core.NewEnv(nil)
+	env.SetCanonical("/", core.GoFunc{Name: "/", Fn: fn})
+	v := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpDiv, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "/"}, core.Int{V: 10}, core.Int{V: 2}}
+	result, err := v.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Float{V: 5}) {
+		t.Errorf("expected 5.0, got %v", result)
+	}
+
+	chunk2 := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpDiv, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk2.Constants = []core.Value{core.Symbol{V: "/"}, core.Int{V: 10}, core.Int{V: 0}}
+	_, err = v.Run(context.Background(), chunk2)
+	if err == nil {
+		t.Fatal("expected division by zero error")
+	}
+}
+
+func TestVM_NativeOpLt(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("<", core.GoFunc{Name: "<", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Bool{V: args[0].(core.Int).V < args[1].(core.Int).V}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpLt, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "<"}, core.Int{V: 1}, core.Int{V: 2}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Bool{V: true}) {
+		t.Errorf("expected true, got %v", result)
+	}
+}
+
+func TestVM_NativeOpGt(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical(">", core.GoFunc{Name: ">", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Bool{V: args[0].(core.Int).V > args[1].(core.Int).V}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpGt, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: ">"}, core.Int{V: 3}, core.Int{V: 2}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Bool{V: true}) {
+		t.Errorf("expected true, got %v", result)
+	}
+}
+
+func TestVM_NativeOpLe(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("<=", core.GoFunc{Name: "<=", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Bool{V: args[0].(core.Int).V <= args[1].(core.Int).V}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpLe, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "<="}, core.Int{V: 2}, core.Int{V: 2}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Bool{V: true}) {
+		t.Errorf("expected true, got %v", result)
+	}
+}
+
+func TestVM_NativeOpGe(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical(">=", core.GoFunc{Name: ">=", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Bool{V: args[0].(core.Int).V >= args[1].(core.Int).V}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpGe, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: ">="}, core.Int{V: 2}, core.Int{V: 2}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Bool{V: true}) {
+		t.Errorf("expected true, got %v", result)
+	}
+}
+
+func TestVM_NativeOpEq(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("=", core.GoFunc{Name: "=", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Bool{V: args[0].Equals(args[1])}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpEq, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "="}, core.Int{V: 5}, core.Int{V: 5}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Bool{V: true}) {
+		t.Errorf("expected true, got %v", result)
+	}
+}
+
+func TestVM_NativeOp_EqString(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("=", core.GoFunc{Name: "=", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Bool{V: args[0].Equals(args[1])}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpEq, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "="}, core.String{V: "hello"}, core.String{V: "hello"}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Bool{V: true}) {
+		t.Errorf("expected true, got %v", result)
+	}
+}
+
+// TestVM_NativeOp_ReboundFallback proves env.Set (non-canonical) over a
+// canonical binding routes to the custom function, not the native fast path.
+func TestVM_NativeOp_ReboundFallback(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			s += a.(core.Int).V
+		}
+		return core.Int{V: s}, nil
+	}})
+	// Rebind via Set (clears canonical marker) — should fall back.
+	env.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Int{V: 999}, nil
+	}})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 999}) {
+		t.Errorf("expected 999 from rebound, got %v", result)
+	}
+}
+
+// TestVM_NativeOp_ChildRebind proves shadowing + in a child env (which has nil
+// canonical map) causes non-canonical fallback, not native fast path.
+func TestVM_NativeOp_ChildRebind(t *testing.T) {
+	t.Parallel()
+	globals := core.NewEnv(nil)
+	globals.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			s += a.(core.Int).V
+		}
+		return core.Int{V: s}, nil
+	}})
+
+	// Test that a child-env override still triggers fallback.
+	child := core.NewEnv(globals)
+	child.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Int{V: 888}, nil
+	}})
+
+	vm := New(child)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 888}) {
+		t.Errorf("expected 888 from child rebind, got %v", result)
+	}
+}
+
+// TestVM_NativeOp_FallbackEnv verifies that when a non-canonical binding
+// triggers fallback inside a closure, the env passed to GoFunc.Fn is the
+// active frame's env (a child of globals), not vm.globals. secret lives
+// only in the closure frame; vm.globals lacks it, so a correct env yields
+// 42 while the old globals bug would yield -1.
+func TestVM_NativeOp_FallbackEnv(t *testing.T) {
+	t.Parallel()
+
+	root := core.NewEnv(nil)
+	root.SetCanonical("+", core.GoFunc{
+		Name: "+",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			var s int64
+			for _, a := range args {
+				if n, ok := a.(core.Int); ok {
+					s += n.V
+				}
+			}
+			return core.Int{V: s}, nil
+		},
+	})
+
+	child := root.Child()
+	child.Set("+", core.GoFunc{
+		Name: "+",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, env *core.Env) (core.Value, error) {
+			if v, ok := env.Get("secret"); ok {
+				return v, nil
+			}
+			return core.Int{V: -1}, nil
+		},
+	})
+	child.Set("secret", core.Int{V: 42})
+
+	subChunk := &Chunk{Name: "inner"}
+	subChunk.Emit(OpGetGlobal, subChunk.AddConstant(core.Symbol{V: "+"}))
+	subChunk.Emit(OpConst, subChunk.AddConstant(core.Int{V: 1}))
+	subChunk.Emit(OpConst, subChunk.AddConstant(core.Int{V: 2}))
+	subChunk.Emit(OpAdd, 2)
+	subChunk.Emit(OpReturn, 0)
+
+	mainChunk := &Chunk{Name: "main"}
+	mainChunk.Emit(OpConst, mainChunk.AddConstant(NewClosure(subChunk, child)))
+	mainChunk.Emit(OpCall, 0)
+	mainChunk.Emit(OpReturn, 0)
+
+	vm := New(root)
+	result, err := vm.Run(context.Background(), mainChunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 42}) {
+		t.Errorf("expected 42 (secret from frame env via fallback), got %v", result)
+	}
+}
+
+// TestVM_NativeOp_SetClearsCanonical verifies that Set over a canonical
+// binding removes the canonical marker — even when the value is structurally
+// identical.
+func TestVM_NativeOp_SetClearsCanonical(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	origFn := func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			s += a.(core.Int).V
+		}
+		return core.Int{V: s}, nil
+	}
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: origFn})
+	// Set same function struct via Set — clears canonical despite same value.
+	env.Set("+", core.GoFunc{Name: "+", Fn: origFn})
+	vm := New(env)
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+	// dispatchNativeOp checks GetCanonical which returns false after Set.
+	// Then vm.call resolves the GoFunc and calls it. Since we lost native
+	// fast path, the fallback goes through vm.call/apply which pushes a
+	// frame and calls the GoFunc directly — the same origFn runs, producing
+	// 3 via the normal call path instead of native fast path.
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 3}) {
+		t.Errorf("expected 3 (fallback call produces same result), got %v", result)
+	}
+}
+
+// TestVM_NativeOp_LookupTimeCapture proves canonical status is captured at
+// OpGetGlobal time, not re-resolved after args. A custom + (non-canonical)
+// is bound, then an arg GoFunc restores canonical as a side effect. The
+// dispatch must use the pre-resolved non-canonical status → fallback →
+// custom fn returns 999, not native 3.
+func TestVM_NativeOp_LookupTimeCapture(t *testing.T) {
+	t.Parallel()
+
+	addFn := func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			if n, ok := a.(core.Int); ok {
+				s += n.V
+			}
+		}
+		return core.Int{V: s}, nil
+	}
+
+	root := core.NewEnv(nil)
+	root.SetCanonical("+", core.GoFunc{Name: "+", Fn: addFn})
+
+	customPlus := core.GoFunc{
+		Name: "+",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Int{V: 999}, nil
+		},
+	}
+	root.Set("+", customPlus)
+
+	restoreFn := core.GoFunc{
+		Name: "restore",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, env *core.Env) (core.Value, error) {
+			env.SetCanonical("+", core.GoFunc{Name: "+", Fn: addFn})
+			return core.Int{V: 1}, nil
+		},
+	}
+	root.Set("restore", restoreFn)
+
+	// (+ (restore) 2): OpGetGlobal + resolves customPlus (non-canonical),
+	// then (restore) side-effect restores canonical, then OpAdd dispatches.
+	// Lookup-time capture → no canonicalSlot → fallback → customPlus → 999.
+	chunk := &Chunk{Name: "test"}
+	chunk.Emit(OpGetGlobal, chunk.AddConstant(core.Symbol{V: "+"}))
+	chunk.Emit(OpGetGlobal, chunk.AddConstant(core.Symbol{V: "restore"}))
+	chunk.Emit(OpCall, 0)
+	chunk.Emit(OpConst, chunk.AddConstant(core.Int{V: 2}))
+	chunk.Emit(OpAdd, 2)
+	chunk.Emit(OpReturn, 0)
+
+	vm := New(root)
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 999}) {
+		t.Errorf("expected 999 (custom + via fallback despite mid-eval canonical restore), got %v", result)
+	}
+}
+
+// TestVM_NativeOp_OpcodeMismatch proves a canonical slot for OpAdd cannot
+// be stolen by OpSub. A hand-built chunk resolves canonical + but dispatches
+// OpSub at the same fnIdx; the opcode guard must reject and fall back.
+func TestVM_NativeOp_OpcodeMismatch(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			if n, ok := a.(core.Int); ok {
+				s += n.V
+			}
+		}
+		return core.Int{V: s}, nil
+	}})
+
+	// OpGetGlobal "+" sets canonicalSlots[slot] = OpAdd.
+	// Then OpSub at the same fnIdx: expectedOp=OpAdd ≠ OpSub → fallback.
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpSub, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 10}, core.Int{V: 3}}
+
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Fallback calls + GoFunc (3), not subtraction (7).
+	if !result.Equals(core.Int{V: 13}) {
+		t.Errorf("expected 13 (addition via fallback, not subtraction), got %v", result)
+	}
+}
+
+// TestVM_NativeOp_FastPathSkipsGoFunc proves the canonical fast path
+// executes native arithmetic without invoking GoFunc.Fn. A counter on the
+// GoFunc must stay zero after VM evaluation of a canonical +.
+func TestVM_NativeOp_FastPathSkipsGoFunc(t *testing.T) {
+	t.Parallel()
+
+	var callCount int
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{
+		Name: "+",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			callCount++
+			return core.Int{V: 0}, nil
+		},
+	})
+
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Equals(core.Int{V: 3}) {
+		t.Errorf("expected 3 from native fast path, got %v", result)
+	}
+	if callCount != 0 {
+		t.Errorf("GoFunc.Fn invoked %d time(s); canonical fast path must skip it", callCount)
+	}
+}
+
+// TestVM_NativeOp_StaleSlotClearedByNonNativeLookup seeds a stale
+// canonicalAt entry, then performs a non-native OpGetGlobal at the same
+// slot index. The stale entry must be cleared so the subsequent OpAdd falls
+// back instead of fast-pathing on a value that is not the operator.
+func TestVM_NativeOp_StaleSlotClearedByNonNativeLookup(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			if n, ok := a.(core.Int); ok {
+				s += n.V
+			}
+		}
+		return core.Int{V: s}, nil
+	}})
+	env.Set("x", core.Int{V: 10})
+
+	vm := New(env)
+
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "x"}, core.Int{V: 1}, core.Int{V: 2}}
+
+	// Seed stale canonicalAt[0] = OpAdd as if a prior throw left it behind.
+	vm.canonicalAt = []Opcode{OpAdd}
+
+	// Run: OpGetGlobal "x" (non-native) must clear slot 0.
+	// Then OpAdd at fnIdx=0: no canonicalSlot → fallback → vm.call(Int{10}) → error.
+	_, err := vm.Run(context.Background(), chunk)
+	if err == nil {
+		t.Fatal("expected error calling non-function x=10 via fallback; stale canonicalSlots entry may have survived")
+	}
+}
+
+func TestVM_UncapturedLocalsNoEnv(t *testing.T) {
+	t.Parallel()
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name:       "test",
+		Locals:     1,
+		LocalNames: []string{"x"},
+		Captured:   nil,
+		FullEnv:    false,
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpSetLocal, 0),
+			Encode(OpGetLocal, 0),
+			Encode(OpReturn, 0),
+		},
+		Constants: []core.Value{core.Int{V: 42}},
+	}
+
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.Int{V: 42}))
+}
+
+func TestVM_CapturedLocalsUseEnv(t *testing.T) {
+	t.Parallel()
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name:       "test",
+		Locals:     1,
+		LocalNames: []string{"x"},
+		Captured:   []bool{true},
+		FullEnv:    false,
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpSetLocal, 0),
+			Encode(OpGetLocal, 0),
+			Encode(OpReturn, 0),
+		},
+		Constants: []core.Value{core.Int{V: 42}},
+	}
+
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.Int{V: 42}))
+}
+
+func TestVM_FullEnvUsesEnv(t *testing.T) {
+	t.Parallel()
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name:       "test",
+		Locals:     1,
+		LocalNames: []string{"x"},
+		Captured:   nil,
+		FullEnv:    true,
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpSetLocal, 0),
+			Encode(OpGetLocal, 0),
+			Encode(OpReturn, 0),
+		},
+		Constants: []core.Value{core.Int{V: 42}},
+	}
+
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.Int{V: 42}))
 }

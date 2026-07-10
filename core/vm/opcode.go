@@ -31,6 +31,17 @@ const (
 	OpPopTry
 	OpThrow
 	OpDup
+	OpAdd
+	OpSub
+	OpMul
+	OpDiv
+	OpLt
+	OpGt
+	OpLe
+	OpGe
+	OpEq
+	OpGetFunc
+	OpSetFunc
 )
 
 var opNames = [...]string{
@@ -39,6 +50,8 @@ var opNames = [...]string{
 	OpSetGlobal:   "SET_GLOBAL",
 	OpGetLocal:    "GET_LOCAL",
 	OpSetLocal:    "SET_LOCAL",
+	OpGetFunc:     "GET_FUNC",
+	OpSetFunc:     "SET_FUNC",
 	OpCall:        "CALL",
 	OpTailCall:    "TAIL_CALL",
 	OpReturn:      "RETURN",
@@ -57,6 +70,15 @@ var opNames = [...]string{
 	OpPopTry:      "POP_TRY",
 	OpThrow:       "THROW",
 	OpDup:         "DUP",
+	OpAdd:         "ADD",
+	OpSub:         "SUB",
+	OpMul:         "MUL",
+	OpDiv:         "DIV",
+	OpLt:          "LT",
+	OpGt:          "GT",
+	OpLe:          "LE",
+	OpGe:          "GE",
+	OpEq:          "EQ",
 }
 
 // String implements fmt.Stringer.

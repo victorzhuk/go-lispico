@@ -9,7 +9,7 @@ import (
 )
 
 func (p *Plugin) registerArithmetic(env *core.Env) {
-	env.Set("+", core.GoFunc{
+	env.SetCanonical("+", core.GoFunc{
 		Name: "+",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			var intSum int64
@@ -42,7 +42,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 		},
 	})
 
-	env.Set("-", core.GoFunc{
+	env.SetCanonical("-", core.GoFunc{
 		Name: "-",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -96,7 +96,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 		},
 	})
 
-	env.Set("*", core.GoFunc{
+	env.SetCanonical("*", core.GoFunc{
 		Name: "*",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -133,7 +133,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 		},
 	})
 
-	env.Set("/", core.GoFunc{
+	env.SetCanonical("/", core.GoFunc{
 		Name: "/",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {

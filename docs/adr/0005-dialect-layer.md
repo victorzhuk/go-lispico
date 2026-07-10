@@ -11,7 +11,7 @@ go-lispico grows a dialect layer so one kernel can present Common Lisp by defaul
 - The package-global `specialForms` map becomes per-Engine dispatch state expressed as canonical kernel forms under neutral names; this is the enabling refactor and lands first.
 - The default flips from the current Clojure-ish flavor to Common Lisp — breaking for existing embedders, tests, and examples; the Clojure dialect must exist and yagel must pin its dialect explicitly before the flip lands.
 - Lisp-2 requires a function cell in `Env` (`funcall`, `#'` in the CL dialect); truthiness becomes a single hook consulted by `if`/`when`/`and`/`or`.
-- Dialect renames normalize to canonical kernel forms before compilation, so the compiler and VM stay dialect-agnostic for vocabulary; Engines on non-default semantic axes fall back to the tree-walker until the VM learns the axes.
+- Dialect renames normalize to canonical kernel forms before compilation, so the compiler and VM stay dialect-agnostic for special-form dispatch. The VM now supports all three dialect axes (rename normalization, truthiness predicate, Lisp-2 function cell) so non-identity dialects compile and run on the bytecode VM.
 - Restriction is a security boundary: a policy dialect built from the empty base can never silently inherit a future kernel form. Evaluated code cannot change the running dialect, so rule code cannot lift its own restrictions.
 - One shared builtin core stays the stdlib-completeness workstream from ADR 0004; dialects add names, not implementations.
 

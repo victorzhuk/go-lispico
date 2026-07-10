@@ -3,7 +3,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -130,10 +129,6 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		opt(&cfg)
 	}
 
-	if cfg.bytecode && !cfg.dialect.IsIdentity() {
-		return nil, errors.New("runtime: the bytecode evaluator supports only the identity dialect")
-	}
-
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -157,7 +152,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	if cfg.bytecode {
-		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, treeWalker)
+		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, treeWalker, cfg.dialect)
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be

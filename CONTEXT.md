@@ -88,7 +88,7 @@ _Avoid_: path guard, jail
 > **Dev:** "Is `+` a special form?"
 > **Designer:** "No — `+` is a **Builtin** from the stdlib **Plugin**; its arguments are evaluated first. `if` is a **Special form**: the **Evaluator** decides which branch to run. `defmacro` defines a **Macro**, which rewrites code before evaluation."
 > **Dev:** "When I turn on the **VM**, does it run everything?"
-> **Designer:** "It runs a subset. Anything it can't compile defers to the **Evaluator** — the VM is an optimization for hot loops, not a replacement."
+> **Designer:** "It runs a subset, but it now covers all dialects and caches compiled chunks per `Engine`. Anything it still can't compile defers to the **Evaluator** — the VM is an optimization for hot loops and repeated loads, not a replacement, and it stays opt-in via `WithBytecode()`."
 
 ## Flagged ambiguities
 

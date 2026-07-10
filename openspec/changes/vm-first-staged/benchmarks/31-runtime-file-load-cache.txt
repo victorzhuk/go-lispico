@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/runtime
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEngine_LoadFileTreeWalker-24    	    1436	    807216 ns/op	  955098 B/op	    6790 allocs/op
+BenchmarkEngine_LoadFileTreeWalker-24    	    1496	    801113 ns/op	  955088 B/op	    6790 allocs/op
+BenchmarkEngine_LoadFileTreeWalker-24    	    1482	    807156 ns/op	  955089 B/op	    6790 allocs/op
+BenchmarkEngine_LoadFileTreeWalker-24    	    1498	    767082 ns/op	  955087 B/op	    6790 allocs/op
+BenchmarkEngine_LoadFileTreeWalker-24    	    1534	    800943 ns/op	  955086 B/op	    6790 allocs/op
+BenchmarkEngine_LoadFileBytecode-24      	    1393	    770409 ns/op	  974494 B/op	    6799 allocs/op
+BenchmarkEngine_LoadFileBytecode-24      	    1381	    785981 ns/op	  974599 B/op	    6800 allocs/op
+BenchmarkEngine_LoadFileBytecode-24      	    1388	    772683 ns/op	  974779 B/op	    6800 allocs/op
+BenchmarkEngine_LoadFileBytecode-24      	    1371	    780016 ns/op	  975484 B/op	    6801 allocs/op
+BenchmarkEngine_LoadFileBytecode-24      	    1356	    795710 ns/op	  975938 B/op	    6801 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/runtime	12.239s

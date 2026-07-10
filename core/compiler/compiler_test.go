@@ -421,15 +421,15 @@ func TestCompiler_Fn_Variadic(t *testing.T) {
 }
 
 func TestCompiler_Fn_Error(t *testing.T) {
-	t.Run("params not vector", func(t *testing.T) {
+	t.Run("params not vector or list", func(t *testing.T) {
 		c := NewCompiler("test")
 		form := core.List{Items: []core.Value{
 			core.Symbol{V: "fn"},
-			core.List{},
+			core.Int{V: 42},
 		}}
 		err := c.Compile(form)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "params must be vector")
+		assert.Contains(t, err.Error(), "params must be vector or list")
 	})
 
 	t.Run("param not symbol", func(t *testing.T) {
@@ -521,7 +521,7 @@ func TestCompiler_Loop(t *testing.T) {
 	assert.Equal(t, vm.OpGetLocal, chunk.Code[2].Op())
 }
 
-func TestCompiler_Call(t *testing.T) {
+func TestCompiler_NativeOpAdd(t *testing.T) {
 	c := NewCompiler("test")
 	form := core.List{Items: []core.Value{
 		core.Symbol{V: "+"},
@@ -532,11 +532,203 @@ func TestCompiler_Call(t *testing.T) {
 
 	chunk := c.Chunk()
 	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpGetGlobal, chunk.Code[0].Op())
+	assert.Equal(t, vm.OpGetGlobal, chunk.Code[0].Op(), "head must be OpGetGlobal")
 	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
-	assert.Equal(t, vm.OpCall, chunk.Code[3].Op())
-	assert.Equal(t, 2, chunk.Code[3].A())
+	assert.Equal(t, vm.OpAdd, chunk.Code[3].Op())
+	assert.Equal(t, 2, chunk.Code[3].A(), "OpAdd operand = arg count (fn already consumed)")
+}
+
+func TestCompiler_NativeOpSub(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "-"},
+		core.Int{V: 10},
+		core.Int{V: 3},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpGetGlobal, chunk.Code[0].Op())
+	assert.Equal(t, vm.OpSub, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpMul(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "*"},
+		core.Int{V: 6},
+		core.Int{V: 7},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpMul, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpDiv(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "/"},
+		core.Int{V: 10},
+		core.Int{V: 2},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpDiv, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpLt(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "<"},
+		core.Int{V: 1},
+		core.Int{V: 2},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpLt, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpGt(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: ">"},
+		core.Int{V: 3},
+		core.Int{V: 2},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpGt, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpLe(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "<="},
+		core.Int{V: 2},
+		core.Int{V: 2},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpLe, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpGe(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: ">="},
+		core.Int{V: 2},
+		core.Int{V: 2},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpGe, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOpEq(t *testing.T) {
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "="},
+		core.Int{V: 5},
+		core.Int{V: 5},
+	}}
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 4)
+	assert.Equal(t, vm.OpEq, chunk.Code[3].Op())
+}
+
+func TestCompiler_NativeOp_ShadowedByLet(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "let"},
+		core.Vector{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 5},
+		}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 1},
+			core.Int{V: 2},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	hasCall := false
+	for _, instr := range chunk.Code {
+		if instr.Op() == vm.OpCall {
+			hasCall = true
+			break
+		}
+	}
+	assert.True(t, hasCall, "expected OpCall when + is locally shadowed")
+}
+
+func TestCompiler_NativeOp_NotShadowed(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "let"},
+		core.Vector{Items: []core.Value{
+			core.Symbol{V: "x"},
+			core.Int{V: 5},
+		}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 1},
+			core.Int{V: 2},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	hasAdd := false
+	for _, instr := range chunk.Code {
+		if instr.Op() == vm.OpAdd {
+			hasAdd = true
+			break
+		}
+	}
+	assert.True(t, hasAdd, "expected OpAdd when + is not locally shadowed")
+}
+
+func TestCompiler_NativeOp_ShadowedByEnclosingFn(t *testing.T) {
+	c := NewCompiler("test")
+	// (fn [+] ((fn [] (+ 1 2))))
+	innerFn := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 1},
+			core.Int{V: 2},
+		}},
+	}}
+	outerFn := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "+"}}},
+		innerFn,
+	}}
+	require.NoError(t, c.Compile(outerFn))
+	// Nesting: top chunk → sub[0] (outer fn body, has + param) → sub[0] (inner fn body)
+	require.Len(t, c.chunk.SubChunks, 1)
+	outerBody := c.chunk.SubChunks[0]
+	require.Len(t, outerBody.SubChunks, 1, "outer fn has one sub-chunk (inner fn)")
+	innerBody := outerBody.SubChunks[0]
+	hasCall := false
+	for _, instr := range innerBody.Code {
+		if instr.Op() == vm.OpCall {
+			hasCall = true
+			break
+		}
+	}
+	assert.True(t, hasCall, "expected OpCall in inner fn body when + is shadowed by enclosing fn param")
 }
 
 func TestCompiler_HashMap(t *testing.T) {
@@ -555,6 +747,190 @@ func TestCompiler_HashMap(t *testing.T) {
 	assert.Equal(t, vm.OpConst, chunk.Code[3].Op())
 	assert.Equal(t, vm.OpMakeMap, chunk.Code[4].Op())
 	assert.Equal(t, 2, chunk.Code[4].A())
+}
+
+func TestCompiler_CaptureAnalysis_Uncaptured(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.Symbol{V: "x"},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+	assert.Nil(t, sub.Captured)
+	assert.False(t, sub.FullEnv)
+}
+
+func TestCompiler_CaptureAnalysis_DirectCapture(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "fn"},
+			core.Vector{},
+			core.Symbol{V: "x"},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	require.NotNil(t, sub.Captured)
+	assert.True(t, sub.Captured[0])
+	assert.True(t, sub.FullEnv)
+
+	inner := sub.SubChunks[0]
+	assert.Nil(t, inner.Captured)
+	assert.False(t, inner.FullEnv)
+}
+
+func TestCompiler_CaptureAnalysis_TransitiveCapture(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "fn"},
+			core.Vector{},
+			core.List{Items: []core.Value{
+				core.Symbol{V: "fn"},
+				core.Vector{},
+				core.Symbol{V: "x"},
+			}},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	require.NotNil(t, sub.Captured)
+	assert.True(t, sub.Captured[0])
+	assert.True(t, sub.FullEnv)
+
+	middle := sub.SubChunks[0]
+	assert.Nil(t, middle.Captured)
+	assert.False(t, middle.FullEnv)
+
+	inner := middle.SubChunks[0]
+	assert.Nil(t, inner.Captured)
+	assert.False(t, inner.FullEnv)
+}
+
+func TestCompiler_CaptureAnalysis_LexicalShadowing(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "fn"},
+			core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+			core.Symbol{V: "x"},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	assert.Nil(t, sub.Captured)
+	assert.False(t, sub.FullEnv)
+
+	inner := sub.SubChunks[0]
+	assert.Nil(t, inner.Captured)
+	assert.False(t, inner.FullEnv)
+}
+
+func TestCompiler_CaptureAnalysis_FnParamVariadic(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{
+			core.Symbol{V: "x"},
+			core.Symbol{V: "&"},
+			core.Symbol{V: "rest"},
+		}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "fn"},
+			core.Vector{},
+			core.Symbol{V: "rest"},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	require.NotNil(t, sub.Captured)
+	assert.False(t, sub.Captured[0])
+	assert.True(t, sub.Captured[1])
+	assert.True(t, sub.FullEnv)
+
+	inner := sub.SubChunks[0]
+	assert.Nil(t, inner.Captured)
+	assert.False(t, inner.FullEnv)
+}
+
+func TestCompiler_CaptureAnalysis_Quote(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "quote"},
+			core.Symbol{V: "x"},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	// quote treats x as data, not a symbol reference
+	assert.Nil(t, sub.Captured)
+	assert.False(t, sub.FullEnv)
+}
+
+func TestCompiler_CaptureAnalysis_QuasiquoteUnquote(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "quasiquote"},
+			core.List{Items: []core.Value{
+				core.Symbol{V: "list"},
+				core.List{Items: []core.Value{
+					core.Symbol{V: "unquote"},
+					core.Symbol{V: "x"},
+				}},
+			}},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	// quasiquote compiles ~x, producing OpGetLocal (not a constant)
+	assert.Nil(t, sub.Captured)
+	assert.False(t, sub.FullEnv)
+
+	// Verify x is actually compiled to distinguish from quote
+	found := false
+	for _, inst := range sub.Code {
+		if inst.Op() == vm.OpGetLocal {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "x should compile as OpGetLocal inside quasiquote/unquote")
+}
+
+func TestCompiler_CaptureAnalysis_FullEnv(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "fn"},
+		core.Vector{},
+		core.Int{V: 42},
+	}}
+	require.NoError(t, c.Compile(form))
+	sub := c.Chunk().SubChunks[0]
+
+	// fn with no captures and no locals should have FullEnv=false
+	assert.Nil(t, sub.Captured)
+	assert.False(t, sub.FullEnv)
 }
 
 func TestCompileAll(t *testing.T) {

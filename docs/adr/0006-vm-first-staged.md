@@ -10,7 +10,7 @@ The performance goal is an ultra-fast VM, and today's VM cannot deliver it: it r
 
 - Staging order: opcodes and slot capture first, dialect axes second, chunk cache third, then the default-flip decision on fresh benchmarks. Each stage must keep the two evaluators agreeing on results.
 - Chunks are compiled after macro expansion, so the chunk cache must invalidate on macro redefinition; a stale chunk silently running old expansions is a correctness bug, not a perf bug.
-- Forms the VM cannot compile still defer cleanly to the Evaluator — ADR 0002's fallback invariant survives the disposition change.
+- Forms the VM cannot compile still defer cleanly to the Evaluator — ADR 0002's fallback invariant survives the disposition change. The VM now supports all three dialect axes (rename normalization 4.1, truthiness hook 4.2, Lisp-2 function cell 4.3) so non-identity dialects compile and run on the bytecode VM.
 - Deep Env optimization for the tree-walker is deliberately skipped; only cheap wins (per-node context walk) are taken, since the VM is the performance path.
 
 ## Considered options

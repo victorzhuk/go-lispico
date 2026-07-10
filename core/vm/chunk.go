@@ -39,6 +39,14 @@ type Chunk struct {
 	Locals int
 	// LocalNames holds each local's source name, indexed by slot.
 	LocalNames []string
+	// Captured marks which local slots are referenced by nested closures.
+	// Indexed like LocalNames. A true entry means the local must be mirrored
+	// to an Env so closures can access it via OpGetGlobal.
+	Captured []bool
+	// FullEnv forces all locals to be mirrored to an Env, even uncaptured ones.
+	// Set when capture analysis encounters an unanalyzable construct, as a
+	// conservative fallback preserving current behavior.
+	FullEnv bool
 	// Code is the compiled instruction sequence.
 	Code []Instruction
 	// Constants is the chunk's constant pool, indexed by AddConstant.
@@ -46,6 +54,9 @@ type Chunk struct {
 	// SubChunks holds chunks for closures compiled within this one, indexed
 	// by the operand of their OpClosure instruction.
 	SubChunks []*Chunk
+	// Truthiness is the dialect's truthiness predicate for conditional opcodes.
+	// When nil, core.IsTruthy (nil+false falsy) is used.
+	Truthiness func(core.Value) bool
 }
 
 // AddConstant interns v into the chunk's constant pool, returning its index.

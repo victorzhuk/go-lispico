@@ -79,13 +79,15 @@ func TestDialect_Lisp2_FunctionCellWalksScopeChain(t *testing.T) {
 	assert.True(t, core.Keyword{V: "outer"}.Equals(got), "got %v", got)
 }
 
-// A Lisp-2 Dialect is non-identity, so the bytecode VM rejects it at
-// construction and evaluation runs on the tree-walker.
-func TestDialect_Lisp2_RejectsBytecode(t *testing.T) {
-	_, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
-	require.Error(t, err, "Lisp-2 is non-identity; bytecode VM must reject it")
+// A Lisp-2 Dialect is non-identity, but the bytecode VM no longer rejects it
+// at construction. Runtime Lisp-2 support (function cells) is implemented in
+// task 4.3; this test only pins that construction succeeds.
+func TestDialect_Lisp2_ConstructsBytecode(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
+	require.NoError(t, err, "Lisp-2 + bytecode must construct successfully")
+	e.Close()
 
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()))
+	e, err = New(nil, WithDialect(core.FullDialect().Lisp2()))
 	require.NoError(t, err)
 	defer e.Close()
 	got, err := e.Eval(context.Background(), "lisp2", "(do (defn id [x] x) (funcall (function id) 5))")
