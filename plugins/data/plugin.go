@@ -98,14 +98,12 @@ func fromJSONValue(v any) (core.Value, error) {
 		return core.String{V: x}, nil
 	case map[string]any:
 		m := core.NewHashMap()
-		var err error
 		for k, val := range x {
 			lv, ferr := fromJSONValue(val)
 			if ferr != nil {
 				return nil, ferr
 			}
-			m, err = m.Assoc(core.Keyword{V: k}, lv)
-			if err != nil {
+			if err := m.Set(core.Keyword{V: k}, lv); err != nil {
 				return nil, fmt.Errorf("json/decode: %w", err)
 			}
 		}

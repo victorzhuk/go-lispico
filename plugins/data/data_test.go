@@ -2,7 +2,11 @@ package data
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -601,4 +605,145 @@ func TestDecodeWithDeepNesting(t *testing.T) {
 	innerVal, found := cMap.Get(core.Keyword{V: "c"})
 	require.True(t, found)
 	assert.True(t, innerVal.Equals(core.Int{V: 1}))
+}
+
+func TestDecodeHashMap_RoundTrip(t *testing.T) {
+	t.Parallel()
+	env := setupEnv(t)
+
+	t.Run("map keys become keywords", func(t *testing.T) {
+		result := eval(t, env, `(json/decode "{\"a\":1,\"b\":2}")`)
+		m, ok := result.(*core.HashMap)
+		require.True(t, ok)
+		require.Equal(t, 2, m.Len())
+
+		v, found := m.Get(core.Keyword{V: "a"})
+		require.True(t, found)
+		assert.True(t, v.Equals(core.Int{V: 1}))
+
+		v, found = m.Get(core.Keyword{V: "b"})
+		require.True(t, found)
+		assert.True(t, v.Equals(core.Int{V: 2}))
+	})
+
+	t.Run("encode decode round-trips", func(t *testing.T) {
+		original := eval(t, env, `(json/decode "{\"x\":10}")`)
+		encoded := eval(t, env, `(json/encode (json/decode "{\"x\":10}"))`)
+		str, ok := encoded.(core.String)
+		require.True(t, ok)
+		decoded := eval(t, env, `(json/decode `+str.String()+`)`)
+		assert.True(t, original.Equals(decoded), "round-trip failed")
+	})
+
+	t.Run("whole number as Int", func(t *testing.T) {
+		result := eval(t, env, `(json/decode "{\"v\":42}")`)
+		m, ok := result.(*core.HashMap)
+		require.True(t, ok)
+		v, found := m.Get(core.Keyword{V: "v"})
+		require.True(t, found)
+		_, isInt := v.(core.Int)
+		assert.True(t, isInt, "expected Int, got %T", v)
+	})
+
+	t.Run("deeply nested encode decode", func(t *testing.T) {
+		result := eval(t, env, `(json/decode "{\"a\":{\"b\":{\"c\":[1,2]}}}")`)
+		m, ok := result.(*core.HashMap)
+		require.True(t, ok)
+		aVal, found := m.Get(core.Keyword{V: "a"})
+		require.True(t, found)
+		aMap, ok := aVal.(*core.HashMap)
+		require.True(t, ok)
+		bVal, found := aMap.Get(core.Keyword{V: "b"})
+		require.True(t, found)
+		bMap, ok := bVal.(*core.HashMap)
+		require.True(t, ok)
+		cVal, found := bMap.Get(core.Keyword{V: "c"})
+		require.True(t, found)
+		cVec, ok := cVal.(core.Vector)
+		require.True(t, ok, "expected Vector, got %T", cVal)
+		require.Equal(t, 2, len(cVec.Items))
+		assert.True(t, cVec.Items[0].Equals(core.Int{V: 1}))
+		assert.True(t, cVec.Items[1].Equals(core.Int{V: 2}))
+	})
+}
+
+func TestDecodeHashMap_Scaling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping scaling test in short mode")
+	}
+
+	buildJSON := func(n int) string {
+		var b strings.Builder
+		b.WriteByte('{')
+		for i := range n {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `"k%d":%d`, i, i)
+		}
+		b.WriteByte('}')
+		return b.String()
+	}
+
+	timeDecode := func(jsonStr string) time.Duration {
+		var raw any
+		if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err := fromJSONValue(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Since(start)
+	}
+
+	samples := 5
+	var best2000, best4000 time.Duration
+
+	for range samples {
+		d := timeDecode(buildJSON(2000))
+		if d < best2000 || best2000 == 0 {
+			best2000 = d
+		}
+	}
+
+	for range samples {
+		d := timeDecode(buildJSON(4000))
+		if d < best4000 || best4000 == 0 {
+			best4000 = d
+		}
+	}
+
+	ratio := float64(best4000) / float64(best2000)
+	t.Logf("2000 keys: %v, 4000 keys: %v, ratio: %.2f (linear~2, quadratic~4)", best2000, best4000, ratio)
+
+	require.Less(t, ratio, 3.0, "decode should scale sub-quadratically")
+}
+
+func TestDecodeHashMap_Immutability(t *testing.T) {
+	t.Parallel()
+	env := setupEnv(t)
+
+	result := eval(t, env, `(json/decode "{\"a\":1,\"b\":2}")`)
+	m, ok := result.(*core.HashMap)
+	require.True(t, ok)
+	require.Equal(t, 2, m.Len())
+
+	t.Run("Assoc does not mutate original", func(t *testing.T) {
+		_, err := m.Assoc(core.Keyword{V: "c"}, core.Int{V: 3})
+		require.NoError(t, err)
+		assert.Equal(t, 2, m.Len(), "original len unchanged after Assoc")
+		_, found := m.Get(core.Keyword{V: "c"})
+		assert.False(t, found, "original should not have new key from Assoc")
+	})
+
+	t.Run("Dissoc does not mutate original", func(t *testing.T) {
+		_, err := m.Dissoc(core.Keyword{V: "a"})
+		require.NoError(t, err)
+		assert.Equal(t, 2, m.Len(), "original len unchanged after Dissoc")
+		v, found := m.Get(core.Keyword{V: "a"})
+		assert.True(t, found, "original should still have key after Dissoc")
+		assert.True(t, v.Equals(core.Int{V: 1}))
+	})
 }
