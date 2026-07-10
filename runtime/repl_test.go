@@ -261,3 +261,38 @@ func bindPlus(e Engine) {
 		panic(err) // bindPlus is test-only; a bind error is a test bug
 	}
 }
+
+func TestIsBalanced_TrailingComment(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"balanced paren after comment", "(+ 1 2) ; note (", true},
+		{"bare comment", "(+ 1 2) ;", true},
+		{"semicolon in string", "\"hello ; world\"", true},
+		{"semicolon in string in parens", "(+ 1 2 \" ; \")", true},
+		{"comment ends at newline", "(+ 1 2) ; \n(+ 3 4)", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isBalanced(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestREPL_TrailingCommentDoesNotBlock(t *testing.T) {
+	input := "(+ 1 2) ; note (\n(exit)\n"
+	output := &bytes.Buffer{}
+
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+
+	bindPlus(eng)
+
+	err = eng.REPL(strings.NewReader(input), output)
+	assert.NoError(t, err)
+	assert.Contains(t, output.String(), "3")
+}
