@@ -17,8 +17,8 @@ type PluginStatus struct {
 
 // bindings tracks per-plugin names to delete on unload/reload.
 // Last writer wins; unload removes what this plugin introduced.
-func (e *engineImpl) snapshotBindings() map[string]struct{} {
-	return diff(unionOf(e.rootEnv.VarNames(), e.rootEnv.FuncNames()), nil)
+func (e *engineImpl) snapshotBindings() []string {
+	return unionOf(e.rootEnv.VarNames(), e.rootEnv.FuncNames())
 }
 
 func (e *engineImpl) Use(p core.Plugin) error {

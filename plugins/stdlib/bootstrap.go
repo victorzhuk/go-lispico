@@ -10,34 +10,14 @@ import (
 func (p *Plugin) loadBootstrap(env *core.Env) error {
 	bootstrapCode := []string{
 		`(defmacro -> [x & forms]
-  (loop [acc x
-         fs forms]
-    (if (empty? fs)
-      acc
-      (let* [form (first fs)
-             threaded (if (list? form)
-                        (cons (first form) (cons acc (rest form)))
-                        (list form acc))]
-        (recur threaded (rest fs))))))`,
+  (reduce (fn [acc form] (if (list? form) (cons (first form) (cons acc (rest form))) (list form acc))) x forms))`,
 
 		`(defmacro ->> [x & forms]
-  (loop [acc x
-         fs forms]
-    (if (empty? fs)
-      acc
-      (let* [form (first fs)
-             threaded (if (list? form)
-                        (concat form (list acc))
-                        (list form acc))]
-        (recur threaded (rest fs))))))`,
+  (reduce (fn [acc form] (if (list? form) (concat form (list acc)) (list form acc))) x forms))`,
 
 		`(defmacro as-> [expr name & forms]
-  (let* [pairs (loop [acc []
-                      fs forms]
-                 (if (empty? fs)
-                   acc
-                   (recur (conj acc name (first fs)) (rest fs))))]
-    (list (quote let) (apply vector (conj pairs name expr)) name)))`,
+  (let* [bindings (reduce (fn [acc form] (conj acc name form)) [name expr] forms)]
+    (list (quote let*) bindings name)))`,
 
 		`(defmacro if-let [bindings then else]
   (let* [name (first bindings)
@@ -55,12 +35,21 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
   (reduce (fn [acc k] (get acc k)) m ks))`,
 	}
 
-	// Prefer the engine's dialect-aware evaluator so bootstrap macros bind into the correct cell.
-	evaluator := env.Evaluator()
-	if evaluator == nil {
-		evaluator = core.NewEvaluator()
-	}
+	// The bootstrap macros are defined with the full-kernel evaluator so they
+	// work even when the engine's dialect (e.g. EmptyDialect) drops defmacro.
+	// After definition, newly-added names are mirrored to the function cell so
+	// they resolve in head position under Lisp-2. Under Lisp-1 the function cell
+	// is unused, so the copy is harmless.
+	evaluator := core.NewEvaluator()
 	ctx := context.Background()
+
+	before := make(map[string]struct{})
+	for _, name := range env.VarNames() {
+		before[name] = struct{}{}
+	}
+	for _, name := range env.FuncNames() {
+		before[name] = struct{}{}
+	}
 
 	for _, code := range bootstrapCode {
 		forms, err := core.Read(code)
@@ -75,5 +64,18 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 			}
 		}
 	}
+
+	for _, name := range env.VarNames() {
+		if _, existed := before[name]; existed {
+			continue
+		}
+		if _, inFuncs := env.GetFunc(name); inFuncs {
+			continue
+		}
+		if v, ok := env.Get(name); ok {
+			env.SetFunc(name, v)
+		}
+	}
+
 	return nil
 }
