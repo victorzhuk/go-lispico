@@ -55,7 +55,11 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
   (reduce (fn [acc k] (get acc k)) m ks))`,
 	}
 
-	evaluator := core.NewEvaluator()
+	// Prefer the engine's dialect-aware evaluator so bootstrap macros bind into the correct cell.
+	evaluator := env.Evaluator()
+	if evaluator == nil {
+		evaluator = core.NewEvaluator()
+	}
 	ctx := context.Background()
 
 	for _, code := range bootstrapCode {
