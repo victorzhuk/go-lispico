@@ -8,6 +8,9 @@ go-lispico is designed as an embeddable scripting kernel with three layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
+│                        CLI                                  │
+│  cmd/lispico (interactive REPL binary, golang.org/x/term)   │
+├─────────────────────────────────────────────────────────────┤
 │                        PLUGINS                              │
 │  stdlib  agent  llm  lio  net  exec  data  fsm              │
 │   (each with optional external dependencies)                │
@@ -211,6 +214,14 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
 - `WithDialect(d)` — Select a custom dialect; the default is the Common Lisp
   dialect (`cl.Dialect()`). Select the Clojure-style surface with
   `WithDialect(clojure.Dialect())`.
+
+### cmd/
+
+The `cmd/lispico/` binary is the interactive REPL. It layers terminal handling
+(`golang.org/x/term`) on top of `runtime.Engine` without modifying the Engine
+contract. The binary owns flag parsing (`-dialect`, `-bytecode`), file
+execution mode, and raw-mode terminal sessions with history persistence.
+
 ### plugins/
 
 Domain-specific plugins extend functionality. Each plugin:

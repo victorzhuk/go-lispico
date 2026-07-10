@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cmd/lispico` interactive REPL binary with raw-mode line editing, multiline
+  continuation, persistent history, `-dialect`/`-bytecode` flags, and file
+  execution mode. Built on `golang.org/x/term`.
+
 ### Changed
 
 - **Breaking:** `compiler.MacroExpander` and `CompileExpanded` have been removed.

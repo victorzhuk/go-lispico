@@ -215,7 +215,7 @@ func TestIsBalanced(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isBalanced(tt.input)
+			result := IsBalanced(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -239,7 +239,7 @@ func TestIsExitCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isExitCommand(tt.input)
+			result := IsExitCommand(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -277,7 +277,7 @@ func TestIsBalanced_TrailingComment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isBalanced(tt.input)
+			result := IsBalanced(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

@@ -79,6 +79,39 @@ to opt in to the Clojure surface.
 go get github.com/victorzhuk/go-lispico
 ```
 
+
+## REPL Binary
+
+Build the interactive REPL:
+
+```bash
+make build    # produces bin/lispico
+```
+
+Interactive session with line editing, history, and multiline support:
+
+```bash
+./bin/lispico
+```
+
+Flags:
+
+- `-dialect cl|clojure` — select dialect (default: `cl`)
+- `-bytecode` — enable the bytecode VM evaluator
+
+File execution — evaluate file(s) in order, then exit:
+
+```bash
+./bin/lispico prog.lisp
+./bin/lispico -dialect clojure prog.lisp
+```
+
+Piped input:
+
+```bash
+echo '(+ 1 2)' | ./bin/lispico   # prints 3, exits 0
+```
+
 ## Architecture
 
 ```
