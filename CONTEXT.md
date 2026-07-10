@@ -76,6 +76,14 @@ _Avoid_: package, scope
 A real security boundary in the `lio` plugin that confines file access to a root, resolving symlinks before the check.
 _Avoid_: path guard, jail
 
+**Trust domain**:
+One Engine is the unit of trust isolation. Code from different trust levels runs on separate Engines; a fresh Engine is cheap (~124B, ~123µs boot with stdlib). Persistent top-level `def`/`set!` across `Eval` calls is intended REPL state within a single Engine, not a cross-call isolation break — so an Engine must not be shared across a trust boundary.
+_Avoid_: session, tenant, per-Eval isolation
+
+**Resource limits**:
+Per-Engine, construction-time ceilings that keep adversarial or accidental input from exhausting the host — reader nesting depth, evaluator structural depth (Vector/HashMap/quasiquote descent), collection length (`range`), and chunk-cache size. Fail-closed with a clean error, never a fatal stack overflow. Distinct from `MaxDepth`, which bounds function-call/macro depth per evaluation.
+_Avoid_: quota, timeout (that is `WithTimeout`), sandbox
+
 ## Relationships
 
 - An **Engine** runs exactly one **Dialect**, fixed at construction; a **Dialect** is a **Delta** over the **Kernel table** (or an empty base) plus **Semantic axes**, reader flags, and a name map over shared **Builtins**.
