@@ -694,17 +694,3 @@ func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err 
 	}
 	return params, variadic, nil
 }
-
-// MacroExpander expands macro forms before compilation.
-type MacroExpander interface {
-	Expand(form core.Value) (core.Value, error)
-}
-
-// CompileExpanded expands form through expander, then compiles the result.
-func (c *Compiler) CompileExpanded(expander MacroExpander, form core.Value) error {
-	expanded, err := expander.Expand(form)
-	if err != nil {
-		return err
-	}
-	return c.Compile(expanded)
-}
