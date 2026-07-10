@@ -14,6 +14,7 @@ go-lispico grows a dialect layer so one kernel can present Common Lisp by defaul
 - Dialect renames normalize to canonical kernel forms before compilation, so the compiler and VM stay dialect-agnostic for special-form dispatch. The VM now supports all three dialect axes (rename normalization, truthiness predicate, Lisp-2 function cell) so non-identity dialects compile and run on the bytecode VM.
 - Restriction is a security boundary: a policy dialect built from the empty base can never silently inherit a future kernel form. Evaluated code cannot change the running dialect, so rule code cannot lift its own restrictions.
 - One shared builtin core stays the stdlib-completeness workstream from ADR 0004; dialects add names, not implementations.
+- The isolation unit is the Engine, not the individual `Eval` call. The dialect boundary above confines which *forms* rule code can reach; it does not isolate ordinary top-level bindings between calls on a shared Engine. `Engine.Eval` mutates the shared root env, so a top-level `def`/`set!` in one call persists and is visible to every later or concurrent call on that Engine — this is intended REPL state, not a cross-call isolation break. Consequently, code from different trust levels must run on separate Engines; a fresh Engine is cheap (~124B, ~123µs boot with stdlib). An embedder must never share one Engine across a trust boundary and rely on `Eval`-call isolation, because there is none.
 
 ## Considered options
 
