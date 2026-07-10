@@ -39,6 +39,7 @@ func (b Bool) String() string {
 	}
 	return "false"
 }
+
 func (b Bool) Equals(o Value) bool {
 	if v, ok := o.(Bool); ok {
 		return b.V == v.V
@@ -53,6 +54,7 @@ func (i Int) Type() Keyword { return Keyword{V: "int"} }
 func (i Int) String() string {
 	return strconv.FormatInt(i.V, 10)
 }
+
 func (i Int) Equals(o Value) bool {
 	if v, ok := o.(Int); ok {
 		return i.V == v.V
@@ -67,6 +69,7 @@ func (f Float) Type() Keyword { return Keyword{V: "float"} }
 func (f Float) String() string {
 	return strconv.FormatFloat(f.V, 'f', -1, 64)
 }
+
 func (f Float) Equals(o Value) bool {
 	if v, ok := o.(Float); ok {
 		return f.V == v.V
@@ -81,6 +84,7 @@ func (s String) Type() Keyword { return Keyword{V: "string"} }
 func (s String) String() string {
 	return fmt.Sprintf("%q", s.V)
 }
+
 func (s String) Equals(o Value) bool {
 	if v, ok := o.(String); ok {
 		return s.V == v.V
@@ -107,6 +111,7 @@ func (k Keyword) Type() Keyword { return Keyword{V: "keyword"} }
 func (k Keyword) String() string {
 	return ":" + k.V
 }
+
 func (k Keyword) Equals(o Value) bool {
 	if v, ok := o.(Keyword); ok {
 		return k.V == v.V
@@ -125,6 +130,7 @@ func (l List) String() string {
 	}
 	return "(" + strings.Join(parts, " ") + ")"
 }
+
 func (l List) Equals(o Value) bool {
 	v, ok := o.(List)
 	if !ok || len(l.Items) != len(v.Items) {
@@ -149,6 +155,7 @@ func (v Vector) String() string {
 	}
 	return "[" + strings.Join(parts, " ") + "]"
 }
+
 func (v Vector) Equals(o Value) bool {
 	other, ok := o.(Vector)
 	if !ok || len(v.Items) != len(other.Items) {
@@ -230,6 +237,7 @@ func (h *HashMap) String() string {
 	}
 	return "{" + strings.Join(parts, " ") + "}"
 }
+
 func (h *HashMap) Equals(o Value) bool {
 	v, ok := o.(*HashMap)
 	if !ok || len(h.m) != len(v.m) {
@@ -330,6 +338,7 @@ func (g GoFunc) Type() Keyword { return Keyword{V: "fn"} }
 func (g GoFunc) String() string {
 	return "#<builtin:" + g.Name + ">"
 }
+
 func (g GoFunc) Equals(o Value) bool {
 	v, ok := o.(GoFunc)
 	return ok && g.Name == v.Name

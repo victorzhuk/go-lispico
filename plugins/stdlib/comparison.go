@@ -8,7 +8,7 @@ import (
 )
 
 func (p *Plugin) registerComparison(env *core.Env) {
-	env.Set("=", core.GoFunc{
+	env.SetCanonical("=", core.GoFunc{
 		Name: "=",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -23,10 +23,10 @@ func (p *Plugin) registerComparison(env *core.Env) {
 		},
 	})
 
-	env.Set("<", core.GoFunc{Name: "<", Fn: orderingFunc("<", func(c int) bool { return c < 0 })})
-	env.Set(">", core.GoFunc{Name: ">", Fn: orderingFunc(">", func(c int) bool { return c > 0 })})
-	env.Set("<=", core.GoFunc{Name: "<=", Fn: orderingFunc("<=", func(c int) bool { return c <= 0 })})
-	env.Set(">=", core.GoFunc{Name: ">=", Fn: orderingFunc(">=", func(c int) bool { return c >= 0 })})
+	env.SetCanonical("<", core.GoFunc{Name: "<", Fn: orderingFunc("<", func(c int) bool { return c < 0 })})
+	env.SetCanonical(">", core.GoFunc{Name: ">", Fn: orderingFunc(">", func(c int) bool { return c > 0 })})
+	env.SetCanonical("<=", core.GoFunc{Name: "<=", Fn: orderingFunc("<=", func(c int) bool { return c <= 0 })})
+	env.SetCanonical(">=", core.GoFunc{Name: ">=", Fn: orderingFunc(">=", func(c int) bool { return c >= 0 })})
 }
 
 // orderingFunc builds a variadic monotonic chain: every adjacent pair must

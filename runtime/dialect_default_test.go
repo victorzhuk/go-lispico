@@ -80,14 +80,13 @@ func TestRuntime_ClojureDialectReproducesPriorSurface(t *testing.T) {
 	require.Error(t, err, "funcall must NOT be callable under Clojure")
 }
 
-// TestRuntime_DefaultCL_RejectsBytecode (1.3) — runtime.New() with
-// WithBytecode() (no WithDialect) errors at construction because the
-// default is the CL dialect, which is non-identity, and the bytecode
-// VM guard rejects non-identity at construction.
-func TestRuntime_DefaultCL_RejectsBytecode(t *testing.T) {
-	_, err := New(nil, WithBytecode())
-	require.Error(t, err,
-		"default (CL) is non-identity; bytecode must be rejected at construction")
+// TestRuntime_DefaultCL_AllowsBytecode (1.3) — runtime.New() with
+// WithBytecode() (no WithDialect) succeeds because bytecode now supports
+// all dialects after normalization.
+func TestRuntime_DefaultCL_AllowsBytecode(t *testing.T) {
+	e, err := New(nil, WithBytecode())
+	require.NoError(t, err, "default (CL) + bytecode must be allowed")
+	e.Close()
 }
 
 // TestRuntime_BytecodeWithClojureWorks (1.4) —

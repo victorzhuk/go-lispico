@@ -509,6 +509,7 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 		Env:      env,
 	}
 	e.bindOperator(env, name.V, macro)
+	env.BumpMacroEpoch()
 	return macro, nil
 }
 

@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -18,22 +20,44 @@ type macroExpander interface {
 	MacroExpand(ctx context.Context, form core.Value, env *core.Env) (core.Value, error)
 }
 
-// bytecodeEvaluator runs Lisp forms through the bytecode VM with per-evaluation
-// isolation: each Eval gets a fresh compiler and a fresh VM state.
-type bytecodeEvaluator struct {
-	globals  *core.Env
-	maxDepth int
-	macro    macroExpander
-	tree     core.Evaluator
+// cacheKey uniquely identifies a compiled chunk in the bytecode cache.
+type cacheKey struct {
+	sourceHash string
+	formIndex  int
+	dialectFP  string
+	macroEpoch int
 }
 
-func newBytecodeEvaluator(globals *core.Env, maxDepth int, treeWalker core.Evaluator) *bytecodeEvaluator {
-	return &bytecodeEvaluator{
-		globals:  globals,
-		maxDepth: maxDepth,
-		macro:    treeWalker.(macroExpander),
-		tree:     treeWalker,
+// bytecodeEvaluator runs Lisp forms through the bytecode VM with chunk caching
+// and VM pool reuse for concurrent safety and reduced allocation.
+type bytecodeEvaluator struct {
+	globals   *core.Env
+	maxDepth  int
+	macro     macroExpander
+	tree      core.Evaluator
+	dialect   core.Dialect
+	mu        sync.Mutex
+	cache     map[cacheKey]*vm.Chunk
+	dialectFP string
+	vmPool    sync.Pool
+}
+
+func newBytecodeEvaluator(globals *core.Env, maxDepth int, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
+	be := &bytecodeEvaluator{
+		globals:   globals,
+		maxDepth:  maxDepth,
+		macro:     treeWalker.(macroExpander),
+		tree:      treeWalker,
+		dialect:   dialect,
+		dialectFP: dialect.Fingerprint(),
+		cache:     make(map[cacheKey]*vm.Chunk),
 	}
+	be.vmPool = sync.Pool{
+		New: func() any {
+			return vm.New(globals, vm.WithMaxDepth(maxDepth), vm.WithEvaluator(be))
+		},
+	}
+	return be
 }
 
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
@@ -41,7 +65,7 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
 	}
-	comp := compiler.NewCompiler("<eval>")
+	comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 	if err := comp.Compile(expanded); err != nil {
 		if isUnsupportedInBytecode(err) {
 			return be.tree.Eval(ctx, expanded, env)
@@ -49,8 +73,8 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 		return nil, fmt.Errorf("compile: %w", err)
 	}
 	comp.Chunk().Emit(vm.OpReturn, 0)
-	fresh := vm.New(env, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be))
-	return fresh.Run(ctx, comp.Chunk())
+	chunk := comp.Chunk()
+	return be.runVM(ctx, chunk, env)
 }
 
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
@@ -58,12 +82,65 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 	return fresh.Apply(ctx, fn, args, env)
 }
 
+// EvalCached evaluates form with caching: macro-expands, checks the chunk cache
+// by key (sourceHash, formIndex, dialectFP, macroEpoch), compiles on miss, and
+// runs via a pooled VM.
+func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash string, formIndex int) (core.Value, error) {
+	expanded, err := be.macro.MacroExpand(ctx, form, env)
+	if err != nil {
+		return nil, fmt.Errorf("macro expand: %w", err)
+	}
+
+	key := cacheKey{
+		sourceHash: sourceHash,
+		formIndex:  formIndex,
+		dialectFP:  be.dialectFP,
+		macroEpoch: be.globals.MacroEpoch(),
+	}
+
+	be.mu.Lock()
+	chunk, hit := be.cache[key]
+	be.mu.Unlock()
+
+	if !hit {
+		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
+		if err := comp.Compile(expanded); err != nil {
+			if isUnsupportedInBytecode(err) {
+				return be.tree.Eval(ctx, expanded, env)
+			}
+			return nil, fmt.Errorf("compile: %w", err)
+		}
+		comp.Chunk().Emit(vm.OpReturn, 0)
+		chunk = comp.Chunk()
+
+		be.mu.Lock()
+		if cached, dup := be.cache[key]; dup {
+			chunk = cached
+		} else {
+			be.cache[key] = chunk
+		}
+		be.mu.Unlock()
+	}
+
+	return be.runVM(ctx, chunk, env)
+}
+
+// runVM gets a VM from the pool, resets it, runs chunk in env, and returns the VM.
+func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *core.Env) (core.Value, error) {
+	v := be.vmPool.Get().(*vm.VM)
+	v.Reset()
+	v.SetGlobals(env)
+	result, err := v.Run(ctx, chunk)
+	be.vmPool.Put(v)
+	return result, err
+}
+
 // isUnsupportedInBytecode reports whether err is the compiler's typed
 // "unsupported in bytecode" error (defmacro nested in a body, unquote-splicing),
 // so the caller can fall back to the tree-walker instead of failing the eval.
 func isUnsupportedInBytecode(err error) bool {
-	var lispErr *core.LispicoError
-	return errors.As(err, &lispErr) && lispErr.Code == compiler.CodeUnsupported
+	var lerr *core.LispicoError
+	return errors.As(err, &lerr) && lerr.Code == compiler.CodeUnsupported
 }
 
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
@@ -87,6 +164,27 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 	env := e.rootEnv
 	e.mu.RUnlock()
 
+	// Bytecode path: use cached compilation.
+	if be := e.bytecodeEvaluator; be != nil {
+		var result core.Value = core.Nil{}
+		sourceHash := sha256Hash(input)
+		for i, form := range forms {
+			result, err = be.EvalCached(ctx, form, env, sourceHash, i)
+			if err != nil {
+				dur := time.Since(start)
+				e.stats.recordEval(dur, err)
+				e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+				return nil, fmt.Errorf("eval: %w", err)
+			}
+		}
+		dur := time.Since(start)
+		e.stats.recordEval(dur, nil)
+		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
+		e.logger.Debug("eval", "source", source, "duration", dur)
+		return result, nil
+	}
+
+	// Tree-walker path.
 	var result core.Value = core.Nil{}
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, env)
@@ -103,6 +201,12 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 	e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
 	e.logger.Debug("eval", "source", source, "duration", dur)
 	return result, nil
+}
+
+// sha256Hash returns a hex-encoded SHA-256 hash of s.
+func sha256Hash(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("%x", h[:])
 }
 
 func (e *engineImpl) EvalFile(path string) (core.Value, error) {
@@ -141,9 +245,9 @@ func (e *engineImpl) LoadDir(dir string) error {
 	sort.Strings(files)
 
 	for _, name := range files {
-		path := filepath.Join(dir, name)
-		if _, err := e.EvalFile(path); err != nil {
-			return fmt.Errorf("load %s: %w", path, err)
+		p := filepath.Join(dir, name)
+		if _, err := e.EvalFile(p); err != nil {
+			return fmt.Errorf("load %s: %w", p, err)
 		}
 	}
 

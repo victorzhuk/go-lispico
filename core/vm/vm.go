@@ -43,13 +43,14 @@ type handler struct {
 // It is not safe for concurrent use on the same instance; callers that need
 // concurrency-safe evaluation should use a fresh VM per evaluation.
 type VM struct {
-	stack    []core.Value
-	frames   []Frame
-	handlers []handler
-	globals  *core.Env
-	maxDepth int
-	depth    int
-	eval     core.Evaluator
+	stack       []core.Value
+	frames      []Frame
+	handlers    []handler
+	globals     *core.Env
+	maxDepth    int
+	depth       int
+	eval        core.Evaluator
+	canonicalAt []Opcode
 }
 
 // VMOption configures a VM created by New.
@@ -88,9 +89,34 @@ func (vm *VM) reset() {
 	vm.frames = vm.frames[:0]
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
+	vm.canonicalAt = vm.canonicalAt[:0]
 }
 
-func (vm *VM) push(v core.Value) { vm.stack = append(vm.stack, v) }
+// Reset clears the VM state (stacks, frames, handlers, depth) so the
+// instance can be reused for a new evaluation. It does not change the
+// VM's configuration (globals, max depth, evaluator).
+func (vm *VM) Reset() {
+	vm.stack = vm.stack[:0]
+	vm.frames = vm.frames[:0]
+	vm.handlers = vm.handlers[:0]
+	vm.depth = 0
+	vm.canonicalAt = vm.canonicalAt[:0]
+}
+
+// SetGlobals replaces the VM's globals (root environment) pointer.
+// Used when reusing a pooled VM for a different environment.
+func (vm *VM) SetGlobals(env *core.Env) {
+	vm.globals = env
+}
+
+func (vm *VM) push(v core.Value) {
+	vm.stack = append(vm.stack, v)
+	slot := len(vm.stack) - 1
+	if slot < len(vm.canonicalAt) {
+		vm.canonicalAt[slot] = 0
+	}
+}
+
 func (vm *VM) pop() (core.Value, error) {
 	if len(vm.stack) == 0 {
 		return nil, &core.LispicoError{Code: "BytecodeError", Message: "stack underflow"}
@@ -99,6 +125,7 @@ func (vm *VM) pop() (core.Value, error) {
 	vm.stack = vm.stack[:len(vm.stack)-1]
 	return top, nil
 }
+
 func (vm *VM) peek() (core.Value, error) {
 	if len(vm.stack) == 0 {
 		return nil, &core.LispicoError{Code: "BytecodeError", Message: "stack underflow"}
@@ -205,7 +232,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 			vm.stack[slot] = top
 			if idx < len(frame.chunk.LocalNames) {
-				frame.env.Set(frame.chunk.LocalNames[idx], top)
+				if frame.chunk.FullEnv || (idx < len(frame.chunk.Captured) && frame.chunk.Captured[idx]) {
+					frame.env.Set(frame.chunk.LocalNames[idx], top)
+				}
 			}
 
 		case OpGetGlobal:
@@ -213,8 +242,26 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			if err != nil {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
 			}
-			v, ok := frame.env.Get(sym.V)
-			if !ok {
+			var v core.Value
+			var found bool
+			if isNativeOpSymbol(sym.V) {
+				var isCanon bool
+				v, found, isCanon = frame.env.GetCanonical(sym.V)
+				if found && isCanon {
+					vm.push(v)
+					slot := len(vm.stack) - 1
+					if op, ok := nativeSymbolToOp(sym.V); ok {
+						if slot >= len(vm.canonicalAt) {
+							vm.canonicalAt = append(vm.canonicalAt, make([]Opcode, slot+1-len(vm.canonicalAt))...)
+						}
+						vm.canonicalAt[slot] = op
+					}
+					break
+				}
+			} else {
+				v, found = frame.env.Get(sym.V)
+			}
+			if !found {
 				return nil, core.NewUndefinedError(sym.V)
 			}
 			vm.push(v)
@@ -230,6 +277,28 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 			frame.env.Set(sym.V, top)
 
+		case OpGetFunc:
+			sym, err := frame.chunk.GetSymbolConstant(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
+			v, found := frame.env.GetFunc(sym.V)
+			if !found {
+				return nil, core.NewUndefinedError(sym.V)
+			}
+			vm.push(v)
+
+		case OpSetFunc:
+			sym, err := frame.chunk.GetSymbolConstant(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			frame.env.SetFunc(sym.V, top)
+
 		case OpPop:
 			if _, err := vm.pop(); err != nil {
 				return nil, err
@@ -243,7 +312,11 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			if err != nil {
 				return nil, err
 			}
-			if !core.IsTruthy(top) {
+			truthy := core.IsTruthy
+			if frame.chunk.Truthiness != nil {
+				truthy = frame.chunk.Truthiness
+			}
+			if !truthy(top) {
 				frame.ip += instr.A()
 			}
 
@@ -347,12 +420,318 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			if !vm.throw(coerceThrow(value)) {
 				return nil, core.NewTypeError("handler", core.Nil{})
 			}
+
+		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
+			if err := vm.dispatchNativeOp(ctx, instr.Op(), instr.A()); err != nil {
+				if !vm.throw(core.String{V: err.Error()}) {
+					return nil, err
+				}
+			}
+
 		}
 	}
 }
 
+// dispatchNativeOp executes a native arithmetic/comparison opcode.
+// The stack already contains [fn, arg1, arg2, ...] (OpGetGlobal emitted before
+// args in compileNativeOp). Checks canonical status captured at lookup time
+// (canonicalAt), not re-resolved after args may have mutated the env.
+func (vm *VM) dispatchNativeOp(ctx context.Context, op Opcode, argc int) error {
+	if argc < 0 || argc+1 > len(vm.stack) {
+		return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("native: argc=%d exceeds stack", argc)}
+	}
+
+	fnIdx := len(vm.stack) - argc - 1
+	frame := &vm.frames[len(vm.frames)-1]
+
+	var expectedOp Opcode
+	if fnIdx < len(vm.canonicalAt) {
+		expectedOp = vm.canonicalAt[fnIdx]
+		vm.canonicalAt[fnIdx] = 0
+	}
+	if expectedOp == 0 || expectedOp != op {
+		return vm.call(ctx, argc, false)
+	}
+
+	args := vm.stack[len(vm.stack)-argc:]
+	eval := vm.eval
+	if eval == nil {
+		eval = core.NewEvaluator()
+	}
+	result, err := execNative(eval, op, args, frame.env)
+	if err != nil {
+		return err
+	}
+	vm.stack = vm.stack[:fnIdx]
+	vm.push(result)
+	return nil
+}
+
+func isNativeOpSymbol(name string) bool {
+	switch name {
+	case "+", "-", "*", "/", "<", ">", "<=", ">=", "=":
+		return true
+	}
+	return false
+}
+
+func nativeSymbolToOp(name string) (Opcode, bool) {
+	switch name {
+	case "+":
+		return OpAdd, true
+	case "-":
+		return OpSub, true
+	case "*":
+		return OpMul, true
+	case "/":
+		return OpDiv, true
+	case "<":
+		return OpLt, true
+	case ">":
+		return OpGt, true
+	case "<=":
+		return OpLe, true
+	case ">=":
+		return OpGe, true
+	case "=":
+		return OpEq, true
+	}
+	return 0, false
+}
+
+func execNative(eval core.Evaluator, op Opcode, args []core.Value, env *core.Env) (core.Value, error) {
+	switch op {
+	case OpAdd:
+		return nativeAdd(args)
+	case OpSub:
+		return nativeSub(args)
+	case OpMul:
+		return nativeMul(args)
+	case OpDiv:
+		return nativeDiv(args)
+	case OpLt:
+		return nativeOrder("<", args, func(c int) bool { return c < 0 })
+	case OpGt:
+		return nativeOrder(">", args, func(c int) bool { return c > 0 })
+	case OpLe:
+		return nativeOrder("<=", args, func(c int) bool { return c <= 0 })
+	case OpGe:
+		return nativeOrder(">=", args, func(c int) bool { return c >= 0 })
+	case OpEq:
+		return nativeEq(args)
+	default:
+		return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("execNative: unknown op %v", op)}
+	}
+}
+
+func nativeAdd(args []core.Value) (core.Value, error) {
+	var intSum int64
+	var floatSum float64
+	hasFloat := false
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case core.Int:
+			if hasFloat {
+				floatSum += float64(v.V)
+			} else {
+				intSum += v.V
+			}
+		case core.Float:
+			if !hasFloat {
+				floatSum = float64(intSum)
+				hasFloat = true
+			}
+			floatSum += v.V
+		default:
+			return nil, fmt.Errorf("+: expected number, got %T", arg)
+		}
+	}
+	if hasFloat {
+		return core.Float{V: floatSum}, nil
+	}
+	return core.Int{V: intSum}, nil
+}
+
+func nativeSub(args []core.Value) (core.Value, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("-: requires at least 1 argument")
+	}
+	var intR int64
+	var floatR float64
+	hasFloat := false
+	switch v := args[0].(type) {
+	case core.Int:
+		intR = v.V
+	case core.Float:
+		floatR = v.V
+		hasFloat = true
+	default:
+		return nil, fmt.Errorf("-: expected number, got %T", args[0])
+	}
+	if len(args) == 1 {
+		if hasFloat {
+			return core.Float{V: -floatR}, nil
+		}
+		return core.Int{V: -intR}, nil
+	}
+	for _, arg := range args[1:] {
+		switch v := arg.(type) {
+		case core.Int:
+			if hasFloat {
+				floatR -= float64(v.V)
+			} else {
+				intR -= v.V
+			}
+		case core.Float:
+			if !hasFloat {
+				floatR = float64(intR)
+				hasFloat = true
+			}
+			floatR -= v.V
+		default:
+			return nil, fmt.Errorf("-: expected number, got %T", arg)
+		}
+	}
+	if hasFloat {
+		return core.Float{V: floatR}, nil
+	}
+	return core.Int{V: intR}, nil
+}
+
+func nativeMul(args []core.Value) (core.Value, error) {
+	var intP int64 = 1
+	var floatP float64 = 1
+	hasFloat := false
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case core.Int:
+			if hasFloat {
+				floatP *= float64(v.V)
+			} else {
+				intP *= v.V
+			}
+		case core.Float:
+			if !hasFloat {
+				floatP = float64(intP)
+				hasFloat = true
+			}
+			floatP *= v.V
+		default:
+			return nil, fmt.Errorf("*: expected number, got %T", arg)
+		}
+	}
+	if hasFloat {
+		return core.Float{V: floatP}, nil
+	}
+	return core.Int{V: intP}, nil
+}
+
+func nativeDiv(args []core.Value) (core.Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("/: requires at least 2 arguments")
+	}
+	var dividend float64
+	switch v := args[0].(type) {
+	case core.Int:
+		dividend = float64(v.V)
+	case core.Float:
+		dividend = v.V
+	default:
+		return nil, fmt.Errorf("/: expected number, got %T", args[0])
+	}
+	for _, arg := range args[1:] {
+		var divisor float64
+		switch v := arg.(type) {
+		case core.Int:
+			if v.V == 0 {
+				return nil, fmt.Errorf("/: division by zero")
+			}
+			divisor = float64(v.V)
+		case core.Float:
+			if v.V == 0 {
+				return nil, fmt.Errorf("/: division by zero")
+			}
+			divisor = v.V
+		default:
+			return nil, fmt.Errorf("/: expected number, got %T", arg)
+		}
+		dividend /= divisor
+	}
+	return core.Float{V: dividend}, nil
+}
+
+func nativeOrder(name string, args []core.Value, ok func(int) bool) (core.Value, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("%s: requires at least 1 argument", name)
+	}
+	if _, err := toFloat(name, args[0]); err != nil {
+		return nil, err
+	}
+	for i := 1; i < len(args); i++ {
+		cmp, err := numCmp(name, args[i-1], args[i])
+		if err != nil {
+			return nil, err
+		}
+		if !ok(cmp) {
+			return core.Bool{V: false}, nil
+		}
+	}
+	return core.Bool{V: true}, nil
+}
+
+func nativeEq(args []core.Value) (core.Value, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("=: requires at least 1 argument")
+	}
+	for _, arg := range args[1:] {
+		if !args[0].Equals(arg) {
+			return core.Bool{V: false}, nil
+		}
+	}
+	return core.Bool{V: true}, nil
+}
+
+func numCmp(name string, a, b core.Value) (int, error) {
+	ai, aInt := a.(core.Int)
+	bi, bInt := b.(core.Int)
+	if aInt && bInt {
+		switch {
+		case ai.V < bi.V:
+			return -1, nil
+		case ai.V > bi.V:
+			return 1, nil
+		}
+		return 0, nil
+	}
+	af, err := toFloat(name, a)
+	if err != nil {
+		return 0, err
+	}
+	bf, err := toFloat(name, b)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case af < bf:
+		return -1, nil
+	case af > bf:
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func toFloat(name string, v core.Value) (float64, error) {
+	switch n := v.(type) {
+	case core.Int:
+		return float64(n.V), nil
+	case core.Float:
+		return n.V, nil
+	default:
+		return 0, fmt.Errorf("%s: expected number, got %T", name, v)
+	}
+}
+
 // coerceThrow mirrors the tree-walker's throw/catch coercion (evalThrow in
-// core/eval.go): a thrown String keeps its raw text, anything else is
 // formatted with %v, so catch binds the same core.String under both evaluators.
 func coerceThrow(value core.Value) core.String {
 	if s, ok := value.(core.String); ok {
@@ -402,7 +781,11 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if eval == nil {
 			eval = core.NewEvaluator()
 		}
-		result, err := f.Fn(ctx, eval, args, vm.globals)
+		frameEnv := vm.globals
+		if len(vm.frames) > 0 {
+			frameEnv = vm.frames[len(vm.frames)-1].env
+		}
+		result, err := f.Fn(ctx, eval, args, frameEnv)
 		if err != nil {
 			return err
 		}
@@ -423,7 +806,14 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("maximum call depth %d exceeded", vm.maxDepth)}
 		}
 		vm.depth++
-		callEnv := core.NewEnv(f.Env)
+
+		needsEnv := needsCallEnv(f.Chunk)
+
+		var callEnv *core.Env
+		if needsEnv {
+			callEnv = core.NewEnv(f.Env)
+		}
+
 		if tail && len(vm.frames) > 0 {
 			vm.depth--
 			frame := &vm.frames[len(vm.frames)-1]
@@ -434,20 +824,28 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				copy(vm.stack[target:], args[:fixed])
 				vm.stack[target+fixed] = rest
 				vm.stack = vm.stack[:target+fixed+1]
-				for i := range fixed {
-					callEnv.Set(f.Chunk.LocalNames[i], args[i])
+				if needsEnv {
+					for i := range fixed {
+						callEnv.Set(f.Chunk.LocalNames[i], args[i])
+					}
+					callEnv.Set(f.Chunk.LocalNames[fixed], rest)
 				}
-				callEnv.Set(f.Chunk.LocalNames[fixed], rest)
 			} else {
 				copy(vm.stack[target:], args)
 				vm.stack = vm.stack[:target+len(args)]
-				for i := range min(len(args), len(f.Chunk.LocalNames)) {
-					callEnv.Set(f.Chunk.LocalNames[i], args[i])
+				if needsEnv {
+					for i := range min(len(args), len(f.Chunk.LocalNames)) {
+						callEnv.Set(f.Chunk.LocalNames[i], args[i])
+					}
 				}
 			}
 			frame.chunk = f.Chunk
 			frame.ip = 0
-			frame.env = callEnv
+			if needsEnv {
+				frame.env = callEnv
+			} else {
+				frame.env = f.Env
+			}
 			frame.isClosure = true
 		} else {
 			base := len(vm.stack) - argc - 1
@@ -456,23 +854,33 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				rest := core.List{Items: append([]core.Value(nil), args[fixed:]...)}
 				for i := range fixed {
 					vm.stack[base+i] = args[i]
-					callEnv.Set(f.Chunk.LocalNames[i], args[i])
 				}
 				vm.stack[base+fixed] = rest
-				callEnv.Set(f.Chunk.LocalNames[fixed], rest)
 				vm.stack = vm.stack[:base+fixed+1]
+				if needsEnv {
+					for i := range fixed {
+						callEnv.Set(f.Chunk.LocalNames[i], args[i])
+					}
+					callEnv.Set(f.Chunk.LocalNames[fixed], rest)
+				}
 			} else {
 				copy(vm.stack[base:], args)
-				for i := range min(len(args), len(f.Chunk.LocalNames)) {
-					callEnv.Set(f.Chunk.LocalNames[i], args[i])
-				}
 				vm.stack = vm.stack[:base+argc]
+				if needsEnv {
+					for i := range min(len(args), len(f.Chunk.LocalNames)) {
+						callEnv.Set(f.Chunk.LocalNames[i], args[i])
+					}
+				}
+			}
+			frameEnv := f.Env
+			if needsEnv {
+				frameEnv = callEnv
 			}
 			vm.frames = append(vm.frames, Frame{
 				chunk:     f.Chunk,
 				ip:        0,
 				base:      base,
-				env:       callEnv,
+				env:       frameEnv,
 				isClosure: true,
 			})
 		}
@@ -481,4 +889,26 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		return core.NewTypeError("callable", fn)
 	}
 	return nil
+}
+
+// needsCallEnv returns true if the chunk requires per-call Env allocation —
+// either because capture analysis was inconclusive (FullEnv) or because at
+// least one local is captured. When false, the frame reuses the closure's
+// parent env and allocates no Env for local bindings.
+func needsCallEnv(chunk *Chunk) bool {
+	return chunk.FullEnv || !allLocalsUncaptured(chunk)
+}
+
+// allLocalsUncaptured returns true when no local slot in the chunk is marked
+// as captured and FullEnv is false.
+func allLocalsUncaptured(chunk *Chunk) bool {
+	if chunk.FullEnv {
+		return false
+	}
+	for _, c := range chunk.Captured {
+		if c {
+			return false
+		}
+	}
+	return true
 }

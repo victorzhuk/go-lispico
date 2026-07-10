@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,5 +240,47 @@ func BenchmarkEngine_EvalWithBindings(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = eng.EvalWithBindings(context.Background(), "(+ x y)", bindings)
+	}
+}
+
+func buildFileLoadSource() string {
+	var lines []string
+	for i := range 1000 {
+		lines = append(lines, fmt.Sprintf("(def x%d %d)", i, i))
+	}
+	lines = append(lines, "(do x0 x999)")
+	return "(do " + strings.Join(lines, " ") + ")"
+}
+
+// BenchmarkEngine_LoadFileTreeWalker measures repeated eval of a file-like
+// source through the tree-walking evaluator (no bytecode, no chunk cache).
+func BenchmarkEngine_LoadFileTreeWalker(b *testing.B) {
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+
+	src := buildFileLoadSource()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Eval(context.Background(), "file", src)
+	}
+}
+
+// BenchmarkEngine_LoadFileBytecode measures repeated eval of the same
+// file-like source through the bytecode VM. After the first iteration the
+// per-form chunks are cached and the VMs are reused from a sync.Pool.
+func BenchmarkEngine_LoadFileBytecode(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+
+	src := buildFileLoadSource()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Eval(context.Background(), "file", src)
 	}
 }

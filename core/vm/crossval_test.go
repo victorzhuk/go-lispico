@@ -10,6 +10,7 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
+	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
 func newCrossValEnv() *core.Env {
@@ -578,6 +579,235 @@ func TestVMVsTreeWalker_EmptyBodyFnDefn(t *testing.T) {
 
 			_, compileErr := compiler.CompileAll(forms)
 			assert.Error(t, compileErr, "bytecode compiler should reject an empty-body fn/defn, not panic")
+		})
+	}
+}
+
+// stdlibEnv creates an env with real stdlib arithmetic and comparison builtins.
+func stdlibEnv() *core.Env {
+	env := core.NewEnv(nil)
+	p := stdlib.New()
+	p.Init(env)
+	return env
+}
+
+func TestVMVsTreeWalker_Promotion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"int + float", "(+ 1 2.5)"},
+		{"float + int", "(+ 2.5 1)"},
+		{"int * float", "(* 3 2.5)"},
+		{"int - float", "(- 10 3.5)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, stdlibEnv(), tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_ComparisonChains(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"lt chain", "(< 1 2 3)"},
+		{"gt chain", "(> 3 2 1)"},
+		{"le chain", "(<= 1 2 2)"},
+		{"ge chain", "(>= 3 2 2)"},
+		{"eq chain", "(= 1 2 3)"},
+		{"eq fallthrough", "(= 1 1 1)"},
+		{"lt chain fail", "(< 1 3 2)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, stdlibEnv(), tt.src)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_DivisionByZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		{"div by zero int", "(/ 10 0)", true},
+		{"div by zero float", "(/ 10.0 0.0)", true},
+		{"div nonzero", "(/ 10 2)", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := stdlibEnv()
+			forms, err := core.Read(tt.src)
+			require.NoError(t, err, "read source")
+
+			treeEval := core.NewEvaluator()
+			var treeResult core.Value = core.Nil{}
+			var treeErr error
+			for _, form := range forms {
+				treeResult, treeErr = treeEval.Eval(context.Background(), form, env)
+			}
+
+			chunks, cErr := compiler.CompileAll(forms)
+			require.NoError(t, cErr, "compile")
+
+			v := vm.New(env)
+			var vmResult core.Value = core.Nil{}
+			var vmErr error
+			for _, chunk := range chunks {
+				vmResult, vmErr = v.Run(context.Background(), chunk)
+			}
+
+			if tt.wantErr {
+				require.Error(t, treeErr, "tree-walker should error")
+				require.Error(t, vmErr, "VM should error")
+				return
+			}
+			require.NoError(t, treeErr)
+			require.NoError(t, vmErr)
+			assert.True(t, vmResult.Equals(treeResult),
+				"VM result %v (%T) != tree-walker result %v (%T)",
+				vmResult, vmResult, treeResult, treeResult)
+		})
+	}
+}
+
+func TestVMVsTreeWalker_ReboundPlus(t *testing.T) {
+	t.Parallel()
+
+	env := stdlibEnv()
+	// Rebound + at global level
+	env.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Int{V: 999}, nil
+	}})
+
+	// Using stdlib + directly: (+ 1 2) → 999 since + is rebound
+	compare(t, env, "(+ 1 2)")
+}
+
+func TestVMVsTreeWalker_ErrorPropagation(t *testing.T) {
+	t.Parallel()
+
+	env := stdlibEnv()
+
+	// Comparison with non-numeric arg
+	forms, err := core.Read("(< 1 \"a\")")
+	require.NoError(t, err)
+
+	treeEval := core.NewEvaluator()
+	var treeErr error
+	for _, form := range forms {
+		_, treeErr = treeEval.Eval(context.Background(), form, env)
+	}
+
+	chunks, cErr := compiler.CompileAll(forms)
+	require.NoError(t, cErr)
+
+	v := vm.New(env)
+	var vmErr error
+	for _, chunk := range chunks {
+		_, vmErr = v.Run(context.Background(), chunk)
+	}
+
+	require.Error(t, treeErr)
+	require.Error(t, vmErr)
+}
+
+// TestVMVsTreeWalker_NativeOpThrowCatchSlotReuse proves a stale canonicalSlots
+// entry from a pre-throw OpGetGlobal does not cause a false fast-path after
+// catch unwinds the stack and the operator is rebound in the catch body.
+func TestVMVsTreeWalker_NativeOpThrowCatchSlotReuse(t *testing.T) {
+	t.Parallel()
+
+	src := "(try (+ (boom) 2) (catch e (do (def + custom-plus) (+ 1 2))))"
+
+	makeEnv := func() *core.Env {
+		env := core.NewEnv(nil)
+		env.SetCanonical("+", core.GoFunc{
+			Name: "+",
+			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+				var s int64
+				for _, a := range args {
+					if n, ok := a.(core.Int); ok {
+						s += n.V
+					}
+				}
+				return core.Int{V: s}, nil
+			},
+		})
+		env.Set("boom", core.GoFunc{
+			Name: "boom",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return nil, errors.New("boom")
+			},
+		})
+		env.Set("custom-plus", core.GoFunc{
+			Name: "custom-plus",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return core.Int{V: 999}, nil
+			},
+		})
+		return env
+	}
+
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+
+	// Tree-walker
+	twEnv := makeEnv()
+	tw := core.NewEvaluator()
+	var twResult core.Value
+	for _, f := range forms {
+		twResult, err = tw.Eval(context.Background(), f, twEnv)
+	}
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 999}, twResult)
+
+	// VM
+	vmEnv := makeEnv()
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+	v := vm.New(vmEnv)
+	var vmResult core.Value
+	for _, chunk := range chunks {
+		vmResult, err = v.Run(context.Background(), chunk)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, core.Int{V: 999}, vmResult)
+}
+
+func TestVMVsTreeWalker_ClosureCapture(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"capture loop var", "(let [f (fn [] (loop [i 0] (if (< i 3) (recur (+ i 1)) i)))] (f))"},
+		{"escaping closure", "(def mkadd (fn [x] (fn [y] (+ x y)))) ((mkadd 10) 20)"},
+		{"deeply nested fn", "(def f (fn [x] (fn [y] (fn [z] (+ x y z))))) (((f 1) 2) 3)"},
+		{"multiple closures same local", "(let [x 100] (def a (fn [] x)) (def b (fn [] x)) (+ (a) (b)))"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, newCrossValEnv(), tt.src)
 		})
 	}
 }

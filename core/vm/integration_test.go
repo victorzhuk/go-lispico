@@ -434,3 +434,47 @@ func TestMultipleRuns_Reset(t *testing.T) {
 		assert.True(t, result.Equals(core.Int{V: 3}), "run %d: expected 3, got %v", i, result)
 	}
 }
+
+func TestTopLevelCapturedLet(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `(do (def get-x (let [x 42] (fn [] x))) (get-x))`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 42}), "expected 42, got %v", result)
+}
+
+func TestSetBangAfterClosure(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `
+(let [x 10]
+  (def get-x (fn [] x))
+  (set! x 20)
+  (get-x))`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 20}), "expected 20, got %v", result)
+}
+
+func TestCapturedParam(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `((fn [a] (let [f (fn [] a)] (f))) 42)`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 42}), "expected 42, got %v", result)
+}
+
+func TestCapturedClosureCall(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `((fn [x] (let [f (fn [y] (+ x y))] (f 10))) 32)`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 42}), "expected 42, got %v", result)
+}

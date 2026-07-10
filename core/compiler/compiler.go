@@ -21,11 +21,12 @@ func unsupportedErr(msg string) error {
 // Compiler compiles core.Value forms into a single vm.Chunk, tracking local
 // variable scopes as it goes. It implements vm.FormCompiler.
 type Compiler struct {
-	chunk  *vm.Chunk
-	locals []local
-	depth  int
-	parent *Compiler
-	loops  []loopFrame
+	chunk   *vm.Chunk
+	locals  []local
+	depth   int
+	parent  *Compiler
+	loops   []loopFrame
+	dialect *core.Dialect
 }
 
 type loopFrame struct {
@@ -40,7 +41,13 @@ type local struct {
 
 // NewCompiler creates a Compiler that emits into a new chunk named name.
 func NewCompiler(name string) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name}}
+	return &Compiler{chunk: &vm.Chunk{Name: name, FullEnv: true}}
+}
+
+// NewCompilerWithDialect creates a Compiler that emits into a new chunk named name
+// with access to the dialect for dialect-dependent compilation.
+func NewCompilerWithDialect(name string, dialect *core.Dialect) *Compiler {
+	return &Compiler{chunk: &vm.Chunk{Name: name, FullEnv: true, Truthiness: dialect.TruthyFunc()}, dialect: dialect}
 }
 
 // Chunk returns the chunk the compiler is emitting into.
@@ -106,52 +113,95 @@ func (c *Compiler) compileList(f core.List) error {
 	}
 	head, isSym := f.Items[0].(core.Symbol)
 	if isSym {
-		switch head.V {
-		case "if":
-			return c.compileIf(f.Items[1:])
-		case "def":
-			return c.compileDef(f.Items[1:])
-		case "defn":
-			return c.compileDefn(f.Items[1:])
-		case "fn":
-			return c.compileFn(f.Items[1:])
-		case "let":
-			return c.compileLet(f.Items[1:])
-		case "let*":
-			return c.compileLetStar(f.Items[1:])
-		case "do":
-			return c.compileDo(f.Items[1:])
-		case "quote":
-			c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(f.Items[1]))
-			return nil
-		case "cond":
-			return c.compileCond(f.Items[1:])
-		case "and":
-			return c.compileAnd(f.Items[1:])
-		case "or":
-			return c.compileOr(f.Items[1:])
-		case "not":
-			return c.compileNot(f.Items[1:])
-		case "quasiquote":
-			return c.compileQuasiquote(f.Items[1:])
-		case "set!":
-			return c.compileSet(f.Items[1:])
-		case "when":
-			return c.compileWhen(f.Items[1:])
-		case "unless":
-			return c.compileUnless(f.Items[1:])
-		case "loop":
-			return c.compileLoop(f.Items[1:])
-		case "recur":
-			return c.compileRecur(f.Items[1:])
-		case "try":
-			return c.compileTry(f.Items[1:])
-		case "throw":
-			return c.compileThrow(f.Items[1:])
-		case "catch":
-			return fmt.Errorf("catch used outside of try")
-		case "defmacro":
-			return unsupportedErr("defmacro is not supported by the bytecode compiler")
+		canonicalName := head.V
+		isSpecial := true
+		if c.dialect != nil {
+			canonical, removed, ok := c.dialect.CanonicalName(head.V)
+			if removed {
+				return fmt.Errorf("compile: undefined form %q", head.V)
+			}
+			if ok {
+				canonicalName = canonical
+			}
+			isSpecial = ok
+		}
+		if isSpecial {
+			switch canonicalName {
+			case "if":
+				return c.compileIf(f.Items[1:])
+			case "def":
+				return c.compileDef(f.Items[1:])
+			case "defn":
+				return c.compileDefn(f.Items[1:])
+			case "fn":
+				return c.compileFn(f.Items[1:])
+			case "function":
+				if len(f.Items[1:]) != 1 {
+					return fmt.Errorf("function: requires exactly 1 argument")
+				}
+				sym, ok := f.Items[1].(core.Symbol)
+				if !ok {
+					return fmt.Errorf("function: argument must be symbol, got %T", f.Items[1])
+				}
+				c.chunk.Emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
+				return nil
+			case "funcall":
+				// funcall evaluates its first argument as a value expression and calls it.
+				if len(f.Items[1:]) < 1 {
+					return fmt.Errorf("funcall: requires at least 1 argument")
+				}
+				if err := c.Compile(f.Items[1]); err != nil {
+					return err
+				}
+				for _, arg := range f.Items[2:] {
+					if err := c.Compile(arg); err != nil {
+						return err
+					}
+				}
+				c.chunk.Emit(vm.OpCall, len(f.Items[2:]))
+				return nil
+			case "let":
+				return c.compileLet(f.Items[1:])
+			case "let*":
+				return c.compileLetStar(f.Items[1:])
+			case "do":
+				return c.compileDo(f.Items[1:])
+			case "quote":
+				c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(f.Items[1]))
+				return nil
+			case "cond":
+				return c.compileCond(f.Items[1:])
+			case "and":
+				return c.compileAnd(f.Items[1:])
+			case "or":
+				return c.compileOr(f.Items[1:])
+			case "not":
+				return c.compileNot(f.Items[1:])
+			case "quasiquote":
+				return c.compileQuasiquote(f.Items[1:])
+			case "set!":
+				return c.compileSet(f.Items[1:])
+			case "when":
+				return c.compileWhen(f.Items[1:])
+			case "unless":
+				return c.compileUnless(f.Items[1:])
+			case "loop":
+				return c.compileLoop(f.Items[1:])
+			case "recur":
+				return c.compileRecur(f.Items[1:])
+			case "try":
+				return c.compileTry(f.Items[1:])
+			case "throw":
+				return c.compileThrow(f.Items[1:])
+			case "catch":
+				return fmt.Errorf("catch used outside of try")
+			case "defmacro":
+				return unsupportedErr("defmacro is not supported by the bytecode compiler")
+			}
+			// Native operator: emit opcode only if not locally shadowed in any scope.
+			if op, ok := nativeOp(canonicalName); ok && !c.isLocallyShadowed(canonicalName) {
+				return c.compileNativeOp(f.Items, op)
+			}
 		}
 	}
 	return c.compileCall(f.Items)
@@ -205,6 +255,9 @@ func (c *Compiler) compileFn(args []core.Value) error {
 		return fmt.Errorf("fn requires at least 2 arguments (params body...)")
 	}
 	sub := NewCompiler("<fn>")
+	if c.dialect != nil {
+		sub = NewCompilerWithDialect("<fn>", c.dialect)
+	}
 	sub.parent = c
 	for _, p := range params {
 		sub.addLocal(p.V)
@@ -220,7 +273,7 @@ func (c *Compiler) compileFn(args []core.Value) error {
 	sub.chunk.Emit(vm.OpReturn, 0)
 	sub.chunk.Arity = len(params)
 	sub.chunk.Variadic = variadic.V != ""
-
+	markCaptures(sub.chunk, collectAncestors(c))
 	idx := len(c.chunk.SubChunks)
 	c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
 	c.chunk.Emit(vm.OpClosure, idx)
@@ -424,8 +477,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	body := args[:len(args)-1]
 
 	catchSlot := len(c.locals)
-	c.chunk.LocalNames = append(c.chunk.LocalNames, errSym.V)
-	c.chunk.Locals++
+	c.addLocal(errSym.V)
 
 	setup := c.chunk.EmitJump(vm.OpSetupTry)
 	if err := c.compileDo(body); err != nil {
@@ -455,8 +507,19 @@ func (c *Compiler) compileThrow(args []core.Value) error {
 }
 
 func (c *Compiler) compileCall(items []core.Value) error {
-	if err := c.Compile(items[0]); err != nil {
-		return err
+	// Lisp-2: emit OpGetFunc for the head symbol instead of OpGetGlobal.
+	if c.dialect != nil && c.dialect.IsLisp2() {
+		if sym, ok := items[0].(core.Symbol); ok {
+			c.chunk.Emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
+		} else {
+			if err := c.Compile(items[0]); err != nil {
+				return err
+			}
+		}
+	} else {
+		if err := c.Compile(items[0]); err != nil {
+			return err
+		}
 	}
 	for _, arg := range items[1:] {
 		if err := c.Compile(arg); err != nil {
@@ -465,6 +528,29 @@ func (c *Compiler) compileCall(items []core.Value) error {
 	}
 	argc := len(items) - 1
 	c.chunk.Emit(vm.OpCall, argc)
+	return nil
+}
+
+// compileNativeOp emits a native arithmetic/comparison opcode for a list form
+// whose head is a non-shadowed symbol. It emits OpGetGlobal for the operator
+// (preserving ordinary head-resolution order and frame-env semantics), then
+// compiles each argument, and finally emits the native opcode with operand =
+// number of arguments + 1 (fn + args). The VM's native dispatch consumes the
+// fn from the stack, checks canonical status in the frame env, fast-paths or
+// falls back.
+func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
+	// Emit OpGetGlobal for the operator symbol (head).
+	sym := items[0].(core.Symbol)
+	c.chunk.Emit(vm.OpGetGlobal, c.chunk.AddConstant(sym))
+
+	// Compile each argument.
+	for _, arg := range items[1:] {
+		if err := c.Compile(arg); err != nil {
+			return err
+		}
+	}
+	// Operand = fn (1) + number of args.
+	c.chunk.Emit(op, len(items[1:]))
 	return nil
 }
 
@@ -477,10 +563,97 @@ func (c *Compiler) resolveLocal(name string) int {
 	return -1
 }
 
+// isLocallyShadowed returns true if name is bound as a local in this compiler
+// or any parent compiler. Used to prevent native opcode emission when an
+// enclosing scope shadows a native operator.
+func (c *Compiler) isLocallyShadowed(name string) bool {
+	if c.resolveLocal(name) >= 0 {
+		return true
+	}
+	if c.parent != nil {
+		return c.parent.isLocallyShadowed(name)
+	}
+	return false
+}
+
 func (c *Compiler) addLocal(name string) {
 	c.locals = append(c.locals, local{name: name, depth: c.depth})
 	c.chunk.Locals++
 	c.chunk.LocalNames = append(c.chunk.LocalNames, name)
+}
+
+// captureAncestor carries a chunk and its local names for capture analysis.
+// Used by markCaptures to walk the ancestor chain of nested closures.
+type captureAncestor struct {
+	chunk  *vm.Chunk
+	locals []string
+}
+
+// collectAncestors walks the Compiler parent chain to build a slice of
+// captureAncestor entries. The caller's own chunk appears first, then its
+// parent, etc., matching the order capture checks apply.
+func collectAncestors(c *Compiler) []captureAncestor {
+	var ancestors []captureAncestor
+	for p := c; p != nil; p = p.parent {
+		ancestors = append(ancestors, captureAncestor{chunk: p.chunk, locals: p.chunk.LocalNames})
+	}
+	return ancestors
+}
+
+// markCaptures walks the chunk tree rooted at root, identifying locals in each
+// ancestor that are referenced by OpGetGlobal instructions in descendant
+// (closure) chunks. Those locals are marked as captured so the VM knows to
+// mirror them to an Env. After analysis, FullEnv is cleared for chunks where
+// no captures were found.
+// The ancestors slice holds chunks from the compiler parent chain that may
+// contain locals referenced by closures within the root.
+func markCaptures(root *vm.Chunk, ancestors []captureAncestor) {
+	walkCaptureTree(root, ancestors)
+}
+
+func walkCaptureTree(chunk *vm.Chunk, ancestors []captureAncestor) {
+	// Recurse into children first — they report captures into ancestors.
+	for _, child := range chunk.SubChunks {
+		childAncestors := make([]captureAncestor, 0, len(ancestors)+1)
+		childAncestors = append(childAncestors, captureAncestor{chunk: chunk, locals: chunk.LocalNames})
+		childAncestors = append(childAncestors, ancestors...)
+		walkCaptureTree(child, childAncestors)
+	}
+
+	// Check each OpGetGlobal against ancestor local names.
+	for _, inst := range chunk.Code {
+		if inst.Op() != vm.OpGetGlobal {
+			continue
+		}
+		sym, err := chunk.GetSymbolConstant(inst.A())
+		if err != nil {
+			continue
+		}
+		for _, anc := range ancestors {
+			for slot, name := range anc.locals {
+				if name == sym.V {
+					if anc.chunk.Captured == nil {
+						anc.chunk.Captured = make([]bool, anc.chunk.Locals)
+					}
+					anc.chunk.Captured[slot] = true
+				}
+			}
+		}
+	}
+
+	// Clear FullEnv when capture analysis found nothing to capture.
+	if chunk.FullEnv {
+		has := false
+		for _, c := range chunk.Captured {
+			if c {
+				has = true
+				break
+			}
+		}
+		if !has {
+			chunk.FullEnv = false
+		}
+	}
 }
 
 func isElse(v core.Value) bool {
@@ -500,6 +673,39 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 	name, ok := args[0].(core.Symbol)
 	if !ok {
 		return fmt.Errorf("defn: name must be symbol, got %T", args[0])
+	}
+	if c.dialect != nil && c.dialect.IsLisp2() {
+		// Lisp-2: compile fn closure then emit OpSetFunc for the function cell.
+		params, variadic, err := parseParams(args[1])
+		if err != nil {
+			return err
+		}
+		body := args[2:]
+		sub := NewCompiler("<fn>")
+		if c.dialect != nil {
+			sub = NewCompilerWithDialect("<fn>", c.dialect)
+		}
+		sub.parent = c
+		for _, p := range params {
+			sub.addLocal(p.V)
+		}
+		if variadic.V != "" {
+			sub.addLocal(variadic.V)
+		}
+		for _, b := range body {
+			if err := sub.Compile(b); err != nil {
+				return err
+			}
+		}
+		sub.chunk.Emit(vm.OpReturn, 0)
+		sub.chunk.Arity = len(params)
+		sub.chunk.Variadic = variadic.V != ""
+		markCaptures(sub.chunk, collectAncestors(c))
+		idx := len(c.chunk.SubChunks)
+		c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
+		c.chunk.Emit(vm.OpClosure, idx)
+		c.chunk.Emit(vm.OpSetFunc, c.chunk.AddConstant(name))
+		return nil
 	}
 	fnItems := append([]core.Value{core.Symbol{V: "fn"}, args[1]}, args[2:]...)
 	def := core.List{Items: []core.Value{core.Symbol{V: "def"}, name, core.List{Items: fnItems}}}
@@ -664,28 +870,34 @@ func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {
 			return nil, err
 		}
 		comp.chunk.Emit(vm.OpReturn, 0)
+		markCaptures(comp.chunk, nil)
 		chunks = append(chunks, comp.chunk)
 	}
 	return chunks, nil
 }
 
 func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err error) {
-	vec, ok := v.(core.Vector)
-	if !ok {
-		return nil, core.Symbol{}, fmt.Errorf("fn params must be vector, got %T", v)
+	var items []core.Value
+	switch val := v.(type) {
+	case core.Vector:
+		items = val.Items
+	case core.List:
+		items = val.Items
+	default:
+		return nil, core.Symbol{}, fmt.Errorf("fn params must be vector or list, got %T", v)
 	}
-	for i, item := range vec.Items {
+	for i, item := range items {
 		sym, ok := item.(core.Symbol)
 		if !ok {
 			return nil, core.Symbol{}, fmt.Errorf("fn param must be symbol, got %T", item)
 		}
 		if sym.V == "&" {
-			if i+1 >= len(vec.Items) {
+			if i+1 >= len(items) {
 				return nil, core.Symbol{}, fmt.Errorf("fn: & requires a rest param name")
 			}
-			rest, ok := vec.Items[i+1].(core.Symbol)
+			rest, ok := items[i+1].(core.Symbol)
 			if !ok {
-				return nil, core.Symbol{}, core.NewTypeError("symbol", vec.Items[i+1])
+				return nil, core.Symbol{}, core.NewTypeError("symbol", items[i+1])
 			}
 			variadic = rest
 			break
@@ -693,4 +905,31 @@ func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err 
 		params = append(params, sym)
 	}
 	return params, variadic, nil
+}
+
+// nativeOp returns the VM opcode for a native operator name, or false if
+// the name is not a compile-time native operator.
+func nativeOp(name string) (vm.Opcode, bool) {
+	switch name {
+	case "+":
+		return vm.OpAdd, true
+	case "-":
+		return vm.OpSub, true
+	case "*":
+		return vm.OpMul, true
+	case "/":
+		return vm.OpDiv, true
+	case "<":
+		return vm.OpLt, true
+	case ">":
+		return vm.OpGt, true
+	case "<=":
+		return vm.OpLe, true
+	case ">=":
+		return vm.OpGe, true
+	case "=":
+		return vm.OpEq, true
+	default:
+		return 0, false
+	}
 }

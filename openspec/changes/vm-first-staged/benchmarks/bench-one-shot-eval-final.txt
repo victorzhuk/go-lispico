@@ -1,0 +1,11 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/runtime
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEngine_EvalSimple-24    	  469038	      2456 ns/op	    1288 B/op	      20 allocs/op
+BenchmarkEngine_EvalSimple-24    	  501992	      2375 ns/op	    1288 B/op	      20 allocs/op
+BenchmarkEngine_EvalSimple-24    	  474152	      2406 ns/op	    1288 B/op	      20 allocs/op
+BenchmarkEngine_EvalSimple-24    	  503844	      2422 ns/op	    1288 B/op	      20 allocs/op
+BenchmarkEngine_EvalSimple-24    	  493934	      2361 ns/op	    1288 B/op	      20 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/runtime	6.015s

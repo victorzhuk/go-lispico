@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/core/vm
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkFibonacci_VM-24            	    1923	    625576 ns/op	    9637 B/op	      25 allocs/op
+BenchmarkFibonacci_VM-24            	    1858	    626718 ns/op	    9632 B/op	      25 allocs/op
+BenchmarkFibonacci_VM-24            	    1812	    633799 ns/op	    9632 B/op	      25 allocs/op
+BenchmarkFibonacci_VM-24            	    1933	    634499 ns/op	    9632 B/op	      25 allocs/op
+BenchmarkFibonacci_VM-24            	    1825	    633364 ns/op	    9632 B/op	      25 allocs/op
+BenchmarkFibonacci_TreeWalker-24    	     532	   2187106 ns/op	 1012249 B/op	   12847 allocs/op
+BenchmarkFibonacci_TreeWalker-24    	     554	   2158362 ns/op	 1012260 B/op	   12847 allocs/op
+BenchmarkFibonacci_TreeWalker-24    	     553	   2169715 ns/op	 1012250 B/op	   12847 allocs/op
+BenchmarkFibonacci_TreeWalker-24    	     554	   2182700 ns/op	 1012249 B/op	   12847 allocs/op
+BenchmarkFibonacci_TreeWalker-24    	     553	   2160095 ns/op	 1012249 B/op	   12847 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/core/vm	13.315s

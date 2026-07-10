@@ -12,7 +12,7 @@ import (
 
 func newBenchEnv() *core.Env {
 	env := core.NewEnv(nil)
-	env.Set("+", core.GoFunc{
+	env.SetCanonical("+", core.GoFunc{
 		Name: "+",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			var sum int64
@@ -22,7 +22,7 @@ func newBenchEnv() *core.Env {
 			return core.Int{V: sum}, nil
 		},
 	})
-	env.Set("-", core.GoFunc{
+	env.SetCanonical("-", core.GoFunc{
 		Name: "-",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -35,7 +35,7 @@ func newBenchEnv() *core.Env {
 			return core.Int{V: result}, nil
 		},
 	})
-	env.Set("*", core.GoFunc{
+	env.SetCanonical("*", core.GoFunc{
 		Name: "*",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			result := int64(1)
@@ -45,13 +45,13 @@ func newBenchEnv() *core.Env {
 			return core.Int{V: result}, nil
 		},
 	})
-	env.Set("<", core.GoFunc{
+	env.SetCanonical("<", core.GoFunc{
 		Name: "<",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			return core.Bool{V: args[0].(core.Int).V < args[1].(core.Int).V}, nil
 		},
 	})
-	env.Set("=", core.GoFunc{
+	env.SetCanonical("=", core.GoFunc{
 		Name: "=",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			if len(args) < 2 {
@@ -148,6 +148,45 @@ func BenchmarkFunctionCall_VM(b *testing.B) {
 		v := vm.New(env)
 		for _, chunk := range chunks {
 			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkUncapturedFunctionCall_VM(b *testing.B) {
+	src := `
+(def add-one (fn [x] (+ x 1)))
+(add-one 41)`
+
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkUncapturedFunctionCall_TreeWalker(b *testing.B) {
+	src := `
+(def add-one (fn [x] (+ x 1)))
+(add-one 41)`
+
+	forms, _ := core.Read(src)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
 		}
 	}
 }

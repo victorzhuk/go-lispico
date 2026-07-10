@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"maps"
+	"sort"
 )
 
 // formFn implements one special form. It is the value type of both the kernel
@@ -209,6 +211,53 @@ func (d Dialect) Vocab() map[string]VocabEntry {
 	return d.vocab
 }
 
+// CanonicalName maps a visible special-form name to its canonical kernel name
+// under this Dialect if the name is a known special form (possibly renamed).
+// It returns:
+//   - canonical, false, true if the name is a known special form (possibly renamed)
+//   - "", true, true if the name was explicitly removed
+//   - "", false, false if the name is not a special form at all in this dialect
+func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok bool) {
+	// Walk delta ops in reverse so the most recent change to this name wins.
+	for i := len(d.ops) - 1; i >= 0; i-- {
+		op := d.ops[i]
+		if op.name == name {
+			switch op.kind {
+			case opRename:
+				return op.canonical, false, true
+			case opAdd:
+				return op.canonical, false, true
+			case opRemove:
+				return "", true, true
+			}
+		}
+	}
+	// Lisp-2 injects function and funcall into the resolved form table.
+	if d.ns == nsLisp2 {
+		if name == "function" || name == "funcall" {
+			return name, false, true
+		}
+	}
+	if d.base == baseFull {
+		if _, ok := kernel[name]; ok {
+			return name, false, true
+		}
+	}
+	return "", false, false
+}
+
+// TruthyFunc returns the Dialect's truthiness predicate for conditional forms.
+// Returns nil for the default (nil+false falsy) meaning the caller can use core.IsTruthy.
+func (d Dialect) TruthyFunc() func(Value) bool {
+	if d.truth == truthNilOnly {
+		return func(v Value) bool {
+			_, isNil := v.(Nil)
+			return !isNil
+		}
+	}
+	return nil
+}
+
 // IsBaseEmpty reports whether the Dialect starts from an empty base.
 func (d Dialect) IsBaseEmpty() bool {
 	return d.base == baseEmpty
@@ -354,4 +403,31 @@ func (d Dialect) resolve() (map[string]formFn, error) {
 		table["function"] = evalFunction
 	}
 	return table, nil
+}
+
+// Fingerprint returns a stable hash string that changes when the Dialect's
+// semantic configuration changes. Used as part of the bytecode chunk cache key.
+func (d Dialect) Fingerprint() string {
+	h := sha256.New()
+	fmt.Fprintf(h, "base=%d|truth=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d",
+		d.base, d.truth, d.ns, d.brackets, d.funcRef, d.readerVec)
+	for _, op := range d.ops {
+		fmt.Fprintf(h, "|%d:%s:%s", op.kind, op.name, op.canonical)
+	}
+	// Sort vocabulary keys for stable order.
+	if len(d.vocab) > 0 {
+		keys := make([]string, 0, len(d.vocab))
+		for k := range d.vocab {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			entry := d.vocab[k]
+			fmt.Fprintf(h, "|v:%s:%s:", k, entry.Canonical)
+			if entry.Adapter != nil {
+				fmt.Fprintf(h, "%T", entry.Adapter)
+			}
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }

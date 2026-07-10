@@ -5,11 +5,13 @@ import "sync"
 // Env is a lexical scope: an immutable parent chain with a thread-safe local binding map.
 // Reads walk up the chain; writes are local-only.
 type Env struct {
-	mu     sync.RWMutex
-	parent *Env
-	vars   map[string]Value
-	funcs  map[string]Value // function cell; nil until first SetFunc (Lisp-2 only)
-	eval   Evaluator
+	mu         sync.RWMutex
+	parent     *Env
+	vars       map[string]Value
+	funcs      map[string]Value // function cell; nil until first SetFunc (Lisp-2 only)
+	eval       Evaluator
+	canonical  map[string]struct{} // set of canonical operator names; nil for child envs
+	macroEpoch int                 // bumped on each defmacro in this scope; used in bytecode cache key
 }
 
 func NewEnv(parent *Env) *Env {
@@ -23,11 +25,68 @@ func NewEnv(parent *Env) *Env {
 	return e
 }
 
-// Set binds name in this (local) scope.
+// Set binds name in this (local) scope. Overwriting a canonical binding
+// removes the canonical marker, so a root-env rebind is detected as non-canonical.
 func (e *Env) Set(name string, val Value) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.vars[name] = val
+	if e.canonical != nil {
+		delete(e.canonical, name)
+	}
+}
+
+// SetCanonical binds name as a canonical operator in this scope.
+// It is intended ONLY for the stdlib plugin to register its builtins during
+// engine initialization. Marking an arbitrary custom GoFunc as canonical will
+// cause the bytecode VM to execute native opcode semantics for name instead of
+// calling the provided function. Canonical markers are NOT inherited by child
+// scopes (nil map for children).
+func (e *Env) SetCanonical(name string, val Value) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.vars[name] = val
+	if e.canonical == nil {
+		e.canonical = make(map[string]struct{})
+	}
+	e.canonical[name] = struct{}{}
+}
+
+// GetCanonical resolves name like Get but also returns whether it is a canonical
+// binding in its owning scope (any scope in the chain). Child envs have nil
+// canonical map so a child-env rebind is trivially non-canonical; root-env rebind
+// is detected because Set removes the marker. Returns (value, found, canonical).
+func (e *Env) GetCanonical(name string) (Value, bool, bool) {
+	e.mu.RLock()
+	val, ok := e.vars[name]
+	isCanon := false
+	if ok && e.canonical != nil {
+		_, isCanon = e.canonical[name]
+	}
+	e.mu.RUnlock()
+	if ok {
+		return val, true, isCanon
+	}
+	if e.parent != nil {
+		return e.parent.GetCanonical(name)
+	}
+	return nil, false, false
+}
+
+// BumpMacroEpoch increments the macro epoch counter for this scope.
+// Called after defmacro to invalidate bytecode caches that depend on
+// macros defined in this scope. Safe for concurrent use.
+func (e *Env) BumpMacroEpoch() {
+	e.mu.Lock()
+	e.macroEpoch++
+	e.mu.Unlock()
+}
+
+// MacroEpoch returns the current macro epoch counter for this scope.
+func (e *Env) MacroEpoch() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.macroEpoch
 }
 
 // Get walks the scope chain from innermost to outermost.
@@ -125,12 +184,15 @@ func (e *Env) SetEvaluator(eval Evaluator) {
 }
 
 // Delete removes name from this scope's local value and function cells.
-// No-op if name is not bound locally.
+// No-op if name is not bound locally. Also clears canonical marker.
 func (e *Env) Delete(name string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.vars, name)
 	delete(e.funcs, name)
+	if e.canonical != nil {
+		delete(e.canonical, name)
+	}
 }
 
 // FuncNames returns a snapshot of the names bound in this scope's local
