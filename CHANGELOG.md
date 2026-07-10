@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `compiler.MacroExpander` and `CompileExpanded` have been removed.
+  The compiler now expands macros inline during compilation; callers that relied
+  on the separate expansion entrypoint should use the normal `Compile` path.
+- **Breaking:** Reader, evaluator, and VM errors are now typed as
+  `*core.LispicoError` and carry the failing form's source position (`Line`,
+  `Col`, `Source`) when available. Code that checks for specific error types
+  should use `errors.As` with `*core.LispicoError`.
+- `runtime.UnloadPlugin` and `runtime.ReloadPlugin` now clear a plugin's
+  bindings from both the value cell and the function cell (Lisp-2), so
+  previously registered functions are no longer callable after unload.
+- `runtime` REPL input balancing now skips `;` comments outside strings,
+  matching `readComment` behavior.
+
+### Fixed
+
+- Bootstrap macros (`->`, `->>`, `as->`, `if-let`, `when-let`, `get-in`) now
+  resolve correctly in head position under the Common Lisp Lisp-2 dialect.
+- Invalid number literals such as `1.2.3` are rejected and report the token's
+  source position.
+
 ## [0.5.0] - 2026-07-10
 
 ### Added
