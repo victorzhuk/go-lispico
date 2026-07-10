@@ -15,6 +15,12 @@ type PluginStatus struct {
 	LoadedAt time.Time
 }
 
+// bindings tracks per-plugin names to delete on unload/reload.
+// Last writer wins; unload removes what this plugin introduced.
+func (e *engineImpl) snapshotBindings() map[string]struct{} {
+	return diff(unionOf(e.rootEnv.VarNames(), e.rootEnv.FuncNames()), nil)
+}
+
 func (e *engineImpl) Use(p core.Plugin) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -23,12 +29,23 @@ func (e *engineImpl) Use(p core.Plugin) error {
 		return fmt.Errorf("register plugin %s: %w", p.Name(), err)
 	}
 
+	before := e.snapshotBindings()
+
 	if err := p.Init(e.rootEnv); err != nil {
 		e.registry.Unregister(p.Name())
 		return fmt.Errorf("init plugin %s: %w", p.Name(), err)
 	}
 
 	e.applyVocabulary()
+
+	after := e.snapshotBindings()
+	added := diff(after, before)
+	if len(added) > 0 {
+		if e.bindings == nil {
+			e.bindings = make(map[string]map[string]struct{})
+		}
+		e.bindings[p.Name()] = added
+	}
 
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", p.Name(), "version", p.Metadata().Version)
@@ -46,6 +63,12 @@ func (e *engineImpl) UnloadPlugin(name string) error {
 	}
 
 	e.registry.Unregister(name)
+
+	for n := range e.bindings[name] {
+		e.rootEnv.Delete(n)
+	}
+	delete(e.bindings, name)
+
 	e.stats.decPlugins()
 	e.logger.Info("plugin unloaded", "name", name, "version", p.Metadata().Version)
 
@@ -60,6 +83,10 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	oldPlugin, hadOld := e.registry.Get(name)
 
 	if hadOld {
+		for n := range e.bindings[name] {
+			e.rootEnv.Delete(n)
+		}
+		delete(e.bindings, name)
 		e.registry.Unregister(name)
 	}
 
@@ -70,6 +97,8 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
 
+	before := e.snapshotBindings()
+
 	if err := p.Init(e.rootEnv); err != nil {
 		e.registry.Unregister(name)
 		if hadOld {
@@ -79,6 +108,15 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	}
 
 	e.applyVocabulary()
+
+	after := e.snapshotBindings()
+	added := diff(after, before)
+	if len(added) > 0 {
+		if e.bindings == nil {
+			e.bindings = make(map[string]map[string]struct{})
+		}
+		e.bindings[name] = added
+	}
 
 	if !hadOld {
 		e.stats.incPlugins()
@@ -115,4 +153,43 @@ func (e *engineImpl) ListPlugins() []PluginStatus {
 	})
 
 	return statuses
+}
+
+// unionOf merges two string slices into one, deduplicating on the fly.
+// Avoids allocations when both inputs are empty.
+func unionOf(a, b []string) []string {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(a)+len(b))
+	result := make([]string, 0, len(a)+len(b))
+	for _, s := range a {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			result = append(result, s)
+		}
+	}
+	for _, s := range b {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// diff returns a set of names present in after but not in before.
+// Accepts nil before (returning after as a set) or empty inputs.
+func diff(after, before []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(after))
+	beforeSet := make(map[string]struct{}, len(before))
+	for _, s := range before {
+		beforeSet[s] = struct{}{}
+	}
+	for _, s := range after {
+		if _, ok := beforeSet[s]; !ok {
+			result[s] = struct{}{}
+		}
+	}
+	return result
 }
