@@ -280,14 +280,12 @@ func TestListPlugins_AfterUnload(t *testing.T) {
 	assert.Equal(t, "beta", statuses[0].Name)
 }
 
-// bindingPlugin is a test plugin that registers named GoFuncs in Init.
-// It can set bindings in both the value cell (env.Set) and function cell
-// (env.SetFunc) to test Lisp-2 unload behaviour.
+// bindingPlugin registers named GoFuncs in Init, optionally in both the value
+// cell (env.Set) and function cell (env.SetFunc).
 type bindingPlugin struct {
 	name  string
 	names []string // Set these in the value cell
 	funcs []string // SetFunc these in the function cell
-	ctx   context.Context
 }
 
 func (p *bindingPlugin) Name() string { return p.name }
@@ -321,7 +319,6 @@ func TestUnloadPlugin_RemovesRegisteredFuncs(t *testing.T) {
 	p := &bindingPlugin{name: t.Name(), names: []string{"json/encode"}, funcs: []string{"cl-func"}}
 	require.NoError(t, eng.Use(p))
 
-	// Verify both resolve before unload
 	ctx := context.Background()
 	_, err = eng.Eval(ctx, "test", `(json/encode "hi")`)
 	require.NoError(t, err)
@@ -330,10 +327,9 @@ func TestUnloadPlugin_RemovesRegisteredFuncs(t *testing.T) {
 
 	require.NoError(t, eng.UnloadPlugin(t.Name()))
 
-	// Both should now be UndefinedError
+	var le *core.LispicoError
 	_, err = eng.Eval(ctx, "test", `(json/encode "hi")`)
 	require.Error(t, err)
-	var le *core.LispicoError
 	require.True(t, errors.As(err, &le), "expected LispicoError")
 	assert.Equal(t, "UndefinedError", le.Code)
 
@@ -354,19 +350,16 @@ func TestReloadPlugin_NoStaleBindings(t *testing.T) {
 	p1 := &bindingPlugin{name: t.Name(), names: []string{"old-func"}, funcs: []string{"old-cl-func"}}
 	require.NoError(t, eng.Use(p1))
 
-	// Reload with a fresh plugin that only registers a new name
 	p2 := &bindingPlugin{name: t.Name(), names: []string{"new-func"}}
 	require.NoError(t, eng.ReloadPlugin(p2))
 
 	ctx := context.Background()
-	// New name resolves
 	_, err = eng.Eval(ctx, "test", `(new-func)`)
 	require.NoError(t, err)
 
-	// Old names are gone
+	var le *core.LispicoError
 	_, err = eng.Eval(ctx, "test", `(old-func)`)
 	require.Error(t, err)
-	var le *core.LispicoError
 	require.True(t, errors.As(err, &le), "expected LispicoError")
 	assert.Equal(t, "UndefinedError", le.Code)
 
@@ -384,7 +377,6 @@ func TestUnloadPlugin_BothCellsCleared(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
-	// Register one name in vars only, one in funcs only
 	p := &bindingPlugin{
 		name:  t.Name(),
 		names: []string{"only-value"},
@@ -393,7 +385,6 @@ func TestUnloadPlugin_BothCellsCleared(t *testing.T) {
 	require.NoError(t, eng.Use(p))
 
 	ctx := context.Background()
-	// Verify both visible
 	_, err = eng.Eval(ctx, "test", `(only-value)`)
 	require.NoError(t, err)
 	_, err = eng.Eval(ctx, "test", `(only-func)`)
@@ -401,7 +392,6 @@ func TestUnloadPlugin_BothCellsCleared(t *testing.T) {
 
 	require.NoError(t, eng.UnloadPlugin(t.Name()))
 
-	// Both should be UndefinedError
 	var le *core.LispicoError
 	_, err = eng.Eval(ctx, "test", `(only-value)`)
 	require.Error(t, err)
