@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0006
 ---
 
 # The bytecode VM is an opt-in hot-loop optimizer, not the default
