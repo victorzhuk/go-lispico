@@ -14,9 +14,9 @@ The bytecode VM SHALL be an opt-in evaluator, selectable with
 evaluator for every program it compiles. It is a documented subset: for a form it
 does not compile it SHALL return a typed error, and the runtime SHALL fall back to
 the tree-walking evaluator for that form — never panicking, and never producing a
-result that differs from the tree-walker. Each `Eval` call SHALL compile and run in
-isolation, with no state carried over from a prior call. The VM has no on-disk
-bytecode cache.
+result that differs from the tree-walker. Evaluations SHALL be isolated in their
+results: compiled chunks MAY be cached and reused, but no stack or frame state
+SHALL leak between `Eval` calls.
 
 #### Scenario: Supported forms match the tree-walker
 
@@ -46,7 +46,7 @@ bytecode cache.
 #### Scenario: Each evaluation is isolated
 
 - **WHEN** two forms are evaluated in sequence on the same engine
-- **THEN** the second evaluation SHALL return its own result, with no instructions or stack state left over from the first
+- **THEN** the second evaluation SHALL return its own result, with no instructions or stack state left over from the first, whether or not its chunk came from the cache
 
 ### Requirement: Bytecode VM concurrency safety
 
@@ -94,4 +94,83 @@ assert identical results, and the runtime SHALL be tested end to end through
 
 - **WHEN** the corpus is driven through `runtime.New(..., WithBytecode())`, including sequential and concurrent (`-race`) evaluation
 - **THEN** all cases SHALL pass with no data race
+
+### Requirement: Native arithmetic and comparison opcodes
+
+The VM SHALL execute `+`, `-`, `*`, `/`, `<`, `>`, `<=`, `>=`, `=` through
+dedicated opcodes operating on stack slots, with semantics identical to the stdlib
+builtins including int/float promotion and division-by-zero errors. When the
+operator symbol is locally shadowed or its global binding is no longer the
+canonical stdlib builtin, execution SHALL fall back to the ordinary call path.
+
+#### Scenario: Hot loop avoids builtin dispatch
+
+- **WHEN** a `loop` body evaluates `(+ acc 1)` under the VM
+- **THEN** the addition SHALL execute as an opcode without a `GoFunc` invocation, and the loop result SHALL equal the tree-walker's
+
+#### Scenario: Promotion parity
+
+- **WHEN** `(+ 1 2.5)` and `(< 1 1.5)` run under the VM
+- **THEN** results SHALL equal the stdlib builtins' results (`3.5`, `true`)
+
+#### Scenario: Rebound operator falls back
+
+- **WHEN** a program rebinds `+` to a custom function and then calls `(+ 1 2)` under the VM
+- **THEN** the custom function SHALL be called, matching tree-walker behavior
+
+### Requirement: Slot-resident locals
+
+The compiler SHALL determine which locals are captured by inner closures; locals
+that are not captured SHALL live only in stack slots, with no per-call `Env`
+allocation or write-mirroring for them. Captured variables SHALL remain visible to
+their closures with unchanged semantics.
+
+#### Scenario: Uncaptured locals allocate no environment
+
+- **WHEN** a function whose locals are never captured is called in a hot loop under the VM
+- **THEN** the call SHALL not allocate an `Env` map for those locals
+
+#### Scenario: Captured variable still works
+
+- **WHEN** a closure captures a local and is called after the defining frame returns
+- **THEN** the captured value SHALL be correct, matching the tree-walker
+
+### Requirement: Compiled-chunk cache
+
+The runtime SHALL cache compiled chunks per Engine, keyed by source, dialect, and
+macro-definition epoch. A cache hit SHALL skip macro expansion and compilation.
+Defining or redefining a macro SHALL invalidate affected entries, so a stale chunk
+never runs an outdated expansion.
+
+#### Scenario: Repeated evaluation reuses the chunk
+
+- **WHEN** the same source is evaluated twice on one Engine under the VM
+- **THEN** the second evaluation SHALL not recompile and SHALL return the same result
+
+#### Scenario: Macro redefinition invalidates
+
+- **WHEN** source using macro `m` is evaluated, `m` is redefined, and the same source is evaluated again
+- **THEN** the second evaluation SHALL reflect the new definition of `m`
+
+### Requirement: Dialect-axis execution
+
+The VM SHALL honor the Engine's dialect: form names normalized to canonical kernel
+forms before compilation, truthiness decided through the dialect's truthiness rule,
+and head-position symbol resolution through the function cell under Lisp-2. Any
+resolvable dialect SHALL be VM-eligible.
+
+#### Scenario: CL dialect runs on the VM
+
+- **WHEN** an Engine is created with the default CL dialect and `WithBytecode()`, and evaluates `(progn (setq x 1) (if nil 2 x))`
+- **THEN** construction SHALL succeed and the result SHALL be `1`, matching the tree-walker
+
+#### Scenario: Truthiness axis honored
+
+- **WHEN** a nil-only-falsy dialect evaluates `(if false 1 2)` under the VM
+- **THEN** the result SHALL be `1`, because `false` is truthy on that axis
+
+#### Scenario: Restricted dialect runs on the VM
+
+- **WHEN** a fail-closed dialect built from the empty base with a form subset runs a program using only its forms under the VM
+- **THEN** the program SHALL evaluate correctly, and forms outside the subset SHALL remain undefined
 
