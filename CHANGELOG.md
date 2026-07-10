@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-10
+
 ### Added
 
 - `core.Dialect.Vocabulary(map[string]string)` and `core.Dialect.WithAdapter(name, fn)`:
@@ -136,7 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.4.2...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/victorzhuk/go-lispico/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/victorzhuk/go-lispico/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/victorzhuk/go-lispico/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/victorzhuk/go-lispico/compare/v0.3.0...v0.4.0
