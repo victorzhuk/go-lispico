@@ -69,6 +69,7 @@ type engineImpl struct {
 	watchCtx          context.Context
 	watchCancel       context.CancelFunc
 	stats             *Stats
+	bindings          map[string]map[string]struct{}
 	evalCallbacks     []func(EvalEvent)
 	pluginCallbacks   []func(PluginCallEvent)
 }
