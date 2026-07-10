@@ -438,7 +438,7 @@ func (p *Parser) parseHashMap() (Value, error) {
 			return nil, err
 		}
 
-		m, err = m.Assoc(key, val)
+		err = m.Set(key, val)
 		if err != nil {
 			return nil, err
 		}

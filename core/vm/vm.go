@@ -420,7 +420,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			}
 		}
 		if vm.maxDepth > 0 && vm.depth >= vm.maxDepth {
-			return fmt.Errorf("maximum call depth %d exceeded", vm.maxDepth)
+			return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("maximum call depth %d exceeded", vm.maxDepth)}
 		}
 		vm.depth++
 		callEnv := core.NewEnv(f.Env)

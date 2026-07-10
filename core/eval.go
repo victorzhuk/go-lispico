@@ -165,7 +165,7 @@ func (e *engine) evalMap(ctx context.Context, m *HashMap, env *Env) (Value, erro
 		if err != nil {
 			return nil, err
 		}
-		result, err = result.Assoc(k, v)
+		err = result.Set(k, v)
 		if err != nil {
 			return nil, err
 		}
@@ -402,7 +402,7 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			if err != nil {
 				return nil, err
 			}
-			result, err = result.Assoc(k, v)
+			err = result.Set(k, v)
 			if err != nil {
 				return nil, err
 			}
