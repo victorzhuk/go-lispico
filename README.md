@@ -7,6 +7,10 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 - **Zero dependencies** in core package (stdlib only)
 - **13 built-in types**: Nil, Bool, Int, Float, String, Symbol, Keyword, List, Vector, HashMap, GoFunc, Lambda, Macro
 - **22 special forms**: if, def, defn, defmacro, fn, let, let*, do, quote, quasiquote, set!, when, unless, cond, loop, recur, try, catch, throw, and, or, not
+
+  The names above are the kernel special-form names. Under the default
+  CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
+
 - **Tree-walking evaluator** with `loop`/`recur` tail-call optimization
 - **Bytecode VM** with `runtime.WithBytecode()` — opt-in optimizer for hot loops
 - **Hot-reload** via `eng.Watch(ctx, dir)`
@@ -52,6 +56,22 @@ func main() {
     fmt.Println(result) // 6
 }
 ```
+
+## Dialects
+
+Build an engine with a specific dialect via `runtime.WithDialect(d)`. Two
+dialects ship with the interpreter:
+
+- `cl.Dialect()` — Common Lisp / Lisp-2 (default). Separates function and
+  value cells, uses nil-only falsiness, disables bracket literals (`[...]`)
+  in source, and renames many special forms and builtins for CL familiarity
+  (`defun`→`defn`, `setq`→`set!`, `progn`→`do`, `car`→`first`, etc.).
+- `clojure.Dialect()` — Clojure / Lisp-1 identity dialect. Single namespace,
+  `nil`+`false` falsiness, bracket literals enabled. Compatible with the
+  bytecode VM.
+
+The default engine uses `cl.Dialect()`. Pass `WithDialect(clojure.Dialect())`
+to opt in to the Clojure surface.
 
 ## Installation
 
