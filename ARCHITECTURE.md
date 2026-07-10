@@ -147,6 +147,21 @@ bounded by the configured max eval depth.
 | `and`, `or`  | Short-circuit logic   |
 | `not`        | Boolean negation      |
 
+The names above are the kernel special-form names. Under the default
+CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
+
+### cl/
+
+The Common Lisp dialect package. Exports `Dialect()` which returns a
+non-identity composition over `core.FullDialect` with Lisp-2 name resolution,
+nil-only falsiness, CL reader flags, and vocabulary-renamed function names.
+
+### clojure/
+
+The Clojure dialect package. Exports `Dialect()` which returns the identity
+dialect (`core.FullDialect`) — Lisp-1, nil+false falsiness, bracket literals
+enabled, no vocabulary map. Compatible with the bytecode VM.
+
 ### runtime/
 
 The runtime package provides the public Go embedding API:

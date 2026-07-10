@@ -12,6 +12,9 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 - **Hot-reload** via `eng.Watch(ctx, dir)`
 - **Plugin system** for extending functionality
 
+
+The names above are the kernel special-form names. Under the default
+CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
 ## Quick Start
 
 ```go
