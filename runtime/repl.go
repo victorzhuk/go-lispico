@@ -32,12 +32,12 @@ func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 			continue
 		}
 
-		if isExitCommand(line) {
+		if IsExitCommand(line) {
 			return nil
 		}
 
 		input := line
-		for !isBalanced(input) {
+		for !IsBalanced(input) {
 			fmt.Fprint(w, "       ")
 			cont, err := rd.ReadString('\n')
 			if err == io.EOF {
@@ -49,7 +49,7 @@ func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 			}
 			input += "\n" + strings.TrimSpace(cont)
 
-			if isExitCommand(input) {
+			if IsExitCommand(input) {
 				return nil
 			}
 		}
@@ -64,12 +64,12 @@ func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 	}
 }
 
-func isExitCommand(input string) bool {
+func IsExitCommand(input string) bool {
 	trimmed := strings.TrimSpace(input)
 	return trimmed == "(exit)" || trimmed == ",quit"
 }
 
-func isBalanced(input string) bool {
+func IsBalanced(input string) bool {
 	var stack []rune
 	inString := false
 	escape := false
