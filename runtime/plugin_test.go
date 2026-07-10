@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"testing"
@@ -277,4 +278,138 @@ func TestListPlugins_AfterUnload(t *testing.T) {
 
 	require.Len(t, statuses, 1)
 	assert.Equal(t, "beta", statuses[0].Name)
+}
+
+// bindingPlugin is a test plugin that registers named GoFuncs in Init.
+// It can set bindings in both the value cell (env.Set) and function cell
+// (env.SetFunc) to test Lisp-2 unload behaviour.
+type bindingPlugin struct {
+	name  string
+	names []string // Set these in the value cell
+	funcs []string // SetFunc these in the function cell
+	ctx   context.Context
+}
+
+func (p *bindingPlugin) Name() string { return p.name }
+
+func (p *bindingPlugin) Init(env *core.Env) error {
+	for _, n := range p.names {
+		env.Set(n, core.GoFunc{Name: n, Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		}})
+	}
+	for _, n := range p.funcs {
+		env.SetFunc(n, core.GoFunc{Name: n, Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		}})
+	}
+	return nil
+}
+
+func (p *bindingPlugin) Metadata() core.PluginMeta {
+	return core.PluginMeta{Version: "1.0.0"}
+}
+
+func TestUnloadPlugin_RemovesRegisteredFuncs(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	p := &bindingPlugin{name: t.Name(), names: []string{"json/encode"}, funcs: []string{"cl-func"}}
+	require.NoError(t, eng.Use(p))
+
+	// Verify both resolve before unload
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "test", `(json/encode "hi")`)
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "test", `(cl-func)`)
+	require.NoError(t, err)
+
+	require.NoError(t, eng.UnloadPlugin(t.Name()))
+
+	// Both should now be UndefinedError
+	_, err = eng.Eval(ctx, "test", `(json/encode "hi")`)
+	require.Error(t, err)
+	var le *core.LispicoError
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+
+	_, err = eng.Eval(ctx, "test", `(cl-func)`)
+	require.Error(t, err)
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+}
+
+func TestReloadPlugin_NoStaleBindings(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	p1 := &bindingPlugin{name: t.Name(), names: []string{"old-func"}, funcs: []string{"old-cl-func"}}
+	require.NoError(t, eng.Use(p1))
+
+	// Reload with a fresh plugin that only registers a new name
+	p2 := &bindingPlugin{name: t.Name(), names: []string{"new-func"}}
+	require.NoError(t, eng.ReloadPlugin(p2))
+
+	ctx := context.Background()
+	// New name resolves
+	_, err = eng.Eval(ctx, "test", `(new-func)`)
+	require.NoError(t, err)
+
+	// Old names are gone
+	_, err = eng.Eval(ctx, "test", `(old-func)`)
+	require.Error(t, err)
+	var le *core.LispicoError
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+
+	_, err = eng.Eval(ctx, "test", `(old-cl-func)`)
+	require.Error(t, err)
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+}
+
+func TestUnloadPlugin_BothCellsCleared(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	// Register one name in vars only, one in funcs only
+	p := &bindingPlugin{
+		name:  t.Name(),
+		names: []string{"only-value"},
+		funcs: []string{"only-func"},
+	}
+	require.NoError(t, eng.Use(p))
+
+	ctx := context.Background()
+	// Verify both visible
+	_, err = eng.Eval(ctx, "test", `(only-value)`)
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "test", `(only-func)`)
+	require.NoError(t, err)
+
+	require.NoError(t, eng.UnloadPlugin(t.Name()))
+
+	// Both should be UndefinedError
+	var le *core.LispicoError
+	_, err = eng.Eval(ctx, "test", `(only-value)`)
+	require.Error(t, err)
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+
+	_, err = eng.Eval(ctx, "test", `(only-func)`)
+	require.Error(t, err)
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
 }

@@ -124,12 +124,29 @@ func (e *Env) SetEvaluator(eval Evaluator) {
 	e.eval = eval
 }
 
-// Delete removes name from this scope's local bindings. It is a no-op if name
-// is not bound locally.
+// Delete removes name from this scope's local value and function cells.
+// No-op if name is not bound locally.
 func (e *Env) Delete(name string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.vars, name)
+	delete(e.funcs, name)
+}
+
+// FuncNames returns a snapshot of the names bound in this scope's local
+// function cell (Lisp-2 only). The order is unspecified. Parent bindings
+// are not included.
+func (e *Env) FuncNames() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.funcs == nil {
+		return nil
+	}
+	names := make([]string, 0, len(e.funcs))
+	for name := range e.funcs {
+		names = append(names, name)
+	}
+	return names
 }
 
 // VarNames returns a snapshot of the names bound in this scope's local frame.
