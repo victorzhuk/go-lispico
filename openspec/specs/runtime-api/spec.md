@@ -35,7 +35,7 @@ it is cancelled. Options that cannot be honored — an inert `WithBytecodeCache`
 - **THEN** every option SHALL either change behavior as documented or be absent
 
 ### Requirement: WithDialect Engine option
-The runtime SHALL provide a `WithDialect` construction option that selects the Dialect an Engine runs. The option SHALL be applied once at `New` and SHALL compose with the existing construction options, except that the bytecode evaluator dispatches canonical form names directly and therefore accepts only the identity Dialect.
+The runtime SHALL provide a `WithDialect` construction option that selects the Dialect an Engine runs. The option SHALL be applied once at `New` and SHALL compose with the existing construction options, including the bytecode evaluator: any resolvable Dialect SHALL be accepted alongside `WithBytecode()`.
 
 #### Scenario: Selecting a Dialect at construction
 - **WHEN** an Engine is created with `WithDialect` set to a given Dialect
@@ -45,9 +45,9 @@ The runtime SHALL provide a `WithDialect` construction option that selects the D
 - **WHEN** an Engine is created without `WithDialect`
 - **THEN** the Engine SHALL run the default Dialect, preserving prior behavior until the default is changed by a later change
 
-#### Scenario: Bytecode evaluator requires the identity Dialect
-- **WHEN** an Engine is created with both the bytecode evaluator and a non-identity Dialect
-- **THEN** construction SHALL fail, because the bytecode path cannot honor a Dialect's renamed, added, or removed forms
+#### Scenario: Bytecode composes with any Dialect
+- **WHEN** an Engine is created with both `WithBytecode()` and a non-identity Dialect (the default CL, or a restricted dialect)
+- **THEN** construction SHALL succeed and evaluation SHALL honor the Dialect's forms and axes on the bytecode path
 
 #### Scenario: Unresolvable Dialect fails construction
 - **WHEN** an Engine is created with a Dialect whose delta references a canonical form absent from the kernel
