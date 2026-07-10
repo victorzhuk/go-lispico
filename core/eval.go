@@ -786,6 +786,17 @@ func evalCatch(_ context.Context, _ *engine, _ []Value, _ *Env) (Value, error) {
 	return nil, evalErrorf("catch used outside of try")
 }
 
+// throwError wraps a LispicoError so errors.As can recover the typed error while
+// preserving the original tree-walker behavior of exposing only the thrown value's
+// text in err.Error() (used by catch binding).
+type throwError struct {
+	value Value
+	cause *LispicoError
+}
+
+func (e *throwError) Error() string { return e.cause.Message }
+func (e *throwError) Unwrap() error { return e.cause }
+
 func evalThrow(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 1 {
 		return nil, evalErrorf("throw requires exactly 1 argument")
@@ -795,9 +806,9 @@ func evalThrow(ctx context.Context, e *engine, args []Value, env *Env) (Value, e
 		return nil, err
 	}
 	if s, ok := val.(String); ok {
-		return nil, fmt.Errorf("%s", s.V)
+		return nil, &throwError{value: val, cause: &LispicoError{Code: "ThrowError", Message: s.V}}
 	}
-	return nil, fmt.Errorf("%v", val)
+	return nil, &throwError{value: val, cause: &LispicoError{Code: "ThrowError", Message: fmt.Sprintf("%v", val)}}
 }
 
 func evalAnd(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {

@@ -38,6 +38,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 				fmtArgs[i] = toAny(arg)
 			}
 
+			if fmtStr.V == "" {
+				return core.String{V: ""}, nil
+			}
 			return core.String{V: fmt.Sprintf(fmtStr.V, fmtArgs...)}, nil
 		},
 	})

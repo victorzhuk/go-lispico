@@ -232,19 +232,12 @@ func (r *Reader) readString() (token, error) {
 
 func (r *Reader) readNumber() token {
 	start := r.pos
-	hasDot := false
 
 	if r.peek() == '-' {
 		r.next()
 	}
 
 	for isDigit(r.peek()) || r.peek() == '.' {
-		if r.peek() == '.' {
-			if hasDot {
-				break
-			}
-			hasDot = true
-		}
 		r.next()
 	}
 
@@ -357,7 +350,7 @@ func (p *Parser) parseForm() (Value, error) {
 		return String{V: tok.val}, nil
 	case tokenNumber:
 		p.next()
-		return parseNumber(tok.val)
+		return parseNumber(tok.val, tok.line, tok.col)
 	case tokenSymbol:
 		p.next()
 		switch tok.val {
@@ -515,17 +508,17 @@ func (p *Parser) parseUnquoteSplicing() (Value, error) {
 	return List{Items: []Value{Symbol{V: "unquote-splicing"}, form}}, nil
 }
 
-func parseNumber(s string) (Value, error) {
+func parseNumber(s string, line, col int) (Value, error) {
 	if strings.Contains(s, ".") {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
-			return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), 0, 0)
+			return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), line, col)
 		}
 		return Float{V: f}, nil
 	}
 	i, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), 0, 0)
+		return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), line, col)
 	}
 	return Int{V: i}, nil
 }
