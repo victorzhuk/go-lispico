@@ -8,9 +8,10 @@
 //   - CL vocabulary renaming core GoFuncs (car→first, cdr→rest, etc.)
 //
 // defun is registered as an alias for the kernel defn form via [Dialect.Add].
-// The kernel defn expects vector parameters (e.g. [x y]), and since CL disables
-// bracket literals, defun forms must be constructed programmatically or called
-// from Lisp code that passes a pre-built Vector for the parameter list.
+// defn/fn/defmacro accept both Vector and List params via paramsAsVector for
+// dialect portability. The CL reader disables bracket literals, so a List
+// is the only on-disk representation — forms typed in Lisp naturally use
+// list-style parameters.
 //
 // Because it carries non-default axes and a vocabulary map, its
 // [core.Dialect.IsIdentity] returns false.  The bytecode VM rejects this

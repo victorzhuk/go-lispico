@@ -93,6 +93,9 @@ Only `nil` and `false` are falsy. Everything else is truthy.
 
 22 special forms: `if`, `def`, `defn`, `defmacro`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `unless`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`, `not`.
 
+These are the kernel names. Under the default CL dialect they are
+renamed: `do`→`progn`, `set!`→`setq`, etc.
+
 ## TCO
 
 The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) is an opt-in optimizer for a documented subset of forms, using O(1) stack `loop`/`recur` via the `OpLoop` back-jump; forms it does not compile fall back to the tree-walker, which is the default and complete path.
