@@ -61,7 +61,8 @@ without data races or cross-call state corruption.
 ### Requirement: Bytecode VM robustness
 
 The bytecode VM SHALL never panic on any input — valid source, a malformed form, or
-a structurally malformed chunk; it SHALL return an error instead.
+a structurally malformed chunk; it SHALL return an error instead. Every error the
+VM returns SHALL be a `*core.LispicoError`.
 
 #### Scenario: Empty-body function
 
@@ -72,6 +73,11 @@ a structurally malformed chunk; it SHALL return an error instead.
 
 - **WHEN** an opcode references an out-of-range stack slot or constant index
 - **THEN** the VM SHALL return a `*core.LispicoError`, never index out of range
+
+#### Scenario: Max call depth is a typed error
+
+- **WHEN** VM execution exceeds the maximum call depth
+- **THEN** the returned error SHALL satisfy `errors.As(err, &lispicoErr)` like every other VM error
 
 ### Requirement: Bytecode VM tree-walker parity verification
 
