@@ -13,8 +13,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Core interpreter with 13 types and 22 special forms
 - Bytecode compiler and VM
 - Runtime API with hot-reload support
-- 8 plugins: `stdlib` and `data` are active; `llm`, `agent`, `lio`, `net`,
-  `exec` are frozen (see `docs/adr/0004-kernel-first-mission.md`)
+- 8 plugins: `stdlib` and `data` are active; `fsm` is idle, no consumer;
+  `llm`, `agent`, `lio`, `net`, `exec` are frozen
+  (see `docs/adr/0004-kernel-first-mission.md`)
 
 ## Build & Test
 

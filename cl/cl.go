@@ -14,10 +14,9 @@
 // list-style parameters.
 //
 // Because it carries non-default axes and a vocabulary map, its
-// [core.Dialect.IsIdentity] returns false.  The bytecode VM rejects this
-// dialect at construction (it requires IsIdentity()==true), so CL evaluation
-// always runs on the tree-walker.  This is by design: the bytecode VM is a
-// Clojure-axis optimization (ADR 0005).
+// [core.Dialect.IsIdentity] returns false.  The bytecode VM handles rename
+// normalization ([core.Dialect.CanonicalName]) and all dialect axes, so CL
+// evaluates on the bytecode VM when WithBytecode() is enabled (ADR 0006).
 package cl
 
 import "github.com/victorzhuk/go-lispico/core"
