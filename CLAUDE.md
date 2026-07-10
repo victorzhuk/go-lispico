@@ -52,6 +52,13 @@ runtime/        # Public Go embedding API
 ├── stats.go    # Runtime statistics
 └── plugin.go   # Plugin loading
 
+cl/             # Common Lisp dialect (Lisp-2, non-identity)
+└── cl.go       # Dialect() constructor
+
+clojure/        # Clojure/Lisp-1 identity dialect
+├── clojure.go      # Dialect() constructor
+└── clojure_test.go # Dialect tests
+
 plugins/        # Domain plugins (opt-in deps)
 ├── stdlib/     # Standard library (pure Lisp + Go builtins)
 ├── llm/        # LLM API bindings
@@ -93,8 +100,7 @@ Only `nil` and `false` are falsy. Everything else is truthy.
 
 22 special forms: `if`, `def`, `defn`, `defmacro`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `unless`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`, `not`.
 
-These are the kernel names. Under the default CL dialect they are
-renamed: `do`→`progn`, `set!`→`setq`, etc.
+These are the kernel names. Under the default CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
 
 ## TCO
 
