@@ -75,10 +75,8 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 
 			m := core.NewHashMap()
-			var err error
 			for i := 0; i < len(args); i += 2 {
-				m, err = m.Assoc(args[i], args[i+1])
-				if err != nil {
+				if err := m.Set(args[i], args[i+1]); err != nil {
 					return nil, fmt.Errorf("hash-map: %w", err)
 				}
 			}
