@@ -6,9 +6,8 @@
 
 **Goals:**
 
-- `Engine.Call` runs on a pooled, reset VM, matching the `Eval` path — no per-call `vm.New`.
-- Docs stop contradicting shipped behavior (CL-on-VM; `fsm` status).
-
+- `core/vm/vm.go` supplies a public pooled receiver apply method (`ApplyPooled`) that reuses the existing receiver without `vm.New`, preserving `VM.Apply`'s documented fresh-isolation contract.
+- `Engine.Call` runs on a pooled, reset VM via `ApplyPooled` — no per-call `vm.New`.
 **Non-Goals:**
 
 - The lazy-tree-walker construction in `vm.New` (a separate low-priority allocation win, backlog).
@@ -16,8 +15,8 @@
 
 ## Decisions
 
-- **Reuse `runVM` semantics in `Apply`.** `Apply` needs a VM bound to `fn`/`args`/`env`; get from `be.vmPool`, `Reset()`, set globals, run, put back — the same lifecycle `runVM` uses. Result isolation holds because `Reset()` clears stack/frames before reuse.
-- **Docs are task-only.** The CL-on-VM and `fsm` corrections change no spec behavior (the CL-on-VM contract is already specified under `runtime-api`/`bytecode-vm`), so they are tasks, not spec deltas.
+- **Public `ApplyPooled` on `*vm.VM`.** New method calls `vm.apply(...)` directly on receiver (same logic as `VM.Apply` but without `vm.New`). Callers that own a reset VM call this; `VM.Apply` stays unchanged.
+- **Reuse `runVM` semantics in `Apply`.** `bytecodeEvaluator.Apply` gets from `be.vmPool`, `Reset()`, set globals, set structural-depth counter, `ApplyPooled`, then `Put` — the same lifecycle `runVM` uses with `defer Put` after `Get`. Result isolation holds because `Reset()` clears stack/frames before reuse.
 
 ## Risks / Trade-offs
 

@@ -16,7 +16,10 @@ does not compile it SHALL return a typed error, and the runtime SHALL fall back 
 the tree-walking evaluator for that form — never panicking, and never producing a
 result that differs from the tree-walker. Evaluations SHALL be isolated in their
 results: compiled chunks MAY be cached and reused, but no stack or frame state
-SHALL leak between `Eval` calls.
+SHALL leak between `Eval` calls. VM instances SHALL be reused across evaluations —
+on both the `Eval` path and the `Apply`/`Call` path — rather than a fresh machine
+being allocated per call; a reused instance SHALL be reset before it runs the next
+evaluation so no state leaks between them.
 
 #### Scenario: Supported forms match the tree-walker
 
@@ -47,6 +50,11 @@ SHALL leak between `Eval` calls.
 
 - **WHEN** two forms are evaluated in sequence on the same engine
 - **THEN** the second evaluation SHALL return its own result, with no instructions or stack state left over from the first, whether or not its chunk came from the cache
+
+#### Scenario: Call reuses a pooled VM
+
+- **WHEN** `Engine.Call` invokes a function repeatedly on one `WithBytecode()` engine
+- **THEN** each call SHALL run on a reset, reused VM from the pool rather than a freshly allocated machine, and SHALL return the same result the tree-walker would
 
 ### Requirement: Bytecode VM concurrency safety
 
