@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-11
+
 ### Added
 
 - `cmd/lispico` interactive REPL binary with raw-mode line editing, multiline
@@ -29,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously registered functions are no longer callable after unload.
 - `runtime` REPL input balancing now skips `;` comments outside strings,
   matching `readComment` behavior.
+- The bytecode VM's `Engine.Call`/`Apply` path reuses pooled VM instances
+  instead of allocating a fresh VM per call, matching the pooled `Eval` path;
+  no per-call VM allocation remains on either path (completes ADR 0006).
+- JSON decoding in the `data` plugin builds each decoded object's hash map in a
+  single linear pass instead of repeated immutable `Assoc`, removing the
+  quadratic rebuild cost on large objects.
 
 ### Fixed
 
@@ -168,7 +176,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.5.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/victorzhuk/go-lispico/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/victorzhuk/go-lispico/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/victorzhuk/go-lispico/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/victorzhuk/go-lispico/compare/v0.4.0...v0.4.1
