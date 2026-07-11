@@ -86,8 +86,13 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
 	ctx = core.EnsureEvalState(ctx)
-	fresh := vm.New(env, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be), vm.WithMaxStructuralDepth(be.maxStructuralDepth), vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx)))
-	return fresh.Apply(ctx, fn, args, env)
+	v := be.vmPool.Get().(*vm.VM)
+	v.Reset()
+	v.SetGlobals(env)
+	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
+	result, err := v.ApplyPooled(ctx, fn, args, env)
+	be.vmPool.Put(v)
+	return result, err
 }
 
 func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen }

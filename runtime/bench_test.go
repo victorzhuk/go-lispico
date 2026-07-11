@@ -156,6 +156,23 @@ func BenchmarkEngine_Call(b *testing.B) {
 	}
 }
 
+func BenchmarkEngine_CallBytecode(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+
+	bindBuiltin(b, eng, "+")
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Call(context.Background(), "add", core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
 func BenchmarkEngine_Bind(b *testing.B) {
 	eng, err := New(nil)
 	if err != nil {
@@ -181,6 +198,26 @@ func BenchmarkEngine_ParallelEval(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			_, _ = eng.Eval(context.Background(), "parallel", "(+ 1 2)")
+		}
+	})
+}
+
+func BenchmarkEngine_ParallelCallBytecode(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+
+	bindBuiltin(b, eng, "+")
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			_, _ = eng.Call(context.Background(), "add", core.Int{V: int64(i)}, core.Int{V: 1})
+			i++
 		}
 	})
 }

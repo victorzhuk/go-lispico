@@ -161,6 +161,14 @@ func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *c
 	return fresh.apply(ctx, fn, args, env)
 }
 
+// ApplyPooled calls fn with args on this VM instance (no fresh VM allocation).
+// The caller MUST have called Reset (or obtained this VM from a pool that
+// resets) before calling ApplyPooled, and MUST NOT reuse this VM concurrently.
+// For fresh-isolation semantics use Apply instead.
+func (v *VM) ApplyPooled(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
+	return v.apply(ctx, fn, args, env)
+}
+
 func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
 	switch f := fn.(type) {
 	case *Closure:
