@@ -372,7 +372,7 @@ func (c *Compiler) compileSet(args []core.Value) error {
 	if idx := c.resolveLocal(sym.V); idx >= 0 {
 		c.chunk.Emit(vm.OpSetLocal, idx)
 	} else {
-		c.chunk.Emit(vm.OpSetGlobal, c.chunk.AddConstant(sym))
+		c.chunk.Emit(vm.OpSetLexical, c.chunk.AddConstant(sym))
 	}
 	return nil
 }
@@ -626,9 +626,9 @@ func walkCaptureTree(chunk *vm.Chunk, ancestors []captureAncestor) {
 		walkCaptureTree(child, childAncestors)
 	}
 
-	// Check each OpGetGlobal against ancestor local names.
+	// Check each OpGetGlobal/OpSetLexical against ancestor local names.
 	for _, inst := range chunk.Code {
-		if inst.Op() != vm.OpGetGlobal {
+		if inst.Op() != vm.OpGetGlobal && inst.Op() != vm.OpSetLexical {
 			continue
 		}
 		sym, err := chunk.GetSymbolConstant(inst.A())

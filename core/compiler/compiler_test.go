@@ -333,7 +333,7 @@ func TestCompiler_Set(t *testing.T) {
 		chunk := c.Chunk()
 		require.Len(t, chunk.Code, 2)
 		assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
-		assert.Equal(t, vm.OpSetGlobal, chunk.Code[1].Op())
+		assert.Equal(t, vm.OpSetLexical, chunk.Code[1].Op())
 	})
 
 	t.Run("local", func(t *testing.T) {

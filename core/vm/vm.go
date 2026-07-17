@@ -306,6 +306,21 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 			frame.env.Set(sym.V, top)
 
+		case OpSetLexical:
+			sym, err := frame.chunk.GetSymbolConstant(instr.A())
+			if err != nil {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
+			}
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			owner, ok := frame.env.Find(sym.V)
+			if !ok {
+				return nil, core.NewUndefinedError(sym.V)
+			}
+			owner.Set(sym.V, top)
+
 		case OpGetFunc:
 			sym, err := frame.chunk.GetSymbolConstant(instr.A())
 			if err != nil {

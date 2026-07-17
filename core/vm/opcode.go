@@ -11,6 +11,7 @@ const (
 	OpConst Opcode = iota
 	OpGetGlobal
 	OpSetGlobal
+	OpSetLexical
 	OpGetLocal
 	OpSetLocal
 	OpCall
@@ -51,6 +52,7 @@ var opNames = [...]string{
 	OpConst:       "CONST",
 	OpGetGlobal:   "GET_GLOBAL",
 	OpSetGlobal:   "SET_GLOBAL",
+	OpSetLexical:  "SET_LEXICAL",
 	OpGetLocal:    "GET_LOCAL",
 	OpSetLocal:    "SET_LOCAL",
 	OpGetFunc:     "GET_FUNC",

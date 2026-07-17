@@ -253,3 +253,43 @@ func TestBytecodeRuntime_WhenUnlessValuePosition(t *testing.T) {
 		})
 	}
 }
+
+func TestBytecodeRuntime_SetLexical(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	bindBuiltin(t, eng, "+")
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "def-g", "(def g 0)")
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "def-bump", "(def bump (fn [x] (let [h (fn [] x)] (set! g (+ g 1)))))")
+	require.NoError(t, err)
+
+	_, err = eng.Eval(ctx, "b1", "(bump 0)")
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "b2", "(bump 0)")
+	require.NoError(t, err)
+
+	got, err := eng.Eval(ctx, "g", "g")
+	require.NoError(t, err)
+	assert.True(t, got.Equals(core.Int{V: 2}), "set! from fn body with callEnv must persist to global; got %v", got)
+}
+
+func TestBytecodeRuntime_SetUndefined(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "set-undef", "(set! undefined-var 1)")
+	require.Error(t, err, "set! on undefined must error")
+	var le *core.LispicoError
+	require.ErrorAs(t, err, &le, "error must be *core.LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code, "error code")
+}

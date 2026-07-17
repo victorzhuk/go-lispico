@@ -499,6 +499,40 @@ func TestVMVsTreeWalker_WhenUnlessValuePosition(t *testing.T) {
 	}
 }
 
+func TestVMVsTreeWalker_SetLexical(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	src := `(def g 0)
+                (def bump (fn [x] (let [h (fn [] x)] (set! g (+ g 1)))))
+                (bump 0)
+                (bump 0)
+                g`
+	compare(t, env, src)
+}
+
+func TestVMVsTreeWalker_SetUndefined(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	forms, err := core.Read("(set! undefined-var 1)")
+	require.NoError(t, err)
+
+	treeEval := core.NewEvaluator()
+	_, treeErr := treeEval.Eval(context.Background(), forms[0], env)
+
+	chunks, cErr := compiler.CompileAll(forms)
+	require.NoError(t, cErr)
+	v := vm.New(env)
+	_, vmErr := v.Run(context.Background(), chunks[0])
+
+	require.Error(t, treeErr, "tree-walker must reject set! on undefined")
+	require.Error(t, vmErr, "VM must reject set! on undefined")
+	var le *core.LispicoError
+	require.ErrorAs(t, vmErr, &le, "VM error must be *core.LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code, "VM error code")
+}
+
 func TestVMVsTreeWalker_Variadic(t *testing.T) {
 	t.Parallel()
 
