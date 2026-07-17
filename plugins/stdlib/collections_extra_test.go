@@ -51,6 +51,8 @@ func TestCollections_Merge(t *testing.T) {
 		{"no args", "(merge)", "{}"},
 		{"nil skipped", "(merge {:a 1} nil {:b 2})", "{:a 1 :b 2}"},
 		{"three maps chain", "(merge {:a 1} {:b 2} {:a 3})", "{:a 3 :b 2}"},
+		{"all-nil arguments", "(merge nil nil)", "{}"},
+		{"sorted regardless of insertion order", "(merge {:c 3} {:a 1} {:b 2})", "{:a 1 :b 2 :c 3}"},
 	}
 
 	for _, tt := range tests {
@@ -60,6 +62,23 @@ func TestCollections_Merge(t *testing.T) {
 				t.Errorf("expected %s, got %s", tt.expected, result.String())
 			}
 		})
+	}
+}
+
+func TestCollections_Merge_Immutable(t *testing.T) {
+	env := setupEnv(t)
+
+	eval(t, env, "(def m1 {:a 1 :b 2})")
+	eval(t, env, "(def m2 {:c 3})")
+	eval(t, env, "(merge m1 m2)")
+
+	result := eval(t, env, "m1")
+	if result.String() != "{:a 1 :b 2}" {
+		t.Errorf("merge mutated its first argument: %s", result.String())
+	}
+	result = eval(t, env, "m2")
+	if result.String() != "{:c 3}" {
+		t.Errorf("merge mutated its second argument: %s", result.String())
 	}
 }
 

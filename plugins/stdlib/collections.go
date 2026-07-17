@@ -417,10 +417,9 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				case *core.HashMap:
 					var err error
 					m.Each(func(k, v core.Value) {
-						if err != nil {
-							return
+						if err == nil {
+							err = result.Set(k, v)
 						}
-						result, err = result.Assoc(k, v)
 					})
 					if err != nil {
 						return nil, fmt.Errorf("merge: %w", err)
