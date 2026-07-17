@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
+	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
 // Defect-family cross-validation corpus. Families 1-3 (when/unless value
@@ -84,6 +85,74 @@ func TestVMVsTreeWalker_TryCatchLocals_InLoopAndFn(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			compare(t, env, tt.src)
+		})
+	}
+}
+
+// Family 5: keyword application, i.e. (:key m), must produce identical
+// results on the VM and the tree-walker — key hit, key miss, and a non-map
+// argument all resolve without error; only arity != 1 is an error.
+func TestVMVsTreeWalker_KeywordApplication(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"key present", `(:name {:name "Alice" :age 30})`},
+		{"key absent", `(:missing {:name "Alice"})`},
+		{"non-map argument", `(:name 42)`},
+		{"non-map argument nil", `(:name nil)`},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
+// TestVMVsTreeWalker_KeywordApplication_ArityError proves both the
+// tree-walker and the compiled VM reject a keyword call with an arity other
+// than 1 as the SAME *core.LispicoError (Code "EvalError"), never a panic or
+// a mismatched error shape.
+func TestVMVsTreeWalker_KeywordApplication_ArityError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"zero args", "(:name)"},
+		{"two args", `(:name {:name "Alice"} "default")`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			forms, err := core.Read(tc.src)
+			require.NoError(t, err, "read source")
+
+			treeEnv := newCrossValEnv()
+			treeEval := core.NewEvaluator()
+			_, treeErr := treeEval.Eval(context.Background(), forms[0], treeEnv)
+			require.Error(t, treeErr, "tree-walker must reject wrong keyword arity")
+
+			vmEnv := newCrossValEnv()
+			chunks, err := compiler.CompileAll(forms)
+			require.NoError(t, err, "compile")
+			v := vm.New(vmEnv)
+			_, vmErr := v.Run(context.Background(), chunks[0])
+			require.Error(t, vmErr, "VM must reject wrong keyword arity")
+
+			var treeLE, vmLE *core.LispicoError
+			require.ErrorAs(t, treeErr, &treeLE, "tree-walker error must be *core.LispicoError")
+			require.ErrorAs(t, vmErr, &vmLE, "VM error must be *core.LispicoError")
+			assert.Equal(t, treeLE.Code, vmLE.Code, "error Code must match between tree-walker and VM")
+			assert.Equal(t, treeLE.Message, vmLE.Message, "error Message must match between tree-walker and VM")
 		})
 	}
 }

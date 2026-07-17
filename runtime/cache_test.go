@@ -61,6 +61,46 @@ func TestCache_MacroInvalidation(t *testing.T) {
 	assert.True(t, core.Int{V: 2}.Equals(r2), "redefined macro: (m 1 2) => 2")
 }
 
+// TestCache_MacroInvalidation_ViaCall extends TestCache_MacroInvalidation to
+// the Apply/Call path: a macro that expands to a top-level (def use-m (fn ...))
+// is invoked via eng.Eval, then use-m is exercised via eng.Call; the macro is
+// redefined and re-invoked, then use-m is exercised via eng.Call again. Proves
+// epoch invalidation isn't bypassed by the pooled-VM cache on the Call path.
+//
+// The macro expansion targets a top-level def (rather than nesting the macro
+// call inside a fn body) because the bytecode compiler only macro-expands the
+// literal top-level form passed to Eval — a macro invoked from inside a
+// compiled fn/defn body is not expanded and misresolves at call time.
+func TestCache_MacroInvalidation_ViaCall(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	defer e.Close()
+
+	bindBuiltin(t, e, "+")
+	bindBuiltin(t, e, "*")
+
+	_, err = e.Eval(context.Background(), "defmacro1", "(defmacro m [] `(def use-m (fn [x y] (+ x y))))")
+	require.NoError(t, err)
+
+	_, err = e.Eval(context.Background(), "use1", "(m)")
+	require.NoError(t, err)
+
+	r1, err := e.Call(context.Background(), "use-m", core.Int{V: 1}, core.Int{V: 2})
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 3}.Equals(r1), "first macro via Call: (use-m 1 2) => 3")
+
+	// Redefine the macro to bind use-m to a multiplying fn instead.
+	_, err = e.Eval(context.Background(), "defmacro2", "(defmacro m [] `(def use-m (fn [x y] (* x y))))")
+	require.NoError(t, err)
+
+	_, err = e.Eval(context.Background(), "use2", "(m)")
+	require.NoError(t, err)
+
+	r2, err := e.Call(context.Background(), "use-m", core.Int{V: 1}, core.Int{V: 2})
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 2}.Equals(r2), "redefined macro via Call: (use-m 1 2) => 2")
+}
+
 // TestCache_Isolation verifies that different source strings with the same
 // form index produce correctly different cached results.
 func TestCache_Isolation(t *testing.T) {

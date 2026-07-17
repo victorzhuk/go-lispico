@@ -35,9 +35,10 @@ func (c *Closure) Equals(o core.Value) bool {
 }
 
 type handler struct {
-	addr       int
-	frameDepth int
-	stackDepth int
+	addr        int
+	frameDepth  int
+	stackDepth  int
+	structDepth int64
 }
 
 // VM is a stack-based bytecode virtual machine.
@@ -109,6 +110,7 @@ func (vm *VM) reset() {
 	vm.frames = vm.frames[:0]
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
+	vm.structDepth.Store(0)
 	vm.canonicalAt = vm.canonicalAt[:0]
 }
 
@@ -120,6 +122,7 @@ func (vm *VM) Reset() {
 	vm.frames = vm.frames[:0]
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
+	vm.structDepth.Store(0)
 	vm.canonicalAt = vm.canonicalAt[:0]
 }
 
@@ -203,9 +206,29 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 			eval = core.NewEvaluator()
 		}
 		return f.Fn(ctx, eval, args, env)
+	case core.Keyword:
+		if len(args) != 1 {
+			return nil, keywordArityError(len(args))
+		}
+		m, ok := args[0].(*core.HashMap)
+		if !ok {
+			return core.Nil{}, nil
+		}
+		v, _ := m.Get(f)
+		if v == nil {
+			return core.Nil{}, nil
+		}
+		return v, nil
 	default:
 		return nil, core.NewTypeError("callable", fn)
 	}
+}
+
+// keywordArityError reports a keyword-as-function call with an argument
+// count other than 1, matching the tree-walker's evalErrorf shape exactly
+// (Code "EvalError") so cross-val tests can assert equality.
+func keywordArityError(got int) *core.LispicoError {
+	return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("keyword lookup requires exactly 1 argument, got %d", got)}
 }
 
 // Run pushes a new frame for chunk and executes it to completion, returning
@@ -464,7 +487,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			frame.ip = instr.A()
 
 		case OpSetupTry:
-			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack)})
+			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), structDepth: vm.structDepth.Load()})
 
 		case OpPopTry:
 			if len(vm.handlers) > 0 {
@@ -810,6 +833,7 @@ func (vm *VM) throw(value core.Value) bool {
 	}
 	h := vm.handlers[len(vm.handlers)-1]
 	vm.handlers = vm.handlers[:len(vm.handlers)-1]
+	vm.structDepth.Store(h.structDepth)
 	for len(vm.frames) > h.frameDepth {
 		f := &vm.frames[len(vm.frames)-1]
 		if f.isClosure && vm.depth > 0 {
@@ -847,6 +871,19 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		result, err := f.Fn(ctx, eval, args, frameEnv)
 		if err != nil {
 			return err
+		}
+		vm.stack = vm.stack[:len(vm.stack)-argc-1]
+		vm.push(result)
+
+	case core.Keyword:
+		if argc != 1 {
+			return keywordArityError(argc)
+		}
+		var result core.Value = core.Nil{}
+		if m, ok := args[0].(*core.HashMap); ok {
+			if v, _ := m.Get(f); v != nil {
+				result = v
+			}
 		}
 		vm.stack = vm.stack[:len(vm.stack)-argc-1]
 		vm.push(result)

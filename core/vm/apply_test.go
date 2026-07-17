@@ -113,6 +113,34 @@ func TestVM_ApplyPreservesFreshIsolation(t *testing.T) {
 	require.Equal(t, beforeFrames, vm.frameCount(), "VM.Apply must not alter receiver frames")
 }
 
+func TestVM_ApplyKeyword(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	v := New(env)
+
+	m := core.NewHashMap()
+	require.NoError(t, m.Set(core.Keyword{V: "name"}, core.String{V: "Alice"}))
+
+	result, err := v.Apply(context.Background(), core.Keyword{V: "name"}, []core.Value{m}, env)
+	require.NoError(t, err)
+	require.True(t, core.String{V: "Alice"}.Equals(result))
+
+	result, err = v.Apply(context.Background(), core.Keyword{V: "missing"}, []core.Value{m}, env)
+	require.NoError(t, err)
+	require.True(t, core.Nil{}.Equals(result))
+
+	result, err = v.Apply(context.Background(), core.Keyword{V: "name"}, []core.Value{core.Int{V: 42}}, env)
+	require.NoError(t, err)
+	require.True(t, core.Nil{}.Equals(result))
+
+	_, err = v.ApplyPooled(context.Background(), core.Keyword{V: "name"}, []core.Value{m, m}, env)
+	require.Error(t, err)
+	var le *core.LispicoError
+	require.ErrorAs(t, err, &le)
+	require.Equal(t, "EvalError", le.Code)
+}
+
 var testSink core.Value
 
 // TestVM_ApplyPooled_AllocationRegression proves ApplyPooled with reset

@@ -1663,3 +1663,74 @@ func TestVM_FullEnvUsesEnv(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Equals(core.Int{V: 42}))
 }
+
+// tryCatchStructLeakChunk builds a chunk equivalent to:
+//
+//	(try (vector 1 (throw "boom")) (catch e "caught"))
+//
+// The OpStructEnter for the vector literal runs, but the throw fires before
+// its matching OpStructLeave, and the throw is caught by the handler rather
+// than propagated out of Run.
+func tryCatchStructLeakChunk() *Chunk {
+	return &Chunk{
+		Name: "try-catch-struct-leak",
+		Code: []Instruction{
+			Encode(OpSetupTry, 5), // 0: handler at 5
+			Encode(OpStructEnter, 1),
+			Encode(OpConst, 0), // "boom"
+			Encode(OpThrow, 0),
+			Encode(OpStructLeave, 1), // unreached
+			Encode(OpPop, 0),         // 5: handler — discard thrown value
+			Encode(OpConst, 1),       // "caught"
+			Encode(OpReturn, 0),
+		},
+		Constants: []core.Value{core.String{V: "boom"}, core.String{V: "caught"}},
+	}
+}
+
+// TestVM_ThrowCaughtInTry_RestoresStructDepth proves that a throw caught by
+// an in-VM handler restores structDepth to its value at OpSetupTry time,
+// even though the OpStructLeave for the interrupted vector literal never ran.
+func TestVM_ThrowCaughtInTry_RestoresStructDepth(t *testing.T) {
+	t.Parallel()
+	v := New(core.NewEnv(nil))
+
+	result, err := v.Run(context.Background(), tryCatchStructLeakChunk())
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.String{V: "caught"}))
+
+	assert.Equal(t, int64(0), v.structDepth.Load(), "structDepth must be restored to its pre-try value after a caught throw")
+}
+
+// vectorLiteralChunk builds a chunk equivalent to (vector 1): a balanced
+// OpStructEnter/OpStructLeave pair around a single-item vector construction.
+func vectorLiteralChunk() *Chunk {
+	return &Chunk{
+		Name: "vector-literal",
+		Code: []Instruction{
+			Encode(OpStructEnter, 1),
+			Encode(OpConst, 0),
+			Encode(OpMakeVector, 1),
+			Encode(OpStructLeave, 1),
+			Encode(OpReturn, 0),
+		},
+		Constants: []core.Value{core.Int{V: 1}},
+	}
+}
+
+// TestVM_StructDepthLeakAcrossPooledReuse proves that a leaked structDepth
+// increment from a caught throw does not survive to falsely trip the
+// structural-depth ceiling on a later Run against a Reset (pool-reused) VM.
+func TestVM_StructDepthLeakAcrossPooledReuse(t *testing.T) {
+	t.Parallel()
+	v := New(core.NewEnv(nil), WithMaxStructuralDepth(1))
+
+	_, err := v.Run(context.Background(), tryCatchStructLeakChunk())
+	require.NoError(t, err)
+
+	v.Reset()
+
+	result, err := v.Run(context.Background(), vectorLiteralChunk())
+	require.NoError(t, err, "a later evaluation on the reused VM must see the full structural-depth budget")
+	assert.True(t, result.Equals(core.Vector{Items: []core.Value{core.Int{V: 1}}}))
+}
