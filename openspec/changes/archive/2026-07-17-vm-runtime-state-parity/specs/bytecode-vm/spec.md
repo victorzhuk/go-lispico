@@ -5,15 +5,15 @@
 ### Requirement: Keyword application parity
 
 VM application SHALL support Keyword values as callables with semantics identical
-to the Evaluator: `(:key m)` looks up `:key` in map `m`, a missing key yields the
-default argument or `nil`, wrong arity is a typed error, and a non-map argument
-behaves exactly as under the tree-walker. This SHALL hold on both the `Eval` and
-the `Apply`/`Call` paths.
+to the Evaluator: `(:key m)` looks up `:key` in map `m`, a missing key yields
+`nil`, wrong arity (anything other than exactly one argument) is a typed error,
+and a non-map argument behaves exactly as under the tree-walker. This SHALL hold
+on both the `Eval` and the `Apply`/`Call` paths.
 
 #### Scenario: Keyword lookup hits and misses
 
-- **WHEN** `(:key m)` is evaluated under `WithBytecode()` with the key present, absent, and absent with a default argument
-- **THEN** the results SHALL equal the tree-walker's (value, `nil`, default)
+- **WHEN** `(:key m)` is evaluated under `WithBytecode()` with the key present and absent
+- **THEN** the results SHALL equal the tree-walker's (value, `nil`)
 
 #### Scenario: Keyword misuse matches the Evaluator
 
