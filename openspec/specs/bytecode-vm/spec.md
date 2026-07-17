@@ -173,8 +173,10 @@ sources or repeatedly redefines macros stays within its memory budget.
 
 The VM SHALL honor the Engine's dialect: form names normalized to canonical kernel
 forms before compilation, truthiness decided through the dialect's truthiness rule,
-and head-position symbol resolution through the function cell under Lisp-2. Any
-resolvable dialect SHALL be VM-eligible.
+head-position symbol resolution through the function cell under Lisp-2, and special
+forms with a dialect-owned Form-shape rule (`cond` clause shape first) compiled from
+the same canonical structure the Evaluator dispatches on. Any resolvable dialect
+SHALL be VM-eligible.
 
 #### Scenario: CL dialect runs on the VM
 
@@ -190,4 +192,9 @@ resolvable dialect SHALL be VM-eligible.
 
 - **WHEN** a fail-closed dialect built from the empty base with a form subset runs a program using only its forms under the VM
 - **THEN** the program SHALL evaluate correctly, and forms outside the subset SHALL remain undefined
+
+#### Scenario: Both cond clause shapes compile
+
+- **WHEN** a Clojure-dialect Engine compiles a flat-pair `cond` and a CL-dialect Engine compiles a nested-clause `cond` under `WithBytecode()`
+- **THEN** both SHALL compile from the dialect's canonical clauses and return results equal to the tree-walker's
 

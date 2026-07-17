@@ -21,6 +21,11 @@ SHALL be VM-eligible.
 - **WHEN** a nil-only-falsy dialect evaluates `(if false 1 2)` under the VM
 - **THEN** the result SHALL be `1`, because `false` is truthy on that axis
 
+#### Scenario: Restricted dialect runs on the VM
+
+- **WHEN** a fail-closed dialect built from the empty base with a form subset runs a program using only its forms under the VM
+- **THEN** the program SHALL evaluate correctly, and forms outside the subset SHALL remain undefined
+
 #### Scenario: Both cond clause shapes compile
 
 - **WHEN** a Clojure-dialect Engine compiles a flat-pair `cond` and a CL-dialect Engine compiles a nested-clause `cond` under `WithBytecode()`
