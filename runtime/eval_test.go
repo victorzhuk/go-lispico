@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -217,6 +218,234 @@ func TestEval_Timeout(t *testing.T) {
 
 	_, err = e.Eval(context.Background(), "test", "(loop [n 1000000] (if (= n 0) n (recur (- n 1))))")
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+}
+
+// deadlineCapture records the deadline observed on the context passed into a
+// GoFunc call, so tests can assert which deadline actually governs evaluation
+// without waiting it out.
+type deadlineCapture struct {
+	mu       sync.Mutex
+	deadline time.Time
+	ok       bool
+}
+
+func (c *deadlineCapture) record(ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline, c.ok = ctx.Deadline()
+}
+
+func (c *deadlineCapture) result() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deadline, c.ok
+}
+
+func bindDeadlineCapture(t testing.TB, e Engine, name string) *deadlineCapture {
+	t.Helper()
+	c := &deadlineCapture{}
+	err := e.Bind(name, core.GoFunc{
+		Name: name,
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			c.record(ctx)
+			return core.Nil{}, nil
+		},
+	})
+	require.NoError(t, err)
+	return c
+}
+
+type invokeFn func(ctx context.Context, e Engine) error
+
+func evalInvoke(source string) invokeFn {
+	return func(ctx context.Context, e Engine) error {
+		_, err := e.Eval(ctx, "test", source)
+		return err
+	}
+}
+
+func callInvoke(name string) invokeFn {
+	return func(ctx context.Context, e Engine) error {
+		_, err := e.Call(ctx, name)
+		return err
+	}
+}
+
+func evalWithBindingsInvoke(source string) invokeFn {
+	return func(ctx context.Context, e Engine) error {
+		_, err := e.EvalWithBindings(ctx, source, nil)
+		return err
+	}
+}
+
+func deadlineInvocations() map[string]invokeFn {
+	return map[string]invokeFn{
+		"Eval":             evalInvoke("(capture)"),
+		"Call":             callInvoke("capture"),
+		"EvalWithBindings": evalWithBindingsInvoke("(capture)"),
+	}
+}
+
+func TestEngineDeadline_CallerEarlierGovernsAlone(t *testing.T) {
+	for name, invoke := range deadlineInvocations() {
+		t.Run(name, func(t *testing.T) {
+			e, err := New(nil, WithDialect(clojure.Dialect()))
+			require.NoError(t, err)
+			defer e.Close()
+
+			capture := bindDeadlineCapture(t, e, "capture")
+
+			callerDeadline := time.Now().Add(2 * time.Second)
+			ctx, cancel := context.WithDeadline(context.Background(), callerDeadline)
+			defer cancel()
+
+			require.NoError(t, invoke(ctx, e))
+
+			got, ok := capture.result()
+			require.True(t, ok, "expected a deadline on the evaluation context")
+			assert.WithinDuration(t, callerDeadline, got, 20*time.Millisecond)
+		})
+	}
+}
+
+func TestEngineDeadline_CallerLaterEngineBoundApplies(t *testing.T) {
+	for name, invoke := range deadlineInvocations() {
+		t.Run(name, func(t *testing.T) {
+			e, err := New(nil, WithDialect(clojure.Dialect()), WithTimeout(50*time.Millisecond))
+			require.NoError(t, err)
+			defer e.Close()
+
+			capture := bindDeadlineCapture(t, e, "capture")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			start := time.Now()
+			require.NoError(t, invoke(ctx, e))
+
+			got, ok := capture.result()
+			require.True(t, ok, "expected a deadline on the evaluation context")
+			assert.WithinDuration(t, start.Add(50*time.Millisecond), got, 30*time.Millisecond)
+		})
+	}
+}
+
+func TestEngineDeadline_ZeroTimeoutNoCallerDeadlineUnbounded(t *testing.T) {
+	for name, invoke := range deadlineInvocations() {
+		t.Run(name, func(t *testing.T) {
+			e, err := New(nil, WithDialect(clojure.Dialect()), WithTimeout(0))
+			require.NoError(t, err)
+			defer e.Close()
+
+			capture := bindDeadlineCapture(t, e, "capture")
+
+			require.NoError(t, invoke(context.Background(), e))
+
+			_, ok := capture.result()
+			assert.False(t, ok, "expected no deadline when Engine timeout is disabled and caller has none")
+		})
+	}
+}
+
+func TestEngineDeadline_ZeroTimeoutCallerDeadlineUnchanged(t *testing.T) {
+	for name, invoke := range deadlineInvocations() {
+		t.Run(name, func(t *testing.T) {
+			e, err := New(nil, WithDialect(clojure.Dialect()), WithTimeout(0))
+			require.NoError(t, err)
+			defer e.Close()
+
+			capture := bindDeadlineCapture(t, e, "capture")
+
+			callerDeadline := time.Now().Add(3 * time.Second)
+			ctx, cancel := context.WithDeadline(context.Background(), callerDeadline)
+			defer cancel()
+
+			require.NoError(t, invoke(ctx, e))
+
+			got, ok := capture.result()
+			require.True(t, ok, "expected the caller's deadline to survive unchanged")
+			assert.WithinDuration(t, callerDeadline, got, 20*time.Millisecond)
+		})
+	}
+}
+
+func TestEngineDeadline_DefaultConstructionKeeps30sBound(t *testing.T) {
+	for name, invoke := range deadlineInvocations() {
+		t.Run(name, func(t *testing.T) {
+			e, err := New(nil, WithDialect(clojure.Dialect()))
+			require.NoError(t, err)
+			defer e.Close()
+
+			capture := bindDeadlineCapture(t, e, "capture")
+
+			start := time.Now()
+			require.NoError(t, invoke(context.Background(), e))
+
+			got, ok := capture.result()
+			require.True(t, ok, "expected the Engine's default deadline")
+			assert.WithinDuration(t, start.Add(30*time.Second), got, 500*time.Millisecond)
+		})
+	}
+}
+
+func TestEngineImpl_WithEvalTimeout(t *testing.T) {
+	t.Run("caller deadline earlier returns ctx unchanged, no timer", func(t *testing.T) {
+		e, err := New(nil)
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		got, gotCancel := impl.withEvalTimeout(ctx)
+		defer gotCancel()
+		assert.True(t, got == ctx, "expected the caller's context unchanged")
+	})
+
+	t.Run("caller deadline later wraps with Engine's tighter timeout", func(t *testing.T) {
+		e, err := New(nil, WithTimeout(50*time.Millisecond))
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		got, gotCancel := impl.withEvalTimeout(ctx)
+		defer gotCancel()
+		assert.False(t, got == ctx, "expected a new context wrapping the Engine's tighter deadline")
+		deadline, ok := got.Deadline()
+		require.True(t, ok)
+		assert.WithinDuration(t, time.Now().Add(50*time.Millisecond), deadline, 20*time.Millisecond)
+	})
+
+	t.Run("no caller deadline wraps with Engine's timeout", func(t *testing.T) {
+		e, err := New(nil, WithTimeout(50*time.Millisecond))
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		got, gotCancel := impl.withEvalTimeout(context.Background())
+		defer gotCancel()
+		assert.False(t, got == context.Background())
+		_, ok := got.Deadline()
+		assert.True(t, ok)
+	})
+
+	t.Run("zero timeout returns ctx unchanged regardless of caller deadline", func(t *testing.T) {
+		e, err := New(nil, WithTimeout(0))
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		got, gotCancel := impl.withEvalTimeout(ctx)
+		defer gotCancel()
+		assert.True(t, got == ctx, "expected the Engine deadline to stay disabled")
+	})
 }
 
 func TestBind_CreatesBinding(t *testing.T) {

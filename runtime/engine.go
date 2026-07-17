@@ -94,6 +94,16 @@ func WithMaxEvalDepth(depth int) EngineOption {
 
 // WithTimeout sets the default timeout applied to evaluations. Defaults to
 // 30 seconds.
+//
+// When the caller's context already carries a deadline at or before what
+// this timeout would produce, the Engine leaves it alone instead of wrapping
+// it in a second timer — the caller's deadline governs alone. A later
+// caller deadline is still bounded by this tighter timeout.
+//
+// WithTimeout(0) disables the Engine's own deadline entirely, leaving the
+// caller's context as the only bound. Use this only once the embedder
+// applies a deadline to every evaluation lifecycle itself (ADR 0010) —
+// otherwise a caller context without a deadline runs unbounded.
 func WithTimeout(timeout time.Duration) EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.timeout = timeout

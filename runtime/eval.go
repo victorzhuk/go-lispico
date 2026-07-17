@@ -175,14 +175,24 @@ func isUnsupportedInBytecode(err error) bool {
 	return errors.As(err, &lerr) && lerr.Code == compiler.CodeUnsupported
 }
 
+// withEvalTimeout applies the Engine's configured deadline to ctx, per ADR
+// 0010: an embedder-owned deadline that already governs at or before the
+// Engine's timeout is left alone rather than wrapped in a redundant timer.
+func (e *engineImpl) withEvalTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if e.config.timeout <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok && !deadline.After(time.Now().Add(e.config.timeout)) {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, e.config.timeout)
+}
+
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
 	start := time.Now()
 
-	var cancel context.CancelFunc
-	if e.config.timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, e.config.timeout)
-		defer cancel()
-	}
+	ctx, cancel := e.withEvalTimeout(ctx)
+	defer cancel()
 
 	forms, err := e.config.dialect.ReadWithMaxDepth(input, e.config.limits.MaxReaderDepth)
 	if err != nil {
@@ -295,11 +305,8 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 	default:
 	}
 
-	var cancel context.CancelFunc
-	if e.config.timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, e.config.timeout)
-		defer cancel()
-	}
+	ctx, cancel := e.withEvalTimeout(ctx)
+	defer cancel()
 
 	e.mu.RLock()
 	env := e.rootEnv
@@ -342,11 +349,8 @@ func (e *engineImpl) Bind(name string, v core.Value) error {
 func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error) {
 	start := time.Now()
 
-	var cancel context.CancelFunc
-	if e.config.timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, e.config.timeout)
-		defer cancel()
-	}
+	ctx, cancel := e.withEvalTimeout(ctx)
+	defer cancel()
 
 	forms, err := e.config.dialect.ReadWithMaxDepth(source, e.config.limits.MaxReaderDepth)
 	if err != nil {
