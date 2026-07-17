@@ -21,6 +21,15 @@ on both the `Eval` path and the `Apply`/`Call` path — rather than a fresh mach
 being allocated per call; a reused instance SHALL be reset before it runs the next
 evaluation so no state leaks between them.
 
+Every compiled expression SHALL leave exactly one result on the stack; a
+non-executed `when` or `unless` body SHALL produce `nil`. Definition and mutation
+SHALL have distinct semantics: a definition writes to the current scope, while
+`set!` updates the scope that already owns the binding and SHALL return a typed
+error when no binding exists; locals resolved to slots keep slot mutation. A catch
+binding SHALL exist only in the handler scope: compiling a `try` normal body SHALL
+NOT reserve or shift the catch slot, and leaving the handler SHALL restore the
+previous local layout.
+
 #### Scenario: Supported forms match the tree-walker
 
 - **WHEN** the VM evaluates a form it compiles
@@ -56,6 +65,26 @@ evaluation so no state leaks between them.
 - **WHEN** `Engine.Call` invokes a function repeatedly on one `WithBytecode()` engine
 - **THEN** each call SHALL run on a reset, reused VM from the pool rather than a freshly allocated machine, and SHALL return the same result the tree-walker would
 
+#### Scenario: Skipped when/unless produces nil
+
+- **WHEN** a false-test `when` or true-test `unless` appears in a value position — a `let` binding, a `do` body, or a function body
+- **THEN** the expression SHALL yield `nil` with the stack balanced, matching the tree-walker
+
+#### Scenario: set! mutates the lexical owner
+
+- **WHEN** a closure invoked repeatedly applies `set!` to a binding owned by an enclosing scope
+- **THEN** the owning scope's binding SHALL be updated, and the state SHALL persist across invocations exactly as under the tree-walker
+
+#### Scenario: set! on an undefined binding errors
+
+- **WHEN** `set!` targets a symbol with no existing binding in any enclosing scope
+- **THEN** the VM SHALL return a typed error and SHALL NOT create a new binding
+
+#### Scenario: Locals after try/catch keep correct slots
+
+- **WHEN** a function binds locals after a `try`/`catch` form, on both the normal path and the error path
+- **THEN** those locals SHALL hold their own values, with no slot-layout corruption from the catch binding
+
 ### Requirement: Bytecode VM concurrency safety
 
 The bytecode evaluator SHALL support concurrent `Eval` calls on a single engine
@@ -70,7 +99,9 @@ without data races or cross-call state corruption.
 
 The bytecode VM SHALL never panic on any input — valid source, a malformed form, or
 a structurally malformed chunk; it SHALL return an error instead. Every error the
-VM returns SHALL be a `*core.LispicoError`.
+VM returns SHALL be a `*core.LispicoError`. For every special form the Compiler
+handles, arity and shape SHALL be validated before any operand is indexed, so no
+malformed special form can panic compilation.
 
 #### Scenario: Empty-body function
 
@@ -86,6 +117,11 @@ VM returns SHALL be a `*core.LispicoError`.
 
 - **WHEN** VM execution exceeds the maximum call depth
 - **THEN** the returned error SHALL satisfy `errors.As(err, &lispicoErr)` like every other VM error
+
+#### Scenario: Malformed special form is a typed error
+
+- **WHEN** any compiled special form is given too few, too many, or wrongly shaped operands and evaluated through `Engine.Eval` under `WithBytecode()`
+- **THEN** the result SHALL be a typed error from validation performed before operand indexing, never a panic
 
 ### Requirement: Bytecode VM tree-walker parity verification
 
