@@ -1,0 +1,26 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/plugins/stdlib
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+BenchmarkMerge/10-24         	  115004	      9464 ns/op	   13824 B/op	      73 allocs/op
+BenchmarkMerge/10-24         	  126128	     10497 ns/op	   13824 B/op	      73 allocs/op
+BenchmarkMerge/10-24         	  125724	      9168 ns/op	   13824 B/op	      73 allocs/op
+BenchmarkMerge/10-24         	  131257	      8486 ns/op	   13824 B/op	      73 allocs/op
+BenchmarkMerge/10-24         	  146138	      9456 ns/op	   13824 B/op	      73 allocs/op
+BenchmarkMerge/100-24        	    1224	    944036 ns/op	 1626946 B/op	    1871 allocs/op
+BenchmarkMerge/100-24        	    1256	   2225020 ns/op	 1627005 B/op	    1871 allocs/op
+BenchmarkMerge/100-24        	    1128	   1022271 ns/op	 1626946 B/op	    1871 allocs/op
+BenchmarkMerge/100-24        	    1224	    972127 ns/op	 1626944 B/op	    1871 allocs/op
+BenchmarkMerge/100-24        	    1221	   1000774 ns/op	 1626947 B/op	    1871 allocs/op
+BenchmarkMerge/1000-24       	       9	 118097138 ns/op	178835322 B/op	   33378 allocs/op
+BenchmarkMerge/1000-24       	       9	 112324307 ns/op	178835322 B/op	   33378 allocs/op
+BenchmarkMerge/1000-24       	       9	 113009971 ns/op	178835294 B/op	   33377 allocs/op
+BenchmarkMerge/1000-24       	      10	 110254194 ns/op	178835107 B/op	   33376 allocs/op
+BenchmarkMerge/1000-24       	       9	 116877144 ns/op	178835207 B/op	   33376 allocs/op
+BenchmarkMerge/10000-24      	       1	14874522462 ns/op	19096809504 B/op	 1000884 allocs/op
+BenchmarkMerge/10000-24      	       1	15625157370 ns/op	19090149888 B/op	 1000625 allocs/op
+BenchmarkMerge/10000-24      	       1	15257541975 ns/op	19094279376 B/op	 1000759 allocs/op
+BenchmarkMerge/10000-24      	       1	15142143104 ns/op	19095316192 B/op	 1000810 allocs/op
+BenchmarkMerge/10000-24      	       1	14496335895 ns/op	19088314512 B/op	 1000552 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/plugins/stdlib	96.597s
