@@ -1,0 +1,7 @@
+{
+  "comment": "Placeholder only. Real cell names and tier assignments are YAGEL-owned and not yet published (see design.md 'Open inputs'). The two entries below illustrate the mapping shape, not real cells.",
+  "cells": {
+    "BenchmarkExampleApply": "engine-sensitive",
+    "BenchmarkExampleFormat": "data-dominated"
+  }
+}
