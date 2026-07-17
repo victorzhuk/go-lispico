@@ -511,6 +511,28 @@ func TestVMVsTreeWalker_SetLexical(t *testing.T) {
 	compare(t, env, src)
 }
 
+func TestVMVsTreeWalker_TryCatchLocals(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"local after try no-throw", "(let [x 1] (try 5 (catch e e)) x)"},
+		{"local after try caught", "(let [x 1] (try (throw \"boom\") (catch e e)) x)"},
+		{"local after try in fn body", "((fn [y] (try (throw \"boom\") (catch e e)) y) 42)"},
+		{"let inside try body caught", "(let [x 1] (try (let [q 2] (throw \"boom\")) (catch e e)) x)"},
+		{"local bound after caught reused", "(let [x 1] (try (throw \"boom\") (catch e e)) (let [z 9] z))"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
 func TestVMVsTreeWalker_SetUndefined(t *testing.T) {
 	t.Parallel()
 

@@ -293,3 +293,31 @@ func TestBytecodeRuntime_SetUndefined(t *testing.T) {
 	require.ErrorAs(t, err, &le, "error must be *core.LispicoError")
 	assert.Equal(t, "UndefinedError", le.Code, "error code")
 }
+
+func TestBytecodeRuntime_TryCatchLocals(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		src  string
+		want core.Value
+	}{
+		{"local after try no-throw", "(let [x 1] (try 5 (catch e e)) x)", core.Int{V: 1}},
+		{"local after try caught", "(let [x 1] (try (throw \"boom\") (catch e e)) x)", core.Int{V: 1}},
+		{"let inside try body caught", "(let [x 1] (try (let [q 2] (throw \"boom\")) (catch e e)) x)", core.Int{V: 1}},
+		{"local bound after caught", "(let [x 1] (try (throw \"boom\") (catch e e)) (let [z 9] z))", core.Int{V: 9}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := eng.Eval(ctx, tc.name, tc.src)
+			require.NoError(t, err)
+			assert.True(t, got.Equals(tc.want), "got %v (%T), want %v (%T)", got, got, tc.want, tc.want)
+		})
+	}
+}

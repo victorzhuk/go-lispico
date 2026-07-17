@@ -482,9 +482,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	}
 	body := args[:len(args)-1]
 
-	catchSlot := len(c.locals)
-	c.addLocal(errSym.V)
-
+	base := len(c.locals)
 	setup := c.chunk.EmitJump(vm.OpSetupTry)
 	if err := c.compileDo(body); err != nil {
 		return err
@@ -493,10 +491,13 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	skip := c.chunk.EmitJump(vm.OpJump)
 	handlerAddr := len(c.chunk.Code)
 	c.chunk.PatchJumpTo(setup, handlerAddr)
+	catchSlot := len(c.locals)
+	c.addLocal(errSym.V)
 	c.chunk.Emit(vm.OpSetLocal, catchSlot)
 	if err := c.compileDo(catchClause.Items[bodyStart:]); err != nil {
 		return err
 	}
+	c.locals = c.locals[:base]
 	c.chunk.PatchJump(skip)
 	return nil
 }

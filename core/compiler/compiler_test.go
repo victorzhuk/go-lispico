@@ -354,6 +354,23 @@ func TestCompiler_Set(t *testing.T) {
 	})
 }
 
+func TestCompiler_Try_LocalsAfterTry(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "try"},
+		core.Int{V: 5},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "catch"},
+			core.Symbol{V: "e"},
+			core.Symbol{V: "e"},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+	c.addLocal("post")
+	assert.Equal(t, 0, c.resolveLocal("post"),
+		"post-try local must not be shifted by dead catch slot")
+}
+
 func TestCompiler_Quote(t *testing.T) {
 	c := NewCompiler("test")
 	quoted := core.List{Items: []core.Value{
