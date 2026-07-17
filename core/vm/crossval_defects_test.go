@@ -114,6 +114,13 @@ func TestVMVsTreeWalker_MalformedFormParity(t *testing.T) {
 		{"def non-symbol name", "(def 42 1)"},
 		{"loop no body", "(loop [])"},
 		{"loop no args", "(loop)"},
+		{"let non-vector bindings", "(let 5 1)"},
+		{"let odd binding count", "(let [x] 1)"},
+		{"let* non-vector bindings", "(let* 5 1)"},
+		{"let* odd binding count", "(let* [x] 1)"},
+		{"recur outside loop", "(recur 1)"},
+		{"not no args", "(not)"},
+		{"not two args", "(not 1 2)"},
 	}
 	for _, tc := range cases {
 		tc := tc

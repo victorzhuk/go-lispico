@@ -111,7 +111,7 @@ func (c *Compiler) Compile(form core.Value) error {
 		c.chunk.Emit(vm.OpMakeMap, len(pairs))
 		c.chunk.Emit(vm.OpStructLeave, 1)
 	default:
-		return fmt.Errorf("compile: unknown form type %T", form)
+		return compileErrf("compile: unknown form type %T", form)
 	}
 	return nil
 }
@@ -128,7 +128,7 @@ func (c *Compiler) compileList(f core.List) error {
 		if c.dialect != nil {
 			canonical, removed, ok := c.dialect.CanonicalName(head.V)
 			if removed {
-				return fmt.Errorf("compile: undefined form %q", head.V)
+				return compileErrf("compile: undefined form %q", head.V)
 			}
 			if ok {
 				canonicalName = canonical
@@ -317,10 +317,10 @@ func (c *Compiler) compileLet(args []core.Value) error {
 	}
 	bindings, ok := args[0].(core.Vector)
 	if !ok {
-		return fmt.Errorf("compile let: bindings must be vector")
+		return compileErrf("compile let: bindings must be vector")
 	}
 	if len(bindings.Items)%2 != 0 {
-		return fmt.Errorf("compile let: bindings must have even count")
+		return compileErrf("compile let: bindings must have even count")
 	}
 	c.depth++
 	base := len(c.locals)
@@ -345,14 +345,14 @@ func (c *Compiler) compileLet(args []core.Value) error {
 
 func (c *Compiler) compileLetStar(args []core.Value) error {
 	if len(args) < 2 {
-		return fmt.Errorf("let*: expected bindings and body")
+		return compileErrf("let*: expected bindings and body")
 	}
 	bindings, ok := args[0].(core.Vector)
 	if !ok {
-		return fmt.Errorf("compile let*: bindings must be vector")
+		return compileErrf("compile let*: bindings must be vector")
 	}
 	if len(bindings.Items)%2 != 0 {
-		return fmt.Errorf("compile let*: bindings must have even count")
+		return compileErrf("compile let*: bindings must have even count")
 	}
 	c.depth++
 	base := len(c.locals)
@@ -462,7 +462,7 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 
 func (c *Compiler) compileRecur(args []core.Value) error {
 	if len(c.loops) == 0 {
-		return fmt.Errorf("recur outside loop")
+		return compileErrf("recur outside loop")
 	}
 	loop := c.loops[len(c.loops)-1]
 	if len(args) != len(loop.slots) {
@@ -744,7 +744,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 
 func (c *Compiler) compileNot(args []core.Value) error {
 	if len(args) != 1 {
-		return fmt.Errorf("not: expected 1 argument, got %d", len(args))
+		return compileErrf("not: expected 1 argument, got %d", len(args))
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err

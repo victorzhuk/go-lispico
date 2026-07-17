@@ -46,6 +46,13 @@ func TestBytecodeRuntime_MalformedForms(t *testing.T) {
 		{"throw two args", "(throw 1 2)"},
 		{"quasiquote no args", "(quasiquote)"},
 		{"quasiquote two args", "(quasiquote 1 2)"},
+		{"let non-vector bindings", "(let 5 1)"},
+		{"let odd binding count", "(let [x] 1)"},
+		{"let* non-vector bindings", "(let* 5 1)"},
+		{"let* odd binding count", "(let* [x] 1)"},
+		{"recur outside loop", "(recur 1)"},
+		{"not no args", "(not)"},
+		{"not two args", "(not 1 2)"},
 	}
 	for _, tc := range cases {
 		tc := tc
