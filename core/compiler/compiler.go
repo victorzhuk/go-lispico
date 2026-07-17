@@ -18,6 +18,14 @@ func unsupportedErr(msg string) error {
 	return &core.LispicoError{Code: CodeUnsupported, Message: msg}
 }
 
+// CodeCompileError identifies a *core.LispicoError reporting that a form
+// failed arity or shape validation during bytecode compilation.
+const CodeCompileError = "CompileError"
+
+func compileErrf(format string, args ...any) error {
+	return &core.LispicoError{Code: CodeCompileError, Message: fmt.Sprintf(format, args...)}
+}
+
 // Compiler compiles core.Value forms into a single vm.Chunk, tracking local
 // variable scopes as it goes. It implements vm.FormCompiler.
 type Compiler struct {
@@ -169,6 +177,9 @@ func (c *Compiler) compileList(f core.List) error {
 			case "do":
 				return c.compileDo(f.Items[1:])
 			case "quote":
+				if len(f.Items) < 2 {
+					return compileErrf("quote: missing value")
+				}
 				c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(f.Items[1]))
 				return nil
 			case "cond":
@@ -196,7 +207,7 @@ func (c *Compiler) compileList(f core.List) error {
 			case "throw":
 				return c.compileThrow(f.Items[1:])
 			case "catch":
-				return fmt.Errorf("catch used outside of try")
+				return compileErrf("catch used outside of try")
 			case "defmacro":
 				return unsupportedErr("defmacro is not supported by the bytecode compiler")
 			}
@@ -210,6 +221,9 @@ func (c *Compiler) compileList(f core.List) error {
 }
 
 func (c *Compiler) compileIf(args []core.Value) error {
+	if len(args) < 2 {
+		return compileErrf("if: expected condition and then branch, got %d args", len(args))
+	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
@@ -232,11 +246,11 @@ func (c *Compiler) compileIf(args []core.Value) error {
 
 func (c *Compiler) compileDef(args []core.Value) error {
 	if len(args) != 2 {
-		return fmt.Errorf("compile def: expected 2 args, got %d", len(args))
+		return compileErrf("compile def: expected 2 args, got %d", len(args))
 	}
 	sym, ok := args[0].(core.Symbol)
 	if !ok {
-		return fmt.Errorf("compile def: name must be symbol, got %T", args[0])
+		return compileErrf("compile def: name must be symbol, got %T", args[0])
 	}
 	if err := c.Compile(args[1]); err != nil {
 		return err
@@ -247,14 +261,14 @@ func (c *Compiler) compileDef(args []core.Value) error {
 
 func (c *Compiler) compileFn(args []core.Value) error {
 	if len(args) == 0 {
-		return fmt.Errorf("fn requires at least 2 arguments (params body...)")
+		return compileErrf("fn requires at least 2 arguments (params body...)")
 	}
 	params, variadic, err := parseParams(args[0])
 	if err != nil {
 		return err
 	}
 	if len(args) < 2 {
-		return fmt.Errorf("fn requires at least 2 arguments (params body...)")
+		return compileErrf("fn requires at least 2 arguments (params body...)")
 	}
 	sub := NewCompiler("<fn>")
 	if c.dialect != nil {
@@ -298,6 +312,9 @@ func (c *Compiler) compileDo(args []core.Value) error {
 }
 
 func (c *Compiler) compileLet(args []core.Value) error {
+	if len(args) == 0 {
+		return compileErrf("compile let: missing bindings vector")
+	}
 	bindings, ok := args[0].(core.Vector)
 	if !ok {
 		return fmt.Errorf("compile let: bindings must be vector")
@@ -360,11 +377,11 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 
 func (c *Compiler) compileSet(args []core.Value) error {
 	if len(args) != 2 {
-		return fmt.Errorf("compile set!: expected 2 args, got %d", len(args))
+		return compileErrf("compile set!: expected 2 args, got %d", len(args))
 	}
 	sym, ok := args[0].(core.Symbol)
 	if !ok {
-		return fmt.Errorf("compile set!: name must be symbol, got %T", args[0])
+		return compileErrf("compile set!: name must be symbol, got %T", args[0])
 	}
 	if err := c.Compile(args[1]); err != nil {
 		return err
@@ -378,6 +395,9 @@ func (c *Compiler) compileSet(args []core.Value) error {
 }
 
 func (c *Compiler) compileWhen(args []core.Value) error {
+	if len(args) == 0 {
+		return compileErrf("when: missing condition")
+	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
@@ -393,6 +413,9 @@ func (c *Compiler) compileWhen(args []core.Value) error {
 }
 
 func (c *Compiler) compileUnless(args []core.Value) error {
+	if len(args) == 0 {
+		return compileErrf("unless: missing condition")
+	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
@@ -409,17 +432,17 @@ func (c *Compiler) compileUnless(args []core.Value) error {
 
 func (c *Compiler) compileLoop(args []core.Value) error {
 	if len(args) < 2 {
-		return fmt.Errorf("loop: expected binding vector and body")
+		return compileErrf("loop: expected binding vector and body")
 	}
 	bindings, ok := args[0].(core.Vector)
 	if !ok || len(bindings.Items)%2 != 0 {
-		return fmt.Errorf("loop: first argument must be an even-length binding vector")
+		return compileErrf("loop: first argument must be an even-length binding vector")
 	}
 	var slots []int
 	for i := 0; i < len(bindings.Items); i += 2 {
 		name, ok := bindings.Items[i].(core.Symbol)
 		if !ok {
-			return fmt.Errorf("loop: binding names must be symbols")
+			return compileErrf("loop: binding names must be symbols")
 		}
 		if err := c.Compile(bindings.Items[i+1]); err != nil {
 			return err
@@ -443,7 +466,7 @@ func (c *Compiler) compileRecur(args []core.Value) error {
 	}
 	loop := c.loops[len(c.loops)-1]
 	if len(args) != len(loop.slots) {
-		return fmt.Errorf("recur: expected %d args, got %d", len(loop.slots), len(args))
+		return compileErrf("recur: expected %d args, got %d", len(loop.slots), len(args))
 	}
 	for _, arg := range args {
 		if err := c.Compile(arg); err != nil {
@@ -460,15 +483,15 @@ func (c *Compiler) compileRecur(args []core.Value) error {
 
 func (c *Compiler) compileTry(args []core.Value) error {
 	if len(args) < 2 {
-		return fmt.Errorf("try: expected body and catch clause")
+		return compileErrf("try: expected body and catch clause")
 	}
 	catchClause, ok := args[len(args)-1].(core.List)
 	if !ok || len(catchClause.Items) < 3 {
-		return fmt.Errorf("try: last argument must be (catch <sym> <handler>...)")
+		return compileErrf("try: last argument must be (catch <sym> <handler>...)")
 	}
 	head, ok := catchClause.Items[0].(core.Symbol)
 	if !ok || head.V != "catch" {
-		return fmt.Errorf("try: expected catch clause, got %v", catchClause.Items[0])
+		return compileErrf("try: expected catch clause, got %v", catchClause.Items[0])
 	}
 	errSymIndex := 1
 	bodyStart := 2
@@ -478,7 +501,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	}
 	errSym, ok := catchClause.Items[errSymIndex].(core.Symbol)
 	if !ok {
-		return fmt.Errorf("catch: error binding must be a symbol")
+		return compileErrf("catch: error binding must be a symbol")
 	}
 	body := args[:len(args)-1]
 
@@ -504,7 +527,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 
 func (c *Compiler) compileThrow(args []core.Value) error {
 	if len(args) != 1 {
-		return fmt.Errorf("throw: expected 1 argument, got %d", len(args))
+		return compileErrf("throw: expected 1 argument, got %d", len(args))
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
@@ -675,11 +698,11 @@ func isElse(v core.Value) bool {
 
 func (c *Compiler) compileDefn(args []core.Value) error {
 	if len(args) < 2 {
-		return fmt.Errorf("defn: expected name and params")
+		return compileErrf("defn: expected name and params")
 	}
 	name, ok := args[0].(core.Symbol)
 	if !ok {
-		return fmt.Errorf("defn: name must be symbol, got %T", args[0])
+		return compileErrf("defn: name must be symbol, got %T", args[0])
 	}
 	if c.dialect != nil && c.dialect.IsLisp2() {
 		// Lisp-2: compile fn closure then emit OpSetFunc for the function cell.
@@ -833,7 +856,7 @@ func (c *Compiler) compileOr(args []core.Value) error {
 
 func (c *Compiler) compileQuasiquote(args []core.Value) error {
 	if len(args) != 1 {
-		return fmt.Errorf("quasiquote: expected 1 argument, got %d", len(args))
+		return compileErrf("quasiquote: expected 1 argument, got %d", len(args))
 	}
 	return c.compileQuasiquoteValue(args[0])
 }
@@ -939,16 +962,16 @@ func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err 
 	case core.List:
 		items = val.Items
 	default:
-		return nil, core.Symbol{}, fmt.Errorf("fn params must be vector or list, got %T", v)
+		return nil, core.Symbol{}, compileErrf("fn params must be vector or list, got %T", v)
 	}
 	for i, item := range items {
 		sym, ok := item.(core.Symbol)
 		if !ok {
-			return nil, core.Symbol{}, fmt.Errorf("fn param must be symbol, got %T", item)
+			return nil, core.Symbol{}, compileErrf("fn param must be symbol, got %T", item)
 		}
 		if sym.V == "&" {
 			if i+1 >= len(items) {
-				return nil, core.Symbol{}, fmt.Errorf("fn: & requires a rest param name")
+				return nil, core.Symbol{}, compileErrf("fn: & requires a rest param name")
 			}
 			rest, ok := items[i+1].(core.Symbol)
 			if !ok {
