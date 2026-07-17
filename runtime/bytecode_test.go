@@ -220,3 +220,36 @@ func TestBytecodeRuntime_EmptyBodyDefn(t *testing.T) {
 	_, err = eng.Eval(ctx, "empty-defn", "(defn f [])")
 	require.Error(t, err, "empty-body defn should error, not panic")
 }
+
+func TestBytecodeRuntime_WhenUnlessValuePosition(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		src  string
+		want core.Value
+	}{
+		{"when false in let", "(let [x (when false 1)] x)", core.Nil{}},
+		{"when false in do", "(do (when false 1))", core.Nil{}},
+		{"when false in fn body", "((fn [] (when false 1)))", core.Nil{}},
+		{"unless true in let", "(let [x (unless true 1)] x)", core.Nil{}},
+		{"unless true in do", "(do (unless true 1))", core.Nil{}},
+		{"unless true in fn body", "((fn [] (unless true 1)))", core.Nil{}},
+		{"when true yields body", "(let [x (when true 7)] x)", core.Int{V: 7}},
+		{"unless false yields body", "(let [x (unless false 7)] x)", core.Int{V: 7}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := eng.Eval(ctx, tc.name, tc.src)
+			require.NoError(t, err)
+			assert.True(t, got.Equals(tc.want), "got %v (%T), want %v (%T)", got, got, tc.want, tc.want)
+		})
+	}
+}

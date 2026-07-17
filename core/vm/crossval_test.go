@@ -474,6 +474,31 @@ func TestVMVsTreeWalker_TryCatch(t *testing.T) {
 	}
 }
 
+func TestVMVsTreeWalker_WhenUnlessValuePosition(t *testing.T) {
+	t.Parallel()
+
+	env := newCrossValEnv()
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"when false in let", "(let [x (when false 1)] x)"},
+		{"when false in do", "(do (when false 1))"},
+		{"when false in fn body", "((fn [] (when false 1)))"},
+		{"unless true in let", "(let [x (unless true 1)] x)"},
+		{"unless true in do", "(do (unless true 1))"},
+		{"unless true in fn body", "((fn [] (unless true 1)))"},
+		{"when true yields body", "(let [x (when true 7)] x)"},
+		{"unless false yields body", "(let [x (unless false 7)] x)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compare(t, env, tt.src)
+		})
+	}
+}
+
 func TestVMVsTreeWalker_Variadic(t *testing.T) {
 	t.Parallel()
 

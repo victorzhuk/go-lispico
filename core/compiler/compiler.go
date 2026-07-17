@@ -381,11 +381,14 @@ func (c *Compiler) compileWhen(args []core.Value) error {
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
-	jump := c.chunk.EmitJump(vm.OpJumpIfFalse)
+	jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
 	}
-	c.chunk.PatchJump(jump)
+	jumpEnd := c.chunk.EmitJump(vm.OpJump)
+	c.chunk.PatchJump(jumpFalse)
+	c.chunk.Emit(vm.OpNil, 0)
+	c.chunk.PatchJump(jumpEnd)
 	return nil
 }
 
@@ -394,12 +397,13 @@ func (c *Compiler) compileUnless(args []core.Value) error {
 		return err
 	}
 	jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
-	jumpOver := c.chunk.EmitJump(vm.OpJump)
+	c.chunk.Emit(vm.OpNil, 0)
+	jumpEnd := c.chunk.EmitJump(vm.OpJump)
 	c.chunk.PatchJump(jumpFalse)
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
 	}
-	c.chunk.PatchJump(jumpOver)
+	c.chunk.PatchJump(jumpEnd)
 	return nil
 }
 
