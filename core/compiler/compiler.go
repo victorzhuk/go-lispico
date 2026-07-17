@@ -731,19 +731,19 @@ func (c *Compiler) compileNot(args []core.Value) error {
 }
 
 func (c *Compiler) compileCond(args []core.Value) error {
-	if len(args) == 0 {
+	clauses, err := c.condNormalizer()(args)
+	if err != nil {
+		return err
+	}
+	if len(clauses) == 0 {
 		c.chunk.Emit(vm.OpNil, 0)
 		return nil
 	}
 	var jumps []int
 	hasElse := false
-	for i, clause := range args {
-		list, ok := clause.(core.List)
-		if !ok || len(list.Items) != 2 {
-			return fmt.Errorf("cond: clauses must be (test expr) pairs")
-		}
-		test := list.Items[0]
-		expr := list.Items[1]
+	for _, clause := range clauses {
+		items := clause.(core.List).Items
+		test, expr := items[0], items[1]
 		if isElse(test) {
 			if err := c.Compile(expr); err != nil {
 				return err
@@ -758,9 +758,7 @@ func (c *Compiler) compileCond(args []core.Value) error {
 		if err := c.Compile(expr); err != nil {
 			return err
 		}
-		if i < len(args)-1 {
-			jumps = append(jumps, c.chunk.EmitJump(vm.OpJump))
-		}
+		jumps = append(jumps, c.chunk.EmitJump(vm.OpJump))
 		c.chunk.PatchJump(jumpFalse)
 	}
 	if !hasElse {
@@ -770,6 +768,13 @@ func (c *Compiler) compileCond(args []core.Value) error {
 		c.chunk.PatchJump(jump)
 	}
 	return nil
+}
+
+func (c *Compiler) condNormalizer() func([]core.Value) ([]core.Value, error) {
+	if c.dialect != nil {
+		return c.dialect.NormalizeCond
+	}
+	return core.Dialect{}.NormalizeCond
 }
 
 func (c *Compiler) compileAnd(args []core.Value) error {

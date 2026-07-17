@@ -99,6 +99,16 @@ const (
 	readerVecOn                         // #(...) reads as a vector
 )
 
+// condShape is the Dialect's cond clause-shape rule. The zero value is nested
+// clauses (the kernel default), so a Dialect built without touching the axis
+// parses cond as before.
+type condShape int
+
+const (
+	condNested condShape = iota // (cond (test body...) ...) — kernel default
+	condFlat                    // (cond test body test body ...) — Clojure
+)
+
 type deltaKind int
 
 const (
@@ -140,6 +150,9 @@ type Dialect struct {
 	// dialect — no vocabulary filtering, every builtin plugins register is
 	// callable under its registered name.
 	vocab map[string]VocabEntry
+	// cond is the cond clause-shape axis. Zero value (condNested) is the kernel
+	// default: (cond (test body...) ...). condFlat is Clojure-style.
+	cond condShape
 }
 
 // FullDialect starts from the full kernel table. With no delta it is the
@@ -166,6 +179,11 @@ func (d Dialect) Rename(canonical, to string) Dialect {
 func (d Dialect) Remove(name string) Dialect {
 	return d.with(deltaOp{kind: opRemove, name: name})
 }
+
+// FlatCond sets the cond clause-shape axis so cond parses flat test/expression
+// pairs (Clojure-style): (cond t1 e1 t2 e2 ...). The default axis keeps nested
+// clauses (Common Lisp-style).
+func (d Dialect) FlatCond() Dialect { d.cond = condFlat; return d }
 
 // Vocabulary sets a name→canonical-name map: each visible name resolves to
 // the GoFunc the canonical name was registered under. A nil vocab (the zero
@@ -416,8 +434,8 @@ func (d Dialect) resolve() (map[string]formFn, error) {
 // semantic configuration changes. Used as part of the bytecode chunk cache key.
 func (d Dialect) Fingerprint() string {
 	h := sha256.New()
-	fmt.Fprintf(h, "base=%d|truth=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d",
-		d.base, d.truth, d.ns, d.brackets, d.funcRef, d.readerVec)
+	fmt.Fprintf(h, "base=%d|truth=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
+		d.base, d.truth, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
 	for _, op := range d.ops {
 		fmt.Fprintf(h, "|%d:%s:%s", op.kind, op.name, op.canonical)
 	}
@@ -437,4 +455,68 @@ func (d Dialect) Fingerprint() string {
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// visibleName returns the dialect-visible name for a canonical kernel form.
+// It scans the delta ops; with no rename/add targeting canonical, the canonical
+// name is itself the visible name (identity behavior).
+func (d Dialect) visibleName(canonical string) string {
+	for i := len(d.ops) - 1; i >= 0; i-- {
+		op := d.ops[i]
+		if op.canonical == canonical && (op.kind == opRename || op.kind == opAdd) {
+			return op.name
+		}
+	}
+	return canonical
+}
+
+// NormalizeCond parses raw cond operands into canonical (test body) clauses
+// under the Dialect's cond clause-shape axis. One canonical clause is one test
+// plus one body expression; a Common Lisp nested clause with a multi-expression
+// implicit-progn body normalizes by wrapping the body in the dialect-visible
+// `do` form. Both the Evaluator and the Compiler call this, so the two paths
+// cannot parse cond differently.
+func (d Dialect) NormalizeCond(args []Value) ([]Value, error) {
+	switch d.cond {
+	case condFlat:
+		return d.normalizeCondFlat(args)
+	default:
+		return d.normalizeCondNested(args)
+	}
+}
+
+func (d Dialect) normalizeCondNested(args []Value) ([]Value, error) {
+	var clauses []Value
+	for _, arg := range args {
+		list, ok := arg.(List)
+		if !ok {
+			return nil, evalErrorf("cond: clauses must be (test body...) lists")
+		}
+		if len(list.Items) < 2 {
+			return nil, evalErrorf("cond: clauses must be (test body...) lists")
+		}
+		if len(list.Items) == 2 {
+			clauses = append(clauses, list)
+		} else {
+			// Multi-expression body: wrap in (doVisible body...)
+			doName := d.visibleName("do")
+			wrapped := List{Items: make([]Value, 0, len(list.Items))}
+			wrapped.Items = append(wrapped.Items, Symbol{V: doName})
+			wrapped.Items = append(wrapped.Items, list.Items[1:]...)
+			clause := List{Items: []Value{list.Items[0], wrapped}}
+			clauses = append(clauses, clause)
+		}
+	}
+	return clauses, nil
+}
+
+func (d Dialect) normalizeCondFlat(args []Value) ([]Value, error) {
+	if len(args)%2 != 0 {
+		return nil, evalErrorf("cond: flat pairs require an even number of forms")
+	}
+	clauses := make([]Value, 0, len(args)/2)
+	for i := 0; i < len(args); i += 2 {
+		clauses = append(clauses, List{Items: []Value{args[i], args[i+1]}})
+	}
+	return clauses, nil
 }

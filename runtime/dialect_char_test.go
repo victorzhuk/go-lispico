@@ -55,7 +55,7 @@ func TestDialect_Characterization_DefaultForms(t *testing.T) {
 		assert.Len(t, lst.Items, 3)
 	})
 	t.Run("cond picks matching branch", func(t *testing.T) {
-		assert.True(t, core.Int{V: 2}.Equals(eval(t, nil, "(cond (false 1) (true 2))")))
+		assert.True(t, core.Int{V: 2}.Equals(eval(t, nil, "(cond false 1 true 2)")))
 	})
 	t.Run("loop recur accumulates", func(t *testing.T) {
 		src := "(loop [i 3 acc 0] (if (= i 0) acc (recur (- i 1) (+ acc i))))"

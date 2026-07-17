@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -804,6 +805,16 @@ func TestEval_CondErrors(t *testing.T) {
 	}
 	if err := evalStrErr(env, "(cond 42)"); err == nil {
 		t.Error("cond with non-list clause should error")
+	}
+	if err := evalStrErr(env, "(cond ())"); err == nil {
+		t.Error("cond with empty clause should error")
+	}
+	// Verify typed error
+	if err := evalStrErr(env, "(cond 42)"); err != nil {
+		var lispErr *LispicoError
+		if !errors.As(err, &lispErr) {
+			t.Errorf("expected *LispicoError, got %T: %v", err, err)
+		}
 	}
 }
 

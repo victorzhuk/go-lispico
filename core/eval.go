@@ -44,6 +44,9 @@ type engine struct {
 	// lisp2 selects the namespace axis. When true, head symbols resolve against
 	// the environment's function cell and definition forms bind functions there.
 	lisp2 bool
+	// dialect is the Dialect this engine was constructed with. It is zero for
+	// NewEvaluator (identity dialect), set by NewEvaluatorWithDialect.
+	dialect Dialect
 }
 
 const defaultMaxStructuralDepth = 1024
@@ -61,7 +64,7 @@ func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: defaultMaxStructuralDepth, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2()}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: defaultMaxStructuralDepth, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2(), dialect: d}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -608,25 +611,33 @@ func evalIf(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 	return Nil{}, nil
 }
 
+func isCondElse(v Value) bool {
+	switch x := v.(type) {
+	case Symbol:
+		return x.V == "else" || x.V == ":else"
+	case Keyword:
+		return x.V == "else"
+	}
+	return false
+}
+
 func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
-	for _, clause := range args {
-		list, ok := clause.(List)
-		if !ok || len(list.Items) != 2 {
-			return nil, evalErrorf("cond: clauses must be (test expr) pairs")
-		}
-		test := list.Items[0]
-		if sym, ok := test.(Symbol); ok && (sym.V == "else" || sym.V == ":else") {
-			return e.Eval(ctx, list.Items[1], env)
-		}
-		if kw, ok := test.(Keyword); ok && kw.V == "else" {
-			return e.Eval(ctx, list.Items[1], env)
+	clauses, err := e.dialect.NormalizeCond(args)
+	if err != nil {
+		return nil, err
+	}
+	for _, clause := range clauses {
+		items := clause.(List).Items
+		test, body := items[0], items[1]
+		if isCondElse(test) {
+			return e.Eval(ctx, body, env)
 		}
 		result, err := e.Eval(ctx, test, env)
 		if err != nil {
 			return nil, err
 		}
 		if e.truthy(result) {
-			return e.Eval(ctx, list.Items[1], env)
+			return e.Eval(ctx, body, env)
 		}
 	}
 	return Nil{}, nil

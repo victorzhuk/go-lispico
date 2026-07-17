@@ -367,6 +367,37 @@ func compare(t *testing.T, env *core.Env, src string) {
 		vmResult, vmResult, treeResult, treeResult)
 }
 
+func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src string) {
+	t.Helper()
+
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEval, err := core.NewEvaluatorWithDialect(dialect)
+	require.NoError(t, err, "new evaluator with dialect")
+	var treeResult core.Value = core.Nil{}
+	for _, form := range forms {
+		treeResult, err = treeEval.Eval(context.Background(), form, env)
+		require.NoError(t, err, "tree-walker eval")
+	}
+
+	comp := compiler.NewCompilerWithDialect("<top>", &dialect)
+	for _, form := range forms {
+		if err := comp.Compile(form); err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+	}
+	comp.Chunk().Emit(vm.OpReturn, 0)
+
+	v := vm.New(env)
+	vmResult, err := v.Run(context.Background(), comp.Chunk())
+	require.NoError(t, err, "vm run")
+
+	assert.True(t, vmResult.Equals(treeResult),
+		"VM result %v (%T) != tree-walker result %v (%T)",
+		vmResult, vmResult, treeResult, treeResult)
+}
+
 func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
 	t.Parallel()
 
@@ -387,6 +418,10 @@ func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
 		{"not true", "(not true)"},
 		{"not nil", "(not nil)"},
 		{"not zero", "(not 0)"},
+		// §3.1: nested multi-body under identity
+		{"cond multi-body", "(cond (true 1 2 3))"},
+		// §3.1: quoted cond data round-trip under identity
+		{"cond quoted", "(quote (cond (a b)))"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -394,6 +429,11 @@ func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
 			compare(t, env, tt.src)
 		})
 	}
+	// §3.1: Clojure flat cond under dialect
+	t.Run("cond clojure flat", func(t *testing.T) {
+		t.Parallel()
+		compareDialect(t, env, core.FullDialect().FlatCond(), "(cond (< 1 2) :yes :else :no)")
+	})
 }
 
 func TestVMVsTreeWalker_LoopRecur(t *testing.T) {

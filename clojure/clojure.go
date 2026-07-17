@@ -1,16 +1,16 @@
 // Package clojure provides the Clojure dialect of the Lispico interpreter.
 //
-// The Clojure dialect is the bare full kernel with no vocabulary map and no axis
-// changes: Lisp-1, nil+false truthiness, bracket literals enabled, #' and #(...)
-// disabled.  Because it carries no delta over [core.FullDialect], its
-// [core.Dialect.IsIdentity] returns true, making it compatible with the bytecode
-// VM.
+// The Clojure dialect is the full kernel with flat-pair cond (Clojure-style):
+// Lisp-1, nil+false truthiness, bracket literals enabled, #' and #(...)
+// disabled, and the cond clause-shape axis set to flat test/expression pairs.
+// IsIdentity() returns true because form-shape rules are excluded from the
+// identity check (they are a separate axis concept, and ADR 0006 removed the
+// IsIdentity VM-gate).
 package clojure
 
 import "github.com/victorzhuk/go-lispico/core"
 
-// Dialect returns the Clojure dialect — the identity dialect built on the full
-// kernel.  The bytecode VM requires IsIdentity()==true, so this dialect MUST
-// remain a bare FullDialect with no vocabulary, no adapters, and no axis
-// changes.
-func Dialect() core.Dialect { return core.FullDialect() }
+// Dialect returns the Clojure dialect — the full kernel with flat cond
+// (Clojure-style (cond t1 e1 t2 e2 ...)).  IsIdentity() returns true because
+// form-shape rules are excluded from the identity check.
+func Dialect() core.Dialect { return core.FullDialect().FlatCond() }
