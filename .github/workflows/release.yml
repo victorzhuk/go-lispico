@@ -8,7 +8,7 @@
 # This job is scaffolding: the env block below carries several TBD
 # placeholders because YAGEL has not published its Behavior-golden suites,
 # benchmark cells, or Hot-cell tiers yet. Steps that reference them will not
-# pass until YAGEL does (tasks.md 1.1, 5.1).
+# pass until YAGEL does (tasks.md 5.1).
 name: Release consumer gate
 
 on:
@@ -24,8 +24,11 @@ permissions:
   contents: read
 
 env:
-  # set at release-cut once selected -- see tasks.md 1.1, blocked: no YAGEL revision chosen yet
-  YAGEL_PIN_REVISION: ""
+  # YAGEL's blessed-release pointer: a ref (branch or tag) YAGEL advances to
+  # the revision it stands behind. No revision pin is recorded in this repo;
+  # YAGEL owns when the pointer moves. The ref does not exist in
+  # yagel-labs/yagel yet -- it must be created there before this job can run.
+  YAGEL_REF: "gold"
   # design.md "Open inputs": fixed GOMAXPROCS not yet chosen
   GOMAXPROCS: ""
   # design.md "Open inputs": fixed benchtime not yet chosen
@@ -39,7 +42,7 @@ jobs:
   consumer-gate:
     runs-on: ubuntu-latest
     steps:
-      # 1.2: checkout candidate and pinned YAGEL revision as sibling paths.
+      # 1.2: checkout candidate and YAGEL's gold ref as sibling paths.
       - name: Checkout candidate
         uses: actions/checkout@v4
         with:
@@ -50,7 +53,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: yagel-labs/yagel
-          ref: ${{ env.YAGEL_PIN_REVISION }}
+          ref: ${{ env.YAGEL_REF }}
           # yagel-labs/yagel is private; the default GITHUB_TOKEN cannot read
           # it. Must be provisioned by a yagel-labs admin as a fine-grained,
           # read-only PAT or deploy key scoped to this repo -- this workflow

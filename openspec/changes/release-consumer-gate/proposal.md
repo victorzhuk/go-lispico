@@ -8,7 +8,7 @@ External dependency: YAGEL owns the live corpus, Behavior goldens, deterministic
 
 ## What changes
 
-- A go-lispico release CI job checks out the pinned YAGEL revision, replaces its go-lispico dependency with the release candidate, and runs YAGEL's correctness suites and benchmark cells. Cutting a release re-pins to the latest YAGEL release.
+- A go-lispico release CI job checks out YAGEL's `gold` ref — the blessed-release pointer YAGEL advances — replaces its go-lispico dependency with the release candidate, and runs YAGEL's correctness suites and benchmark cells. No revision pin is recorded in this repo.
 - The authoritative performance evidence is a Paired release run: Evaluator and VM variants interleaved in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence.
 - Threshold evaluation follows ADR 0008: per-cell tiers committed before candidate results, burden-of-proof handling of inconclusive benchstat (one rerun at doubled benchtime; then improvement cells fail, non-regression cells pass), race runs separate and untimed.
 - The improvement gate is one-shot: after first authorization, later releases compare the candidate VM against the previous release's VM baseline as non-regression.
@@ -18,7 +18,7 @@ External dependency: YAGEL owns the live corpus, Behavior goldens, deterministic
 
 ### New Capabilities
 
-- `consumer-release-gate`: the release-time contract between go-lispico and its consumer — pinned-consumer checkout, paired benchmark run, tiered threshold evaluation, and the one-shot authorization semantics.
+- `consumer-release-gate`: the release-time contract between go-lispico and its consumer — gold-ref consumer checkout, paired benchmark run, tiered threshold evaluation, and the one-shot authorization semantics.
 
 ### Modified Capabilities
 

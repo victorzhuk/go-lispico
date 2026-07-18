@@ -1,6 +1,6 @@
-## 1. Pin and dependency plumbing
+## 1. Consumer ref and dependency plumbing
 
-- [ ] 1.1 Record the pinned YAGEL revision in this repo with the re-pin-at-release-cut rule documented next to it. -- BLOCKED: no YAGEL revision selected yet; release.yml references YAGEL_PIN_REVISION as an empty placeholder until this is filled in.
+- [x] 1.1 Track YAGEL's `gold` ref as the blessed-release pointer instead of recording a pinned revision in this repo; YAGEL owns when the pointer moves. Done on the go-lispico side (release.yml checks out `YAGEL_REF: gold`); the ref does not exist in yagel-labs/yagel yet and must be created there before the job can run.
 - [x] 1.2 Script the checkout + `go.mod` replace step and verify YAGEL builds against a candidate working tree.
 
 ## 2. Correctness leg
@@ -21,4 +21,4 @@
 
 ## 5. Verify (blocked on YAGEL harness)
 
-- [ ] 5.1 Dry-run the full job against the pinned YAGEL revision with the current go-lispico release; correctness leg green, paired run produces a benchstat report. -- BLOCKED: YAGEL has not published its Behavior-golden suites, benchmark cells, or Scale envelopes yet (verified zero hits for expected harness terms in the YAGEL repo). Cannot be attempted until YAGEL publishes.
+- [ ] 5.1 Dry-run the full job against YAGEL's `gold` ref with the current go-lispico release; correctness leg green, paired run produces a benchstat report. -- BLOCKED: YAGEL has not published its Behavior-golden suites, benchmark cells, or Scale envelopes yet (verified zero hits for expected harness terms in the YAGEL repo), and the `gold` ref does not exist there yet. Cannot be attempted until YAGEL publishes.

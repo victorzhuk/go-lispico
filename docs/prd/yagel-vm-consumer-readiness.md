@@ -14,7 +14,7 @@ Establish a **VM correctness floor**, then run a YAGEL-owned **Consumer workload
 
 Fix the known VM parity, cleanup, cache, and no-panic defects. Add one dialect-owned **Form-shape rule** so Clojure and Common Lisp `cond` forms normalize to the same canonical clauses without changing quoted source. Correct stdlib `merge` with a fresh mutable builder and report that **Shared-path fix** separately from VM gains.
 
-YAGEL owns the live corpus and benchmark harness. A go-lispico release job checks out a pinned YAGEL revision, replaces its go-lispico dependency with the candidate, and performs a **Paired release run**. Passing the gate authorizes YAGEL to add `WithBytecode()` directly. It does not change go-lispico's global Engine default.
+YAGEL owns the live corpus and benchmark harness. A go-lispico release job checks out YAGEL's `gold` ref — the blessed-release pointer YAGEL advances — replaces its go-lispico dependency with the candidate, and performs a **Paired release run**. Passing the gate authorizes YAGEL to add `WithBytecode()` directly. It does not change go-lispico's global Engine default.
 
 ## User stories
 
@@ -67,7 +67,7 @@ YAGEL owns the live corpus and benchmark harness. A go-lispico release job check
 - Inconclusive benchstat results follow ADR 0008's burden-of-proof rule: one rerun at doubled benchtime, then improvement cells fail and non-regression cells pass.
 - Each scaled dimension has three levels: shipped baseline, an operational knee, and the supported boundary. A CI-safe proxy is permitted only when a separate load test covers the real boundary.
 - The authoritative **Paired release run** interleaves Evaluator and VM variants in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence. Pull requests run correctness and race checks without percentage gates.
-- go-lispico release CI checks out a pinned YAGEL revision and replaces that revision's go-lispico dependency with the release candidate. Cutting a release re-pins to the latest YAGEL release, so the pin is never staler than one release cycle.
+- go-lispico release CI checks out YAGEL's `gold` ref and replaces that revision's go-lispico dependency with the release candidate. No revision pin is recorded in go-lispico; YAGEL owns when the pointer moves (ADR 0008).
 - Passing the complete gate authorizes YAGEL to add `WithBytecode()` directly. There is no user-facing execution flag and no shadow run. Rollback is a normal code or dependency revert.
 - The improvement gate is one-shot. After authorization, later releases keep the paired run but compare the candidate VM against the previous release's VM baseline as a non-regression check; an Evaluator improvement cannot fail the gate.
 - Passing authorizes YAGEL only. The Evaluator remains go-lispico's complete global default until a separate dialect-wide gate supplies evidence for every supported Dialect.
@@ -103,8 +103,8 @@ YAGEL owns the live corpus and benchmark harness. A go-lispico release job check
 
 ## Further notes
 
-- The initial authoritative YAGEL revision is not yet selected; the update policy is fixed (re-pin at each release cut, ADR 0008).
-- Exact baseline, knee, boundary, and CI-proxy values remain to be derived from the pinned YAGEL contracts for tool schemas, maps/catalogs, history, Rule count, and handler fan-out.
+- The `gold` ref does not exist in the YAGEL repo yet; YAGEL must create and maintain it as its blessed-release pointer (ADR 0008).
+- Exact baseline, knee, boundary, and CI-proxy values remain to be derived from the blessed YAGEL contracts for tool schemas, maps/catalogs, history, Rule count, and handler fan-out.
 - Hot-cell tier assignments remain open until baseline profiles are recorded and checked in. Classification must precede candidate results.
 - The fixed `GOMAXPROCS`, benchmark benchtime, interleaving order, and release workflow trigger remain operational gaps.
 - YAGEL must demonstrate complete coverage of its Rule-load and handler-dispatch deadlines before selecting `WithTimeout(0)`.

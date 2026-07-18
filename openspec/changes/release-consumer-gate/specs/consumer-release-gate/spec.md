@@ -2,18 +2,19 @@
 
 ## ADDED Requirements
 
-### Requirement: Pinned consumer checkout
+### Requirement: Gold-ref consumer checkout
 
-go-lispico release CI SHALL check out a pinned YAGEL revision and replace that
-revision's go-lispico dependency with the release candidate. Cutting a go-lispico
-release SHALL re-pin to the latest YAGEL release, so the pin is never staler than
-one release cycle. YAGEL owns the corpus, goldens, benchmark cells, envelopes, and
-tiers; go-lispico SHALL NOT copy those fixtures.
+go-lispico release CI SHALL check out YAGEL's `gold` ref — the blessed-release
+pointer YAGEL advances to the revision it stands behind — and replace that
+revision's go-lispico dependency with the release candidate. No revision pin
+SHALL be recorded in this repo; YAGEL owns when the pointer moves. YAGEL owns the
+corpus, goldens, benchmark cells, envelopes, and tiers; go-lispico SHALL NOT copy
+those fixtures.
 
-#### Scenario: Candidate runs against the pinned consumer
+#### Scenario: Candidate runs against the blessed consumer
 
 - **WHEN** the release job runs for a candidate
-- **THEN** YAGEL's suites SHALL execute at the pinned revision with the candidate substituted as its go-lispico dependency
+- **THEN** YAGEL's suites SHALL execute at the `gold` ref with the candidate substituted as its go-lispico dependency
 
 ### Requirement: Correctness precedes timing
 

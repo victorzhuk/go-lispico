@@ -9,7 +9,7 @@ YAGEL opts into the VM only after every known VM parity, state-cleanup, cache-fr
 ## Gate mechanics
 
 - Hot timing starts at `Evaluator.Apply` and runs through the Rule body with deterministic fake world Primitives, retaining GoFunc call overhead; scheduler and bus flows remain untimed end-to-end behavior checks.
-- YAGEL owns the live corpus and benchmark harness; go-lispico release CI checks out the pinned YAGEL revision and replaces its lispico dependency with the candidate. Cutting a go-lispico release re-pins to the latest YAGEL release, so the pin is never staler than one release cycle.
+- YAGEL owns the live corpus and benchmark harness; go-lispico release CI checks out YAGEL's `gold` ref — the blessed-release pointer YAGEL advances to the revision it stands behind — and replaces its lispico dependency with the candidate. No revision pin is recorded in go-lispico; YAGEL owns when the pointer moves, so the gate always runs against exactly what the consumer currently blesses.
 - The authoritative performance run interleaves both execution modes in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence; ordinary pull requests run correctness and race checks only. Race-detector runs are separate and untimed — no timing threshold is evaluated under `-race`.
 - When benchstat is inconclusive on a cell, the cell reruns once at doubled benchtime. Still inconclusive after the rerun: improvement cells fail (the win was not demonstrated), non-regression cells pass (no regression was demonstrated).
 - Each scaled data dimension has three checked-in levels: shipped baseline, an operational knee, and its supported boundary; a lower CI proxy is allowed only when a separate load test covers the real boundary.
@@ -32,6 +32,6 @@ This ADR is the single owner of the numbers; the PRD and glossary reference them
 ## Considered options
 
 - Keeping the gate only in the benchmark lab: rejected — not a release contract.
-- Copying YAGEL fixtures into this repository: rejected — they would drift from the consumer; the pinned checkout has the same failure mode, which the per-release re-pin bounds to one cycle.
+- Copying YAGEL fixtures into this repository: rejected — they would drift from the consumer. A revision pin recorded here was also rejected: it has the same drift failure mode and needs a re-pin ritual at every release cut; the consumer-owned `gold` ref removes the pin entirely and keeps pointer movement with YAGEL.
 - A standing 15%-vs-Evaluator gate on every release: rejected — after authorization it punishes Evaluator improvements, failing a release for making the fallback path faster.
 - Failing or endlessly rerunning inconclusive benchstat cells: rejected — hosted runners make inconclusive the common case; burden-of-proof (improvement claims fail, non-regression claims pass) keeps the gate decidable after one bounded retry.
