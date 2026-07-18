@@ -1,0 +1,18 @@
+# Design — dispatch loop tightening and small-value preboxing
+
+## Context
+
+fib(20) bytecode profile after attributing global lookups (33%) and cancellation (10%): `VM.Run` 19% flat, `Chunk.GetConstant`+`GetSymbolConstant` ~9%, `push`/`pop` ~6%. Costs are structural: per-instruction frame pointer re-derivation, ip range check, error-returning accessor calls for constants, truthiness hook nil-check per branch, `canonicalAt` zeroing per push.
+
+Compiler diagnostics on the real repo (go1.26.5) sharpen this: `-d=ssa/check_bce` shows `frame.chunk.Code[frame.ip]` is already bounds-check-eliminated (the explicit ip guard dominates it), but `vm.canonicalAt[slot] = 0` in `push` survives as a live check duplicated at all 14 inlined `push` sites — the guard tests only `slot < len(...)`, never `slot >= 0`, so `prove` cannot drop the lower bound (interim fix if this change lands before `vm-resolved-global-bindings` deletes `canonicalAt`: make both bounds explicit). `-m -m` confirms `nativeAdd`/`nativeSub`/`nativeMul`/`nativeDiv` are "cannot inline: function too complex" (costs 156–513 vs budget 80) and that every boxed arithmetic result escapes via `vm.stack` — allocation avoidance, not escape analysis, is the only lever there, which is what preboxing does.
+
+## Decisions
+
+- **Validate once, index directly.** Trusting a chunk in the hot loop is safe only if nothing unvalidated can reach it; the two entry points are compiler output and the chunk cache, both funneled through `Validate()`. Hand-built chunks (tests, future serialization) go through the same gate. This relocates, not weakens, the robustness contract — GopherLua and goja both execute compiler-validated programs with unchecked indexing.
+- **Locals-cached dispatch state.** `Run` keeps `code []Instruction`, `ip`, `base`, `env`, `truthy` in locals; frame sync happens at the five transition points (call, tail-call, return, throw/handler, loop is just `ip = target`). GopherLua's `cf := L.currentFrame` + direct `Code[cf.Pc]` is the model. No jump-table/closure dispatch here: Go lowers a dense opcode switch to a jump table already; goja-style instruction objects or Vitess-style closure fusion is a bigger rewrite with no evidence it is needed before the cheap wins land — revisit only if the gate still fails after this program.
+- **Preboxing shape.** Measured baseline (AllocsPerRun, v0.7.0): `Int→Value` is already free for 0..255 (Go's `staticuint64s` cache applies to the 8-byte pointer-free struct); negatives, ≥256, and runtime floats allocate one object each. `boxInt` therefore returns shared preboxed values for −128..1023 — the added win is the −128..−1 and 256..1023 windows (loop counters, sizes, rule thresholds) — else a fresh box; `Nil`/`True`/`False` singletons for uniformity. goja's cache is exactly the complement shape (−256..−1, positives already free); GopherLua preloads 0–127 and bulk-allocates the rest. Floats are out of scope here — an unbounded domain can't be preboxed; unboxed operand slots (ADR 0008's deferred "tagged slots") are the float answer if a gate cell demands it. Values stay immutable structs — sharing a box is invisible to semantics (`Equals` compares `V`).
+- **Interaction with `vm-resolved-global-bindings`.** That change deletes `canonicalAt`; whichever lands second removes the leftover push-time zeroing. No other overlap: this change does not touch name resolution.
+
+## Verification
+
+Crossval/dialect/robustness suites; malformed-chunk fuzz moved to `Validate()`; `AllocsPerRun` zero-alloc assertion for in-range int arithmetic; goldset gate + fib bench before/after with profile diff.
