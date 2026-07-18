@@ -14,7 +14,7 @@ Establish a **VM correctness floor**, then run a YAGEL-owned **Consumer workload
 
 Fix the known VM parity, cleanup, cache, and no-panic defects. Add one dialect-owned **Form-shape rule** so Clojure and Common Lisp `cond` forms normalize to the same canonical clauses without changing quoted source. Correct stdlib `merge` with a fresh mutable builder and report that **Shared-path fix** separately from VM gains.
 
-YAGEL owns the live corpus and benchmark harness. A go-lispico release job checks out YAGEL's `gold` ref — the blessed-release pointer YAGEL advances — replaces its go-lispico dependency with the candidate, and performs a **Paired release run**. Passing the gate authorizes YAGEL to add `WithBytecode()` directly. It does not change go-lispico's global Engine default.
+YAGEL owns the gate corpus as a **Gold set** — rule-shaped fixtures with independent golden results plus benchmark cells, exported from its shipped Rules and committed in go-lispico. A go-lispico release job runs the gold set under both execution modes and performs a **Paired release run**, self-contained — no consumer checkout. Passing the gate authorizes YAGEL to add `WithBytecode()` directly. It does not change go-lispico's global Engine default.
 
 ## User stories
 
@@ -59,7 +59,7 @@ YAGEL owns the live corpus and benchmark harness. A go-lispico release job check
 - stdlib `merge` builds its fresh result through the mutable construction escape hatch, preserving immutable inputs, deterministic iteration, right-most precedence, and existing errors. This is a **Shared-path fix** and does not count toward VM thresholds.
 - The Engine retains its safe 30-second **Evaluation deadline**. It skips creating a redundant timer when the caller already has an earlier deadline.
 - YAGEL selects `WithTimeout(0)` only after its separate Rule-load and handler-dispatch deadlines cover every evaluation path. Direct `Apply` continues to receive the caller-owned context.
-- YAGEL owns the shipped Rule corpus, Behavior goldens, deterministic Primitive fakes, benchmark cell definitions, Scale envelopes, and checked-in **Hot-cell tiers**. go-lispico does not copy those fixtures.
+- YAGEL owns the shipped Rule corpus, Behavior goldens, deterministic Primitive fakes, benchmark cell definitions, Scale envelopes, and checked-in **Hot-cell tiers**. The gate consumes them as the **Gold set** YAGEL exports into go-lispico and refreshes deliberately; ad-hoc copying outside that export is still out.
 - Single-handler timing begins at `Evaluator.Apply` and ends when the Rule handler returns. Primitive call overhead remains included, while network, filesystem, process, and model work use deterministic fakes.
 - Scheduler and bus flows are correctness evidence only. They validate registration, state, publication, acknowledgement, failure isolation, and deadlines without contributing timing thresholds.
 - ADR 0008 is the single owner of the numeric thresholds. Engine-sensitive hot cells require its Material VM win; data/output-dominated, concurrent, and startup/Rule-load cells hold its non-regression budgets. Tier classification and baseline profiles are committed before candidate results.
@@ -67,7 +67,7 @@ YAGEL owns the live corpus and benchmark harness. A go-lispico release job check
 - Inconclusive benchstat results follow ADR 0008's burden-of-proof rule: one rerun at doubled benchtime, then improvement cells fail and non-regression cells pass.
 - Each scaled dimension has three levels: shipped baseline, an operational knee, and the supported boundary. A CI-safe proxy is permitted only when a separate load test covers the real boundary.
 - The authoritative **Paired release run** interleaves Evaluator and VM variants in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence. Pull requests run correctness and race checks without percentage gates.
-- go-lispico release CI checks out YAGEL's `gold` ref and replaces that revision's go-lispico dependency with the release candidate. No revision pin is recorded in go-lispico; YAGEL owns when the pointer moves (ADR 0008).
+- go-lispico release CI runs the committed **Gold set** under both execution modes, self-contained in the candidate checkout. No consumer checkout, no revision pin, no cross-repo secret; YAGEL exports and refreshes the corpus deliberately (ADR 0008).
 - Passing the complete gate authorizes YAGEL to add `WithBytecode()` directly. There is no user-facing execution flag and no shadow run. Rollback is a normal code or dependency revert.
 - The improvement gate is one-shot. After authorization, later releases keep the paired run but compare the candidate VM against the previous release's VM baseline as a non-regression check; an Evaluator improvement cannot fail the gate.
 - Passing authorizes YAGEL only. The Evaluator remains go-lispico's complete global default until a separate dialect-wide gate supplies evidence for every supported Dialect.
@@ -103,7 +103,7 @@ YAGEL owns the live corpus and benchmark harness. A go-lispico release job check
 
 ## Further notes
 
-- The `gold` ref does not exist in the YAGEL repo yet; YAGEL must create and maintain it as its blessed-release pointer (ADR 0008).
+- The YAGEL-exported **Gold set** corpus does not exist yet; the committed fixtures are examples that keep the harness executable. YAGEL must export its shipped Rules as gold-set fixtures with goldens and benchmark cells (ADR 0008).
 - Exact baseline, knee, boundary, and CI-proxy values remain to be derived from the blessed YAGEL contracts for tool schemas, maps/catalogs, history, Rule count, and handler fan-out.
 - Hot-cell tier assignments remain open until baseline profiles are recorded and checked in. Classification must precede candidate results.
 - The fixed `GOMAXPROCS`, benchmark benchtime, interleaving order, and release workflow trigger remain operational gaps.

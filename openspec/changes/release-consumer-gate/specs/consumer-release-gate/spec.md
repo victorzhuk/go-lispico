@@ -2,19 +2,20 @@
 
 ## ADDED Requirements
 
-### Requirement: Gold-ref consumer checkout
+### Requirement: Gold-set gate corpus
 
-go-lispico release CI SHALL check out YAGEL's `gold` ref — the blessed-release
-pointer YAGEL advances to the revision it stands behind — and replace that
-revision's go-lispico dependency with the release candidate. No revision pin
-SHALL be recorded in this repo; YAGEL owns when the pointer moves. YAGEL owns the
-corpus, goldens, benchmark cells, envelopes, and tiers; go-lispico SHALL NOT copy
-those fixtures.
+go-lispico release CI SHALL run a committed gold set — rule-shaped fixtures with
+independent golden expected results, plus benchmark cells over them — under both
+execution modes, with no consumer checkout, no revision pin, and no cross-repo
+secret. YAGEL SHALL own the corpus content: it exports the gold set from its
+shipped Rules and refreshes it deliberately, so corpus drift is bounded by
+explicit refresh rather than a checkout pin. A fixture without a golden SHALL be
+an error.
 
-#### Scenario: Candidate runs against the blessed consumer
+#### Scenario: Candidate runs against the gold set
 
 - **WHEN** the release job runs for a candidate
-- **THEN** YAGEL's suites SHALL execute at the `gold` ref with the candidate substituted as its go-lispico dependency
+- **THEN** every gold-set fixture SHALL execute under both execution modes against its golden, self-contained in the candidate checkout
 
 ### Requirement: Correctness precedes timing
 

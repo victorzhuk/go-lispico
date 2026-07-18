@@ -109,7 +109,7 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 	for _, name := range names {
 		cell := cells[name]
 		cell.RaceClean = raceClean
-		tier, ok := tiers[name]
+		tier, ok := tiers[perfgate.TrimProcsSuffix(name)]
 		if !ok {
 			fmt.Fprintf(&report, "%s: FAIL no committed tier for this cell\n", name)
 			anyFail = true

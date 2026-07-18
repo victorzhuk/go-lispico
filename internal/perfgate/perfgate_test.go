@@ -213,6 +213,28 @@ geomean,2,,2,,+0.00%,
 	assert.False(t, cell.Allocs.Significant)
 }
 
+func TestTrimProcsSuffix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "strips procs suffix", in: "Goldset/route-decision-24", want: "Goldset/route-decision"},
+		{name: "strips single digit", in: "Apply-8", want: "Apply"},
+		{name: "keeps non-numeric tail", in: "Goldset/route-decision", want: "Goldset/route-decision"},
+		{name: "keeps trailing dash", in: "Cell-", want: "Cell-"},
+		{name: "keeps bare name", in: "Cell", want: "Cell"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, TrimProcsSuffix(tt.in))
+		})
+	}
+}
+
 func TestLoadTierConfig(t *testing.T) {
 	t.Parallel()
 

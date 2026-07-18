@@ -160,6 +160,22 @@ func parsePValue(s string) (p float64, n int, err error) {
 	return p, n, nil
 }
 
+// TrimProcsSuffix strips the -<GOMAXPROCS> suffix Go appends to benchmark
+// names (Goldset/route-decision-24 -> Goldset/route-decision), so tiers.json
+// keys stay independent of the runner's core count.
+func TrimProcsSuffix(name string) string {
+	i := strings.LastIndexByte(name, '-')
+	if i <= 0 || i == len(name)-1 {
+		return name
+	}
+	for _, r := range name[i+1:] {
+		if r < '0' || r > '9' {
+			return name
+		}
+	}
+	return name[:i]
+}
+
 // tierConfigFile is tiers.json's on-disk shape: a documenting comment plus
 // the cell-name -> tier map.
 type tierConfigFile struct {

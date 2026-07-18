@@ -1,7 +1,7 @@
 {
-  "comment": "Placeholder only. Real cell names and tier assignments are YAGEL-owned and not yet published (see design.md 'Open inputs'). The two entries below illustrate the mapping shape, not real cells.",
+  "comment": "Example tier mapping for the example gold-set cells (internal/goldset/testdata), keeping the harness dry-runnable end-to-end. Real cells and their tier assignments arrive with the YAGEL-exported gold set; tier classification must be committed before candidate results (ADR 0008). Keys are benchmark names with the -GOMAXPROCS suffix stripped.",
   "cells": {
-    "BenchmarkExampleApply": "engine-sensitive",
-    "BenchmarkExampleFormat": "data-dominated"
+    "Goldset/route-decision": "engine-sensitive",
+    "Goldset/registry-fold": "engine-sensitive"
   }
 }

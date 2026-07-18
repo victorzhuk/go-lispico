@@ -5,18 +5,19 @@
 # they never run on the same event -- ordinary PR CI carries no percentage
 # gates by construction (tasks.md 4.1).
 #
-# This job is scaffolding: the env block below carries several TBD
-# placeholders because YAGEL has not published its Behavior-golden suites,
-# benchmark cells, or Hot-cell tiers yet. Steps that reference them will not
-# pass until YAGEL does (tasks.md 5.1).
+# The gate is self-contained: it runs the committed gold set
+# (internal/goldset) under both execution modes -- no consumer checkout, no
+# cross-repo secret. The current gold-set fixtures are examples that keep
+# the harness executable end-to-end; the real corpus is exported from
+# YAGEL's shipped Rules and has not landed yet, so a run today is a harness
+# dry-run, not an authoritative verdict (tasks.md 5.1).
 name: Release consumer gate
 
 on:
   workflow_dispatch: {}
-  # Not wired to fire automatically: the correctness and benchmark steps
-  # below call YAGEL suite/cell names that don't exist yet. An auto-firing
-  # trigger would fail every real release cut until YAGEL publishes its
-  # harness.
+  # Not wired to fire automatically: until the YAGEL-exported gold set and
+  # its committed tier assignments land, an auto-firing trigger would gate
+  # real releases on example cells.
   # release:
   #   types: [published]
 
@@ -24,17 +25,10 @@ permissions:
   contents: read
 
 env:
-  # YAGEL's blessed-release pointer: a ref (branch or tag) YAGEL advances to
-  # the revision it stands behind. No revision pin is recorded in this repo;
-  # YAGEL owns when the pointer moves. The ref does not exist in
-  # yagel-labs/yagel yet -- it must be created there before this job can run.
-  YAGEL_REF: "gold"
   # design.md "Open inputs": fixed GOMAXPROCS not yet chosen
   GOMAXPROCS: ""
   # design.md "Open inputs": fixed benchtime not yet chosen
   BENCHTIME: ""
-  # Hot-cell benchmark names are YAGEL-owned, not yet published
-  BENCH_FILTER: ""
   # ADR 0008 "at least ten samples" floor -- real value, not a placeholder
   BENCH_COUNT: "10"
 
@@ -42,24 +36,8 @@ jobs:
   consumer-gate:
     runs-on: ubuntu-latest
     steps:
-      # 1.2: checkout candidate and YAGEL's gold ref as sibling paths.
-      - name: Checkout candidate
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          path: candidate
-          persist-credentials: false
-
-      - name: Checkout YAGEL
-        uses: actions/checkout@v4
-        with:
-          repository: yagel-labs/yagel
-          ref: ${{ env.YAGEL_REF }}
-          # yagel-labs/yagel is private; the default GITHUB_TOKEN cannot read
-          # it. Must be provisioned by a yagel-labs admin as a fine-grained,
-          # read-only PAT or deploy key scoped to this repo -- this workflow
-          # cannot run until that secret exists.
-          token: ${{ secrets.YAGEL_CHECKOUT_TOKEN }}
-          path: yagel
           persist-credentials: false
 
       - uses: actions/setup-go@v5
@@ -67,68 +45,50 @@ jobs:
           go-version: "1.24"
           cache: true
 
-      # 1.2: point YAGEL's go-lispico dependency at the candidate and confirm
-      # the replace resolves.
-      - name: Point YAGEL at the candidate
-        working-directory: yagel
-        run: |
-          go mod edit -replace github.com/victorzhuk/go-lispico=../candidate
-          go build ./...
+      # 2.1: correctness leg, untimed -- every gold-set fixture under both
+      # execution modes against its golden; any failure fails the release.
+      - name: Gold set under both execution modes
+        run: go test ./internal/goldset/ -count=1
 
-      # 2.1: correctness leg, untimed -- any failure fails the release.
-      - name: YAGEL Behavior-golden suite (Evaluator mode)
-        working-directory: yagel
-        # exact test pattern TBD -- YAGEL harness unpublished, see design.md Open inputs
-        run: go test ./... -run TestBehaviorGolden
-
-      - name: YAGEL Behavior-golden suite (VM mode)
-        working-directory: yagel
-        # LISPICO_MODE toggle mechanism itself is TBD, matches ADR 0008's WithBytecode() opt-in
-        env:
-          LISPICO_MODE: vm
-        run: go test ./... -run TestBehaviorGolden
-
-      - name: YAGEL race suite
-        working-directory: yagel
-        # untimed, never combined with -bench (ADR 0008: race runs are separate and untimed)
+      # 2.1: untimed, never combined with -bench (ADR 0008: race runs are
+      # separate and untimed).
+      - name: Race suite
         run: go test -race -count=1 ./...
 
-      - name: go-lispico race suite
-        working-directory: candidate
-        # untimed, never combined with -bench (ADR 0008: race runs are separate and untimed)
-        run: go test -race -count=1 ./...
-
-      # 3.1: paired interleaved benchmark run -- Evaluator and VM cells in one
-      # hosted job, fixed GOMAXPROCS and benchtime, at least BENCH_COUNT
-      # samples. BENCH_FILTER stays empty: the interleaved Evaluator/VM cell
-      # list is YAGEL-owned and not yet published. Never combined with -race.
+      # 3.1: paired release run -- Evaluator and VM samples interleaved per
+      # iteration in one hosted job, fixed GOMAXPROCS and benchtime,
+      # BENCH_COUNT samples per cell per mode. Cell names are identical
+      # across the two output files so benchstat pairs them. Never combined
+      # with -race.
       - name: Paired Evaluator/VM benchmark run
-        working-directory: yagel
         env:
           GOMAXPROCS: ${{ env.GOMAXPROCS }}
         run: |
-          go test -run '^$' -bench "${{ env.BENCH_FILTER }}" -benchtime="${{ env.BENCHTIME }}" -count="${{ env.BENCH_COUNT }}" -benchmem > bench-candidate.txt
+          for _ in $(seq "${{ env.BENCH_COUNT }}"); do
+            GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-evaluator.txt
+            GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-vm.txt
+          done
 
       # 3.2: benchstat comparison against committed Hot-cell tiers (ADR 0008
       # "Thresholds"), via internal/perfgate. First-authorization mode only:
       # tasks.md 3.3 leaves the baseline storage backend open, so there is no
-      # stored VM baseline to compare against yet. The Evaluator-vs-VM split
-      # of bench-candidate.txt into two separate benchstat inputs is also
-      # TBD -- YAGEL owns the subtest naming convention that would make the
-      # split possible (design.md Open inputs); this step references the
-      # not-yet-produced split files and will not pass until that split exists.
+      # stored VM baseline to compare against yet.
+      # Built once and run as a binary: `go run` collapses the program's
+      # exit code to 1, which would make the needs-rerun signal (exit 2)
+      # indistinguishable from a failure. The `|| code=$?` capture keeps the
+      # runner's `bash -e` from aborting before the output line is written.
       - name: Evaluate performance gate
         id: perfgate
-        working-directory: candidate
-        continue-on-error: true
         run: |
-          go run ./cmd/perfgate \
-            -old ../yagel/bench-evaluator.txt \
-            -candidate ../yagel/bench-vm.txt \
+          go build -o bin/perfgate ./cmd/perfgate
+          code=0
+          bin/perfgate \
+            -old bench-evaluator.txt \
+            -candidate bench-vm.txt \
             -tiers internal/perfgate/tiers.json \
             -mode first-authorization \
-            -out verdict.txt
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+            -out verdict.txt || code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       # design.md "Decision rules" / ADR 0008 burden-of-proof rule: a still-
       # inconclusive cell (perfgate exit 2) gets exactly one rerun at doubled
@@ -137,27 +97,29 @@ jobs:
       # first attempt actually produced an inconclusive cell.
       - name: Rerun paired benchmark at doubled benchtime
         if: steps.perfgate.outputs.exit_code == '2'
-        working-directory: yagel
         env:
           GOMAXPROCS: ${{ env.GOMAXPROCS }}
         run: |
           doubled=$(awk -v bt="${{ env.BENCHTIME }}" 'BEGIN{match(bt,/^[0-9.]+/);n=substr(bt,RSTART,RLENGTH);s=substr(bt,RSTART+RLENGTH);printf "%s%s", n*2, s}')
-          go test -run '^$' -bench "${{ env.BENCH_FILTER }}" -benchtime="$doubled" -count="${{ env.BENCH_COUNT }}" -benchmem > bench-candidate.txt
+          rm -f bench-evaluator.txt bench-vm.txt
+          for _ in $(seq "${{ env.BENCH_COUNT }}"); do
+            GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench . -benchtime="$doubled" -count=1 -benchmem >> bench-evaluator.txt
+            GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench . -benchtime="$doubled" -count=1 -benchmem >> bench-vm.txt
+          done
 
       - name: Resolve inconclusive cells after rerun
         id: perfgate-rerun
         if: steps.perfgate.outputs.exit_code == '2'
-        working-directory: candidate
-        continue-on-error: true
         run: |
-          go run ./cmd/perfgate \
-            -old ../yagel/bench-evaluator.txt \
-            -candidate ../yagel/bench-vm.txt \
+          code=0
+          bin/perfgate \
+            -old bench-evaluator.txt \
+            -candidate bench-vm.txt \
             -tiers internal/perfgate/tiers.json \
             -mode first-authorization \
             -rerun \
-            -out verdict.txt
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+            -out verdict.txt || code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Enforce performance gate verdict
         run: |
@@ -167,14 +129,15 @@ jobs:
             test "${{ steps.perfgate.outputs.exit_code }}" = "0"
           fi
 
-      # 3.4: publish the benchstat report and verdict as release evidence,
-      # even when the job fails.
+      # 3.4: publish the paired benchmark output and verdict as release
+      # evidence, even when the job fails.
       - name: Upload release evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: consumer-gate-evidence
           path: |
-            yagel/bench-candidate.txt
-            candidate/verdict.txt
+            bench-evaluator.txt
+            bench-vm.txt
+            verdict.txt
           if-no-files-found: warn
