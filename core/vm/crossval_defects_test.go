@@ -157,6 +157,55 @@ func TestVMVsTreeWalker_KeywordApplication_ArityError(t *testing.T) {
 	}
 }
 
+// Family 6: kernel `let` binds in parallel — every init resolves in the scope
+// enclosing the `let`, never in a sibling binding — while `let*` stays
+// sequential. Both modes must match the pinned expected value, not merely each
+// other; a shared wrong answer would still be a defect.
+func TestVMVsTreeWalker_LetParallelBindingScope(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		src      string
+		expected core.Value
+	}{
+		{"let sibling resolves enclosing", "(def a 10) (let [a 1 b a] b)", core.Int{V: 10}},
+		{"let* sibling resolves earlier", "(def a 10) (let* [a 1 b a] b)", core.Int{V: 1}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			forms, err := core.Read(tc.src)
+			require.NoError(t, err, "read source")
+
+			treeEnv := newCrossValEnv()
+			treeEval := core.NewEvaluator()
+			var treeResult core.Value = core.Nil{}
+			for _, form := range forms {
+				treeResult, err = treeEval.Eval(context.Background(), form, treeEnv)
+				require.NoError(t, err, "tree-walker eval")
+			}
+
+			vmEnv := newCrossValEnv()
+			chunks, err := compiler.CompileAll(forms)
+			require.NoError(t, err, "compile")
+			v := vm.New(vmEnv)
+			var vmResult core.Value = core.Nil{}
+			for _, chunk := range chunks {
+				vmResult, err = v.Run(context.Background(), chunk)
+				require.NoError(t, err, "vm run")
+			}
+
+			assert.True(t, treeResult.Equals(tc.expected),
+				"tree-walker result %v != expected %v", treeResult, tc.expected)
+			assert.True(t, vmResult.Equals(tc.expected),
+				"VM result %v != expected %v", vmResult, tc.expected)
+		})
+	}
+}
+
 // Family 4: every malformed special form must be rejected by BOTH the
 // tree-walker (at eval) and the bytecode compiler (at compile) — error parity,
 // never a panic on either side.

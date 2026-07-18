@@ -324,16 +324,19 @@ func (c *Compiler) compileLet(args []core.Value) error {
 	}
 	c.depth++
 	base := len(c.locals)
+	// Parallel binding: compile every init before registering any local, so an
+	// init resolves names in the enclosing scope, not in a sibling binding.
 	for i := 0; i < len(bindings.Items); i += 2 {
 		if err := c.Compile(bindings.Items[i+1]); err != nil {
 			return err
 		}
-		sym, ok := bindings.Items[i].(core.Symbol)
-		if !ok {
+		if _, ok := bindings.Items[i].(core.Symbol); !ok {
 			return core.NewTypeError("symbol", bindings.Items[i])
 		}
-		c.addLocal(sym.V)
-		c.chunk.Emit(vm.OpSetLocal, len(c.locals)-1)
+		c.chunk.Emit(vm.OpSetLocal, base+i/2)
+	}
+	for i := 0; i < len(bindings.Items); i += 2 {
+		c.addLocal(bindings.Items[i].(core.Symbol).V)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
