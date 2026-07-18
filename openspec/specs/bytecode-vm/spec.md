@@ -153,6 +153,9 @@ dedicated opcodes operating on stack slots, with semantics identical to the stdl
 builtins including int/float promotion and division-by-zero errors. When the
 operator symbol is locally shadowed or its global binding is no longer the
 canonical stdlib builtin, execution SHALL fall back to the ordinary call path.
+Canonical status SHALL be determined through the operator's resolved binding, not
+re-derived by a per-execution environment walk, and a canonical operator SHALL
+take the native path on every execution — not intermittently.
 
 #### Scenario: Hot loop avoids builtin dispatch
 
@@ -168,6 +171,11 @@ canonical stdlib builtin, execution SHALL fall back to the ordinary call path.
 
 - **WHEN** a program rebinds `+` to a custom function and then calls `(+ 1 2)` under the VM
 - **THEN** the custom function SHALL be called, matching tree-walker behavior
+
+#### Scenario: Recursive calls keep the native path
+
+- **WHEN** a recursive function's body applies canonical `+`, `-`, and `<` across nested self-calls under the VM
+- **THEN** every application SHALL execute as a native opcode, with no fallback to `GoFunc` dispatch for canonical bindings
 
 ### Requirement: Slot-resident locals
 
@@ -294,4 +302,29 @@ to any sibling init in the same `let` vector.
 
 - **WHEN** the VM evaluates `(def a 10) (let* [a 1 b a] b)`
 - **THEN** the result SHALL be `1`, equal to the tree-walking evaluator's result
+
+### Requirement: Resolved global bindings
+
+Repeated execution of a compiled chunk SHALL NOT re-resolve a global name through
+a locked map walk on every read. A call site's resolution MAY be cached on the
+chunk, guarded so that a chunk running against a different environment, or after
+a new name is bound into the resolution environment, resolves afresh. Rebinding
+an already-bound global SHALL be visible to subsequent reads through any cached
+resolution, and concurrent execution with concurrent binds SHALL stay race-free
+per the concurrency-safety requirement.
+
+#### Scenario: Rebind visible through a cached resolution
+
+- **WHEN** a chunk reads global `f`, then the program rebinds `f`, then the same cached chunk executes again
+- **THEN** the second execution SHALL observe the new binding, matching the tree-walker
+
+#### Scenario: Shared chunk across environments
+
+- **WHEN** one cached chunk executes against two engines with different root environments
+- **THEN** each execution SHALL resolve globals in its own environment, with no cross-engine value leakage
+
+#### Scenario: Concurrent bind and execute
+
+- **WHEN** one goroutine rebinds a global while others execute chunks reading it on the same engine
+- **THEN** each execution SHALL observe either the old or the new binding and `go test -race` SHALL report no data race
 

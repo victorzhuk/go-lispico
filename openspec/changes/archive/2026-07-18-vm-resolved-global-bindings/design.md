@@ -68,3 +68,46 @@ Shadowing correctness: a cached cell is the *owning* cell for that name in that 
 - Crossval + dialect suites (parity), `-race` concurrency suites (ADR 0003 scenarios).
 - New tests: rebind visibility through a cached site; delete-then-read through a cached cell; concurrent `Set` + chunk execution under `-race`.
 - Bench evidence: fib bytecode in go-lispico-bench and `internal/goldset` hot cells; profile confirms `GetCanonical` gone from top-10.
+
+## Implementation notes (as built)
+
+The lock-free cell (section 1) was implemented and measured, then revised. Four
+findings from adversarial review + the ADR 0008 gate reshaped the final design:
+
+1. **Locked reads, not lock-free (value stored inline).** `atomic.Value`
+   panics on inconsistent concrete types and on `Store(nil)` tombstones, so the
+   first fix used `atomic.Pointer[cellState]`. But any lock-free atomic read of
+   a multi-word interface value requires publishing a heap snapshot **per
+   write**, which regressed the ADR 0008 allocation gate on write-heavy loops
+   (`loop`/`recur` mirrors captured locals into the env every iteration:
+   loop-sum 141→343 allocs). The shipped `Cell` stores `{v, canonical}` inline,
+   guarded by the owning `Env`'s `RWMutex`; reads take a short `RLock` but skip
+   the scope-chain map walk (the dominant cost). This keeps the map-walk win
+   with zero per-write allocation. The core-engine spec's "lock-free reads"
+   requirement was amended to "reads under a short read lock" accordingly.
+2. **Canonical frozen at head-resolution, not re-read at dispatch.** Reading the
+   cell's canonical flag in `dispatchNativeOp` (after arguments ran) diverges
+   from the tree-walker when an argument flips the operator canonical
+   mid-evaluation. `OpGetGlobal` freezes the native-op decision per operand-stack
+   slot (a minimal scratch, cleared on push and stack unwind); dispatch consumes
+   it. `canonicalAt` is still gone; the frozen scratch is its correct, robust
+   replacement.
+3. **Depth-0-only, generation-guarded, root-env-scoped caching.** Only a name
+   owned by the frame's env is cached (closing the starlark-revert shadowing
+   hazard), guarded by env identity + a per-env new-name generation counter, and
+   only when the frame env is the stable root — a per-call child env is fresh
+   every invocation and would only churn cache entries.
+4. **Lazy, single-atomic-pointer site table + capture analysis in the engine
+   path.** The site table is built from `Code` on the first cache **hit** (proven
+   reuse) and published via one `atomic.Pointer` (a two-field publish would allow
+   a torn read `-race` cannot catch). A form that recompiles every eval
+   (`defmacro`) never builds it. The engine's compile path now runs
+   `markCaptures`, without which a top-level chunk stayed conservatively
+   `FullEnv` and mirrored every local — the source of the loop-sum regression.
+   The first cell in each `Env` is stored inline to avoid a per-scope heap
+   allocation.
+
+Outcome: VM/tree-walker parity and ADR 0003 race-freedom hold; fib bytecode
+~10.6% faster (the locked read keeps the RWMutex cost the lock-free version
+removed); ADR 0008 goldset non-regressing on 11/12 cells, with `twice-macro`
++0.21% B/op (the 8-byte site-cache pointer on the `Chunk`, within CI noise).
