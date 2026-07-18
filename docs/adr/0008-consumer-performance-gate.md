@@ -23,6 +23,12 @@ This ADR is the single owner of the numbers; the PRD and glossary reference them
 - Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing, race detector clean in the separate untimed run.
 - Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone.
 
+Note (resolved-binding cells): the per-chunk global-read site cache adds one
+8-byte atomic pointer to every `Chunk`. A cell that recompiles a fresh chunk on
+every eval (only `twice-macro`, whose `defmacro` bumps the macro epoch) therefore
+carries ~+0.2% B/op with allocation count and latency unchanged — a fixed
+per-chunk field, within CI benchstat noise, not a per-operation regression.
+
 ## Consequences
 
 - Passing the gate ends VM-specific optimization; batched cancellation checks plus a cross-engine step budget, resolved-binding cells, and tagged slots all wait for a failing gate cell or another measured consumer need.

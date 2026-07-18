@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -195,4 +197,197 @@ func TestEnv_SetEvaluator(t *testing.T) {
 	if child.Evaluator() != nil {
 		t.Error("child should inherit nil evaluator")
 	}
+}
+
+func TestEnv_Cell_WriteThrough(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.Set("x", Int{V: 1})
+
+	cell, ok := env.Cell("x")
+	if !ok {
+		t.Fatal("expected to resolve cell for x")
+	}
+	v, live, _ := env.ReadCell(cell)
+	if !live || !v.Equals(Int{V: 1}) {
+		t.Fatalf("ReadCell = %v, %v; want 1, true", v, live)
+	}
+
+	env.Set("x", Int{V: 2})
+	v, live, _ = env.ReadCell(cell)
+	if !live || !v.Equals(Int{V: 2}) {
+		t.Fatalf("ReadCell after rebind = %v, %v; want 2, true", v, live)
+	}
+}
+
+func TestEnv_Cell_TombstonedDelete(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.Set("x", Int{V: 1})
+	cell, ok := env.Cell("x")
+	if !ok {
+		t.Fatal("expected to resolve cell for x")
+	}
+
+	env.Delete("x")
+
+	if _, live, _ := env.ReadCell(cell); live {
+		t.Error("held cell should report not-live after Delete")
+	}
+	if _, ok := env.Get("x"); ok {
+		t.Error("Get should not find a deleted name")
+	}
+	if _, ok := env.Cell("x"); ok {
+		t.Error("Cell should not resolve a deleted name")
+	}
+
+	// A different name bound to Nil{} is a legitimate live binding, distinct
+	// from a tombstoned one.
+	env.Set("y", Nil{})
+	v, ok := env.Get("y")
+	if !ok || !v.Equals(Nil{}) {
+		t.Errorf("Get(y) = %v, %v; want Nil{}, true", v, ok)
+	}
+}
+
+func TestEnv_CanonicalClearedOnRebind(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.SetCanonical("+", Int{V: 1})
+
+	_, _, isCanon := env.GetCanonical("+")
+	if !isCanon {
+		t.Fatal("expected + to be canonical after SetCanonical")
+	}
+
+	env.Set("+", Int{V: 1})
+	_, _, isCanon = env.GetCanonical("+")
+	if isCanon {
+		t.Error("Set should clear the canonical marker even with an equal value")
+	}
+}
+
+func TestEnv_ConcurrentSetGet(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.Set("shared", Int{V: 0})
+
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Add(2)
+		go func(n int) {
+			defer wg.Done()
+			env.Set("shared", Int{V: int64(n)})
+		}(i)
+		go func() {
+			defer wg.Done()
+			if v, ok := env.Get("shared"); ok {
+				if _, isInt := v.(Int); !isInt {
+					t.Errorf("concurrent Get returned non-Int %T", v)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestEnv_Get_ZeroAllocs(t *testing.T) {
+	env := NewEnv(nil)
+	env.Set("x", Int{V: 42})
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, ok := env.Get("x"); !ok {
+			t.Fatal("expected to find x")
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("Env.Get allocated %.1f times per run, want 0", allocs)
+	}
+}
+
+func TestEnv_RebindAcrossConcreteTypes(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.Set("x", Int{V: 1})
+	env.Set("x", String{V: "hi"})
+	env.Set("x", GoFunc{Name: "x", Fn: func(context.Context, Evaluator, []Value, *Env) (Value, error) {
+		return Nil{}, nil
+	}})
+
+	v, ok := env.Get("x")
+	if !ok {
+		t.Fatal("expected to find x")
+	}
+	if _, isFn := v.(GoFunc); !isFn {
+		t.Errorf("expected final binding to be GoFunc, got %T", v)
+	}
+}
+
+func TestEnv_NameGen(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.Set("x", Int{V: 1})
+	g0 := env.NameGen()
+
+	env.Set("x", Int{V: 2})
+	if env.NameGen() != g0 {
+		t.Error("rebinding a live name must not bump NameGen")
+	}
+
+	env.Set("y", Int{V: 1})
+	if env.NameGen() <= g0 {
+		t.Error("binding a new name must bump NameGen")
+	}
+	g1 := env.NameGen()
+
+	env.Delete("y")
+	env.Set("y", Int{V: 2})
+	if env.NameGen() <= g1 {
+		t.Error("reviving a tombstoned name must bump NameGen")
+	}
+}
+
+// TestEnv_Cell_ValueCanonicalCoherent proves value and canonical flag are
+// published as one unit: a concurrent reader never observes a rebind's new
+// value paired with the previous binding's canonical flag. Run under -race.
+func TestEnv_Cell_ValueCanonicalCoherent(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	nonCanon := GoFunc{Name: "custom"}
+	canon := GoFunc{Name: "canon"}
+	env.Set("+", nonCanon)
+
+	cell, ok := env.Cell("+")
+	if !ok {
+		t.Fatal("expected cell for +")
+	}
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			if i%2 == 0 {
+				env.Set("+", nonCanon)
+			} else {
+				env.SetCanonical("+", canon)
+			}
+		}
+	}()
+
+	for range 500000 {
+		v, live, isCanon := env.ReadCell(cell)
+		if !live {
+			continue
+		}
+		// custom must never be canonical; canon must always be canonical.
+		if (v.(GoFunc).Name == "custom") == isCanon {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("torn read: value=%s canonical=%v", v.(GoFunc).Name, isCanon)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
 }

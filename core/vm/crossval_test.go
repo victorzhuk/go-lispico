@@ -3,6 +3,7 @@ package vm_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -388,6 +389,7 @@ func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src strin
 		}
 	}
 	comp.Chunk().Emit(vm.OpReturn, 0)
+	comp.Chunk().EnsureSites()
 
 	v := vm.New(env)
 	vmResult, err := v.Run(context.Background(), comp.Chunk())
@@ -931,4 +933,313 @@ func TestVMVsTreeWalker_ClosureCapture(t *testing.T) {
 			compare(t, newCrossValEnv(), tt.src)
 		})
 	}
+}
+
+// TestVMVsTreeWalker_NativeOpFrozenBeforeRebind proves the operator resolved
+// by OpGetGlobal before argument evaluation is what gets called, even though
+// dispatchNativeOp re-resolves the same site's cell afterward. Both
+// evaluators freeze the operator at lookup time, before args run.
+func TestVMVsTreeWalker_NativeOpFrozenBeforeRebind(t *testing.T) {
+	t.Parallel()
+
+	src := "(+ (do (def + custom) 1) 2)"
+
+	makeEnv := func() *core.Env {
+		env := core.NewEnv(nil)
+		env.SetCanonical("+", core.GoFunc{
+			Name: "+",
+			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+				var s int64
+				for _, a := range args {
+					if n, ok := a.(core.Int); ok {
+						s += n.V
+					}
+				}
+				return core.Int{V: s}, nil
+			},
+		})
+		env.Set("custom", core.GoFunc{
+			Name: "custom",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return core.Int{V: 999}, nil
+			},
+		})
+		return env
+	}
+
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+
+	twEnv := makeEnv()
+	tw := core.NewEvaluator()
+	var twResult core.Value
+	for _, f := range forms {
+		twResult, err = tw.Eval(context.Background(), f, twEnv)
+	}
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 3}, twResult, "tree-walker should freeze the operator before the rebind")
+
+	vmEnv := makeEnv()
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+	v := vm.New(vmEnv)
+	var vmResult core.Value
+	for _, chunk := range chunks {
+		vmResult, err = v.Run(context.Background(), chunk)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, core.Int{V: 3}, vmResult, "vm should freeze the operator before the rebind")
+}
+
+// TestVM_CachedSiteReflectsRebind proves a site cached on one run still
+// reflects a later rebind of the same name on the same env: the cell it
+// holds is written through by Set, so no re-resolution is needed.
+func TestVM_CachedSiteReflectsRebind(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 1})
+
+	forms, err := core.Read("x")
+	require.NoError(t, err)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+	chunk := chunks[0]
+
+	v := vm.New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+
+	env.Set("x", core.Int{V: 2})
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 2}, result, "cached site should observe the rebind")
+}
+
+// TestVM_MultipleNativeOpSitesResolveConsistently proves that several native
+// op call sites for the same operator symbol within one chunk each resolve
+// their own site independently, without cross-site interference.
+func TestVM_MultipleNativeOpSitesResolveConsistently(t *testing.T) {
+	t.Parallel()
+
+	env := stdlibEnv()
+	compare(t, env, "(let [a 1 b 2 c 3 d 4] (+ (+ a b) (+ c d)))")
+}
+
+// TestVM_RecursiveNativeOpsNeverCallGoFunc proves a recursive function whose
+// self-calls all resolve globals at depth 0 (no captured locals, so frame.env
+// stays the root env across every call) fast-paths its native ops on every
+// call — the canonical GoFunc is never invoked.
+func TestVM_RecursiveNativeOpsNeverCallGoFunc(t *testing.T) {
+	t.Parallel()
+
+	var addCalls, subCalls, ltCalls int
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		addCalls++
+		return core.Int{V: args[0].(core.Int).V + args[1].(core.Int).V}, nil
+	}})
+	env.SetCanonical("-", core.GoFunc{Name: "-", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		subCalls++
+		return core.Int{V: args[0].(core.Int).V - args[1].(core.Int).V}, nil
+	}})
+	env.SetCanonical("<", core.GoFunc{Name: "<", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		ltCalls++
+		return core.Bool{V: args[0].(core.Int).V < args[1].(core.Int).V}, nil
+	}})
+
+	src := `
+(def fib (fn [n]
+  (if (< n 2)
+    n
+    (+ (fib (- n 1)) (fib (- n 2))))))
+(fib 10)`
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+
+	v := vm.New(env)
+	var result core.Value
+	for _, chunk := range chunks {
+		result, err = v.Run(context.Background(), chunk)
+	}
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 55}, result)
+	assert.Equal(t, 0, addCalls, "native + fast path should skip the GoFunc")
+	assert.Equal(t, 0, subCalls, "native - fast path should skip the GoFunc")
+	assert.Equal(t, 0, ltCalls, "native < fast path should skip the GoFunc")
+}
+
+// TestVM_SharedChunkAcrossEnvsNoLeakage proves a chunk shared across
+// concurrent VMs bound to different root envs resolves each one's own
+// binding — a site's env-identity guard must never serve one goroutine's
+// cell to another's env.
+func TestVM_SharedChunkAcrossEnvsNoLeakage(t *testing.T) {
+	t.Parallel()
+
+	forms, err := core.Read("greeting")
+	require.NoError(t, err)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+	chunk := chunks[0]
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]core.Value, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			env := core.NewEnv(nil)
+			env.Set("greeting", core.Int{V: int64(idx)})
+			v := vm.New(env)
+			results[idx], errs[idx] = v.Run(context.Background(), chunk)
+		}(i)
+	}
+	wg.Wait()
+
+	for i := range n {
+		require.NoError(t, errs[i], "goroutine %d", i)
+		assert.Equal(t, core.Int{V: int64(i)}, results[i], "goroutine %d", i)
+	}
+}
+
+// TestVM_ConcurrentBindAndExecute proves concurrent Set calls on one env
+// racing against concurrent Run calls reading the same site never trip
+// -race and always observe a valid (old-or-new) value.
+func TestVM_ConcurrentBindAndExecute(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 0})
+
+	forms, err := core.Read("x")
+	require.NoError(t, err)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+	chunk := chunks[0]
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range 2000 {
+			env.Set("x", core.Int{V: int64(i)})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 2000 {
+			v := vm.New(env)
+			result, err := v.Run(context.Background(), chunk)
+			assert.NoError(t, err)
+			if _, ok := result.(core.Int); !ok {
+				t.Errorf("expected Int, got %T", result)
+			}
+		}
+	}()
+	wg.Wait()
+}
+
+// TestVMVsTreeWalker_NativeOpCanonicalRestoredDuringArgs covers the direction
+// NativeOpFrozenBeforeRebind does not: + starts non-canonical (a custom fn
+// returning 999) and an argument restores it canonical mid-evaluation. Both
+// evaluators must apply the operator frozen at head resolution (the custom
+// fn), not the restored canonical one — VM must not re-derive the fast path
+// from the operator's canonical flag after arguments ran.
+func TestVMVsTreeWalker_NativeOpCanonicalRestoredDuringArgs(t *testing.T) {
+	t.Parallel()
+
+	src := "(+ (restore) 2)"
+
+	makeEnv := func() *core.Env {
+		env := core.NewEnv(nil)
+		add := core.GoFunc{
+			Name: "+",
+			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+				var s int64
+				for _, a := range args {
+					if n, ok := a.(core.Int); ok {
+						s += n.V
+					}
+				}
+				return core.Int{V: s}, nil
+			},
+		}
+		env.SetCanonical("+", add)
+		env.Set("+", core.GoFunc{
+			Name: "custom",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return core.Int{V: 999}, nil
+			},
+		})
+		env.Set("restore", core.GoFunc{
+			Name: "restore",
+			Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, e *core.Env) (core.Value, error) {
+				e.SetCanonical("+", add)
+				return core.Int{V: 1}, nil
+			},
+		})
+		return env
+	}
+
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+
+	twEnv := makeEnv()
+	tw := core.NewEvaluator()
+	var twResult core.Value
+	for _, f := range forms {
+		twResult, err = tw.Eval(context.Background(), f, twEnv)
+	}
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 999}, twResult, "tree-walker applies the operator frozen before args")
+
+	vmEnv := makeEnv()
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+	v := vm.New(vmEnv)
+	var vmResult core.Value
+	for _, chunk := range chunks {
+		vmResult, err = v.Run(context.Background(), chunk)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, core.Int{V: 999}, vmResult, "vm must apply the operator frozen before args, not the restored canonical one")
+}
+
+// TestVM_AncestorClosureNativeOpsNeverCallGoFunc proves a canonical operator
+// owned by an ANCESTOR of the frame env (a closure capturing an outer local)
+// keeps the native fast path across repeated calls — resolution falls back to
+// a chain walk that still recognizes the canonical binding, rather than
+// calling the underlying GoFunc.
+func TestVM_AncestorClosureNativeOpsNeverCallGoFunc(t *testing.T) {
+	t.Parallel()
+
+	var addCalls int
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		addCalls++
+		return core.Int{V: args[0].(core.Int).V + args[1].(core.Int).V}, nil
+	}})
+
+	forms, err := core.Read(`
+(def outer (fn [k] (fn [x] (+ x k))))
+(def adder (outer 1))
+(adder 2)
+(adder 3)
+(adder 4)`)
+	require.NoError(t, err)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+
+	v := vm.New(env)
+	var result core.Value
+	for _, chunk := range chunks {
+		result, err = v.Run(context.Background(), chunk)
+		require.NoError(t, err)
+	}
+	require.True(t, core.Int{V: 5}.Equals(result))
+	require.Zero(t, addCalls, "ancestor-owned canonical + must stay on the native path, never calling its GoFunc")
 }

@@ -52,9 +52,15 @@ type VM struct {
 	maxDepth           int
 	depth              int
 	eval               core.Evaluator
-	canonicalAt        []Opcode
 	structDepth        *atomic.Int64
 	maxStructuralDepth int
+	// nativeOp freezes, per operand-stack slot, the native opcode a canonical
+	// operator was resolved to when OpGetGlobal pushed it — matching the
+	// tree-walker's resolve-head-before-args order. dispatchNativeOp consumes
+	// it instead of re-reading the cell after arguments (which could have
+	// rebound the operator). A zero entry (OpConst, never a native op) means
+	// "not a canonical native operator"; push zeroes each slot it writes.
+	nativeOp []Opcode
 }
 
 // VMOption configures a VM created by New.
@@ -111,7 +117,7 @@ func (vm *VM) reset() {
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
 	vm.structDepth.Store(0)
-	vm.canonicalAt = vm.canonicalAt[:0]
+	vm.nativeOp = vm.nativeOp[:0]
 }
 
 // Reset clears the VM state (stacks, frames, handlers, depth) so the
@@ -123,7 +129,7 @@ func (vm *VM) Reset() {
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
 	vm.structDepth.Store(0)
-	vm.canonicalAt = vm.canonicalAt[:0]
+	vm.nativeOp = vm.nativeOp[:0]
 }
 
 // SetGlobals replaces the VM's globals (root environment) pointer.
@@ -135,9 +141,19 @@ func (vm *VM) SetGlobals(env *core.Env) {
 func (vm *VM) push(v core.Value) {
 	vm.stack = append(vm.stack, v)
 	slot := len(vm.stack) - 1
-	if slot < len(vm.canonicalAt) {
-		vm.canonicalAt[slot] = 0
+	if slot < len(vm.nativeOp) {
+		vm.nativeOp[slot] = 0
 	}
+}
+
+// freezeNativeOp records that the operator at slot resolved to a canonical
+// native op, so its later dispatch takes the native fast path regardless of an
+// intervening rebind. Called by OpGetGlobal after push, overriding push's zero.
+func (vm *VM) freezeNativeOp(slot int, op Opcode) {
+	if slot >= len(vm.nativeOp) {
+		vm.nativeOp = append(vm.nativeOp, make([]Opcode, slot+1-len(vm.nativeOp))...)
+	}
+	vm.nativeOp[slot] = op
 }
 
 func (vm *VM) pop() (core.Value, error) {
@@ -294,29 +310,19 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			if err != nil {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
 			}
-			var v core.Value
-			var found bool
-			if isNativeOpSymbol(sym.V) {
-				var isCanon bool
-				v, found, isCanon = frame.env.GetCanonical(sym.V)
-				if found && isCanon {
-					vm.push(v)
-					slot := len(vm.stack) - 1
-					if op, ok := nativeSymbolToOp(sym.V); ok {
-						if slot >= len(vm.canonicalAt) {
-							vm.canonicalAt = append(vm.canonicalAt, make([]Opcode, slot+1-len(vm.canonicalAt))...)
-						}
-						vm.canonicalAt[slot] = op
-					}
-					break
-				}
-			} else {
-				v, found = frame.env.Get(sym.V)
-			}
-			if !found {
+			val, canon, ok := vm.resolveGlobalValue(frame.chunk.site(frame.ip-1), frame, sym)
+			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
-			vm.push(v)
+			vm.push(val)
+			// Native operators freeze their canonical eligibility here, at
+			// head-resolution time, so a rebind during argument evaluation
+			// cannot flip the fast-path decision (tree-walker parity).
+			if canon && isNativeOpSymbol(sym.V) {
+				if op, isOp := nativeSymbolToOp(sym.V); isOp {
+					vm.freezeNativeOp(len(vm.stack)-1, op)
+				}
+			}
 
 		case OpSetGlobal:
 			sym, err := frame.chunk.GetSymbolConstant(instr.A())
@@ -504,7 +510,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 
 		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
-			if err := vm.dispatchNativeOp(ctx, instr.Op(), instr.A()); err != nil {
+			if err := vm.dispatchNativeOp(ctx, frame, instr.Op(), instr.A()); err != nil {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
@@ -514,39 +520,74 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	}
 }
 
-// dispatchNativeOp executes a native arithmetic/comparison opcode.
-// The stack already contains [fn, arg1, arg2, ...] (OpGetGlobal emitted before
-// args in compileNativeOp). Checks canonical status captured at lookup time
-// (canonicalAt), not re-resolved after args may have mutated the env.
-func (vm *VM) dispatchNativeOp(ctx context.Context, op Opcode, argc int) error {
+// dispatchNativeOp executes a native arithmetic/comparison opcode. The stack
+// holds [operator, arg1, ...] with the operator at fnIdx. The fast path is
+// taken only when OpGetGlobal froze this operator as a canonical native op for
+// this opcode (nativeOp[fnIdx]) — the decision made at head-resolution time,
+// before arguments ran, matching the tree-walker. Otherwise it falls back to
+// calling the operator value already on the stack.
+func (vm *VM) dispatchNativeOp(ctx context.Context, frame *Frame, op Opcode, argc int) error {
 	if argc < 0 || argc+1 > len(vm.stack) {
 		return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("native: argc=%d exceeds stack", argc)}
 	}
 
 	fnIdx := len(vm.stack) - argc - 1
-	frame := &vm.frames[len(vm.frames)-1]
-
-	var expectedOp Opcode
-	if fnIdx < len(vm.canonicalAt) {
-		expectedOp = vm.canonicalAt[fnIdx]
-		vm.canonicalAt[fnIdx] = 0
-	}
-	if expectedOp == 0 || expectedOp != op {
-		return vm.call(ctx, argc, false)
+	if fnIdx >= 0 && fnIdx < len(vm.nativeOp) && vm.nativeOp[fnIdx] == op {
+		vm.nativeOp[fnIdx] = 0
+		return vm.execNativeFast(op, argc, frame.env)
 	}
 
+	return vm.call(ctx, argc, false)
+}
+
+// execNativeFast runs op over the argc values already on top of the stack,
+// replacing them and the operator below them with the result.
+func (vm *VM) execNativeFast(op Opcode, argc int, env *core.Env) error {
+	fnIdx := len(vm.stack) - argc - 1
 	args := vm.stack[len(vm.stack)-argc:]
 	eval := vm.eval
 	if eval == nil {
 		eval = core.NewEvaluator()
 	}
-	result, err := execNative(eval, op, args, frame.env)
+	result, err := execNative(eval, op, args, env)
 	if err != nil {
 		return err
 	}
 	vm.stack = vm.stack[:fnIdx]
 	vm.push(result)
 	return nil
+}
+
+// resolveGlobalValue resolves sym to its value and canonical flag for
+// frame.env, reading them coherently under the owning env's read lock. A cached
+// depth-0 site (frame.env owns the name) skips the chain walk and reads through
+// the cached cell pointer; a miss publishes a fresh entry; an ancestor-owned
+// name or a site-less (hand-built) chunk falls back to an uncached chain walk.
+// Only depth-0 resolutions are cached — an ancestor cell could later be shadowed
+// by a new local bind of the same name without the site observing it. ok is
+// false when sym is unbound.
+func (vm *VM) resolveGlobalValue(site *siteCache, frame *Frame, sym core.Symbol) (val core.Value, canonical bool, ok bool) {
+	if site != nil {
+		if entry := site.entry.Load(); entry != nil && entry.env == frame.env && entry.gen == frame.env.NameGen() {
+			if v, live, canon := entry.env.ReadCell(entry.cell); live {
+				return v, canon, true
+			}
+		}
+		// Publish only for the stable root env: a per-call child env is fresh
+		// every invocation, so caching it never hits again and just churns a
+		// siteEntry per call. Those fall through to the uncached chain walk.
+		if frame.env == vm.globals {
+			if cell, found := frame.env.CellLocal(sym.V); found {
+				site.entry.Store(&siteEntry{env: frame.env, gen: frame.env.NameGen(), cell: cell})
+				if v, live, canon := frame.env.ReadCell(cell); live {
+					return v, canon, true
+				}
+				return nil, false, false
+			}
+		}
+	}
+	v, found, canon := frame.env.GetCanonical(sym.V)
+	return v, canon, found
 }
 
 func isNativeOpSymbol(name string) bool {

@@ -61,6 +61,19 @@ func NewCompilerWithDialect(name string, dialect *core.Dialect) *Compiler {
 // Chunk returns the chunk the compiler is emitting into.
 func (c *Compiler) Chunk() *vm.Chunk { return c.chunk }
 
+// MarkCaptures runs capture analysis on the finished chunk, clearing the
+// conservative FullEnv default when no local is captured by a nested closure.
+// Without it a top-level chunk mirrors every local to the env on each write —
+// wasteful for hot loops that only rebind stack slots. Must be called once Code
+// is final. CompileAll does this per form; single-form callers must too.
+func (c *Compiler) MarkCaptures() { markCaptures(c.chunk, nil) }
+
+// emitGetGlobal emits OpGetGlobal for sym. The VM's site cache is built later
+// from Code (Chunk.EnsureSites), so no per-site bookkeeping is needed here.
+func (c *Compiler) emitGetGlobal(sym core.Symbol) {
+	c.chunk.Emit(vm.OpGetGlobal, c.chunk.AddConstant(sym))
+}
+
 // Compile emits bytecode for form into the compiler's chunk.
 func (c *Compiler) Compile(form core.Value) error {
 	switch f := form.(type) {
@@ -79,7 +92,7 @@ func (c *Compiler) Compile(form core.Value) error {
 		if idx := c.resolveLocal(f.V); idx >= 0 {
 			c.chunk.Emit(vm.OpGetLocal, idx)
 		} else {
-			c.chunk.Emit(vm.OpGetGlobal, c.chunk.AddConstant(f))
+			c.emitGetGlobal(f)
 		}
 
 	case core.List:
@@ -289,6 +302,7 @@ func (c *Compiler) compileFn(args []core.Value) error {
 	sub.chunk.Emit(vm.OpReturn, 0)
 	sub.chunk.Arity = len(params)
 	sub.chunk.Variadic = variadic.V != ""
+	sub.chunk.EnsureSites()
 	markCaptures(sub.chunk, collectAncestors(c))
 	idx := len(c.chunk.SubChunks)
 	c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
@@ -566,23 +580,20 @@ func (c *Compiler) compileCall(items []core.Value) error {
 
 // compileNativeOp emits a native arithmetic/comparison opcode for a list form
 // whose head is a non-shadowed symbol. It emits OpGetGlobal for the operator
-// (preserving ordinary head-resolution order and frame-env semantics), then
-// compiles each argument, and finally emits the native opcode with operand =
-// number of arguments + 1 (fn + args). The VM's native dispatch consumes the
-// fn from the stack, checks canonical status in the frame env, fast-paths or
-// falls back.
+// (preserving head-resolution order and frame-env semantics, and freezing the
+// operator's canonical-native eligibility at that point), then compiles each
+// argument, then the native opcode with operand = number of arguments. The VM
+// dispatches natively only when the operator was frozen as canonical, else it
+// calls the pushed operator value.
 func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
-	// Emit OpGetGlobal for the operator symbol (head).
 	sym := items[0].(core.Symbol)
-	c.chunk.Emit(vm.OpGetGlobal, c.chunk.AddConstant(sym))
+	c.emitGetGlobal(sym)
 
-	// Compile each argument.
 	for _, arg := range items[1:] {
 		if err := c.Compile(arg); err != nil {
 			return err
 		}
 	}
-	// Operand = fn (1) + number of args.
 	c.chunk.Emit(op, len(items[1:]))
 	return nil
 }
@@ -733,6 +744,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		sub.chunk.Emit(vm.OpReturn, 0)
 		sub.chunk.Arity = len(params)
 		sub.chunk.Variadic = variadic.V != ""
+		sub.chunk.EnsureSites()
 		markCaptures(sub.chunk, collectAncestors(c))
 		idx := len(c.chunk.SubChunks)
 		c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
@@ -951,6 +963,7 @@ func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {
 			return nil, err
 		}
 		comp.chunk.Emit(vm.OpReturn, 0)
+		comp.chunk.EnsureSites()
 		markCaptures(comp.chunk, nil)
 		chunks = append(chunks, comp.chunk)
 	}

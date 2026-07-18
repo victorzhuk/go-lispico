@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -57,6 +58,91 @@ type Chunk struct {
 	// Truthiness is the dialect's truthiness predicate for conditional opcodes.
 	// When nil, core.IsTruthy (nil+false falsy) is used.
 	Truthiness func(core.Value) bool
+	// sites is the per-instruction global-read cache, built lazily by
+	// EnsureSites once a chunk is known to be reused, and published atomically
+	// so concurrent runs of a shared chunk never race on it. Nil until built —
+	// the VM then resolves globals through the ordinary chain walk.
+	sites atomic.Pointer[siteTable]
+}
+
+// siteTable is a chunk's global-read cache: entries keyed by symbol, and idx
+// mapping each instruction index to an entry (-1 for none). Immutable once
+// published; the per-entry resolution is what varies at run time.
+type siteTable struct {
+	idx     []int32
+	entries []siteCache
+}
+
+// siteEntry is a resolved global binding cached at one bytecode site: the
+// env it was resolved in, that env's name-binding generation at resolution
+// time, and the cell itself. Published once and read many times, so it is
+// immutable — a stale entry is replaced, never mutated.
+type siteEntry struct {
+	env  *core.Env
+	gen  uint64
+	cell *core.Cell
+}
+
+// siteCache is one chunk site's resolution cache. constIdx is fixed at
+// compile time; entry is published lock-free so concurrent execution of a
+// shared chunk (the same chunk run under different envs) never tears a read.
+type siteCache struct {
+	constIdx int32
+	entry    atomic.Pointer[siteEntry]
+}
+
+// EnsureSites builds the global-read site table once, from the chunk's own
+// Code, and publishes it. Callers invoke it only when a chunk is known to be
+// reused (a bytecode-cache hit, or eager compilation for benchmarks/tests), so
+// a run-once chunk never pays for a table it would never reuse. Safe for
+// concurrent callers; idempotent.
+func (c *Chunk) EnsureSites() {
+	if c.sites.Load() == nil {
+		// A rare concurrent first hit may build twice; the CAS keeps a single
+		// published table and the loser's is discarded.
+		c.sites.CompareAndSwap(nil, c.buildSites())
+	}
+}
+
+// buildSites scans Code for OpGetGlobal reads, assigning one shared entry per
+// distinct symbol (constant index) so repeated reads of the same global reuse
+// a single cached resolution. Native ops need no site: their canonical
+// decision is frozen at the operator's OpGetGlobal.
+func (c *Chunk) buildSites() *siteTable {
+	idx := make([]int32, len(c.Code))
+	for i := range idx {
+		idx[i] = -1
+	}
+	bySym := map[int32]int32{}
+	var entries []siteCache
+	for ip, inst := range c.Code {
+		if inst.Op() != OpGetGlobal {
+			continue
+		}
+		constIdx := int32(inst.A())
+		si, ok := bySym[constIdx]
+		if !ok {
+			si = int32(len(entries))
+			entries = append(entries, siteCache{constIdx: constIdx})
+			bySym[constIdx] = si
+		}
+		idx[ip] = si
+	}
+	return &siteTable{idx: idx, entries: entries}
+}
+
+// site returns the chunk's site cache entry for ip, or nil if the table is not
+// built yet or ip has no site (the VM then resolves through the chain walk).
+func (c *Chunk) site(ip int) *siteCache {
+	t := c.sites.Load()
+	if t == nil || ip < 0 || ip >= len(t.idx) {
+		return nil
+	}
+	si := t.idx[ip]
+	if si < 0 {
+		return nil
+	}
+	return &t.entries[si]
 }
 
 // AddConstant interns v into the chunk's constant pool, returning its index.

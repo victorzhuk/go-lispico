@@ -1480,9 +1480,10 @@ func TestVM_NativeOp_LookupTimeCapture(t *testing.T) {
 	}
 }
 
-// TestVM_NativeOp_OpcodeMismatch proves a canonical slot for OpAdd cannot
-// be stolen by OpSub. A hand-built chunk resolves canonical + but dispatches
-// OpSub at the same fnIdx; the opcode guard must reject and fall back.
+// TestVM_NativeOp_OpcodeMismatch proves a site resolving canonical + cannot
+// be used to fast-path an OpSub instruction. A hand-built chunk points an
+// OpSub at +'s site; nativeSymbolToOp("+") != OpSub, so the guard rejects
+// the fast path and falls back to calling +.
 func TestVM_NativeOp_OpcodeMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -1497,8 +1498,6 @@ func TestVM_NativeOp_OpcodeMismatch(t *testing.T) {
 		return core.Int{V: s}, nil
 	}})
 
-	// OpGetGlobal "+" sets canonicalSlots[slot] = OpAdd.
-	// Then OpSub at the same fnIdx: expectedOp=OpAdd ≠ OpSub → fallback.
 	chunk := &Chunk{Name: "test", Code: []Instruction{
 		Encode(OpGetGlobal, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
@@ -1506,6 +1505,7 @@ func TestVM_NativeOp_OpcodeMismatch(t *testing.T) {
 		Encode(OpReturn, 0),
 	}}
 	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 10}, core.Int{V: 3}}
+	chunk.EnsureSites()
 
 	vm := New(env)
 	result, err := vm.Run(context.Background(), chunk)
@@ -1541,6 +1541,7 @@ func TestVM_NativeOp_FastPathSkipsGoFunc(t *testing.T) {
 		Encode(OpReturn, 0),
 	}}
 	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+	chunk.EnsureSites()
 
 	vm := New(env)
 	result, err := vm.Run(context.Background(), chunk)
@@ -1555,26 +1556,17 @@ func TestVM_NativeOp_FastPathSkipsGoFunc(t *testing.T) {
 	}
 }
 
-// TestVM_NativeOp_StaleSlotClearedByNonNativeLookup seeds a stale
-// canonicalAt entry, then performs a non-native OpGetGlobal at the same
-// slot index. The stale entry must be cleared so the subsequent OpAdd falls
-// back instead of fast-pathing on a value that is not the operator.
-func TestVM_NativeOp_StaleSlotClearedByNonNativeLookup(t *testing.T) {
+// TestVM_NativeOp_NonCanonicalSiteFallsBackToCall proves that when a native
+// op's site resolves to a live but non-canonical cell (here, "+" rebound to
+// a plain GoFunc via Set instead of SetCanonical), dispatchNativeOp calls
+// the pushed value instead of taking the native fast path.
+func TestVM_NativeOp_NonCanonicalSiteFallsBackToCall(t *testing.T) {
 	t.Parallel()
 
 	env := core.NewEnv(nil)
-	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
-		var s int64
-		for _, a := range args {
-			if n, ok := a.(core.Int); ok {
-				s += n.V
-			}
-		}
-		return core.Int{V: s}, nil
+	env.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		return core.Int{V: 999}, nil
 	}})
-	env.Set("x", core.Int{V: 10})
-
-	vm := New(env)
 
 	chunk := &Chunk{Name: "test", Code: []Instruction{
 		Encode(OpGetGlobal, 0),
@@ -1582,16 +1574,59 @@ func TestVM_NativeOp_StaleSlotClearedByNonNativeLookup(t *testing.T) {
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),
 	}}
-	chunk.Constants = []core.Value{core.Symbol{V: "x"}, core.Int{V: 1}, core.Int{V: 2}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+	chunk.EnsureSites()
 
-	// Seed stale canonicalAt[0] = OpAdd as if a prior throw left it behind.
-	vm.canonicalAt = []Opcode{OpAdd}
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	if !result.Equals(core.Int{V: 999}) {
+		t.Errorf("expected 999 from GoFunc fallback (non-canonical +), got %v", result)
+	}
+}
 
-	// Run: OpGetGlobal "x" (non-native) must clear slot 0.
-	// Then OpAdd at fnIdx=0: no canonicalSlot → fallback → vm.call(Int{10}) → error.
-	_, err := vm.Run(context.Background(), chunk)
-	if err == nil {
-		t.Fatal("expected error calling non-function x=10 via fallback; stale canonicalSlots entry may have survived")
+// TestVM_SiteReResolvesAfterGenerationBump proves a new-name bind into the
+// resolution env bumps its generation counter, forcing a site to republish
+// a fresh entry on its next hit rather than trusting the stale one — even
+// though re-resolution lands back on the same cell for the unrelated name.
+func TestVM_SiteReResolvesAfterGenerationBump(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.Set("y", core.Int{V: 1})
+
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "y"}}
+	chunk.EnsureSites()
+
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	if !result.Equals(core.Int{V: 1}) {
+		t.Fatalf("expected 1, got %v", result)
+	}
+	firstEntry := chunk.site(0).entry.Load()
+	if firstEntry == nil {
+		t.Fatal("expected site to be populated after first run")
+	}
+
+	env.Set("z", core.Int{V: 99}) // new name in env — bumps NameGen
+
+	vm.Reset()
+	result, err = vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	if !result.Equals(core.Int{V: 1}) {
+		t.Fatalf("expected 1, got %v", result)
+	}
+	secondEntry := chunk.site(0).entry.Load()
+	if secondEntry == firstEntry {
+		t.Error("expected the site to republish a new entry after the generation bump")
+	}
+	if secondEntry.cell != firstEntry.cell {
+		t.Error("re-resolution should still land on the same underlying cell for y")
 	}
 }
 

@@ -80,7 +80,10 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 		return nil, fmt.Errorf("compile: %w", err)
 	}
 	comp.Chunk().Emit(vm.OpReturn, 0)
+	comp.MarkCaptures()
 	chunk := comp.Chunk()
+	// A one-shot eval is never reused, so its global reads resolve through the
+	// chain walk rather than paying to build a site cache that never gets a hit.
 	return be.runVM(ctx, chunk, env)
 }
 
@@ -136,6 +139,7 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 			return nil, fmt.Errorf("compile: %w", err)
 		}
 		comp.Chunk().Emit(vm.OpReturn, 0)
+		comp.MarkCaptures()
 		chunk = comp.Chunk()
 
 		be.mu.Lock()
@@ -153,6 +157,12 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		be.mu.Unlock()
 	}
 
+	// The site cache pays off only across repeated runs, so build it the first
+	// time a cached chunk is reused (a hit) — a compile-once/run-once form
+	// (e.g. a body that bumps the macro epoch every eval) never builds it.
+	if hit {
+		chunk.EnsureSites()
+	}
 	return be.runVM(ctx, chunk, env)
 }
 
