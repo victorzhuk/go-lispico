@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-18
+
+### Changed
+
+- `cond` clause shape is dialect-owned: each dialect decides how `cond` clauses
+  are structured, rather than the kernel imposing a single shape.
+
+### Fixed
+
+- The bytecode VM now binds kernel `let` in parallel, matching the tree-walking
+  evaluator — every binding init resolves in the scope enclosing the `let`,
+  never in a sibling binding. `let*` stays sequential.
+- Restored VM parity with the tree-walker for keyword application (`(:key m)`)
+  and structural-depth limits.
+- `when` and `unless` push `nil` on the skipped branch under the VM, matching
+  the evaluator in expression position.
+- `set!` targets its lexical owner under the VM (new `OpSetLexical`), so
+  mutating a captured binding updates the owning frame, not a local slot.
+- The `try`/`catch` error binding is scoped to handler entry, so it is not
+  visible to the guarded body.
+- Special-form arity and shape are validated before argument indexing, and
+  malformed special forms now fail with a typed `*core.LispicoError` instead of
+  a panic or an untyped error.
+- `stdlib` `merge` builds its result through a mutable bulk-builder.
+- The runtime skips its redundant Engine deadline timer when the caller's
+  context deadline already governs the evaluation.
+
 ## [0.6.0] - 2026-07-11
 
 ### Added
@@ -176,7 +203,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.6.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/victorzhuk/go-lispico/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/victorzhuk/go-lispico/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/victorzhuk/go-lispico/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/victorzhuk/go-lispico/compare/v0.4.1...v0.4.2
