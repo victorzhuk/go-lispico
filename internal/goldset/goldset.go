@@ -1,12 +1,12 @@
-// Package goldset runs the consumer release gate's gold set: a committed
-// corpus of rule-shaped fixtures with expected results, executed under both
-// execution modes (ADR 0008). The gate does not check out the consumer repo;
-// YAGEL exports and refreshes this corpus deliberately, so a gate run is
-// self-contained in go-lispico.
+// Package goldset runs the release gate's gold set: a corpus of rule-shaped
+// fixtures with independent expected results, owned by this repo and
+// executed under both execution modes (ADR 0008). The corpus is modeled on
+// embedder rule workloads — dispatch, closure state, error handling,
+// keyword lookups, macros, collection folds, rule loading — and covers the
+// VM correctness-floor risk areas, independent of any single consumer.
 //
-// The current fixtures are examples that keep the harness executable
-// end-to-end; the real gold set is derived from YAGEL's shipped Rules and
-// has not been exported yet.
+// Goldens are hand-derived from the language contract, never captured from
+// either engine, so neither execution mode is the correctness oracle.
 package goldset
 
 import (
@@ -31,7 +31,7 @@ const (
 var Modes = []Mode{ModeEvaluator, ModeVM}
 
 // NewEngine builds the engine configuration the gate measures: Clojure
-// dialect (YAGEL's Rule surface, ADR 0006 in the YAGEL repo) plus stdlib.
+// dialect plus stdlib — the surface embedder rules run on.
 func NewEngine(mode Mode) (runtime.Engine, error) {
 	opts := []runtime.EngineOption{runtime.WithDialect(clojure.Dialect())}
 	if mode == ModeVM {

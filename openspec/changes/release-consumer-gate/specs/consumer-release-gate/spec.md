@@ -5,11 +5,11 @@
 ### Requirement: Gold-set gate corpus
 
 go-lispico release CI SHALL run a committed gold set — rule-shaped fixtures with
-independent golden expected results, plus benchmark cells over them — under both
+hand-derived golden expected results, plus benchmark cells over them — under both
 execution modes, with no consumer checkout, no revision pin, and no cross-repo
-secret. YAGEL SHALL own the corpus content: it exports the gold set from its
-shipped Rules and refreshes it deliberately, so corpus drift is bounded by
-explicit refresh rather than a checkout pin. A fixture without a golden SHALL be
+secret. The corpus, goldens, and tier assignments SHALL be owned by this repo,
+independent of any consumer; goldens SHALL be derived from the language
+contract, never captured from either engine. A fixture without a golden SHALL be
 an error.
 
 #### Scenario: Candidate runs against the gold set

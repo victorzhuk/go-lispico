@@ -7,17 +7,16 @@
 #
 # The gate is self-contained: it runs the committed gold set
 # (internal/goldset) under both execution modes -- no consumer checkout, no
-# cross-repo secret. The current gold-set fixtures are examples that keep
-# the harness executable end-to-end; the real corpus is exported from
-# YAGEL's shipped Rules and has not landed yet, so a run today is a harness
-# dry-run, not an authoritative verdict (tasks.md 5.1).
+# cross-repo secret. The corpus is owned by this repo, modeled on embedder
+# rule workloads, with hand-derived goldens and committed tier assignments
+# (internal/perfgate/tiers.json).
 name: Release consumer gate
 
 on:
   workflow_dispatch: {}
-  # Not wired to fire automatically: until the YAGEL-exported gold set and
-  # its committed tier assignments land, an auto-firing trigger would gate
-  # real releases on example cells.
+  # Not wired to fire automatically until the fixed GOMAXPROCS and BENCHTIME
+  # values are chosen (empty BENCHTIME fails the bench step) and the gate's
+  # verdict is meant to block releases.
   # release:
   #   types: [published]
 

@@ -1,7 +1,17 @@
 {
-  "comment": "Example tier mapping for the example gold-set cells (internal/goldset/testdata), keeping the harness dry-runnable end-to-end. Real cells and their tier assignments arrive with the YAGEL-exported gold set; tier classification must be committed before candidate results (ADR 0008). Keys are benchmark names with the -GOMAXPROCS suffix stripped.",
+  "comment": "Committed tier classification for the gold-set cells (internal/goldset/testdata), assigned before candidate results per ADR 0008. Control-flow and dispatch-dominated cells are engine-sensitive; collection/string-building cells are data-dominated; rule-load is startup-shaped. Keys are benchmark names with the -GOMAXPROCS suffix stripped. Reclassification requires a committed baseline profile justifying it.",
   "cells": {
     "Goldset/route-decision": "engine-sensitive",
-    "Goldset/registry-fold": "engine-sensitive"
+    "Goldset/loop-sum": "engine-sensitive",
+    "Goldset/counter-closure": "engine-sensitive",
+    "Goldset/kw-lookup": "engine-sensitive",
+    "Goldset/twice-macro": "engine-sensitive",
+    "Goldset/safe-parse": "engine-sensitive",
+    "Goldset/guard-nil": "engine-sensitive",
+    "Goldset/registry-fold": "data-dominated",
+    "Goldset/merge-config": "data-dominated",
+    "Goldset/text-render": "data-dominated",
+    "Goldset/pipeline": "data-dominated",
+    "Goldset/rule-load": "startup"
   }
 }

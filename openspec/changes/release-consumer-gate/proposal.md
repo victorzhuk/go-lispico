@@ -4,11 +4,11 @@ Existing microbenchmarks do not represent YAGEL's Rule-loading and handler-appli
 
 Blocked by: `dialect-cond-form-shape`, `vm-compile-shape-and-scope`, `vm-runtime-state-parity`, `stdlib-merge-bulk-builder` — the VM correctness floor and the named Shared-path fix precede any performance authorization.
 
-External dependency: YAGEL owns the gold-set content — corpus, goldens, deterministic Primitive fakes, benchmark cells, Scale envelopes, and Hot-cell tiers. This change consumes them; the gate cannot produce an authoritative verdict until YAGEL exports its gold set to replace the example fixtures.
+The gold set — corpus, hand-derived goldens, benchmark cells, and Hot-cell tiers — is owned by this repo (`internal/goldset`, `internal/perfgate/tiers.json`), independent of any consumer. Scale-envelope and concurrent cells remain to be authored; fixed `GOMAXPROCS`/benchtime values remain open.
 
 ## What changes
 
-- A go-lispico release CI job runs a committed gold set — rule-shaped fixtures with independent golden results, plus benchmark cells over them — under both execution modes. No consumer checkout, no revision pin, no cross-repo secret; YAGEL exports and refreshes the corpus deliberately from its shipped Rules.
+- A go-lispico release CI job runs the repo-owned gold set — rule-shaped fixtures with hand-derived golden results, plus benchmark cells over them — under both execution modes. No consumer checkout, no revision pin, no cross-repo secret; the corpus is independent of any consumer and evolves against measured consumer needs.
 - The authoritative performance evidence is a Paired release run: Evaluator and VM variants interleaved in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence.
 - Threshold evaluation follows ADR 0008: per-cell tiers committed before candidate results, burden-of-proof handling of inconclusive benchstat (one rerun at doubled benchtime; then improvement cells fail, non-regression cells pass), race runs separate and untimed.
 - The improvement gate is one-shot: after first authorization, later releases compare the candidate VM against the previous release's VM baseline as non-regression.
