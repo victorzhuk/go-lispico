@@ -20,8 +20,11 @@ on:
   # release:
   #   types: [published]
 
+# contents: write lets the passing gate store its bench-vm.txt as an asset on
+# the release it authorized, and read the previous release's asset back as the
+# next release's non-regression baseline (design.md "Decision rules").
 permissions:
-  contents: read
+  contents: write
 
 env:
   # design.md "Open inputs": fixed GOMAXPROCS not yet chosen
@@ -43,6 +46,35 @@ jobs:
         with:
           go-version: "1.24"
           cache: true
+
+      # 3.3: first authorization uses ADR 0008's improvement thresholds; every
+      # later release compares this candidate VM against the previous release's
+      # stored bench-vm.txt as non-regression (design.md "Decision rules"). The
+      # baseline is whichever earlier release still carries the asset; none
+      # found means this is the first authorization. Release-triggered only --
+      # a workflow_dispatch run has no release identity, so it stays in
+      # first-authorization mode with no baseline I/O.
+      - name: Determine gate mode
+        id: gate-mode
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          baseline_tag=""
+          for tag in $(gh release list --limit 30 --json tagName --jq '.[].tagName'); do
+            [ "$tag" = "$RELEASE_TAG" ] && continue
+            if gh release download "$tag" --pattern bench-vm.txt --output baseline-vm.txt 2>/dev/null; then
+              baseline_tag="$tag"
+              break
+            fi
+          done
+          if [ -n "$baseline_tag" ]; then
+            echo "mode=non-regression" >> "$GITHUB_OUTPUT"
+            echo "baseline_tag=$baseline_tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=first-authorization" >> "$GITHUB_OUTPUT"
+          fi
 
       # 2.1: correctness leg, untimed -- every gold-set fixture under both
       # execution modes against its golden; any failure fails the release.
@@ -68,10 +100,11 @@ jobs:
             GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-vm.txt
           done
 
-      # 3.2: benchstat comparison against committed Hot-cell tiers (ADR 0008
-      # "Thresholds"), via internal/perfgate. First-authorization mode only:
-      # tasks.md 3.3 leaves the baseline storage backend open, so there is no
-      # stored VM baseline to compare against yet.
+      # 3.2/3.3: benchstat comparison against committed Hot-cell tiers (ADR
+      # 0008 "Thresholds"), via internal/perfgate. First authorization pairs
+      # this release's Evaluator vs VM against the improvement thresholds;
+      # later releases pair the previous release's stored bench-vm.txt (the
+      # baseline downloaded above) against this candidate as non-regression.
       # Built once and run as a binary: `go run` collapses the program's
       # exit code to 1, which would make the needs-rerun signal (exit 2)
       # indistinguishable from a failure. The `|| code=$?` capture keeps the
@@ -80,14 +113,19 @@ jobs:
         id: perfgate
         run: |
           go build -o bin/perfgate ./cmd/perfgate
+          mode="${{ steps.gate-mode.outputs.mode }}"
+          [ -z "$mode" ] && mode="first-authorization"
+          old="bench-evaluator.txt"
+          [ "$mode" = "non-regression" ] && old="baseline-vm.txt"
           code=0
           bin/perfgate \
-            -old bench-evaluator.txt \
+            -old "$old" \
             -candidate bench-vm.txt \
             -tiers internal/perfgate/tiers.json \
-            -mode first-authorization \
+            -mode "$mode" \
             -out verdict.txt || code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
       # design.md "Decision rules" / ADR 0008 burden-of-proof rule: a still-
       # inconclusive cell (perfgate exit 2) gets exactly one rerun at doubled
@@ -110,12 +148,15 @@ jobs:
         id: perfgate-rerun
         if: steps.perfgate.outputs.exit_code == '2'
         run: |
+          mode="${{ steps.perfgate.outputs.mode }}"
+          old="bench-evaluator.txt"
+          [ "$mode" = "non-regression" ] && old="baseline-vm.txt"
           code=0
           bin/perfgate \
-            -old bench-evaluator.txt \
+            -old "$old" \
             -candidate bench-vm.txt \
             -tiers internal/perfgate/tiers.json \
-            -mode first-authorization \
+            -mode "$mode" \
             -rerun \
             -out verdict.txt || code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
@@ -128,8 +169,21 @@ jobs:
             test "${{ steps.perfgate.outputs.exit_code }}" = "0"
           fi
 
+      # 3.3: the passing gate stores its bench-vm.txt as an asset on the
+      # release it authorized, so the next release can gate against it as the
+      # non-regression baseline. Reached only after the verdict step passed
+      # (an implicit success() guards every if: without always()); release-
+      # triggered only.
+      - name: Store VM baseline on the authorized release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" bench-vm.txt --clobber
+
       # 3.4: publish the paired benchmark output and verdict as release
-      # evidence, even when the job fails.
+      # evidence, even when the job fails. baseline-vm.txt is present only on
+      # post-authorization releases.
       - name: Upload release evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,5 +192,6 @@ jobs:
           path: |
             bench-evaluator.txt
             bench-vm.txt
+            baseline-vm.txt
             verdict.txt
           if-no-files-found: warn
