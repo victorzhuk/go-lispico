@@ -16,10 +16,10 @@ func (p *Plugin) registerComparison(env *core.Env) {
 			}
 			for _, arg := range args[1:] {
 				if !args[0].Equals(arg) {
-					return core.Bool{V: false}, nil
+					return core.BoxBool(false), nil
 				}
 			}
-			return core.Bool{V: true}, nil
+			return core.BoxBool(true), nil
 		},
 	})
 
@@ -45,10 +45,10 @@ func orderingFunc(name string, ok func(cmp int) bool) func(context.Context, core
 				return nil, err
 			}
 			if !ok(cmp) {
-				return core.Bool{V: false}, nil
+				return core.BoxBool(false), nil
 			}
 		}
-		return core.Bool{V: true}, nil
+		return core.BoxBool(true), nil
 	}
 }
 

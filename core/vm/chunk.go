@@ -38,6 +38,11 @@ type Chunk struct {
 	Variadic bool
 	// Locals is the number of local variable slots.
 	Locals int
+	// MaxStack is the peak operand-stack height (relative to the frame base)
+	// this chunk's Code can reach, computed by the compiler at finalization.
+	// Run pre-grows the stack to this size once per frame entry, and Validate
+	// bounds OpGetLocal/OpSetLocal operands against it.
+	MaxStack int
 	// LocalNames holds each local's source name, indexed by slot.
 	LocalNames []string
 	// Captured marks which local slots are referenced by nested closures.
@@ -214,4 +219,67 @@ func (c *Chunk) GetSubChunk(i int) (*Chunk, error) {
 // PatchJumpTo rewrites the jump instruction at offset to jump to target.
 func (c *Chunk) PatchJumpTo(offset, target int) {
 	c.Code[offset] = Encode(c.Code[offset].Op(), target)
+}
+
+// Validate walks c.Code checking that every operand is in range for its
+// opcode, recursing into chunks reachable via OpClosure. Run trusts a
+// validated chunk and skips these checks in its hot loop, so every path that
+// can reach Run with a newly built or cached chunk must call Validate first.
+func (c *Chunk) Validate() error {
+	for ip, inst := range c.Code {
+		op, a := inst.Op(), inst.A()
+		switch op {
+		case OpConst:
+			if a < 0 || a >= len(c.Constants) {
+				return bytecodeErrorf("%s: constant index %d out of range", op, a)
+			}
+		case OpGetGlobal, OpSetGlobal, OpSetLexical, OpGetFunc, OpSetFunc:
+			if a < 0 || a >= len(c.Constants) {
+				return bytecodeErrorf("%s: constant index %d out of range", op, a)
+			}
+			if _, ok := c.Constants[a].(core.Symbol); !ok {
+				return bytecodeErrorf("%s: constant %d is not a symbol", op, a)
+			}
+		case OpJump, OpJumpIfFalse:
+			target := ip + 1 + a
+			if target < 0 || target >= len(c.Code) {
+				return bytecodeErrorf("%s: jump target %d out of range", op, target)
+			}
+		case OpLoop:
+			if a < 0 || a >= len(c.Code) {
+				return bytecodeErrorf("%s: loop target %d out of range", op, a)
+			}
+		case OpSetupTry:
+			if a < 0 || a >= len(c.Code) {
+				return bytecodeErrorf("%s: handler target %d out of range", op, a)
+			}
+		case OpGetLocal, OpSetLocal:
+			if a < 0 || a >= c.MaxStack {
+				return bytecodeErrorf("%s: local slot %d out of range", op, a)
+			}
+		case OpClosure:
+			if a < 0 || a >= len(c.SubChunks) {
+				return bytecodeErrorf("%s: subchunk index %d out of range", op, a)
+			}
+			if err := c.SubChunks[a].Validate(); err != nil {
+				return err
+			}
+		}
+	}
+	// ip only ever reaches len(Code) by falling through the final instruction,
+	// so a chunk whose last op transfers control (or errors) can never run off
+	// the end — which is what lets Run index code[ip] without a bounds check.
+	if len(c.Code) == 0 {
+		return bytecodeErrorf("chunk has no instructions")
+	}
+	switch c.Code[len(c.Code)-1].Op() {
+	case OpReturn, OpJump, OpLoop, OpThrow:
+	default:
+		return bytecodeErrorf("chunk does not end in a control-transfer instruction")
+	}
+	return nil
+}
+
+func bytecodeErrorf(format string, args ...any) error {
+	return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf(format, args...)}
 }

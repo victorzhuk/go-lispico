@@ -971,8 +971,10 @@ func TestVM_MalformedChunk_TailCallUnderflow(t *testing.T) {
 	}
 }
 
+// Run trusts a validated chunk and no longer range-checks the instruction
+// pointer itself; a jump running off the chunk is now caught statically by
+// Validate before Run ever sees the chunk.
 func TestVM_MalformedChunk_InstructionPointerOutOfRange(t *testing.T) {
-	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name: "test",
 		Code: []Instruction{
@@ -980,9 +982,9 @@ func TestVM_MalformedChunk_InstructionPointerOutOfRange(t *testing.T) {
 		},
 	}
 
-	_, err := vm.Run(context.Background(), chunk)
+	err := chunk.Validate()
 	if err == nil {
-		t.Fatal("expected error for instruction pointer running off the chunk, got nil")
+		t.Fatal("expected error for jump target running off the chunk, got nil")
 	}
 	if _, ok := err.(*core.LispicoError); !ok {
 		t.Errorf("expected *core.LispicoError, got %T", err)

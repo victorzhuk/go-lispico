@@ -543,7 +543,7 @@ func parseNumber(s string, line, col int) (Value, error) {
 	if err != nil {
 		return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), line, col)
 	}
-	return Int{V: i}, nil
+	return BoxInt(i), nil
 }
 
 func isWhitespace(ch byte) bool {

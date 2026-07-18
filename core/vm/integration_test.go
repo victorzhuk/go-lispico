@@ -478,3 +478,40 @@ func TestCapturedClosureCall(t *testing.T) {
 	result := compileAndRun(t, env, src)
 	assert.True(t, result.Equals(core.Int{V: 42}), "expected 42, got %v", result)
 }
+
+// A large iteration count exercises OpLoop's back-edge across many passes
+// through Run's per-frame dispatch locals, confirming reload after a
+// preceding frame mutation never leaves stale state behind.
+func TestLoopRecur_LargeIterationCount(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `
+(def sum-to (fn [n]
+  (loop [i n acc 0]
+    (if (= i 0)
+      acc
+      (recur (- i 1) (+ acc i))))))
+(sum-to 200000)`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 20000100000}), "expected 20000100000, got %v", result)
+}
+
+// Deep, non-tail self-recursion via OpCall grows the frame stack across many
+// vm.call invocations, each re-growing the operand stack for its own chunk —
+// confirms growStack's per-frame capacity hint survives repeated frame churn.
+func TestDeepRecursion_ManyFrames(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	src := `
+(def count-down (fn [n]
+  (if (= n 0)
+    0
+    (+ 1 (count-down (- n 1))))))
+(count-down 5000)`
+
+	result := compileAndRun(t, env, src)
+	assert.True(t, result.Equals(core.Int{V: 5000}), "expected 5000, got %v", result)
+}

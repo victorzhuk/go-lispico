@@ -146,6 +146,31 @@ func (vm *VM) push(v core.Value) {
 	}
 }
 
+// growStack ensures vm.stack has capacity for base+maxStack, so pushes within
+// a newly entered frame don't trigger a reallocation mid-execution. It never
+// changes len(vm.stack), only cap.
+func (vm *VM) growStack(base, maxStack int) {
+	need := base + maxStack
+	if need <= cap(vm.stack) {
+		return
+	}
+	grown := make([]core.Value, len(vm.stack), need)
+	copy(grown, vm.stack)
+	vm.stack = grown
+}
+
+// reloadFrame reads the top frame's state into Run's per-frame dispatch
+// locals after a helper that can push, pop, or replace frames (vm.call,
+// vm.throw) returns. Callers must only call it when vm.frames is non-empty.
+func (vm *VM) reloadFrame() (chunk *Chunk, code []Instruction, ip, base int, env *core.Env, truthy func(core.Value) bool) {
+	frame := &vm.frames[len(vm.frames)-1]
+	truthy = core.IsTruthy
+	if frame.chunk.Truthiness != nil {
+		truthy = frame.chunk.Truthiness
+	}
+	return frame.chunk, frame.chunk.Code, frame.ip, frame.base, frame.env, truthy
+}
+
 // freezeNativeOp records that the operator at slot resolved to a canonical
 // native op, so its later dispatch takes the native fast path regardless of an
 // intervening rebind. Called by OpGetGlobal after push, overriding push's zero.
@@ -215,6 +240,10 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 			wrapper.Code = append(wrapper.Code, Encode(OpConst, i+1))
 		}
 		wrapper.Code = append(wrapper.Code, Encode(OpCall, len(args)), Encode(OpReturn, 0))
+		wrapper.MaxStack = len(args) + 1
+		if err := wrapper.Validate(); err != nil {
+			return nil, err
+		}
 		return vm.Run(ctx, wrapper)
 	case core.GoFunc:
 		eval := vm.eval
@@ -250,19 +279,25 @@ func keywordArityError(got int) *core.LispicoError {
 // Run pushes a new frame for chunk and executes it to completion, returning
 // the result of its top-level OpReturn.
 func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
-	vm.frames = append(vm.frames, Frame{chunk: chunk, base: len(vm.stack), env: vm.globals})
+	base := len(vm.stack)
+	vm.frames = append(vm.frames, Frame{chunk: chunk, base: base, env: vm.globals})
+	vm.growStack(base, chunk.MaxStack)
+
+	code := chunk.Code
+	ip := 0
+	env := vm.globals
+	truthy := core.IsTruthy
+	if chunk.Truthiness != nil {
+		truthy = chunk.Truthiness
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("vm: %w", err)
 		}
 
-		frame := &vm.frames[len(vm.frames)-1]
-		if frame.ip < 0 || frame.ip >= len(frame.chunk.Code) {
-			return nil, &core.LispicoError{Code: "BytecodeError", Message: "instruction pointer out of range"}
-		}
-		instr := frame.chunk.Code[frame.ip]
-		frame.ip++
+		instr := code[ip]
+		ip++
 
 		switch instr.Op() {
 		case OpNil:
@@ -275,14 +310,10 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(core.Bool{V: false})
 
 		case OpConst:
-			v, err := frame.chunk.GetConstant(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
-			vm.push(v)
+			vm.push(chunk.Constants[instr.A()])
 
 		case OpGetLocal:
-			slot := frame.base + instr.A()
+			slot := base + instr.A()
 			if slot < 0 || slot >= len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("local slot %d out of range", instr.A())}
 			}
@@ -290,7 +321,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpSetLocal:
 			idx := instr.A()
-			slot := frame.base + idx
+			slot := base + idx
 			if slot < 0 || slot >= len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("local slot %d out of range", idx)}
 			}
@@ -299,18 +330,15 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 				return nil, err
 			}
 			vm.stack[slot] = top
-			if idx < len(frame.chunk.LocalNames) {
-				if frame.chunk.FullEnv || (idx < len(frame.chunk.Captured) && frame.chunk.Captured[idx]) {
-					frame.env.Set(frame.chunk.LocalNames[idx], top)
+			if idx < len(chunk.LocalNames) {
+				if chunk.FullEnv || (idx < len(chunk.Captured) && chunk.Captured[idx]) {
+					env.Set(chunk.LocalNames[idx], top)
 				}
 			}
 
 		case OpGetGlobal:
-			sym, err := frame.chunk.GetSymbolConstant(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
-			val, canon, ok := vm.resolveGlobalValue(frame.chunk.site(frame.ip-1), frame, sym)
+			sym := chunk.Constants[instr.A()].(core.Symbol)
+			val, canon, ok := vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
@@ -325,52 +353,40 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 
 		case OpSetGlobal:
-			sym, err := frame.chunk.GetSymbolConstant(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
+			sym := chunk.Constants[instr.A()].(core.Symbol)
 			top, err := vm.peek()
 			if err != nil {
 				return nil, err
 			}
-			frame.env.Set(sym.V, top)
+			env.Set(sym.V, top)
 
 		case OpSetLexical:
-			sym, err := frame.chunk.GetSymbolConstant(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
+			sym := chunk.Constants[instr.A()].(core.Symbol)
 			top, err := vm.peek()
 			if err != nil {
 				return nil, err
 			}
-			owner, ok := frame.env.Find(sym.V)
+			owner, ok := env.Find(sym.V)
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
 			owner.Set(sym.V, top)
 
 		case OpGetFunc:
-			sym, err := frame.chunk.GetSymbolConstant(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
-			v, found := frame.env.GetFunc(sym.V)
+			sym := chunk.Constants[instr.A()].(core.Symbol)
+			v, found := env.GetFunc(sym.V)
 			if !found {
 				return nil, core.NewUndefinedError(sym.V)
 			}
 			vm.push(v)
 
 		case OpSetFunc:
-			sym, err := frame.chunk.GetSymbolConstant(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
+			sym := chunk.Constants[instr.A()].(core.Symbol)
 			top, err := vm.peek()
 			if err != nil {
 				return nil, err
 			}
-			frame.env.SetFunc(sym.V, top)
+			env.SetFunc(sym.V, top)
 
 		case OpPop:
 			if _, err := vm.pop(); err != nil {
@@ -378,45 +394,47 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			}
 
 		case OpJump:
-			frame.ip += instr.A()
+			ip += instr.A()
 
 		case OpJumpIfFalse:
 			top, err := vm.pop()
 			if err != nil {
 				return nil, err
 			}
-			truthy := core.IsTruthy
-			if frame.chunk.Truthiness != nil {
-				truthy = frame.chunk.Truthiness
-			}
 			if !truthy(top) {
-				frame.ip += instr.A()
+				ip += instr.A()
 			}
 
 		case OpCall:
+			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), false); err != nil {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
 			}
+			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		case OpTailCall:
+			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), true); err != nil {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
 			}
+			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		case OpReturn:
 			result, err := vm.pop()
 			if err != nil {
 				return nil, err
 			}
+			frame := &vm.frames[len(vm.frames)-1]
+			frame.ip = ip
 			if frame.isClosure && vm.depth > 0 {
 				vm.depth--
 			}
 			vm.frames = vm.frames[:len(vm.frames)-1]
-			vm.stack = vm.stack[:frame.base]
+			vm.stack = vm.stack[:base]
 			for len(vm.handlers) > 0 && vm.handlers[len(vm.handlers)-1].frameDepth > len(vm.frames) {
 				vm.handlers = vm.handlers[:len(vm.handlers)-1]
 			}
@@ -424,6 +442,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 				return result, nil
 			}
 			vm.push(result)
+			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		case OpMakeList:
 			n := instr.A()
@@ -476,11 +495,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.structDepth.Add(-int64(n))
 
 		case OpClosure:
-			sub, err := frame.chunk.GetSubChunk(instr.A())
-			if err != nil {
-				return nil, &core.LispicoError{Code: "BytecodeError", Message: err.Error()}
-			}
-			vm.push(NewClosure(sub, frame.env))
+			vm.push(NewClosure(chunk.SubChunks[instr.A()], env))
 
 		case OpDup:
 			top, err := vm.peek()
@@ -490,7 +505,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			vm.push(top)
 
 		case OpLoop:
-			frame.ip = instr.A()
+			ip = instr.A()
 
 		case OpSetupTry:
 			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), structDepth: vm.structDepth.Load()})
@@ -505,16 +520,20 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 			if err != nil {
 				return nil, err
 			}
+			vm.frames[len(vm.frames)-1].ip = ip
 			if !vm.throw(coerceThrow(value)) {
 				return nil, core.NewTypeError("handler", core.Nil{})
 			}
+			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
-			if err := vm.dispatchNativeOp(ctx, frame, instr.Op(), instr.A()); err != nil {
+			vm.frames[len(vm.frames)-1].ip = ip
+			if err := vm.dispatchNativeOp(ctx, env, instr.Op(), instr.A()); err != nil {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
 			}
+			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		}
 	}
@@ -526,7 +545,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 // this opcode (nativeOp[fnIdx]) — the decision made at head-resolution time,
 // before arguments ran, matching the tree-walker. Otherwise it falls back to
 // calling the operator value already on the stack.
-func (vm *VM) dispatchNativeOp(ctx context.Context, frame *Frame, op Opcode, argc int) error {
+func (vm *VM) dispatchNativeOp(ctx context.Context, env *core.Env, op Opcode, argc int) error {
 	if argc < 0 || argc+1 > len(vm.stack) {
 		return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("native: argc=%d exceeds stack", argc)}
 	}
@@ -534,7 +553,7 @@ func (vm *VM) dispatchNativeOp(ctx context.Context, frame *Frame, op Opcode, arg
 	fnIdx := len(vm.stack) - argc - 1
 	if fnIdx >= 0 && fnIdx < len(vm.nativeOp) && vm.nativeOp[fnIdx] == op {
 		vm.nativeOp[fnIdx] = 0
-		return vm.execNativeFast(op, argc, frame.env)
+		return vm.execNativeFast(op, argc, env)
 	}
 
 	return vm.call(ctx, argc, false)
@@ -558,17 +577,17 @@ func (vm *VM) execNativeFast(op Opcode, argc int, env *core.Env) error {
 	return nil
 }
 
-// resolveGlobalValue resolves sym to its value and canonical flag for
-// frame.env, reading them coherently under the owning env's read lock. A cached
-// depth-0 site (frame.env owns the name) skips the chain walk and reads through
-// the cached cell pointer; a miss publishes a fresh entry; an ancestor-owned
-// name or a site-less (hand-built) chunk falls back to an uncached chain walk.
-// Only depth-0 resolutions are cached — an ancestor cell could later be shadowed
+// resolveGlobalValue resolves sym to its value and canonical flag for env,
+// reading them coherently under the owning env's read lock. A cached depth-0
+// site (env owns the name) skips the chain walk and reads through the cached
+// cell pointer; a miss publishes a fresh entry; an ancestor-owned name or a
+// site-less (hand-built) chunk falls back to an uncached chain walk. Only
+// depth-0 resolutions are cached — an ancestor cell could later be shadowed
 // by a new local bind of the same name without the site observing it. ok is
 // false when sym is unbound.
-func (vm *VM) resolveGlobalValue(site *siteCache, frame *Frame, sym core.Symbol) (val core.Value, canonical bool, ok bool) {
+func (vm *VM) resolveGlobalValue(site *siteCache, env *core.Env, sym core.Symbol) (val core.Value, canonical bool, ok bool) {
 	if site != nil {
-		if entry := site.entry.Load(); entry != nil && entry.env == frame.env && entry.gen == frame.env.NameGen() {
+		if entry := site.entry.Load(); entry != nil && entry.env == env && entry.gen == env.NameGen() {
 			if v, live, canon := entry.env.ReadCell(entry.cell); live {
 				return v, canon, true
 			}
@@ -576,17 +595,17 @@ func (vm *VM) resolveGlobalValue(site *siteCache, frame *Frame, sym core.Symbol)
 		// Publish only for the stable root env: a per-call child env is fresh
 		// every invocation, so caching it never hits again and just churns a
 		// siteEntry per call. Those fall through to the uncached chain walk.
-		if frame.env == vm.globals {
-			if cell, found := frame.env.CellLocal(sym.V); found {
-				site.entry.Store(&siteEntry{env: frame.env, gen: frame.env.NameGen(), cell: cell})
-				if v, live, canon := frame.env.ReadCell(cell); live {
+		if env == vm.globals {
+			if cell, found := env.CellLocal(sym.V); found {
+				site.entry.Store(&siteEntry{env: env, gen: env.NameGen(), cell: cell})
+				if v, live, canon := env.ReadCell(cell); live {
 					return v, canon, true
 				}
 				return nil, false, false
 			}
 		}
 	}
-	v, found, canon := frame.env.GetCanonical(sym.V)
+	v, found, canon := env.GetCanonical(sym.V)
 	return v, canon, found
 }
 
@@ -672,7 +691,7 @@ func nativeAdd(args []core.Value) (core.Value, error) {
 	if hasFloat {
 		return core.Float{V: floatSum}, nil
 	}
-	return core.Int{V: intSum}, nil
+	return core.BoxInt(intSum), nil
 }
 
 func nativeSub(args []core.Value) (core.Value, error) {
@@ -695,7 +714,7 @@ func nativeSub(args []core.Value) (core.Value, error) {
 		if hasFloat {
 			return core.Float{V: -floatR}, nil
 		}
-		return core.Int{V: -intR}, nil
+		return core.BoxInt(-intR), nil
 	}
 	for _, arg := range args[1:] {
 		switch v := arg.(type) {
@@ -718,7 +737,7 @@ func nativeSub(args []core.Value) (core.Value, error) {
 	if hasFloat {
 		return core.Float{V: floatR}, nil
 	}
-	return core.Int{V: intR}, nil
+	return core.BoxInt(intR), nil
 }
 
 func nativeMul(args []core.Value) (core.Value, error) {
@@ -746,7 +765,7 @@ func nativeMul(args []core.Value) (core.Value, error) {
 	if hasFloat {
 		return core.Float{V: floatP}, nil
 	}
-	return core.Int{V: intP}, nil
+	return core.BoxInt(intP), nil
 }
 
 func nativeDiv(args []core.Value) (core.Value, error) {
@@ -796,10 +815,10 @@ func nativeOrder(name string, args []core.Value, ok func(int) bool) (core.Value,
 			return nil, err
 		}
 		if !ok(cmp) {
-			return core.Bool{V: false}, nil
+			return core.BoxBool(false), nil
 		}
 	}
-	return core.Bool{V: true}, nil
+	return core.BoxBool(true), nil
 }
 
 func nativeEq(args []core.Value) (core.Value, error) {
@@ -808,10 +827,10 @@ func nativeEq(args []core.Value) (core.Value, error) {
 	}
 	for _, arg := range args[1:] {
 		if !args[0].Equals(arg) {
-			return core.Bool{V: false}, nil
+			return core.BoxBool(false), nil
 		}
 	}
-	return core.Bool{V: true}, nil
+	return core.BoxBool(true), nil
 }
 
 func numCmp(name string, a, b core.Value) (int, error) {
@@ -984,6 +1003,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				frame.env = f.Env
 			}
 			frame.isClosure = true
+			vm.growStack(target, f.Chunk.MaxStack)
 		} else {
 			base := len(vm.stack) - argc - 1
 			if f.Chunk.Variadic {
@@ -1020,6 +1040,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				env:       frameEnv,
 				isClosure: true,
 			})
+			vm.growStack(base, f.Chunk.MaxStack)
 		}
 
 	default:

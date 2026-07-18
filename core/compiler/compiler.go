@@ -698,6 +698,8 @@ func walkCaptureTree(chunk *vm.Chunk, ancestors []captureAncestor) {
 			chunk.FullEnv = false
 		}
 	}
+
+	chunk.MaxStack = computeMaxStack(chunk)
 }
 
 func isElse(v core.Value) bool {
@@ -965,6 +967,9 @@ func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {
 		comp.chunk.Emit(vm.OpReturn, 0)
 		comp.chunk.EnsureSites()
 		markCaptures(comp.chunk, nil)
+		if err := comp.chunk.Validate(); err != nil {
+			return nil, err
+		}
 		chunks = append(chunks, comp.chunk)
 	}
 	return chunks, nil

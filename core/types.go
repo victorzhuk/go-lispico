@@ -54,6 +54,21 @@ func (b Bool) Equals(o Value) bool {
 	return false
 }
 
+// True and False are shared Bool instances. BoxBool returns one of them
+// instead of allocating a fresh Bool on every boolean result.
+var (
+	True  Value = Bool{V: true}
+	False Value = Bool{V: false}
+)
+
+// BoxBool returns the shared True or False instance for b.
+func BoxBool(b bool) Value {
+	if b {
+		return True
+	}
+	return False
+}
+
 // Int — fixed-precision signed 64-bit integer.
 type Int struct{ V int64 }
 
@@ -67,6 +82,33 @@ func (i Int) Equals(o Value) bool {
 		return i.V == v.V
 	}
 	return false
+}
+
+// minPreboxedInt and maxPreboxedInt bound the shared Int instances BoxInt
+// returns for. 0..255 already boxes alloc-free via the Go runtime's own
+// small-value interface cache; this range extends that to negatives and the
+// rest of the common small-integer span (loop counters, small arithmetic).
+const (
+	minPreboxedInt = -128
+	maxPreboxedInt = 1023
+)
+
+var preboxedInts [maxPreboxedInt - minPreboxedInt + 1]Value
+
+func init() {
+	for i := range preboxedInts {
+		preboxedInts[i] = Int{V: int64(i) + minPreboxedInt}
+	}
+}
+
+// BoxInt returns a Value wrapping v, reusing a shared instance when v is in
+// [-128, 1023] to avoid a heap allocation on the hot arithmetic path. Outside
+// that range it boxes a fresh Int as usual.
+func BoxInt(v int64) Value {
+	if v >= minPreboxedInt && v <= maxPreboxedInt {
+		return preboxedInts[v-minPreboxedInt]
+	}
+	return Int{V: v}
 }
 
 // Float — IEEE 754 double.

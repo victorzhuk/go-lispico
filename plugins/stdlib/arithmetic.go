@@ -38,7 +38,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			if hasFloat {
 				return core.Float{V: floatSum}, nil
 			}
-			return core.Int{V: intSum}, nil
+			return core.BoxInt(intSum), nil
 		},
 	})
 
@@ -67,7 +67,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				if hasFloat {
 					return core.Float{V: -floatResult}, nil
 				}
-				return core.Int{V: -intResult}, nil
+				return core.BoxInt(-intResult), nil
 			}
 
 			for _, arg := range args[1:] {
@@ -92,7 +92,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			if hasFloat {
 				return core.Float{V: floatResult}, nil
 			}
-			return core.Int{V: intResult}, nil
+			return core.BoxInt(intResult), nil
 		},
 	})
 
@@ -100,7 +100,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 		Name: "*",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
-				return core.Int{V: 1}, nil
+				return core.BoxInt(1), nil
 			}
 
 			var intProd int64 = 1
@@ -129,7 +129,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			if hasFloat {
 				return core.Float{V: floatProd}, nil
 			}
-			return core.Int{V: intProd}, nil
+			return core.BoxInt(intProd), nil
 		},
 	})
 
@@ -191,7 +191,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return nil, fmt.Errorf("mod: division by zero")
 			}
 
-			return core.Int{V: a.V % b.V}, nil
+			return core.BoxInt(a.V % b.V), nil
 		},
 	})
 
@@ -213,7 +213,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return nil, fmt.Errorf("quot: division by zero")
 			}
 
-			return core.Int{V: a.V / b.V}, nil
+			return core.BoxInt(a.V / b.V), nil
 		},
 	})
 
@@ -277,11 +277,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			switch v := args[0].(type) {
 			case core.Int:
-				return core.Bool{V: v.V == 0}, nil
+				return core.BoxBool(v.V == 0), nil
 			case core.Float:
-				return core.Bool{V: v.V == 0}, nil
+				return core.BoxBool(v.V == 0), nil
 			default:
-				return core.Bool{V: false}, nil
+				return core.BoxBool(false), nil
 			}
 		},
 	})
@@ -295,11 +295,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			switch v := args[0].(type) {
 			case core.Int:
-				return core.Bool{V: v.V > 0}, nil
+				return core.BoxBool(v.V > 0), nil
 			case core.Float:
-				return core.Bool{V: v.V > 0}, nil
+				return core.BoxBool(v.V > 0), nil
 			default:
-				return core.Bool{V: false}, nil
+				return core.BoxBool(false), nil
 			}
 		},
 	})
@@ -313,11 +313,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			switch v := args[0].(type) {
 			case core.Int:
-				return core.Bool{V: v.V < 0}, nil
+				return core.BoxBool(v.V < 0), nil
 			case core.Float:
-				return core.Bool{V: v.V < 0}, nil
+				return core.BoxBool(v.V < 0), nil
 			default:
-				return core.Bool{V: false}, nil
+				return core.BoxBool(false), nil
 			}
 		},
 	})
@@ -398,6 +398,6 @@ func minMaxFunc(isMax bool) func(context.Context, core.Evaluator, []core.Value, 
 		if hasFloat {
 			return core.Float{V: result}, nil
 		}
-		return core.Int{V: int64(result)}, nil
+		return core.BoxInt(int64(result)), nil
 	}
 }

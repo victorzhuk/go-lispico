@@ -82,6 +82,9 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	comp.Chunk().Emit(vm.OpReturn, 0)
 	comp.MarkCaptures()
 	chunk := comp.Chunk()
+	if err := chunk.Validate(); err != nil {
+		return nil, err
+	}
 	// A one-shot eval is never reused, so its global reads resolve through the
 	// chain walk rather than paying to build a site cache that never gets a hit.
 	return be.runVM(ctx, chunk, env)
@@ -141,6 +144,9 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		comp.Chunk().Emit(vm.OpReturn, 0)
 		comp.MarkCaptures()
 		chunk = comp.Chunk()
+		if err := chunk.Validate(); err != nil {
+			return nil, err
+		}
 
 		be.mu.Lock()
 		if cached, dup := be.cache[key]; dup {
