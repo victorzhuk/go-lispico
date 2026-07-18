@@ -11,7 +11,7 @@
 
 - [x] 3.1 Release job runs the gold-set benchmark cells interleaved per sample (Evaluator, then VM, ten times) with fixed `GOMAXPROCS` and benchtime in one hosted job; identical cell names across the two output files so benchstat pairs them.
 - [x] 3.2 Benchstat comparison per cell against its committed Hot-cell tier, applying ADR 0008 thresholds and the burden-of-proof inconclusive rule (one rerun at doubled benchtime).
-- [ ] 3.3 Store the passing VM baseline as the non-regression reference for the next release; post-authorization runs compare against it instead of the improvement thresholds. -- OPEN: design.md names no storage backend for the cross-release baseline; GH Actions cache is unsuitable (LRU-evicted). Needs a design decision before scaffolding.
+- [x] 3.3 Store the passing VM baseline as the non-regression reference for the next release; post-authorization runs compare against it instead of the improvement thresholds. Decided: GitHub Release asset — the passing gate uploads `bench-vm.txt` to the release it authorized; the next gate downloads the previous release's asset and runs perfgate `-mode non-regression` against it (see design.md "Decision rules").
 - [x] 3.4 Publish the benchstat report as release evidence.
 
 ## 4. Guardrails
@@ -21,4 +21,4 @@
 
 ## 5. Verify
 
-- [x] 5.1 Dry-run the full job with the gold set: correctness leg green under both modes, paired 10-sample interleaved run produced a benchstat-backed per-cell verdict, and the inconclusive path exercised end-to-end (first attempt exit 2, doubled-benchtime rerun, burden-of-proof resolve failing the improvement cells -- the correct verdict while no VM win is demonstrated). Authoring the corpus also surfaced a real VM parity defect: kernel `let` binds in parallel on the tree-walker but sequentially under the VM (`(def a 10) (let [a 1 b a] b)` -> 10 vs 1); needs its own change with a pinned regression.
+- [x] 5.1 Dry-run the full job with the gold set: correctness leg green under both modes, paired 10-sample interleaved run produced a benchstat-backed per-cell verdict, and the inconclusive path exercised end-to-end (first attempt exit 2, doubled-benchtime rerun, burden-of-proof resolve failing the improvement cells -- the correct verdict while no VM win is demonstrated). Authoring the corpus also surfaced a real VM parity defect: kernel `let` binds in parallel on the tree-walker but sequentially under the VM (`(def a 10) (let [a 1 b a] b)` -> 10 vs 1); fixed by the vm-let-parallel-binding-parity change with a pinned cross-mode regression.

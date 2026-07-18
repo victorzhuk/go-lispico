@@ -1,7 +1,8 @@
-# consumer-release-gate — delta
+# consumer-release-gate Specification
 
-## ADDED Requirements
-
+## Purpose
+TBD - created by archiving change release-consumer-gate. Update Purpose after archive.
+## Requirements
 ### Requirement: Gold-set gate corpus
 
 go-lispico release CI SHALL run a committed gold set — rule-shaped fixtures with
@@ -19,15 +20,15 @@ an error.
 
 ### Requirement: Correctness precedes timing
 
-The release job SHALL run YAGEL's Behavior-golden suites under both execution
-modes and both repositories' race-enabled test suites before any benchmark result
-is considered. Race runs SHALL be separate from timed runs; no timing threshold
-SHALL be evaluated under the race detector. Any correctness or race failure SHALL
-fail the release regardless of benchmark outcomes.
+The release job SHALL run every gold-set fixture under both execution modes
+against its golden, and this repo's race-enabled test suite, before any benchmark
+result is considered. Race runs SHALL be separate from timed runs; no timing
+threshold SHALL be evaluated under the race detector. Any correctness or race
+failure SHALL fail the release regardless of benchmark outcomes.
 
 #### Scenario: Golden failure blocks the release
 
-- **WHEN** any Behavior golden fails under either execution mode
+- **WHEN** any gold-set fixture fails its golden under either execution mode
 - **THEN** the release SHALL fail before threshold evaluation
 
 ### Requirement: Paired release run
@@ -35,10 +36,13 @@ fail the release regardless of benchmark outcomes.
 The authoritative performance evidence SHALL be one hosted CI job interleaving
 Evaluator and VM benchmark variants with fixed concurrency and benchtime and at
 least ten samples per cell, compared per cell with benchstat against the cell's
-committed Hot-cell tier and ADR 0008's thresholds. When benchstat is inconclusive,
-the cell SHALL rerun once at doubled benchtime; if still inconclusive, improvement
-cells fail and non-regression cells pass. Ordinary pull requests SHALL carry no
-percentage gates.
+committed Hot-cell tier and ADR 0008's thresholds. When any cell is
+benchstat-inconclusive, the whole paired run SHALL rerun once at doubled
+benchtime and every cell SHALL be re-judged from the rerun data — doubled
+benchtime is stronger evidence for every cell, so no first-attempt verdict is
+frozen; a cell still inconclusive after the rerun fails if it is an improvement
+cell and passes if it is a non-regression cell. Ordinary pull requests SHALL
+carry no percentage gates.
 
 #### Scenario: Inconclusive improvement cell fails
 
@@ -65,3 +69,4 @@ another consumer need is measured.
 
 - **WHEN** a release runs after the first authorization
 - **THEN** each cell SHALL be judged against the stored VM baseline as non-regression, not against the same-release Evaluator improvement thresholds
+

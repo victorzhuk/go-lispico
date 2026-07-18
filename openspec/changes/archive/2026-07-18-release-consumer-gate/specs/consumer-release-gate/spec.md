@@ -1,0 +1,70 @@
+# consumer-release-gate — delta
+
+## ADDED Requirements
+
+### Requirement: Gold-set gate corpus
+
+go-lispico release CI SHALL run a committed gold set — rule-shaped fixtures with
+hand-derived golden expected results, plus benchmark cells over them — under both
+execution modes, with no consumer checkout, no revision pin, and no cross-repo
+secret. The corpus, goldens, and tier assignments SHALL be owned by this repo,
+independent of any consumer; goldens SHALL be derived from the language
+contract, never captured from either engine. A fixture without a golden SHALL be
+an error.
+
+#### Scenario: Candidate runs against the gold set
+
+- **WHEN** the release job runs for a candidate
+- **THEN** every gold-set fixture SHALL execute under both execution modes against its golden, self-contained in the candidate checkout
+
+### Requirement: Correctness precedes timing
+
+The release job SHALL run every gold-set fixture under both execution modes
+against its golden, and this repo's race-enabled test suite, before any benchmark
+result is considered. Race runs SHALL be separate from timed runs; no timing
+threshold SHALL be evaluated under the race detector. Any correctness or race
+failure SHALL fail the release regardless of benchmark outcomes.
+
+#### Scenario: Golden failure blocks the release
+
+- **WHEN** any gold-set fixture fails its golden under either execution mode
+- **THEN** the release SHALL fail before threshold evaluation
+
+### Requirement: Paired release run
+
+The authoritative performance evidence SHALL be one hosted CI job interleaving
+Evaluator and VM benchmark variants with fixed concurrency and benchtime and at
+least ten samples per cell, compared per cell with benchstat against the cell's
+committed Hot-cell tier and ADR 0008's thresholds. When any cell is
+benchstat-inconclusive, the whole paired run SHALL rerun once at doubled
+benchtime and every cell SHALL be re-judged from the rerun data — doubled
+benchtime is stronger evidence for every cell, so no first-attempt verdict is
+frozen; a cell still inconclusive after the rerun fails if it is an improvement
+cell and passes if it is a non-regression cell. Ordinary pull requests SHALL
+carry no percentage gates.
+
+#### Scenario: Inconclusive improvement cell fails
+
+- **WHEN** an engine-sensitive cell remains benchstat-inconclusive after its doubled-benchtime rerun
+- **THEN** the cell SHALL fail — the win was not demonstrated
+
+#### Scenario: Inconclusive non-regression cell passes
+
+- **WHEN** a non-regression cell remains benchstat-inconclusive after its doubled-benchtime rerun
+- **THEN** the cell SHALL pass — no regression was demonstrated
+
+### Requirement: One-shot authorization with a standing VM baseline
+
+Passing the complete gate SHALL authorize YAGEL to enable `WithBytecode()`
+directly — no user-facing execution flag, no shadow run; rollback is a normal code
+or dependency revert. The improvement thresholds SHALL apply only to that first
+authorization: subsequent releases SHALL compare the candidate VM against the
+previous release's stored VM baseline as a non-regression check, so an Evaluator
+improvement cannot fail the gate. Passing SHALL NOT change go-lispico's global
+Engine default and SHALL end VM-specific optimization until a gate cell fails or
+another consumer need is measured.
+
+#### Scenario: Post-authorization release
+
+- **WHEN** a release runs after the first authorization
+- **THEN** each cell SHALL be judged against the stored VM baseline as non-regression, not against the same-release Evaluator improvement thresholds
