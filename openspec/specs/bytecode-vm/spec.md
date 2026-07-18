@@ -108,7 +108,12 @@ The bytecode VM SHALL never panic on any input — valid source, a malformed for
 a structurally malformed chunk; it SHALL return an error instead. Every error the
 VM returns SHALL be a `*core.LispicoError`. For every special form the Compiler
 handles, arity and shape SHALL be validated before any operand is indexed, so no
-malformed special form can panic compilation.
+malformed special form can panic compilation. Structural validation of a chunk —
+constant indices, symbol-constant types, jump and loop targets, and sub-chunk
+references — SHALL happen once when the chunk is constructed or enters the chunk
+cache; a chunk that fails validation SHALL be rejected there with a typed error
+and SHALL never execute. Execution of a validated chunk SHALL NOT re-validate
+these properties per instruction and SHALL still never panic.
 
 #### Scenario: Empty-body function
 
@@ -117,8 +122,8 @@ malformed special form can panic compilation.
 
 #### Scenario: Malformed chunk
 
-- **WHEN** an opcode references an out-of-range stack slot or constant index
-- **THEN** the VM SHALL return a `*core.LispicoError`, never index out of range
+- **WHEN** a chunk contains an opcode referencing an out-of-range stack slot, constant index, jump target, handler target, or a non-symbol where a symbol constant is required
+- **THEN** it SHALL be rejected with a `*core.LispicoError` before any instruction runs, never indexing out of range and never panicking
 
 #### Scenario: Max call depth is a typed error
 

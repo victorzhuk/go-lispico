@@ -20,9 +20,9 @@ these properties per instruction and SHALL still never panic.
 - **WHEN** an empty-body function such as `((fn []))` or an empty-body `defn` is evaluated under `WithBytecode()`
 - **THEN** the VM SHALL return an error, never panic
 
-#### Scenario: Malformed chunk rejected at load
+#### Scenario: Malformed chunk
 
-- **WHEN** a chunk contains an opcode referencing an out-of-range stack slot, constant index, jump target, or a non-symbol where a symbol constant is required
+- **WHEN** a chunk contains an opcode referencing an out-of-range stack slot, constant index, jump target, handler target, or a non-symbol where a symbol constant is required
 - **THEN** it SHALL be rejected with a `*core.LispicoError` before any instruction runs, never indexing out of range and never panicking
 
 #### Scenario: Max call depth is a typed error
