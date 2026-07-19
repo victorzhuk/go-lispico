@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-19
+
+### Changed
+
+- Canonical arithmetic and comparison operators (`+ - * / < > <= >= =`) now
+  compile to native VM opcodes under any dialect, not only dialects using
+  identity names. Under a Lisp-2 dialect the function cell tracks canonical
+  status (cleared on `defun` or any rebind), so the VM keeps tree-walker
+  parity when an operator is redefined.
+- `HashMap` storage is now a sorted small-array form (≤8 keys) that promotes
+  to a hashed form on the 9th distinct key, replacing a double Go-map layout;
+  keys hash on bit patterns instead of formatted strings. Numeric-key
+  iteration order is now bit-pattern rather than lexicographic-on-string; NaN
+  keys canonicalize to one bucket and `+0.0`/`-0.0` fold to one key, matching
+  `Float.Equals`.
+- `OpGetGlobal` resolves through a binding cell cached on the chunk instead of
+  walking the scope chain on every read.
+- The VM validates a chunk's structure (constant indices, jump/loop/handler
+  targets, sub-chunk references, local slots) once at load instead of
+  checking on every instruction; the never-panics contract is unchanged.
+- Small integers (`-128..1023`) and booleans reuse preboxed shared values
+  instead of allocating on every arithmetic/comparison result.
+- Cancellation checks in both evaluators now run on a batched countdown
+  budget plus loop-back-jump/call boundaries instead of every
+  instruction/node; the Engine's default deadline is carried as a
+  precomputed instant instead of a `context.WithTimeout` per `Eval`/`Call`,
+  so no timer or derived context is allocated per call.
+- **Breaking:** A `GoFunc` invoked during evaluation now receives the
+  caller's context unwrapped, rather than one bound to the Engine's deadline.
+  It observes the Engine deadline only as the error the evaluator returns
+  once the call completes, not as a context cancellation; a `GoFunc`
+  blocking on external work (a network call, a file read) is bounded by the
+  caller's context, not interrupted mid-call by the Engine deadline (amends
+  ADR 0010).
+- `vm.apply` enters the call protocol directly instead of synthesizing a
+  per-call wrapper chunk; call observability (timing, events, per-function
+  counts) goes lazy when no callback is registered.
+
 ## [0.7.0] - 2026-07-18
 
 ### Changed
@@ -203,7 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.7.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/victorzhuk/go-lispico/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/victorzhuk/go-lispico/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/victorzhuk/go-lispico/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/victorzhuk/go-lispico/compare/v0.4.2...v0.5.0
