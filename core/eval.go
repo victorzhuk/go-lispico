@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"sync/atomic"
+	"time"
 )
 
 // tailCall is returned by special forms to signal that the trampoline should
@@ -81,6 +82,35 @@ type evalState struct {
 	loopDepth   atomic.Int64
 	macroDepth  atomic.Int64
 	structDepth atomic.Int64
+	// deadline is the engine-owned evaluation deadline enforced by pollCancel.
+	// Zero means no engine deadline is set.
+	deadline time.Time
+	// budget counts nodes until the next batched cancellation check. Atomic
+	// to match structDepth and stay race-safe if this state is shared across
+	// sequential evaluator hops (e.g. VM GoFunc callbacks into the tree-walker).
+	budget atomic.Int64
+}
+
+// checkInterval bounds how many nodes run between batched cancellation
+// checks. A fresh budget starts at 0 (its zero value), so the first check
+// (force=false) sees Add(-1) go negative and fires immediately, then every
+// checkInterval thereafter.
+const checkInterval = 128
+
+// pollCancel checks the engine deadline and ctx for cancellation. A batched
+// (force=false) check only runs once every checkInterval calls; a forced
+// check always runs, for latency-bounding call/loop boundaries.
+func (st *evalState) pollCancel(ctx context.Context, force bool) error {
+	if !force {
+		if st.budget.Add(-1) > 0 {
+			return nil
+		}
+	}
+	st.budget.Store(checkInterval)
+	if !st.deadline.IsZero() && !time.Now().Before(st.deadline) {
+		return context.DeadlineExceeded
+	}
+	return ctx.Err()
 }
 
 type evalStateKey struct{}
@@ -126,6 +156,23 @@ func EvalStructCounter(ctx context.Context) *atomic.Int64 {
 	return &st.structDepth
 }
 
+// WithEvalDeadline attaches an engine-owned evaluation deadline instant to
+// ctx's eval state (creating it if absent), enforced by the evaluators' batched
+// cancellation checks instead of a per-call timer context. A zero deadline
+// leaves the caller's context as the only bound.
+func WithEvalDeadline(ctx context.Context, deadline time.Time) context.Context {
+	ctx = ensureEvalState(ctx)
+	evalStateFrom(ctx).deadline = deadline
+	return ctx
+}
+
+// EvalDeadlineFrom returns the engine-owned deadline instant carried in ctx's
+// eval state, or the zero Time when none is set. The VM reads it to enforce the
+// deadline without a timer context.
+func EvalDeadlineFrom(ctx context.Context) time.Time {
+	return evalStateFrom(ctx).deadline
+}
+
 func evalErrorf(format string, args ...any) *LispicoError {
 	return &LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
 }
@@ -145,10 +192,9 @@ func (e *engine) Apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 	ctx = ensureEvalState(ctx)
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
+	st := evalStateFrom(ctx)
+	if err := st.pollCancel(ctx, false); err != nil {
+		return nil, err
 	}
 
 	switch val := v.(type) {
@@ -268,10 +314,8 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+		if err := st.pollCancel(ctx, true); err != nil {
+			return nil, err
 		}
 
 		switch f := fn.(type) {

@@ -308,6 +308,10 @@ func TestEngineDeadline_CallerEarlierGovernsAlone(t *testing.T) {
 	}
 }
 
+// TestEngineDeadline_CallerLaterEngineBoundApplies confirms the GoFunc now
+// sees the caller's own (later) ctx deadline unwrapped — the Engine no longer
+// layers a second ctx bound on top of it (that bound is enforced off-context,
+// see TestEngineDeadline_CallerLaterEngineBoundStillGovernsEvaluation below).
 func TestEngineDeadline_CallerLaterEngineBoundApplies(t *testing.T) {
 	for name, invoke := range deadlineInvocations() {
 		t.Run(name, func(t *testing.T) {
@@ -317,17 +321,40 @@ func TestEngineDeadline_CallerLaterEngineBoundApplies(t *testing.T) {
 
 			capture := bindDeadlineCapture(t, e, "capture")
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			callerDeadline := time.Now().Add(5 * time.Second)
+			ctx, cancel := context.WithDeadline(context.Background(), callerDeadline)
 			defer cancel()
 
-			start := time.Now()
 			require.NoError(t, invoke(ctx, e))
 
 			got, ok := capture.result()
-			require.True(t, ok, "expected a deadline on the evaluation context")
-			assert.WithinDuration(t, start.Add(50*time.Millisecond), got, 30*time.Millisecond)
+			require.True(t, ok, "expected the caller's own deadline on the evaluation context")
+			assert.WithinDuration(t, callerDeadline, got, 20*time.Millisecond)
 		})
 	}
+}
+
+// TestEngineDeadline_CallerLaterEngineBoundStillGovernsEvaluation confirms
+// that even though a GoFunc no longer observes the Engine's tighter deadline
+// as a context deadline, it still governs evaluation via the evaluators'
+// batched cancellation checks — a long loop still terminates with
+// context.DeadlineExceeded at the Engine's bound, not the caller's later one.
+func TestEngineDeadline_CallerLaterEngineBoundStillGovernsEvaluation(t *testing.T) {
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithTimeout(20*time.Millisecond))
+	require.NoError(t, err)
+	defer e.Close()
+
+	bindBuiltin(t, e, "=")
+	bindBuiltin(t, e, "-")
+
+	_, err = e.Eval(context.Background(), "test", "(defn slow [] (loop [n 1000000] (if (= n 0) n (recur (- n 1)))))")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = e.Call(ctx, "slow")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 }
 
 func TestEngineDeadline_ZeroTimeoutNoCallerDeadlineUnbounded(t *testing.T) {
@@ -369,6 +396,11 @@ func TestEngineDeadline_ZeroTimeoutCallerDeadlineUnchanged(t *testing.T) {
 	}
 }
 
+// TestEngineDeadline_DefaultConstructionKeeps30sBound confirms that under
+// default construction the GoFunc's ctx carries no deadline at all — the
+// Engine's 30s default is enforced off-context by the evaluators' batched
+// checks now, not by wrapping ctx in a timer. The 30s bound itself is
+// verified directly against evalDeadline in TestEngineImpl_EvalDeadline.
 func TestEngineDeadline_DefaultConstructionKeeps30sBound(t *testing.T) {
 	for name, invoke := range deadlineInvocations() {
 		t.Run(name, func(t *testing.T) {
@@ -378,74 +410,98 @@ func TestEngineDeadline_DefaultConstructionKeeps30sBound(t *testing.T) {
 
 			capture := bindDeadlineCapture(t, e, "capture")
 
-			start := time.Now()
 			require.NoError(t, invoke(context.Background(), e))
 
-			got, ok := capture.result()
-			require.True(t, ok, "expected the Engine's default deadline")
-			assert.WithinDuration(t, start.Add(30*time.Second), got, 500*time.Millisecond)
+			_, ok := capture.result()
+			assert.False(t, ok, "expected no context deadline on the GoFunc ctx under the Engine's default timeout")
 		})
 	}
 }
 
-func TestEngineImpl_WithEvalTimeout(t *testing.T) {
-	t.Run("caller deadline earlier returns ctx unchanged, no timer", func(t *testing.T) {
-		e, err := New(nil)
-		require.NoError(t, err)
-		defer e.Close()
-		impl := e.(*engineImpl)
+// TestEngineImpl_EvalDeadline unit-tests evalDeadline's instant computation
+// directly, now that the Engine deadline is no longer observable as a ctx
+// wrapper (see the deadline-invocation tests above).
+func TestEngineImpl_EvalDeadline(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
-		got, gotCancel := impl.withEvalTimeout(ctx)
-		defer gotCancel()
-		assert.True(t, got == ctx, "expected the caller's context unchanged")
-	})
-
-	t.Run("caller deadline later wraps with Engine's tighter timeout", func(t *testing.T) {
-		e, err := New(nil, WithTimeout(50*time.Millisecond))
-		require.NoError(t, err)
-		defer e.Close()
-		impl := e.(*engineImpl)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		got, gotCancel := impl.withEvalTimeout(ctx)
-		defer gotCancel()
-		assert.False(t, got == ctx, "expected a new context wrapping the Engine's tighter deadline")
-		deadline, ok := got.Deadline()
-		require.True(t, ok)
-		assert.WithinDuration(t, time.Now().Add(50*time.Millisecond), deadline, 20*time.Millisecond)
-	})
-
-	t.Run("no caller deadline wraps with Engine's timeout", func(t *testing.T) {
-		e, err := New(nil, WithTimeout(50*time.Millisecond))
-		require.NoError(t, err)
-		defer e.Close()
-		impl := e.(*engineImpl)
-
-		got, gotCancel := impl.withEvalTimeout(context.Background())
-		defer gotCancel()
-		assert.False(t, got == context.Background())
-		_, ok := got.Deadline()
-		assert.True(t, ok)
-	})
-
-	t.Run("zero timeout returns ctx unchanged regardless of caller deadline", func(t *testing.T) {
+	t.Run("timeout disabled returns zero", func(t *testing.T) {
 		e, err := New(nil, WithTimeout(0))
 		require.NoError(t, err)
 		defer e.Close()
 		impl := e.(*engineImpl)
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		got := impl.evalDeadline(context.Background(), start)
+		assert.True(t, got.IsZero())
+	})
+
+	t.Run("no caller deadline returns start plus timeout", func(t *testing.T) {
+		e, err := New(nil, WithTimeout(50*time.Millisecond))
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		got := impl.evalDeadline(context.Background(), start)
+		assert.Equal(t, start.Add(50*time.Millisecond), got)
+	})
+
+	t.Run("caller deadline earlier or equal returns zero", func(t *testing.T) {
+		e, err := New(nil, WithTimeout(50*time.Millisecond))
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		ctx, cancel := context.WithDeadline(context.Background(), start.Add(50*time.Millisecond))
 		defer cancel()
 
-		got, gotCancel := impl.withEvalTimeout(ctx)
-		defer gotCancel()
-		assert.True(t, got == ctx, "expected the Engine deadline to stay disabled")
+		got := impl.evalDeadline(ctx, start)
+		assert.True(t, got.IsZero())
 	})
+
+	t.Run("caller deadline later returns start plus timeout", func(t *testing.T) {
+		e, err := New(nil, WithTimeout(50*time.Millisecond))
+		require.NoError(t, err)
+		defer e.Close()
+		impl := e.(*engineImpl)
+
+		ctx, cancel := context.WithDeadline(context.Background(), start.Add(time.Hour))
+		defer cancel()
+
+		got := impl.evalDeadline(ctx, start)
+		assert.Equal(t, start.Add(50*time.Millisecond), got)
+	})
+}
+
+// TestEngineDeadline_NoPerCallTimerAllocation confirms Call and Eval no
+// longer pay for a per-call context.WithTimeout timer (timerCtx, runtime
+// timer, Done channel, cleanup goroutine) when the Engine's default timeout
+// applies and the caller holds no deadline of its own. Thresholds are the
+// measured allocs/op on this change (Call: 2, Eval: 7, both with
+// testing.AllocsPerRun(1000, ...)) plus one alloc of headroom for noise; a
+// regression back to a per-call timer would push both well past these
+// ceilings.
+func TestEngineDeadline_NoPerCallTimerAllocation(t *testing.T) {
+	e, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	defer e.Close()
+
+	require.NoError(t, e.Bind("noop", core.GoFunc{
+		Name: "noop",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		},
+	}))
+
+	ctx := context.Background()
+
+	callAllocs := testing.AllocsPerRun(1000, func() {
+		_, _ = e.Call(ctx, "noop")
+	})
+	assert.LessOrEqual(t, callAllocs, float64(3))
+
+	evalAllocs := testing.AllocsPerRun(1000, func() {
+		_, _ = e.Eval(ctx, "test", "42")
+	})
+	assert.LessOrEqual(t, evalAllocs, float64(8))
 }
 
 func TestBind_CreatesBinding(t *testing.T) {

@@ -2,6 +2,7 @@ package vm_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -514,4 +515,111 @@ func TestDeepRecursion_ManyFrames(t *testing.T) {
 
 	result := compileAndRun(t, env, src)
 	assert.True(t, result.Equals(core.Int{V: 5000}), "expected 5000, got %v", result)
+}
+
+// compileSrc compiles src into chunks for tests that need direct control over
+// Run's ctx or the VM's deadline (compileAndRun always runs with
+// context.Background() and a fresh VM).
+func compileSrc(t *testing.T, src string) []*vm.Chunk {
+	t.Helper()
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err, "compile")
+	return chunks
+}
+
+// runChunks runs each chunk in order on v, stopping at the first error.
+func runChunks(ctx context.Context, v *vm.VM, chunks []*vm.Chunk) (core.Value, error) {
+	var result core.Value = core.Nil{}
+	var err error
+	for _, chunk := range chunks {
+		result, err = v.Run(ctx, chunk)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func TestVM_CancelObservedStraightLine(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	chunks := compileSrc(t, "(+ 1 2)")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	v := vm.New(env)
+	_, err := runChunks(ctx, v, chunks)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.Canceled))
+	assert.Contains(t, err.Error(), "vm:")
+}
+
+func TestVM_CancelObservedWithinLoopIteration(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	chunks := compileSrc(t, `
+(def spin (fn [n]
+  (loop [i n]
+    (if (= i 0)
+      i
+      (recur (- i 1))))))
+(spin 1000000000)`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	v := vm.New(env)
+	start := time.Now()
+	_, err := runChunks(ctx, v, chunks)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.Less(t, elapsed, time.Second, "OpLoop's forced check should bound cancellation latency to about one iteration")
+}
+
+func TestVM_CancelObservedWithinOneCall_DeepRecursion(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	chunks := compileSrc(t, `
+(def count-down (fn [n]
+  (if (= n 0)
+    0
+    (+ 1 (count-down (- n 1))))))
+(count-down 100000000)`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	v := vm.New(env)
+	start := time.Now()
+	_, err := runChunks(ctx, v, chunks)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.Less(t, elapsed, time.Second, "OpCall's forced check should bound cancellation latency to about one call")
+}
+
+func TestVM_EngineDeadlineFires(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	chunks := compileSrc(t, `
+(def spin (fn [n]
+  (loop [i n]
+    (if (= i 0)
+      i
+      (recur (- i 1))))))
+(spin 1000000000)`)
+
+	v := vm.New(env)
+	v.SetDeadline(time.Now().Add(5 * time.Millisecond))
+
+	_, err := runChunks(context.Background(), v, chunks)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.Contains(t, err.Error(), "vm:")
 }

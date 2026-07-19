@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -61,6 +62,11 @@ type VM struct {
 	// rebound the operator). A zero entry (OpConst, never a native op) means
 	// "not a canonical native operator"; push zeroes each slot it writes.
 	nativeOp []Opcode
+	// deadline is the engine-owned evaluation deadline enforced at the VM's
+	// batched cancellation checks. Zero means no engine deadline is set.
+	deadline time.Time
+	// budget counts instructions until the next batched cancellation check.
+	budget int
 }
 
 // VMOption configures a VM created by New.
@@ -137,6 +143,10 @@ func (vm *VM) Reset() {
 func (vm *VM) SetGlobals(env *core.Env) {
 	vm.globals = env
 }
+
+// SetDeadline sets the engine-owned evaluation deadline enforced at the VM's
+// batched check points. A zero t means the caller's context is the only bound.
+func (vm *VM) SetDeadline(t time.Time) { vm.deadline = t }
 
 func (vm *VM) push(v core.Value) {
 	vm.stack = append(vm.stack, v)
@@ -276,6 +286,25 @@ func keywordArityError(got int) *core.LispicoError {
 	return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("keyword lookup requires exactly 1 argument, got %d", got)}
 }
 
+// checkInterval bounds how many instructions/nodes run between batched
+// cancellation checks. Starting a fresh budget at 0 (its zero value) forces
+// the first check to fire immediately, then every checkInterval thereafter.
+const checkInterval = 128
+
+// pollCancel checks the engine deadline and ctx for cancellation, resetting
+// vm.budget for the next batch. Errors are wrapped with the "vm: " prefix so
+// errors.Is(err, context.DeadlineExceeded/Canceled) still holds.
+func (vm *VM) pollCancel(ctx context.Context) error {
+	vm.budget = checkInterval
+	if !vm.deadline.IsZero() && !time.Now().Before(vm.deadline) {
+		return fmt.Errorf("vm: %w", context.DeadlineExceeded)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("vm: %w", err)
+	}
+	return nil
+}
+
 // Run pushes a new frame for chunk and executes it to completion, returning
 // the result of its top-level OpReturn.
 func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
@@ -290,10 +319,13 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	if chunk.Truthiness != nil {
 		truthy = chunk.Truthiness
 	}
+	vm.budget = 0
 
 	for {
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("vm: %w", err)
+		if vm.budget--; vm.budget <= 0 {
+			if err := vm.pollCancel(ctx); err != nil {
+				return nil, err
+			}
 		}
 
 		instr := code[ip]
@@ -412,6 +444,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 					return nil, err
 				}
 			}
+			if err := vm.pollCancel(ctx); err != nil {
+				return nil, err
+			}
 			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		case OpTailCall:
@@ -420,6 +455,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
+			}
+			if err := vm.pollCancel(ctx); err != nil {
+				return nil, err
 			}
 			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
@@ -506,6 +544,9 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 
 		case OpLoop:
 			ip = instr.A()
+			if err := vm.pollCancel(ctx); err != nil {
+				return nil, err
+			}
 
 		case OpSetupTry:
 			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), structDepth: vm.structDepth.Load()})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // evalStr is a test helper: read and evaluate a Lisp source string.
@@ -643,6 +644,90 @@ func TestEval_ContextCancellation(t *testing.T) {
 	_, err := e.Eval(ctx, forms[0], env)
 	if err == nil {
 		t.Error("expected context cancellation error")
+	}
+}
+
+// TestEval_ContextCancellation_StraightLineBudget confirms the batched
+// per-node check in Eval still catches a pre-cancelled ctx while evaluating a
+// straight-line structural value with more nodes than checkInterval, not just
+// the single-atom case above.
+func TestEval_ContextCancellation_StraightLineBudget(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+
+	items := make([]Value, 0, 200)
+	for i := range 200 {
+		items = append(items, Int{V: int64(i)})
+	}
+	vec := Vector{Items: items}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	e := NewEvaluator()
+	_, err := e.Eval(ctx, vec, env)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func loopCancelTestEnv() *Env {
+	env := newTestEnv()
+	env.Set("-", GoFunc{Name: "-", Fn: func(_ context.Context, _ Evaluator, args []Value, _ *Env) (Value, error) {
+		return Int{V: args[0].(Int).V - args[1].(Int).V}, nil
+	}})
+	env.Set("=", GoFunc{Name: "=", Fn: func(_ context.Context, _ Evaluator, args []Value, _ *Env) (Value, error) {
+		return Bool{V: args[0].(Int).V == args[1].(Int).V}, nil
+	}})
+	return env
+}
+
+// TestEval_Loop_ContextCancellation confirms a ctx cancellation mid-loop is
+// observed by the batched per-node check within a bounded number of
+// iterations, without waiting for the (otherwise very long) loop to finish.
+func TestEval_Loop_ContextCancellation(t *testing.T) {
+	t.Parallel()
+	env := loopCancelTestEnv()
+
+	forms, err := Read(`(loop [i 1000000000] (if (= i 0) i (recur (- i 1))))`)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	e := NewEvaluator()
+	start := time.Now()
+	_, err = e.Eval(ctx, forms[0], env)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("cancellation observed too late: %v", elapsed)
+	}
+}
+
+// TestEval_Loop_EngineDeadline confirms an engine-owned deadline attached via
+// WithEvalDeadline (no ctx.Deadline of its own) is enforced the same way as a
+// caller-cancelled ctx.
+func TestEval_Loop_EngineDeadline(t *testing.T) {
+	t.Parallel()
+	env := loopCancelTestEnv()
+
+	forms, err := Read(`(loop [i 1000000000] (if (= i 0) i (recur (- i 1))))`)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	ctx := WithEvalDeadline(context.Background(), time.Now().Add(5*time.Millisecond))
+
+	e := NewEvaluator()
+	_, err = e.Eval(ctx, forms[0], env)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
 	}
 }
 
