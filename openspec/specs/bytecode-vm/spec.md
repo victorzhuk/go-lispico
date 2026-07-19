@@ -162,17 +162,29 @@ assert identical results, and the runtime SHALL be tested end to end through
 
 The VM SHALL execute `+`, `-`, `*`, `/`, `<`, `>`, `<=`, `>=`, `=` through
 dedicated opcodes operating on stack slots, with semantics identical to the stdlib
-builtins including int/float promotion and division-by-zero errors. When the
-operator symbol is locally shadowed or its global binding is no longer the
-canonical stdlib builtin, execution SHALL fall back to the ordinary call path.
-Canonical status SHALL be determined through the operator's resolved binding, not
-re-derived by a per-execution environment walk, and a canonical operator SHALL
-take the native path on every execution — not intermittently.
+builtins including int/float promotion and division-by-zero errors. The compiler
+SHALL emit these opcodes for a canonical native operator whether or not a dialect
+is configured — a configured dialect (the shipped runtime path) SHALL NOT suppress
+native-opcode emission for an operator that is not a special form and not locally
+shadowed. The operator head SHALL be resolved through the cell the active dialect
+uses for head position — the value cell for a Lisp-1 dialect, the function cell for
+a Lisp-2 dialect (the default CL surface) — so that a rebind through that cell is
+observed. When the operator symbol is locally shadowed or its head-cell binding is
+no longer the canonical stdlib builtin, execution SHALL fall back to the ordinary
+call path over the resolved value. Canonical status SHALL be determined through the
+operator's resolved binding, not re-derived by a per-execution environment walk,
+and a canonical operator SHALL take the native path on every execution — not
+intermittently.
 
 #### Scenario: Hot loop avoids builtin dispatch
 
 - **WHEN** a `loop` body evaluates `(+ acc 1)` under the VM
 - **THEN** the addition SHALL execute as an opcode without a `GoFunc` invocation, and the loop result SHALL equal the tree-walker's
+
+#### Scenario: Native opcodes emitted under a configured dialect
+
+- **WHEN** `(+ a b)` or `(< a b)` is compiled with a configured dialect (the default CL dialect or clojure) and run on a `WithBytecode()` engine
+- **THEN** the operator SHALL compile to and execute as its native opcode with no `GoFunc` dispatch, matching the tree-walker's result
 
 #### Scenario: Promotion parity
 
@@ -183,6 +195,11 @@ take the native path on every execution — not intermittently.
 
 - **WHEN** a program rebinds `+` to a custom function and then calls `(+ 1 2)` under the VM
 - **THEN** the custom function SHALL be called, matching tree-walker behavior
+
+#### Scenario: Lisp-2 function-cell rebind falls back
+
+- **WHEN** under the CL dialect a program rebinds `+` in the function cell (`(defun + (a b) (- a b))`) and then calls `(+ 5 3)` under the VM
+- **THEN** the rebound function SHALL be called (result `2`), matching the tree-walker — the native opcode SHALL NOT execute over the stale canonical value-cell binding
 
 #### Scenario: Recursive calls keep the native path
 

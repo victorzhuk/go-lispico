@@ -31,10 +31,16 @@ scenarios.
   not locally shadowed — independent of whether the dialect's `CanonicalName`
   classifies it as special. Special-form precedence, dialect rename/removal, and
   local-shadow fallback are preserved.
-- Rebind-safety is unchanged: the VM already freezes canonical eligibility at
-  `OpGetGlobal` and `dispatchNativeOp` falls back to calling the operator value
-  when the binding is not the canonical builtin, so emitting the opcode is safe
-  even when `+` is later rebound.
+- Rebind-safety holds per dialect through the cell head resolution uses. Under
+  a Lisp-1 dialect the VM freezes canonical eligibility at `OpGetGlobal` (the
+  value cell) and `dispatchNativeOp` falls back to the operator value when the
+  binding is not the canonical builtin. Under a Lisp-2 dialect (the default CL
+  surface) the head resolves through the **function cell**, so the operator head
+  compiles to `OpGetFunc` and the function cell gains canonical tracking
+  (`SetFuncCanonical`/`GetFuncCanonical`, cleared on any `defun`/`OpSetFunc`
+  rebind); the VM freezes off the function cell in `OpGetFunc`. Either way a
+  rebind through the dialect's head cell is observed and falls back to calling
+  the rebound function — see `design.md`.
 - Add runtime-level coverage so the native-path scenarios are verified through
   `NewCompilerWithDialect` (the real path), not only the nil-dialect compiler.
 
@@ -48,8 +54,10 @@ scenarios.
 
 ## Impact
 
-- Code: `core/compiler/compiler.go` (`compileList` native-op gate), compiler and
-  runtime tests, goldset/bench evidence.
+- Code: `core/compiler/compiler.go` (`compileList` native-op gate, Lisp-2
+  `OpGetFunc` head in `compileNativeOp`), `core/env.go` (function-cell canonical
+  tracking), `core/vm/vm.go` (`OpGetFunc` native-op freeze), `runtime/engine.go`
+  (Lisp-2 canonical bridge), compiler and runtime tests, goldset/bench evidence.
 - Parity: tree-walker/VM cross-validation must stay green — the native opcodes
   already match stdlib arithmetic semantics (int/float promotion, div-by-zero);
   this only makes them reachable under a dialect.
