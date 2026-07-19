@@ -173,6 +173,47 @@ func BenchmarkEngine_CallBytecode(b *testing.B) {
 	}
 }
 
+// BenchmarkEngine_CallBytecodePlain measures Engine.Call for a GoFunc-free
+// body ((defn pick [a b] a), compiled to OpGetLocal/OpReturn) — the clean
+// boundary the lazy-observability fast path optimizes: no reentrantCtx
+// evalState, no callback, no timing.
+func BenchmarkEngine_CallBytecodePlain(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn pick [a b] a)")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Call(context.Background(), "pick", core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
+// BenchmarkEngine_CallBytecodeCallback is BenchmarkEngine_CallBytecode with
+// an OnPluginCall callback registered — measures the with-callback cost
+// (timing + RLock + slice copy + dispatch) the fast path pays only when a
+// caller actually asked for it.
+func BenchmarkEngine_CallBytecodeCallback(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+
+	bindBuiltin(b, eng, "+")
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+	eng.OnPluginCall(func(PluginCallEvent) {})
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Call(context.Background(), "add", core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
 func BenchmarkEngine_Bind(b *testing.B) {
 	eng, err := New(nil)
 	if err != nil {

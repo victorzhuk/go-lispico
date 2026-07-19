@@ -173,6 +173,30 @@ func EvalDeadlineFrom(ctx context.Context) time.Time {
 	return evalStateFrom(ctx).deadline
 }
 
+// AdoptEvalState returns ctx carrying an evalState (deadline set, structural-depth
+// counter seeded to seed) together with a pointer to that counter, so a caller
+// enforcing its own structural depth (the VM) can hand a re-entrant evaluator
+// the SAME counter. If ctx already carries an evalState, that state is reused
+// and seed is ignored.
+func AdoptEvalState(ctx context.Context, deadline time.Time, seed int64) (context.Context, *atomic.Int64) {
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		return ctx, &st.structDepth
+	}
+	st := &evalState{deadline: deadline}
+	st.structDepth.Store(seed)
+	return context.WithValue(ctx, evalStateKey{}, st), &st.structDepth
+}
+
+// HasEvalState reports whether ctx already carries evaluation state from an
+// enclosing evaluation. The Call fast path uses it to share the enclosing
+// structural-depth counter and deadline on a re-entrant call instead of
+// starting a fresh, independent resource budget (which would let nested calls
+// escape the ADR-0007 limits).
+func HasEvalState(ctx context.Context) bool {
+	_, ok := ctx.Value(evalStateKey{}).(*evalState)
+	return ok
+}
+
 func evalErrorf(format string, args ...any) *LispicoError {
 	return &LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
 }

@@ -24,14 +24,12 @@ type Stats struct {
 	totalEvalNs    atomic.Int64
 	activePlugins  atomic.Int64
 	startTime      time.Time
-	pluginCallsMu  sync.Mutex
-	pluginCallCnts map[string]int64
+	pluginCallCnts sync.Map // string -> *atomic.Int64
 }
 
 func newStats() *Stats {
 	return &Stats{
-		startTime:      time.Now(),
-		pluginCallCnts: make(map[string]int64),
+		startTime: time.Now(),
 	}
 }
 
@@ -46,12 +44,11 @@ type EngineStats struct {
 }
 
 func (s *Stats) Snapshot() EngineStats {
-	s.pluginCallsMu.Lock()
-	pluginCounts := make(map[string]int64, len(s.pluginCallCnts))
-	for k, v := range s.pluginCallCnts {
-		pluginCounts[k] = v
-	}
-	s.pluginCallsMu.Unlock()
+	pluginCounts := make(map[string]int64)
+	s.pluginCallCnts.Range(func(k, v any) bool {
+		pluginCounts[k.(string)] = v.(*atomic.Int64).Load()
+		return true
+	})
 
 	totalEvals := s.evalCount.Load()
 	var avgEvalNs int64
@@ -78,10 +75,13 @@ func (s *Stats) recordEval(dur time.Duration, err error) {
 	}
 }
 
-func (s *Stats) recordPluginCall(name string, dur time.Duration) {
-	s.pluginCallsMu.Lock()
-	s.pluginCallCnts[name]++
-	s.pluginCallsMu.Unlock()
+func (s *Stats) countPluginCall(name string) {
+	if v, ok := s.pluginCallCnts.Load(name); ok {
+		v.(*atomic.Int64).Add(1)
+		return
+	}
+	actual, _ := s.pluginCallCnts.LoadOrStore(name, new(atomic.Int64))
+	actual.(*atomic.Int64).Add(1)
 }
 
 func (s *Stats) incPlugins() {

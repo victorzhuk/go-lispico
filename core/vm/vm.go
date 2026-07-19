@@ -67,6 +67,15 @@ type VM struct {
 	deadline time.Time
 	// budget counts instructions until the next batched cancellation check.
 	budget int
+	// ownStructDepth is the VM's private structural-depth counter. structDepth
+	// points here until a re-entrant GoFunc dispatch adopts a shared counter
+	// (see reentrantCtx); Reset restores the pointer and zeroes this back out.
+	ownStructDepth atomic.Int64
+	// reentryCtx is per-invocation scratch (like budget), reset each run: the
+	// ctx adopted for re-entrant GoFunc calls once one occurs, so repeated
+	// callbacks within the same run share one evalState instead of adopting
+	// afresh each time. Never a stored request context.
+	reentryCtx context.Context
 }
 
 // VMOption configures a VM created by New.
@@ -103,12 +112,12 @@ func WithStructuralDepthCounter(c *atomic.Int64) VMOption {
 // New creates a VM using globals as the root environment.
 func New(globals *core.Env, opts ...VMOption) *VM {
 	v := &VM{
-		stack:       make([]core.Value, 0, 256),
-		frames:      make([]Frame, 0, 64),
-		globals:     globals,
-		eval:        core.NewEvaluator(),
-		structDepth: &atomic.Int64{},
+		stack:   make([]core.Value, 0, 256),
+		frames:  make([]Frame, 0, 64),
+		globals: globals,
+		eval:    core.NewEvaluator(),
 	}
+	v.structDepth = &v.ownStructDepth
 	for _, opt := range opts {
 		opt(v)
 	}
@@ -122,7 +131,9 @@ func (vm *VM) reset() {
 	vm.frames = vm.frames[:0]
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
-	vm.structDepth.Store(0)
+	vm.structDepth = &vm.ownStructDepth
+	vm.ownStructDepth.Store(0)
+	vm.reentryCtx = nil
 	vm.nativeOp = vm.nativeOp[:0]
 }
 
@@ -134,7 +145,9 @@ func (vm *VM) Reset() {
 	vm.frames = vm.frames[:0]
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
-	vm.structDepth.Store(0)
+	vm.structDepth = &vm.ownStructDepth
+	vm.ownStructDepth.Store(0)
+	vm.reentryCtx = nil
 	vm.nativeOp = vm.nativeOp[:0]
 }
 
@@ -147,6 +160,21 @@ func (vm *VM) SetGlobals(env *core.Env) {
 // SetDeadline sets the engine-owned evaluation deadline enforced at the VM's
 // batched check points. A zero t means the caller's context is the only bound.
 func (vm *VM) SetDeadline(t time.Time) { vm.deadline = t }
+
+// reentrantCtx lazily builds (once per run) a context carrying an evalState that
+// shares the VM's structural-depth counter and deadline, so a GoFunc that calls
+// back into the evaluator enforces the same resource budget across the
+// boundary. Only reached on a real GoFunc dispatch — the native-op fast path
+// never calls it.
+func (vm *VM) reentrantCtx(ctx context.Context) context.Context {
+	if vm.reentryCtx != nil {
+		return vm.reentryCtx
+	}
+	adopted, counter := core.AdoptEvalState(ctx, vm.deadline, vm.structDepth.Load())
+	vm.structDepth = counter
+	vm.reentryCtx = adopted
+	return adopted
+}
 
 func (vm *VM) push(v core.Value) {
 	vm.stack = append(vm.stack, v)
@@ -235,32 +263,25 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 				return nil, core.NewArityError(f.Chunk.Arity, len(args))
 			}
 		}
-		// Build a tiny wrapper chunk: push closure, push args, call, return.
-		wrapper := &Chunk{
-			Name:       "<apply>",
-			Constants:  make([]core.Value, 0, len(args)+1),
-			Code:       make([]Instruction, 0, len(args)+3),
-			LocalNames: []string{},
-			Arity:      0,
+		// Seed the stack with [closure, arg0, arg1, ...] — the layout vm.call
+		// expects — and let it push the closure's frame directly, skipping the
+		// per-call wrapper Chunk the old implementation synthesized here.
+		vm.push(f)
+		for _, arg := range args {
+			vm.push(arg)
 		}
-		wrapper.Constants = append(wrapper.Constants, f)
-		wrapper.Code = append(wrapper.Code, Encode(OpConst, 0))
-		for i, arg := range args {
-			wrapper.Constants = append(wrapper.Constants, arg)
-			wrapper.Code = append(wrapper.Code, Encode(OpConst, i+1))
+		if err := vm.call(ctx, len(args), false); err != nil {
+			if !vm.throw(core.String{V: err.Error()}) {
+				return nil, err
+			}
 		}
-		wrapper.Code = append(wrapper.Code, Encode(OpCall, len(args)), Encode(OpReturn, 0))
-		wrapper.MaxStack = len(args) + 1
-		if err := wrapper.Validate(); err != nil {
-			return nil, err
-		}
-		return vm.Run(ctx, wrapper)
+		return vm.run(ctx)
 	case core.GoFunc:
 		eval := vm.eval
 		if eval == nil {
 			eval = core.NewEvaluator()
 		}
-		return f.Fn(ctx, eval, args, env)
+		return f.Fn(vm.reentrantCtx(ctx), eval, args, env)
 	case core.Keyword:
 		if len(args) != 1 {
 			return nil, keywordArityError(len(args))
@@ -311,14 +332,15 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	base := len(vm.stack)
 	vm.frames = append(vm.frames, Frame{chunk: chunk, base: base, env: vm.globals})
 	vm.growStack(base, chunk.MaxStack)
+	return vm.run(ctx)
+}
 
-	code := chunk.Code
-	ip := 0
-	env := vm.globals
-	truthy := core.IsTruthy
-	if chunk.Truthiness != nil {
-		truthy = chunk.Truthiness
-	}
+// run drives the dispatch loop from the current top frame until vm.frames
+// empties, returning the result of that frame's terminating OpReturn.
+// Callers must have already pushed the frame to execute (and, for a call,
+// its callee + args below it on vm.stack) — see Run and apply.
+func (vm *VM) run(ctx context.Context) (core.Value, error) {
+	chunk, code, ip, base, env, truthy := vm.reloadFrame()
 	vm.budget = 0
 
 	for {
@@ -969,7 +991,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if len(vm.frames) > 0 {
 			frameEnv = vm.frames[len(vm.frames)-1].env
 		}
-		result, err := f.Fn(ctx, eval, args, frameEnv)
+		result, err := f.Fn(vm.reentrantCtx(ctx), eval, args, frameEnv)
 		if err != nil {
 			return err
 		}

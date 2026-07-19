@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/victorzhuk/go-lispico/cl"
@@ -71,6 +72,7 @@ type engineImpl struct {
 	bindings          map[string]map[string]struct{} // per-plugin names to delete on unload/reload; lazy-init in Use
 	evalCallbacks     []func(EvalEvent)
 	pluginCallbacks   []func(PluginCallEvent)
+	callbacksActive   atomic.Bool // one-way: no unregister API, so once true it stays true
 }
 
 type engineConfig struct {
@@ -262,15 +264,21 @@ func (e *engineImpl) OnEval(fn func(EvalEvent)) {
 	e.mu.Lock()
 	e.evalCallbacks = append(e.evalCallbacks, fn)
 	e.mu.Unlock()
+	e.callbacksActive.Store(true)
 }
 
 func (e *engineImpl) OnPluginCall(fn func(PluginCallEvent)) {
 	e.mu.Lock()
 	e.pluginCallbacks = append(e.pluginCallbacks, fn)
 	e.mu.Unlock()
+	e.callbacksActive.Store(true)
 }
 
 func (e *engineImpl) fireEvalCallbacks(event EvalEvent) {
+	if !e.callbacksActive.Load() {
+		return
+	}
+
 	e.mu.RLock()
 	callbacks := e.evalCallbacks
 	e.mu.RUnlock()
@@ -281,6 +289,10 @@ func (e *engineImpl) fireEvalCallbacks(event EvalEvent) {
 }
 
 func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
+	if !e.callbacksActive.Load() {
+		return
+	}
+
 	e.mu.RLock()
 	callbacks := e.pluginCallbacks
 	e.mu.RUnlock()

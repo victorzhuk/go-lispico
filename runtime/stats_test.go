@@ -59,9 +59,9 @@ func TestStats_Uptime_Increases(t *testing.T) {
 func TestStats_RecordPluginCall_PerFunction(t *testing.T) {
 	s := newStats()
 
-	s.recordPluginCall("foo", time.Millisecond)
-	s.recordPluginCall("foo", time.Millisecond)
-	s.recordPluginCall("bar", time.Millisecond)
+	s.countPluginCall("foo")
+	s.countPluginCall("foo")
+	s.countPluginCall("bar")
 
 	snap := s.Snapshot()
 	assert.Equal(t, int64(2), snap.PluginCallCounts["foo"])

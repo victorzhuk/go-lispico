@@ -141,6 +141,132 @@ func TestVM_ApplyKeyword(t *testing.T) {
 	require.Equal(t, "EvalError", le.Code)
 }
 
+func TestVM_ApplyPooled_Parity(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+
+	fixed := &Chunk{
+		Name:       "<fn>",
+		Arity:      2,
+		LocalNames: []string{"a", "b"},
+		Code: []Instruction{
+			Encode(OpGetLocal, 1),
+			Encode(OpReturn, 0),
+		},
+	}
+	variadic := &Chunk{
+		Name:       "<fn>",
+		Arity:      1,
+		Variadic:   true,
+		LocalNames: []string{"a", "rest"},
+		Code: []Instruction{
+			Encode(OpGetLocal, 1),
+			Encode(OpReturn, 0),
+		},
+	}
+	m := core.NewHashMap()
+	require.NoError(t, m.Set(core.Keyword{V: "name"}, core.String{V: "Alice"}))
+	goFn := core.GoFunc{
+		Name: "id",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			return args[0], nil
+		},
+	}
+
+	tests := []struct {
+		name string
+		fn   core.Value
+		args []core.Value
+		want core.Value
+	}{
+		{"fixed arity closure", NewClosure(fixed, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}}, core.Int{V: 2}},
+		{"variadic closure", NewClosure(variadic, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}},
+		{"keyword", core.Keyword{V: "name"}, []core.Value{m}, core.String{V: "Alice"}},
+		{"gofunc", goFn, []core.Value{core.Int{V: 5}}, core.Int{V: 5}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vm := New(env)
+			result, err := vm.ApplyPooled(context.Background(), tt.fn, tt.args, env)
+			require.NoError(t, err)
+			require.True(t, tt.want.Equals(result), "got %v, want %v", result, tt.want)
+		})
+	}
+}
+
+// TestVM_ApplyPooled_ArityErrorNoPartialState proves an arity mismatch is
+// caught before apply pushes the closure's frame — a wrong argc must leave
+// the receiver's stack and frames exactly as they were.
+func TestVM_ApplyPooled_ArityErrorNoPartialState(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	vm := New(env)
+
+	chunk := &Chunk{
+		Name:       "<fn>",
+		Arity:      2,
+		LocalNames: []string{"a", "b"},
+		Code: []Instruction{
+			Encode(OpGetLocal, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	closure := NewClosure(chunk, env)
+
+	beforeStack := vm.stackSize()
+	beforeFrames := vm.frameCount()
+
+	_, err := vm.ApplyPooled(context.Background(), closure, []core.Value{core.Int{V: 1}}, env)
+	require.Error(t, err)
+	var le *core.LispicoError
+	require.ErrorAs(t, err, &le)
+	require.Equal(t, "ArityError", le.Code)
+
+	require.Equal(t, beforeStack, vm.stackSize(), "arity error must not leave a partial push")
+	require.Equal(t, beforeFrames, vm.frameCount(), "arity error must not push a frame")
+}
+
+// TestVM_ApplyPooled_NoWrapperChunkAllocs proves ApplyPooled no longer
+// allocates a per-call wrapper Chunk (struct + Constants slice + Code slice)
+// to run a closure. That wrapper cost ~4 allocs on top of the call itself;
+// bounding well under that catches a regression back to it.
+func TestVM_ApplyPooled_NoWrapperChunkAllocs(t *testing.T) {
+	env := core.NewEnv(nil)
+	vm := New(env)
+
+	chunk := &Chunk{
+		Name:       "<fn>",
+		Arity:      1,
+		LocalNames: []string{"x"},
+		Code: []Instruction{
+			Encode(OpGetLocal, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	closure := NewClosure(chunk, env)
+	args := []core.Value{core.Int{V: 42}}
+	ctx := context.Background()
+
+	vm.Reset()
+	allocs := testing.AllocsPerRun(100, func() {
+		vm.Reset()
+		result, err := vm.ApplyPooled(ctx, closure, args, env)
+		if err != nil {
+			panic(err)
+		}
+		testSink = result
+	})
+
+	t.Logf("ApplyPooled AllocsPerRun: %.1f", allocs)
+	if allocs > 3 {
+		t.Fatalf("ApplyPooled allocates %.1f/run, want <= 3 (wrapper Chunk removed)", allocs)
+	}
+}
+
 var testSink core.Value
 
 // TestVM_ApplyPooled_AllocationRegression proves ApplyPooled with reset

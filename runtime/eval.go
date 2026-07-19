@@ -102,6 +102,31 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 	return result, err
 }
 
+// applyBoundary is the Engine.Call fast path: it runs fn on a pooled VM WITHOUT
+// wrapping ctx in a per-call evalState. The VM carries the deadline directly
+// and uses its own structural-depth counter; a re-entrant GoFunc gets a shared
+// counter lazily (see vm.reentrantCtx). Callers on the WithBytecode() path use
+// this instead of Apply.
+func (be *bytecodeEvaluator) applyBoundary(ctx context.Context, fn core.Value, args []core.Value, env *core.Env, deadline time.Time) (core.Value, error) {
+	v := be.vmPool.Get().(*vm.VM)
+	v.Reset()
+	v.SetGlobals(env)
+	if core.HasEvalState(ctx) {
+		// Re-entrant Call (a GoFunc calling back through Engine.Call, or a caller
+		// evaluating within an outer evaluation): share the enclosing structural-
+		// depth counter and deadline so ADR-0007 limits hold across the boundary,
+		// matching Apply. Otherwise this is a top-level Call: the VM's own zeroed
+		// counter and the engine-computed deadline, allocating no evalState.
+		vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
+		v.SetDeadline(core.EvalDeadlineFrom(ctx))
+	} else {
+		v.SetDeadline(deadline)
+	}
+	result, err := v.ApplyPooled(ctx, fn, args, env)
+	be.vmPool.Put(v)
+	return result, err
+}
+
 func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen }
 
 // EvalCached evaluates form with caching: macro-expands, checks the chunk cache
@@ -324,7 +349,7 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 	default:
 	}
 
-	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+	deadline := e.evalDeadline(ctx, start)
 
 	e.mu.RLock()
 	env := e.rootEnv
@@ -332,16 +357,25 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 
 	fn, ok := env.Get(name)
 	if !ok {
-		dur := time.Since(start)
-		e.stats.recordPluginCall(name, dur)
-		e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: dur})
+		e.stats.countPluginCall(name)
+		if e.callbacksActive.Load() {
+			e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: time.Since(start)})
+		}
 		return nil, fmt.Errorf("undefined function: %s", name)
 	}
 
-	result, err := e.evaluator.Apply(ctx, fn, args, env)
-	dur := time.Since(start)
-	e.stats.recordPluginCall(name, dur)
-	e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: dur})
+	var result core.Value
+	var err error
+	if be := e.bytecodeEvaluator; be != nil {
+		result, err = be.applyBoundary(ctx, fn, args, env, deadline)
+	} else {
+		ctx = core.WithEvalDeadline(ctx, deadline)
+		result, err = e.evaluator.Apply(ctx, fn, args, env)
+	}
+	e.stats.countPluginCall(name)
+	if e.callbacksActive.Load() {
+		e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: time.Since(start)})
+	}
 	return result, err
 }
 
