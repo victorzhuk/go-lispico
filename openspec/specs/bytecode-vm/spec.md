@@ -19,7 +19,9 @@ results: compiled chunks MAY be cached and reused, but no stack or frame state
 SHALL leak between `Eval` calls. VM instances SHALL be reused across evaluations —
 on both the `Eval` path and the `Apply`/`Call` path — rather than a fresh machine
 being allocated per call; a reused instance SHALL be reset before it runs the next
-evaluation so no state leaks between them.
+evaluation so no state leaks between them. Applying a closure through
+`Apply`/`ApplyPooled` SHALL enter the VM's call protocol directly, without
+synthesizing a per-call wrapper chunk.
 
 Every compiled expression SHALL leave exactly one result on the stack; a
 non-executed `when` or `unless` body SHALL produce `nil`. Definition and mutation
@@ -84,6 +86,11 @@ previous local layout.
 
 - **WHEN** a function binds locals after a `try`/`catch` form, on both the normal path and the error path
 - **THEN** those locals SHALL hold their own values, with no slot-layout corruption from the catch binding
+
+#### Scenario: Apply enters the call protocol directly
+
+- **WHEN** `Engine.Call` applies a compiled closure on a `WithBytecode()` engine
+- **THEN** the VM SHALL execute the closure through its call protocol without compiling or allocating a per-call wrapper chunk, and the result SHALL match the tree-walker's
 
 ### Requirement: Bytecode VM concurrency safety
 
