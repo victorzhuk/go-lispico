@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -664,6 +665,26 @@ func TestDecodeHashMap_RoundTrip(t *testing.T) {
 		require.Equal(t, 2, len(cVec.Items))
 		assert.True(t, cVec.Items[0].Equals(core.Int{V: 1}))
 		assert.True(t, cVec.Items[1].Equals(core.Int{V: 2}))
+	})
+
+	t.Run("more than 8 keys round-trips through the promoted map form", func(t *testing.T) {
+		src := `{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11}`
+		result := eval(t, env, `(json/decode `+strconv.Quote(src)+`)`)
+		m, ok := result.(*core.HashMap)
+		require.True(t, ok)
+		require.Equal(t, 12, m.Len())
+
+		for i := range 12 {
+			v, found := m.Get(core.Keyword{V: fmt.Sprintf("k%d", i)})
+			require.True(t, found, "key k%d missing", i)
+			assert.True(t, v.Equals(core.Int{V: int64(i)}), "k%d = %v, want %d", i, v, i)
+		}
+
+		encoded := eval(t, env, `(json/encode (json/decode `+strconv.Quote(src)+`))`)
+		encStr, ok := encoded.(core.String)
+		require.True(t, ok)
+		decoded := eval(t, env, `(json/decode `+strconv.Quote(encStr.V)+`)`)
+		assert.True(t, result.Equals(decoded), "round-trip through re-encode changed the map")
 	})
 }
 

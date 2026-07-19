@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -219,86 +221,204 @@ func (v Vector) Equals(o Value) bool {
 }
 
 // hashKey is the internal map key — disambiguates equal string representations
-// across types (e.g. symbol "true" vs bool true).
+// across types (e.g. symbol "true" vs bool true). Numeric and bool keys are
+// derived from their bit pattern, never formatted through strconv/fmt, so
+// Get/Set/Assoc stay allocation-free on the hot path.
 type hashKey struct {
-	typ string
-	val string
+	typ uint8
+	num uint64
+	str string
 }
+
+// Cross-type ordering group. Assigned in the old type-name strings' sort
+// order (bool < float < int < keyword < nil < string < symbol) to minimize
+// iteration-order churn from the rewrite.
+const (
+	hkBool uint8 = iota
+	hkFloat
+	hkInt
+	hkKeyword
+	hkNil
+	hkString
+	hkSymbol
+)
+
+// less orders hash keys deterministically: (typ, num, str). Within a numeric
+// type this is bit-pattern order, not true numeric order — a negative Int or
+// Float has its sign bit set, so e.g. -1 sorts after positive values. The
+// spec only requires deterministic, evaluator-identical order, not true
+// numeric order.
+func (hk hashKey) less(other hashKey) bool {
+	if hk.typ != other.typ {
+		return hk.typ < other.typ
+	}
+	if hk.num != other.num {
+		return hk.num < other.num
+	}
+	return hk.str < other.str
+}
+
+// negZeroBits is math.Float64bits(-0.0). toHashKey folds it to 0 so +0.0 and
+// -0.0 hash to one key — key identity then matches Float.Equals, where
+// 0.0 == -0.0. (The old string-formatted keys kept them distinct: "0" vs "-0".)
+const negZeroBits = uint64(1) << 63
 
 func toHashKey(v Value) (hashKey, error) {
 	switch val := v.(type) {
 	case Nil:
-		return hashKey{"nil", ""}, nil
+		return hashKey{typ: hkNil}, nil
 	case Bool:
-		return hashKey{"bool", fmt.Sprintf("%t", val.V)}, nil
+		var n uint64
+		if val.V {
+			n = 1
+		}
+		return hashKey{typ: hkBool, num: n}, nil
 	case Int:
-		return hashKey{"int", strconv.FormatInt(val.V, 10)}, nil
+		return hashKey{typ: hkInt, num: uint64(val.V)}, nil
 	case Float:
-		return hashKey{"float", strconv.FormatFloat(val.V, 'f', -1, 64)}, nil
+		bits := math.Float64bits(val.V)
+		switch {
+		case math.IsNaN(val.V):
+			bits = math.Float64bits(math.NaN())
+		case bits == negZeroBits:
+			bits = 0
+		}
+		return hashKey{typ: hkFloat, num: bits}, nil
 	case String:
-		return hashKey{"string", val.V}, nil
+		return hashKey{typ: hkString, str: val.V}, nil
 	case Symbol:
-		return hashKey{"symbol", val.V}, nil
+		return hashKey{typ: hkSymbol, str: val.V}, nil
 	case Keyword:
-		return hashKey{"keyword", val.V}, nil
+		return hashKey{typ: hkKeyword, str: val.V}, nil
 	default:
 		return hashKey{}, fmt.Errorf("unhashable type: %T", v)
 	}
 }
 
+// entry is one key-value pair. It keeps the original key Value alongside its
+// hashKey so both storage forms below can render and iterate without a
+// second parallel map.
+type entry struct {
+	hk hashKey
+	k  Value
+	v  Value
+}
+
+// hashMapSmallLimit caps the sorted-slice form: Assoc/Set promote to the map
+// form on the 9th distinct key. Frozen by BenchmarkHashMap_ScanVsMap — below
+// this size, a linear scan beats a Go map lookup.
+const hashMapSmallLimit = 8
+
 // HashMap — immutable associative map. Keys must be comparable (Nil, Bool, Int,
 // Float, String, Symbol, Keyword). Operations return new maps.
+//
+// Below hashMapSmallLimit distinct keys, entries holds them sorted by hashKey
+// and Get is a linear scan — cheap at this size and already iteration-order.
+// Past the limit, m takes over as storage. Promotion is one-way: a map that
+// shrinks back below the limit through Dissoc stays in map form.
 type HashMap struct {
-	m    map[hashKey]Value // internal storage
-	keys map[hashKey]Value // original key Values for display/iteration
+	entries []entry
+	m       map[hashKey]entry
 }
 
 func NewHashMap() *HashMap {
-	return &HashMap{
-		m:    make(map[hashKey]Value),
-		keys: make(map[hashKey]Value),
-	}
+	return &HashMap{}
 }
 
 func (h *HashMap) Type() Keyword { return Keyword{V: "map"} }
 
-// sortedKeys returns the map's hash keys in a deterministic order, so
-// iteration, rendering, and literal evaluation do not depend on Go's
-// randomized map order.
-func (h *HashMap) sortedKeys() []hashKey {
-	ks := make([]hashKey, 0, len(h.m))
-	for hk := range h.m {
-		ks = append(ks, hk)
-	}
-	sort.Slice(ks, func(i, j int) bool {
-		if ks[i].typ != ks[j].typ {
-			return ks[i].typ < ks[j].typ
+// find locates hk in the sorted small-form entries, or the index it would
+// need to be inserted at to keep entries sorted. Unused when h.m != nil.
+func (h *HashMap) find(hk hashKey) (int, bool) {
+	for i := range h.entries {
+		if h.entries[i].hk == hk {
+			return i, true
 		}
-		return ks[i].val < ks[j].val
+		if hk.less(h.entries[i].hk) {
+			return i, false
+		}
+	}
+	return len(h.entries), false
+}
+
+func (h *HashMap) getByHashKey(hk hashKey) (Value, bool) {
+	if h.m != nil {
+		e, ok := h.m[hk]
+		return e.v, ok
+	}
+	if i, ok := h.find(hk); ok {
+		return h.entries[i].v, true
+	}
+	return nil, false
+}
+
+// eachRaw walks every entry in storage order — unsorted for the map form.
+// For callers like Equals that only need membership, not display order.
+func (h *HashMap) eachRaw(fn func(e entry)) {
+	if h.m != nil {
+		for _, e := range h.m {
+			fn(e)
+		}
+		return
+	}
+	for _, e := range h.entries {
+		fn(e)
+	}
+}
+
+// sortedEntries returns every entry in deterministic (typ, num, str) order.
+// The small form is already sorted and returned as-is; the map form re-sorts
+// on each call, same cost as before the rewrite.
+func (h *HashMap) sortedEntries() []entry {
+	if h.m == nil {
+		return h.entries
+	}
+	entries := make([]entry, 0, len(h.m))
+	for _, e := range h.m {
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].hk.less(entries[j].hk)
 	})
-	return ks
+	return entries
 }
 
 func (h *HashMap) String() string {
-	parts := make([]string, 0, len(h.m)*2)
-	for _, hk := range h.sortedKeys() {
-		parts = append(parts, h.keys[hk].String()+" "+h.m[hk].String())
+	entries := h.sortedEntries()
+	parts := make([]string, 0, len(entries)*2)
+	for _, e := range entries {
+		parts = append(parts, e.k.String()+" "+e.v.String())
 	}
 	return "{" + strings.Join(parts, " ") + "}"
 }
 
 func (h *HashMap) Equals(o Value) bool {
 	v, ok := o.(*HashMap)
-	if !ok || len(h.m) != len(v.m) {
+	if !ok || h.Len() != v.Len() {
 		return false
 	}
-	for hk, val := range h.m {
-		other, ok := v.m[hk]
-		if !ok || !val.Equals(other) {
-			return false
+	equal := true
+	h.eachRaw(func(e entry) {
+		if !equal {
+			return
 		}
+		other, found := v.getByHashKey(e.hk)
+		if !found || !e.v.Equals(other) {
+			equal = false
+		}
+	})
+	return equal
+}
+
+// newMapFromEntries builds map-form storage from small-form entries plus one
+// more, used when Assoc/Set crosses hashMapSmallLimit.
+func newMapFromEntries(entries []entry, extra entry) map[hashKey]entry {
+	m := make(map[hashKey]entry, len(entries)+1)
+	for _, e := range entries {
+		m[e.hk] = e
 	}
-	return true
+	m[extra.hk] = extra
+	return m
 }
 
 func (h *HashMap) Assoc(key, val Value) (*HashMap, error) {
@@ -306,14 +426,28 @@ func (h *HashMap) Assoc(key, val Value) (*HashMap, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := NewHashMap()
-	for k, v := range h.m {
-		out.m[k] = v
-		out.keys[k] = h.keys[k]
+	e := entry{hk: hk, k: key, v: val}
+	if h.m != nil {
+		out := make(map[hashKey]entry, len(h.m)+1)
+		maps.Copy(out, h.m)
+		out[hk] = e
+		return &HashMap{m: out}, nil
 	}
-	out.m[hk] = val
-	out.keys[hk] = key
-	return out, nil
+	i, found := h.find(hk)
+	if found {
+		entries := make([]entry, len(h.entries))
+		copy(entries, h.entries)
+		entries[i] = e
+		return &HashMap{entries: entries}, nil
+	}
+	if len(h.entries) >= hashMapSmallLimit {
+		return &HashMap{m: newMapFromEntries(h.entries, e)}, nil
+	}
+	entries := make([]entry, len(h.entries)+1)
+	copy(entries, h.entries[:i])
+	entries[i] = e
+	copy(entries[i+1:], h.entries[i:])
+	return &HashMap{entries: entries}, nil
 }
 
 func (h *HashMap) Dissoc(key Value) (*HashMap, error) {
@@ -321,14 +455,22 @@ func (h *HashMap) Dissoc(key Value) (*HashMap, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := NewHashMap()
-	for k, v := range h.m {
-		if k != hk {
-			out.m[k] = v
-			out.keys[k] = h.keys[k]
+	if h.m != nil {
+		out := make(map[hashKey]entry, len(h.m))
+		for k, e := range h.m {
+			if k != hk {
+				out[k] = e
+			}
+		}
+		return &HashMap{m: out}, nil
+	}
+	entries := make([]entry, 0, len(h.entries))
+	for _, e := range h.entries {
+		if e.hk != hk {
+			entries = append(entries, e)
 		}
 	}
-	return out, nil
+	return &HashMap{entries: entries}, nil
 }
 
 func (h *HashMap) Get(key Value) (Value, bool) {
@@ -336,14 +478,19 @@ func (h *HashMap) Get(key Value) (Value, bool) {
 	if err != nil {
 		return nil, false
 	}
-	v, ok := h.m[hk]
+	v, ok := h.getByHashKey(hk)
 	if !ok {
 		return Nil{}, false
 	}
 	return v, true
 }
 
-func (h *HashMap) Len() int { return len(h.m) }
+func (h *HashMap) Len() int {
+	if h.m != nil {
+		return len(h.m)
+	}
+	return len(h.entries)
+}
 
 // Set mutably inserts a key-value pair. It is an in-place escape hatch for
 // building a fresh map before it is shared; callers holding a HashMap that may
@@ -354,24 +501,40 @@ func (h *HashMap) Set(key, val Value) error {
 	if err != nil {
 		return err
 	}
-	h.m[hk] = val
-	h.keys[hk] = key
+	e := entry{hk: hk, k: key, v: val}
+	if h.m != nil {
+		h.m[hk] = e
+		return nil
+	}
+	i, found := h.find(hk)
+	if found {
+		h.entries[i] = e
+		return nil
+	}
+	if len(h.entries) >= hashMapSmallLimit {
+		h.m = newMapFromEntries(h.entries, e)
+		h.entries = nil
+		return nil
+	}
+	h.entries = append(h.entries, entry{})
+	copy(h.entries[i+1:], h.entries[i:len(h.entries)-1])
+	h.entries[i] = e
 	return nil
 }
 
 // Each calls fn for every key-value pair in the map, in deterministic order.
 func (h *HashMap) Each(fn func(k, v Value)) {
-	for _, hk := range h.sortedKeys() {
-		fn(h.keys[hk], h.m[hk])
+	for _, e := range h.sortedEntries() {
+		fn(e.k, e.v)
 	}
 }
 
 // Pairs returns all key-value pairs as [2]Value arrays, in deterministic order.
 func (h *HashMap) Pairs() [][2]Value {
-	ks := h.sortedKeys()
-	pairs := make([][2]Value, 0, len(ks))
-	for _, hk := range ks {
-		pairs = append(pairs, [2]Value{h.keys[hk], h.m[hk]})
+	entries := h.sortedEntries()
+	pairs := make([][2]Value, len(entries))
+	for i, e := range entries {
+		pairs[i] = [2]Value{e.k, e.v}
 	}
 	return pairs
 }

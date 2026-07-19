@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"testing"
 )
 
@@ -69,5 +71,41 @@ func BenchmarkHashMap_Assoc(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		m.Assoc(key, val)
+	}
+}
+
+// BenchmarkHashMap_ScanVsMap freezes hashMapSmallLimit: it compares a linear
+// scan over sorted entries against a native Go map lookup at the small-form
+// boundary sizes, independent of HashMap's own auto-promotion at 9 keys.
+func BenchmarkHashMap_ScanVsMap(b *testing.B) {
+	for _, n := range []int{4, 8, 16} {
+		entries := make([]entry, n)
+		mapForm := make(map[hashKey]entry, n)
+		for i := range n {
+			k := Keyword{V: fmt.Sprintf("key%02d", i)}
+			hk, err := toHashKey(k)
+			if err != nil {
+				b.Fatal(err)
+			}
+			e := entry{hk: hk, k: k, v: Int{V: int64(i)}}
+			entries[i] = e
+			mapForm[hk] = e
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].hk.less(entries[j].hk) })
+		target := entries[n-1].hk
+		scanForm := &HashMap{entries: entries}
+
+		b.Run(fmt.Sprintf("scan/n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				scanForm.find(target)
+			}
+		})
+		b.Run(fmt.Sprintf("map/n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				_ = mapForm[target]
+			}
+		})
 	}
 }
