@@ -38,6 +38,14 @@ duplicated that check and forced a clock read onto every short call. This is
 what lets a later boundary fast path run short calls entirely clock-free
 (deadline arming moves into the first poll — `engine-func-handle`).
 
+**Shared reentrant budget.** A bytecode `GoFunc` can re-enter the evaluator
+through many short VM runs. Those runs must consume the context's shared
+evaluation budget before dispatch, matching the tree-walker; otherwise each
+fresh VM run resets its local budget and an engine deadline can remain
+unobserved indefinitely. This boundary poll is budget-throttled, not a
+per-run clock read, so standalone short VM runs retain their full initial
+budget.
+
 **GoFunc window.** A host `GoFunc` runs to completion regardless of polls; the
 old forced poll fired after it returned. Now observation happens at most 127
 instructions later. Both before and after, the wall-clock observation window

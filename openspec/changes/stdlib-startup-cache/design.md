@@ -78,7 +78,8 @@ stdlib closures publish sites against their own root env only.
 
 ## Non-goals
 
-- Lazy stdlib loading (goja-style deferred init) — changes observable load
-  semantics; out of scope.
+- Lazy stdlib loading (goja-style deferred init) — out of scope here; the
+  trigger-gated follow-up `stdlib-lazy-materialization` covers it if this
+  change's measured startup still misses the target.
 - Caching user `Eval` sources across engines — macro-epoch reproducibility
   does not hold there.
