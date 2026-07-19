@@ -26,6 +26,7 @@ type Env struct {
 	cell0      Cell // first binding's cell, inline to save a heap alloc per scope
 	cell0Used  bool
 	funcs      map[string]Value // function cell; nil until first SetFunc (Lisp-2 only)
+	funcCanon  map[string]bool  // function cell canonical markers; nil until first SetFuncCanonical
 	eval       Evaluator
 	macroEpoch int           // bumped on each defmacro in this scope; used in bytecode cache key
 	newNameGen atomic.Uint64 // bumped whenever a name is newly bound (or revived from tombstone) in vars
@@ -191,7 +192,9 @@ func (e *Env) Get(name string) (Value, bool) {
 }
 
 // SetFunc binds name in this scope's function cell (Lisp-2 only). The cell is
-// allocated on first use so Lisp-1 scopes never carry it.
+// allocated on first use so Lisp-1 scopes never carry it. Overwriting a
+// canonical function binding removes the canonical marker, so a defun rebind
+// is detected as non-canonical.
 func (e *Env) SetFunc(name string, val Value) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -199,6 +202,26 @@ func (e *Env) SetFunc(name string, val Value) {
 		e.funcs = make(map[string]Value)
 	}
 	e.funcs[name] = val
+	delete(e.funcCanon, name)
+}
+
+// SetFuncCanonical binds name as a canonical operator in this scope's
+// function cell (Lisp-2 only). It is intended ONLY for the engine's
+// canonical-operator bridge, which mirrors a canonical value-cell binding
+// into the function cell so Lisp-2 head resolution observes it too. Marking
+// an arbitrary custom GoFunc as canonical will cause the bytecode VM to
+// execute native opcode semantics for name instead of calling it.
+func (e *Env) SetFuncCanonical(name string, val Value) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.funcs == nil {
+		e.funcs = make(map[string]Value)
+	}
+	if e.funcCanon == nil {
+		e.funcCanon = make(map[string]bool)
+	}
+	e.funcs[name] = val
+	e.funcCanon[name] = true
 }
 
 // GetFunc walks the scope chain reading the function cell (Lisp-2 only).
@@ -213,6 +236,23 @@ func (e *Env) GetFunc(name string) (Value, bool) {
 		return e.parent.GetFunc(name)
 	}
 	return nil, false
+}
+
+// GetFuncCanonical resolves name like GetFunc but also returns whether it is
+// a canonical binding in its owning scope (any scope in the chain). Returns
+// (value, found, canonical).
+func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
+	e.mu.RLock()
+	val, ok := e.funcs[name]
+	canon := e.funcCanon[name]
+	e.mu.RUnlock()
+	if ok {
+		return val, true, canon
+	}
+	if e.parent != nil {
+		return e.parent.GetFuncCanonical(name)
+	}
+	return nil, false, false
 }
 
 // Find returns the scope that owns name (for set!).
@@ -284,6 +324,7 @@ func (e *Env) Delete(name string) {
 		cell.canonical = false
 	}
 	delete(e.funcs, name)
+	delete(e.funcCanon, name)
 }
 
 // FuncNames returns a snapshot of the names bound in this scope's local

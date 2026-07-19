@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/cl"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
@@ -788,6 +790,123 @@ func TestCompiler_NativeOp_ShadowedByEnclosingFn(t *testing.T) {
 		}
 	}
 	assert.True(t, hasCall, "expected OpCall in inner fn body when + is shadowed by enclosing fn param")
+}
+
+func TestCompiler_NativeOp_Dialect(t *testing.T) {
+	clDialect := cl.Dialect()
+	clojureDialect := clojure.Dialect()
+	// CL is Lisp-2: a native op head resolves through the function cell
+	// (OpGetFunc), same as any other call head under compileCall. Clojure is
+	// Lisp-1: the value cell (OpGetGlobal) is the only namespace.
+	cases := []struct {
+		name    string
+		dialect *core.Dialect
+		headOp  vm.Opcode
+	}{
+		{"cl", &clDialect, vm.OpGetFunc},
+		{"clojure", &clojureDialect, vm.OpGetGlobal},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("add", func(t *testing.T) {
+				c := NewCompilerWithDialect("test", tc.dialect)
+				form := core.List{Items: []core.Value{
+					core.Symbol{V: "+"},
+					core.Symbol{V: "a"},
+					core.Symbol{V: "b"},
+				}}
+				require.NoError(t, c.Compile(form))
+
+				chunk := c.Chunk()
+				require.Len(t, chunk.Code, 4)
+				assert.Equal(t, tc.headOp, chunk.Code[0].Op(), "head opcode")
+				assert.Equal(t, vm.OpAdd, chunk.Code[3].Op())
+			})
+
+			t.Run("lt", func(t *testing.T) {
+				c := NewCompilerWithDialect("test", tc.dialect)
+				form := core.List{Items: []core.Value{
+					core.Symbol{V: "<"},
+					core.Symbol{V: "a"},
+					core.Symbol{V: "b"},
+				}}
+				require.NoError(t, c.Compile(form))
+
+				chunk := c.Chunk()
+				require.Len(t, chunk.Code, 4)
+				assert.Equal(t, tc.headOp, chunk.Code[0].Op(), "head opcode")
+				assert.Equal(t, vm.OpLt, chunk.Code[3].Op())
+			})
+		})
+	}
+}
+
+// TestCompiler_NativeOp_DialectShadowedByLet asserts the shadow fallback
+// under Clojure (Lisp-1), where a let-bound "+" unambiguously shadows the
+// single namespace. CL's let only binds the value cell, not the function
+// cell a native-op head resolves through, so the analogous CL case doesn't
+// shadow at all — that's covered by crossval instead of an opcode assertion.
+func TestCompiler_NativeOp_DialectShadowedByLet(t *testing.T) {
+	clojureDialect := clojure.Dialect()
+	c := NewCompilerWithDialect("test", &clojureDialect)
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "let"},
+		core.Vector{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 5},
+		}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 1},
+			core.Int{V: 2},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	hasCall := false
+	for _, instr := range chunk.Code {
+		if instr.Op() == vm.OpCall {
+			hasCall = true
+			break
+		}
+	}
+	assert.True(t, hasCall, "expected OpCall when + is locally shadowed under a dialect")
+}
+
+// TestCompiler_NativeOp_DialectRebindStillNative: under CL, a value-cell
+// `(def + f)` doesn't touch the function cell a native-op head resolves
+// through (OpGetFunc), so the head still compiles to the native opcode.
+// Rebind-safety for an actual function-cell rebind (defun) is a VM runtime
+// concern, proven by crossval, not a compile-time one.
+func TestCompiler_NativeOp_DialectRebindStillNative(t *testing.T) {
+	clDialect := cl.Dialect()
+	c := NewCompilerWithDialect("test", &clDialect)
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "do"},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "def"},
+			core.Symbol{V: "+"},
+			core.Symbol{V: "f"},
+		}},
+		core.List{Items: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 1},
+			core.Int{V: 2},
+		}},
+	}}
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	hasAdd := false
+	for _, instr := range chunk.Code {
+		if instr.Op() == vm.OpAdd {
+			hasAdd = true
+			break
+		}
+	}
+	assert.True(t, hasAdd, "value-cell def of + doesn't touch the function cell; head still compiles to OpAdd")
 }
 
 func TestCompiler_HashMap(t *testing.T) {

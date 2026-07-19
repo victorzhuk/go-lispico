@@ -355,15 +355,22 @@ func (e *engineImpl) applyVocabulary() {
 	// Bridge every GoFunc to the function cell under Lisp-2 so they are
 	// callable in head position. Without this, head lookup of a GoFunc (e.g.
 	// `(* x x)`, `(car '...)`) returns undefined because the value cell is
-	// not consulted for head resolution in Lisp-2.
+	// not consulted for head resolution in Lisp-2. A canonical value-cell
+	// binding (stdlib's native operators) bridges canonically too, so the VM's
+	// native-op fast path — which under Lisp-2 freezes off the function cell —
+	// still fires; a defun rebind lands through SetFunc and loses it again.
 	if e.config.dialect.IsLisp2() {
 		for _, name := range e.rootEnv.VarNames() {
-			v, ok := e.rootEnv.Get(name)
+			v, ok, canon := e.rootEnv.GetCanonical(name)
 			if !ok {
 				continue
 			}
 			if _, isGoFunc := v.(core.GoFunc); isGoFunc {
-				e.rootEnv.SetFunc(name, v)
+				if canon {
+					e.rootEnv.SetFuncCanonical(name, v)
+				} else {
+					e.rootEnv.SetFunc(name, v)
+				}
 			}
 		}
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
 // Benchmarks using bracket literals are pinned to Clojure; the default flips to Common Lisp in shard-C.
@@ -189,6 +190,30 @@ func BenchmarkEngine_CallBytecodePlain(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = eng.Call(context.Background(), "pick", core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
+// BenchmarkEngine_CallBytecodeCanonical measures Engine.Call for an arithmetic
+// body ((defn add [a b] (+ a b))) with a canonical stdlib `+` — the path the
+// native-op fast path actually optimizes. Unlike BenchmarkEngine_CallBytecode
+// (which binds `+` via Engine.Bind, clearing the canonical flag and forcing a
+// GoFunc fallback), this reflects the shipped runtime: canonical `+` compiles
+// to OpAdd and executes via execNativeFast, no GoFunc call frame.
+func BenchmarkEngine_CallBytecodeCanonical(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Call(context.Background(), "add", core.Int{V: 1}, core.Int{V: 2})
 	}
 }
 

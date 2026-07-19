@@ -224,10 +224,14 @@ func (c *Compiler) compileList(f core.List) error {
 			case "defmacro":
 				return unsupportedErr("defmacro is not supported by the bytecode compiler")
 			}
-			// Native operator: emit opcode only if not locally shadowed in any scope.
-			if op, ok := nativeOp(canonicalName); ok && !c.isLocallyShadowed(canonicalName) {
-				return c.compileNativeOp(f.Items, op)
-			}
+		}
+		// +, -, *, etc. aren't special forms, so a configured dialect marks
+		// isSpecial false for them and the switch above never runs; a form
+		// that IS a real special form already returned from the switch, so
+		// this can't misfire. Skip only when locally shadowed, falling back
+		// to compileCall/OpCall.
+		if op, ok := nativeOp(canonicalName); ok && !c.isLocallyShadowed(canonicalName) {
+			return c.compileNativeOp(f.Items, op)
 		}
 	}
 	return c.compileCall(f.Items)
@@ -579,15 +583,21 @@ func (c *Compiler) compileCall(items []core.Value) error {
 }
 
 // compileNativeOp emits a native arithmetic/comparison opcode for a list form
-// whose head is a non-shadowed symbol. It emits OpGetGlobal for the operator
-// (preserving head-resolution order and frame-env semantics, and freezing the
-// operator's canonical-native eligibility at that point), then compiles each
-// argument, then the native opcode with operand = number of arguments. The VM
-// dispatches natively only when the operator was frozen as canonical, else it
-// calls the pushed operator value.
+// whose head is a non-shadowed symbol. It emits the operator's head lookup
+// (OpGetFunc under a Lisp-2 dialect — CL resolves callable heads through the
+// function cell, not the value cell, so a defun rebind must be observed there
+// too; OpGetGlobal otherwise), preserving head-resolution order and freezing
+// the operator's canonical-native eligibility at that point, then compiles
+// each argument, then the native opcode with operand = number of arguments.
+// The VM dispatches natively only when the operator was frozen as canonical,
+// else it calls the pushed operator value.
 func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
 	sym := items[0].(core.Symbol)
-	c.emitGetGlobal(sym)
+	if c.dialect != nil && c.dialect.IsLisp2() {
+		c.chunk.Emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
+	} else {
+		c.emitGetGlobal(sym)
+	}
 
 	for _, arg := range items[1:] {
 		if err := c.Compile(arg); err != nil {

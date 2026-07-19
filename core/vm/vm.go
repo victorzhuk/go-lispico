@@ -428,11 +428,19 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 
 		case OpGetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
-			v, found := env.GetFunc(sym.V)
+			v, found, canon := env.GetFuncCanonical(sym.V)
 			if !found {
 				return nil, core.NewUndefinedError(sym.V)
 			}
 			vm.push(v)
+			// Lisp-2 native-op heads resolve here (compileNativeOp emits
+			// OpGetFunc for them), so the freeze has to happen here too —
+			// mirrors OpGetGlobal above.
+			if canon && isNativeOpSymbol(sym.V) {
+				if op, isOp := nativeSymbolToOp(sym.V); isOp {
+					vm.freezeNativeOp(len(vm.stack)-1, op)
+				}
+			}
 
 		case OpSetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)

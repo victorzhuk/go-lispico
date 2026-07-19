@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
 // All tests pinned to Clojure dialect; the default flips to Common Lisp in shard-C.
@@ -320,4 +321,32 @@ func TestBytecodeRuntime_TryCatchLocals(t *testing.T) {
 			assert.True(t, got.Equals(tc.want), "got %v (%T), want %v (%T)", got, got, tc.want, tc.want)
 		})
 	}
+}
+
+// TestBytecodeRuntime_NativeOpNoGoFuncDispatch proves that under a configured
+// dialect (Clojure, matching the goldset/bench setup), "+" compiles to OpAdd
+// and dispatches through the VM's native fast path instead of calling the
+// stdlib GoFunc. Before compileList hoisted native-op emission out of the
+// isSpecial gate, "+" wasn't a special form under any dialect, so it always
+// compiled to OpCall and paid the GoFunc-call path (measured 3 allocs/op);
+// the native path measures 1. A regression back to GoFunc dispatch pushes
+// this well past the ceiling.
+func TestBytecodeRuntime_NativeOpNoGoFuncDispatch(t *testing.T) {
+	if raceEnabled {
+		t.Skip("alloc counts are unreliable under the race detector")
+	}
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	require.NoError(t, eng.Use(stdlib.New()))
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "setup", "(defn add [a b] (+ a b))")
+	require.NoError(t, err)
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		_, _ = eng.Call(ctx, "add", core.Int{V: 1}, core.Int{V: 2})
+	})
+	assert.LessOrEqual(t, allocs, float64(2), "native op dispatch alloc ceiling, got %v", allocs)
 }
