@@ -3,7 +3,7 @@
 - [x] 1.1 Remove forced `pollCancel` at `OpCall`, `OpTailCall`, and `OpLoop` in `core/vm/vm.go`; keep the budget check at the loop head.
 - [x] 1.2 Start `run()` with `vm.budget = checkInterval`; update the `checkInterval` doc comment (first check no longer fires at instruction one).
 - [x] 1.3 Confirm every boundary entry (`Engine.Eval`, `Engine.Call`, `applyBoundary`, `runVM`) still rejects an already-cancelled ctx before instruction one; add the check where missing.
-- [ ] 1.4 Share the evaluator's batched cancellation budget across reentrant bytecode `Eval` calls so short VM runs cannot indefinitely defer an engine deadline.
+- [x] 1.4 Share the evaluator's batched cancellation budget across reentrant bytecode `Eval` calls so short VM runs cannot indefinitely defer an engine deadline.
 
 ## 2. Tests
 
@@ -17,6 +17,6 @@
 
 ## 4. Verify
 
-- [ ] 4.1 `go test ./...` and `-race` green; crossval parity suite green.
-- [ ] 4.2 `GOLDSET_MODE=vm` goldset gate non-increasing.
-- [ ] 4.3 Bench evidence (bench repo, benchstat ≥6 counts): fib bytecode delta recorded; `time.runtimeNow` off the fib profile top.
+- [x] 4.1 `go test ./...` and `-race` green; crossval parity suite green.
+- [x] 4.2 `GOLDSET_MODE=vm` goldset gate non-increasing.
+- [x] 4.3 Bench evidence (bench repo, benchstat ≥6 counts): fib bytecode delta recorded; `time.runtimeNow` off the fib profile top.

@@ -23,6 +23,12 @@ ones. Removing 2–4 keeps the interval bound because the budget decrements on
 every executed instruction, including `OpCall`/`OpTailCall`/`OpLoop`
 themselves.
 
+Local deadline-armed `fib(15)` VM validation (six samples per revision) measured
+`377.2µs` → `300.2µs` per operation (`-20.41%`, `p=0.002`); allocations were
+unchanged. CPU profiles moved `time.runtimeNow` from the top cost (`26.44%`) to
+`3.77%`, below the top six entries. The temporary harness set the same
+30-second engine-style deadline before each VM run and was removed after capture.
+
 ## Decisions
 
 **Budget-only observation.** The latency contract weakens from "no later than
