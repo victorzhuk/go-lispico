@@ -578,7 +578,7 @@ func TestVM_CancelObservedWithinLoopIteration(t *testing.T) {
 
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
-	assert.Less(t, elapsed, time.Second, "OpLoop's forced check should bound cancellation latency to about one iteration")
+	assert.Less(t, elapsed, time.Second, "budget-bound check should bound cancellation latency to about one iteration")
 }
 
 func TestVM_CancelObservedWithinOneCall_DeepRecursion(t *testing.T) {
@@ -601,7 +601,7 @@ func TestVM_CancelObservedWithinOneCall_DeepRecursion(t *testing.T) {
 
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
-	assert.Less(t, elapsed, time.Second, "OpCall's forced check should bound cancellation latency to about one call")
+	assert.Less(t, elapsed, time.Second, "budget-bound check should bound cancellation latency to about one call")
 }
 
 func TestVM_EngineDeadlineFires(t *testing.T) {

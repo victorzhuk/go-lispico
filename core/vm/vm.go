@@ -308,8 +308,8 @@ func keywordArityError(got int) *core.LispicoError {
 }
 
 // checkInterval bounds how many instructions/nodes run between batched
-// cancellation checks. Starting a fresh budget at 0 (its zero value) forces
-// the first check to fire immediately, then every checkInterval thereafter.
+// cancellation checks. A fresh run starts with a full checkInterval budget
+// before the first check, then every checkInterval thereafter.
 const checkInterval = 128
 
 // pollCancel checks the engine deadline and ctx for cancellation, resetting
@@ -341,7 +341,10 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 // its callee + args below it on vm.stack) — see Run and apply.
 func (vm *VM) run(ctx context.Context) (core.Value, error) {
 	chunk, code, ip, base, env, truthy := vm.reloadFrame()
-	vm.budget = 0
+	vm.budget = checkInterval
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("vm: %w", err)
+	}
 
 	for {
 		if vm.budget--; vm.budget <= 0 {
@@ -474,9 +477,6 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 					return nil, err
 				}
 			}
-			if err := vm.pollCancel(ctx); err != nil {
-				return nil, err
-			}
 			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
 		case OpTailCall:
@@ -485,9 +485,6 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
-			}
-			if err := vm.pollCancel(ctx); err != nil {
-				return nil, err
 			}
 			chunk, code, ip, base, env, truthy = vm.reloadFrame()
 
@@ -574,9 +571,6 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 
 		case OpLoop:
 			ip = instr.A()
-			if err := vm.pollCancel(ctx); err != nil {
-				return nil, err
-			}
 
 		case OpSetupTry:
 			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), structDepth: vm.structDepth.Load()})

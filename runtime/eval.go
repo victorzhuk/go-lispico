@@ -68,6 +68,9 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, limits ResourceLimits
 
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
 	ctx = core.EnsureEvalState(ctx)
+	if err := core.PollEvalState(ctx); err != nil {
+		return nil, err
+	}
 	expanded, err := be.macro.MacroExpand(ctx, form, env)
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
@@ -92,6 +95,9 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
 	ctx = core.EnsureEvalState(ctx)
+	if err := core.PollEvalState(ctx); err != nil {
+		return nil, err
+	}
 	v := be.vmPool.Get().(*vm.VM)
 	v.Reset()
 	v.SetGlobals(env)
@@ -134,6 +140,9 @@ func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen 
 // runs via a pooled VM.
 func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash string, formIndex int) (core.Value, error) {
 	ctx = core.EnsureEvalState(ctx)
+	if err := core.PollEvalState(ctx); err != nil {
+		return nil, err
+	}
 	expanded, err := be.macro.MacroExpand(ctx, form, env)
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)

@@ -143,8 +143,11 @@ func DetachEvalState(ctx context.Context) context.Context {
 // is not already present. Callers that propagate ctx through evaluator
 // callbacks (VM GoFuncs, Apply) should call this at every entry point so
 // the shared structural-depth counter is available.
-func EnsureEvalState(ctx context.Context) context.Context {
-	return ensureEvalState(ctx)
+func EnsureEvalState(ctx context.Context) context.Context { return ensureEvalState(ctx) }
+
+// PollEvalState runs the shared batched cancellation check carried by ctx.
+func PollEvalState(ctx context.Context) error {
+	return evalStateFrom(ctx).pollCancel(ctx, false)
 }
 
 // EvalStructCounter returns the shared structDepth atomic from the eval state
