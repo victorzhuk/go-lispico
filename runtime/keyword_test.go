@@ -10,13 +10,13 @@ import (
 )
 
 // Proves keyword-as-function application, (:key m), behaves identically
-// through the tree-walker (default Engine) and the bytecode VM
+// through the tree-walker (WithTreeWalker) and the bytecode VM
 // (WithBytecode), across both the Eval path (literal keyword in head
 // position) and the Call path (a bound name resolved to a keyword).
 func TestKeywordApplication_EvalAndCall_Parity(t *testing.T) {
 	t.Parallel()
 
-	treeEng, err := New(nil)
+	treeEng, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = treeEng.Close() })
 

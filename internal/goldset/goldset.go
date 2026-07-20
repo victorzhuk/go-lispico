@@ -31,11 +31,16 @@ const (
 var Modes = []Mode{ModeEvaluator, ModeVM}
 
 // NewEngine builds the engine configuration the gate measures: Clojure
-// dialect plus stdlib — the surface embedder rules run on.
+// dialect plus stdlib, with explicit evaluator selection per mode.
 func NewEngine(mode Mode) (runtime.Engine, error) {
 	opts := []runtime.EngineOption{runtime.WithDialect(clojure.Dialect())}
-	if mode == ModeVM {
+	switch mode {
+	case ModeEvaluator:
+		opts = append(opts, runtime.WithTreeWalker())
+	case ModeVM:
 		opts = append(opts, runtime.WithBytecode())
+	default:
+		return nil, fmt.Errorf("goldset: unknown mode %q", mode)
 	}
 	eng, err := runtime.New(nil, opts...)
 	if err != nil {

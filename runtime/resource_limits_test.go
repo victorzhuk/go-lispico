@@ -21,6 +21,8 @@ func evalLimits(t *testing.T, bytecode bool, limits ResourceLimits, src string) 
 	opts := []EngineOption{WithResourceLimits(limits), WithDialect(clojure.Dialect())}
 	if bytecode {
 		opts = append(opts, WithBytecode())
+	} else {
+		opts = append(opts, WithTreeWalker())
 	}
 	e, err := New(nil, opts...)
 	require.NoError(t, err)

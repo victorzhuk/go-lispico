@@ -399,7 +399,7 @@ func buildFileLoadSource() string {
 // BenchmarkEngine_LoadFileTreeWalker measures repeated eval of a file-like
 // source through the tree-walking evaluator (no bytecode, no chunk cache).
 func BenchmarkEngine_LoadFileTreeWalker(b *testing.B) {
-	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	eng, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	if err != nil {
 		b.Fatal(err)
 	}

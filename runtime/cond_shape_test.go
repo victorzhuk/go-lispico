@@ -15,7 +15,7 @@ import (
 
 func TestCondShape_ClojureFlatCond_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -37,7 +37,7 @@ func TestCondShape_ClojureFlatCond_Bytecode(t *testing.T) {
 
 func TestCondShape_ClojureFlatCond_NoMatch_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -61,7 +61,7 @@ func TestCondShape_ClojureFlatCond_NoMatch_Bytecode(t *testing.T) {
 
 func TestCondShape_CL_MultiBody_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil) // default CL dialect
+	e, err := New(nil, WithTreeWalker()) // default CL dialect
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -83,7 +83,7 @@ func TestCondShape_CL_MultiBody_Bytecode(t *testing.T) {
 
 func TestCondShape_CL_MultiBody_NoMatch_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil)
+	e, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -96,7 +96,7 @@ func TestCondShape_CL_MultiBody_NoMatch_TreeWalker(t *testing.T) {
 
 func TestCondShape_QuotedCond_RoundTrip_CL_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil)
+	e, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -126,7 +126,7 @@ func TestCondShape_QuotedCond_RoundTrip_CL_Bytecode(t *testing.T) {
 
 func TestCondShape_QuotedCond_RoundTrip_Clojure_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -200,7 +200,7 @@ func TestCondShape_Malformed_Clojure_OddPair_Bytecode(t *testing.T) {
 
 func TestCondShape_Malformed_CL_NonList_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil)
+	e, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -212,7 +212,7 @@ func TestCondShape_Malformed_CL_NonList_TreeWalker(t *testing.T) {
 
 func TestCondShape_Malformed_CL_EmptyClause_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil)
+	e, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -224,7 +224,7 @@ func TestCondShape_Malformed_CL_EmptyClause_TreeWalker(t *testing.T) {
 
 func TestCondShape_Malformed_Clojure_OddPair_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -238,7 +238,7 @@ func TestCondShape_Malformed_Clojure_OddPair_TreeWalker(t *testing.T) {
 
 func TestCondShape_QuasiquotedCond_RoundTrip_CL_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil)
+	e, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -268,7 +268,7 @@ func TestCondShape_QuasiquotedCond_RoundTrip_CL_Bytecode(t *testing.T) {
 
 func TestCondShape_QuasiquotedCond_RoundTrip_Clojure_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -304,7 +304,7 @@ func TestCondShape_QuasiquotedCond_RoundTrip_Clojure_Bytecode(t *testing.T) {
 
 func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_CL_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil)
+	e, err := New(nil, WithTreeWalker())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 	bindBuiltin(t, e, "+")
@@ -336,7 +336,7 @@ func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_CL_Bytecode(t *testing.T) {
 
 func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_Clojure_TreeWalker(t *testing.T) {
 	t.Parallel()
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 	bindBuiltin(t, e, "+")

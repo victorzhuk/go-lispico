@@ -36,7 +36,7 @@ func TestDialectNativeOp_CL_FunctionCellParity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tw, err := New(nil, WithDialect(cl.Dialect()))
+			tw, err := New(nil, WithTreeWalker(), WithDialect(cl.Dialect()))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = tw.Close() })
 			require.NoError(t, tw.Use(stdlib.New()))
