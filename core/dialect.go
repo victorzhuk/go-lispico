@@ -233,33 +233,57 @@ func (d Dialect) Vocab() map[string]VocabEntry {
 // under this Dialect if the name is a known special form (possibly renamed).
 // It returns:
 //   - canonical, false, true if the name is a known special form (possibly renamed)
-//   - "", true, true if the name was explicitly removed
+//   - "", true, true if the name was removed from this dialect's dispatch table
 //   - "", false, false if the name is not a special form at all in this dialect
 func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok bool) {
-	// Walk delta ops in reverse so the most recent change to this name wins.
-	for i := len(d.ops) - 1; i >= 0; i-- {
-		op := d.ops[i]
-		if op.name == name {
-			switch op.kind {
-			case opRename:
-				return op.canonical, false, true
-			case opAdd:
-				return op.canonical, false, true
-			case opRemove:
-				return "", true, true
+	present := false
+	affected := false
+	if d.base == baseFull {
+		if _, ok := kernel[name]; ok {
+			canonical = name
+			present = true
+			affected = true
+		}
+	}
+
+	for _, op := range d.ops {
+		switch op.kind {
+		case opAdd:
+			if op.name == name {
+				canonical = op.canonical
+				present = true
+				affected = true
+			}
+		case opRename:
+			if op.canonical == name {
+				canonical = ""
+				present = false
+				affected = true
+			}
+			if op.name == name {
+				canonical = op.canonical
+				present = true
+				affected = true
+			}
+		case opRemove:
+			if op.name == name {
+				canonical = ""
+				present = false
+				affected = true
 			}
 		}
 	}
-	// Lisp-2 injects function and funcall into the resolved form table.
+
 	if d.ns == nsLisp2 {
 		if name == "function" || name == "funcall" {
 			return name, false, true
 		}
 	}
-	if d.base == baseFull {
-		if _, ok := kernel[name]; ok {
-			return name, false, true
-		}
+	if present {
+		return canonical, false, true
+	}
+	if affected {
+		return "", true, true
 	}
 	return "", false, false
 }
