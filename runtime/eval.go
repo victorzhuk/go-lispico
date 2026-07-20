@@ -9,12 +9,15 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
+
+var nowFunc = time.Now
 
 type macroExpander interface {
 	MacroExpand(ctx context.Context, form core.Value, env *core.Env) (core.Value, error)
@@ -33,6 +36,7 @@ type cacheKey struct {
 type bytecodeEvaluator struct {
 	globals            *core.Env
 	maxDepth           int
+	timeout            time.Duration
 	macro              macroExpander
 	tree               core.Evaluator
 	dialect            core.Dialect
@@ -45,10 +49,11 @@ type bytecodeEvaluator struct {
 	maxCacheEntries    int
 }
 
-func newBytecodeEvaluator(globals *core.Env, maxDepth int, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
+func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
 	be := &bytecodeEvaluator{
 		globals:            globals,
 		maxDepth:           maxDepth,
+		timeout:            timeout,
 		maxStructuralDepth: limits.MaxStructuralDepth,
 		maxCollectionLen:   limits.MaxCollectionLen,
 		maxCacheEntries:    limits.MaxCacheEntries,
@@ -66,6 +71,17 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, limits ResourceLimits
 	return be
 }
 
+func (be *bytecodeEvaluator) treeFallbackCtx(ctx context.Context) context.Context {
+	if be.timeout <= 0 || !core.EvalDeadlineFrom(ctx).IsZero() {
+		return ctx
+	}
+	bound := nowFunc().Add(be.timeout)
+	if d, ok := ctx.Deadline(); ok && !d.After(bound) {
+		return ctx
+	}
+	return core.WithEvalDeadline(ctx, bound)
+}
+
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
 	ctx = core.EnsureEvalState(ctx)
 	if err := core.PollEvalState(ctx); err != nil {
@@ -78,7 +94,7 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 	if err := comp.Compile(expanded); err != nil {
 		if isUnsupportedInBytecode(err) {
-			return be.tree.Eval(ctx, expanded, env)
+			return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
 		}
 		return nil, fmt.Errorf("compile: %w", err)
 	}
@@ -113,11 +129,11 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 }
 
 // applyBoundary is the Engine.Call fast path: it runs fn on a pooled VM WITHOUT
-// wrapping ctx in a per-call evalState. The VM carries the deadline directly
+// wrapping ctx in a per-call evalState. The VM lazily arms the engine timeout
 // and uses its own structural-depth counter; a re-entrant GoFunc gets a shared
 // counter lazily (see vm.reentrantCtx). Callers on the WithBytecode() path use
 // this instead of Apply.
-func (be *bytecodeEvaluator) applyBoundary(ctx context.Context, fn core.Value, args []core.Value, env *core.Env, deadline time.Time) (core.Value, error) {
+func (be *bytecodeEvaluator) applyBoundary(ctx context.Context, fn core.Value, args []core.Value, env *core.Env, timeout time.Duration) (core.Value, error) {
 	v := be.vmPool.Get().(*vm.VM)
 	v.Reset()
 	v.SetGlobals(env)
@@ -126,11 +142,11 @@ func (be *bytecodeEvaluator) applyBoundary(ctx context.Context, fn core.Value, a
 		// evaluating within an outer evaluation): share the enclosing structural-
 		// depth counter and deadline so ADR-0007 limits hold across the boundary,
 		// matching Apply. Otherwise this is a top-level Call: the VM's own zeroed
-		// counter and the engine-computed deadline, allocating no evalState.
+		// counter and lazy timeout avoid entry-time evalState and clock work.
 		vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
 		v.SetDeadline(core.EvalDeadlineFrom(ctx))
 	} else {
-		v.SetDeadline(deadline)
+		v.SetTimeout(timeout)
 	}
 	result, err := v.ApplyPooled(ctx, fn, args, env)
 	be.vmPool.Put(v)
@@ -176,7 +192,7 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 		if err := comp.Compile(expanded); err != nil {
 			if isUnsupportedInBytecode(err) {
-				return be.tree.Eval(ctx, expanded, env)
+				return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
 			}
 			return nil, fmt.Errorf("compile: %w", err)
 		}
@@ -216,7 +232,11 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 	v := be.vmPool.Get().(*vm.VM)
 	v.Reset()
 	v.SetGlobals(env)
-	v.SetDeadline(core.EvalDeadlineFrom(ctx))
+	if deadline := core.EvalDeadlineFrom(ctx); !deadline.IsZero() {
+		v.SetDeadline(deadline)
+	} else {
+		v.SetTimeout(be.timeout)
+	}
 	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
 	result, err := v.Run(ctx, chunk)
 	be.vmPool.Put(v)
@@ -249,7 +269,9 @@ func (e *engineImpl) evalDeadline(ctx context.Context, start time.Time) time.Tim
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
 	start := time.Now()
 
-	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+	// Seed the shared evalState once for the whole form loop; the deadline
+	// stays zero so the VM still arms the engine timeout lazily.
+	ctx = core.EnsureEvalState(ctx)
 
 	forms, err := e.config.dialect.ReadWithMaxDepth(input, e.config.limits.MaxReaderDepth)
 	if err != nil {
@@ -284,6 +306,8 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 	}
 
 	// Tree-walker path.
+	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+
 	var result core.Value = core.Nil{}
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, env)
@@ -354,40 +378,54 @@ func (e *engineImpl) LoadDir(dir string) error {
 }
 
 func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) (core.Value, error) {
-	start := time.Now()
-
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
 
-	deadline := e.evalDeadline(ctx, start)
-
 	e.mu.RLock()
 	env := e.rootEnv
 	e.mu.RUnlock()
 
 	fn, ok := env.Get(name)
+	counter := e.stats.counterFor(name)
 	if !ok {
-		e.stats.countPluginCall(name)
+		counter.Add(1)
 		if e.callbacksActive.Load() {
-			e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: time.Since(start)})
+			e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: 0})
 		}
 		return nil, fmt.Errorf("undefined function: %s", name)
+	}
+	return e.callBoundary(ctx, name, fn, env, counter, args)
+}
+
+func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value) (core.Value, error) {
+	active := e.callbacksActive.Load()
+	var start time.Time
+	if active {
+		start = nowFunc()
 	}
 
 	var result core.Value
 	var err error
 	if be := e.bytecodeEvaluator; be != nil {
-		result, err = be.applyBoundary(ctx, fn, args, env, deadline)
+		result, err = be.applyBoundary(ctx, fn, args, env, e.config.timeout)
 	} else {
+		var deadline time.Time
+		if e.config.timeout > 0 {
+			deadlineStart := start
+			if !active {
+				deadlineStart = nowFunc()
+			}
+			deadline = e.evalDeadline(ctx, deadlineStart)
+		}
 		ctx = core.WithEvalDeadline(ctx, deadline)
 		result, err = e.evaluator.Apply(ctx, fn, args, env)
 	}
-	e.stats.countPluginCall(name)
-	if e.callbacksActive.Load() {
-		e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: time.Since(start)})
+	counter.Add(1)
+	if active {
+		e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: nowFunc().Sub(start)})
 	}
 	return result, err
 }

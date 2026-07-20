@@ -75,13 +75,16 @@ func (s *Stats) recordEval(dur time.Duration, err error) {
 	}
 }
 
-func (s *Stats) countPluginCall(name string) {
+func (s *Stats) counterFor(name string) *atomic.Int64 {
 	if v, ok := s.pluginCallCnts.Load(name); ok {
-		v.(*atomic.Int64).Add(1)
-		return
+		return v.(*atomic.Int64)
 	}
 	actual, _ := s.pluginCallCnts.LoadOrStore(name, new(atomic.Int64))
-	actual.(*atomic.Int64).Add(1)
+	return actual.(*atomic.Int64)
+}
+
+func (s *Stats) countPluginCall(name string) {
+	s.counterFor(name).Add(1)
 }
 
 func (s *Stats) incPlugins() {

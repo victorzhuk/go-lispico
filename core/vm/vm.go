@@ -11,6 +11,8 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+var nowFunc = time.Now
+
 // Closure is a compiled function: a Chunk paired with the lexical
 // environment it closed over. It implements core.Value.
 type Closure struct {
@@ -64,7 +66,9 @@ type VM struct {
 	nativeOp []Opcode
 	// deadline is the engine-owned evaluation deadline enforced at the VM's
 	// batched cancellation checks. Zero means no engine deadline is set.
-	deadline time.Time
+	deadline      time.Time
+	timeout       time.Duration
+	deadlineArmed bool
 	// budget counts instructions until the next batched cancellation check.
 	budget int
 	// ownStructDepth is the VM's private structural-depth counter. structDepth
@@ -135,6 +139,9 @@ func (vm *VM) reset() {
 	vm.ownStructDepth.Store(0)
 	vm.reentryCtx = nil
 	vm.nativeOp = vm.nativeOp[:0]
+	vm.deadline = time.Time{}
+	vm.timeout = 0
+	vm.deadlineArmed = false
 }
 
 // Reset clears the VM state (stacks, frames, handlers, depth) so the
@@ -149,6 +156,9 @@ func (vm *VM) Reset() {
 	vm.ownStructDepth.Store(0)
 	vm.reentryCtx = nil
 	vm.nativeOp = vm.nativeOp[:0]
+	vm.deadline = time.Time{}
+	vm.timeout = 0
+	vm.deadlineArmed = false
 }
 
 // SetGlobals replaces the VM's globals (root environment) pointer.
@@ -159,7 +169,30 @@ func (vm *VM) SetGlobals(env *core.Env) {
 
 // SetDeadline sets the engine-owned evaluation deadline enforced at the VM's
 // batched check points. A zero t means the caller's context is the only bound.
-func (vm *VM) SetDeadline(t time.Time) { vm.deadline = t }
+func (vm *VM) SetDeadline(t time.Time) {
+	vm.deadline = t
+	vm.deadlineArmed = true
+}
+
+// SetTimeout sets the lazy engine timeout. The deadline is armed at the first
+// cancellation checkpoint, or before a re-entrant evaluator call adopts state.
+func (vm *VM) SetTimeout(d time.Duration) {
+	vm.deadline = time.Time{}
+	vm.timeout = d
+	vm.deadlineArmed = false
+}
+
+func (vm *VM) armDeadline(ctx context.Context) {
+	if vm.deadlineArmed || vm.timeout <= 0 {
+		return
+	}
+	vm.deadlineArmed = true
+	bound := nowFunc().Add(vm.timeout)
+	if d, ok := ctx.Deadline(); ok && !d.After(bound) {
+		return
+	}
+	vm.deadline = bound
+}
 
 // reentrantCtx lazily builds (once per run) a context carrying an evalState that
 // shares the VM's structural-depth counter and deadline, so a GoFunc that calls
@@ -170,6 +203,7 @@ func (vm *VM) reentrantCtx(ctx context.Context) context.Context {
 	if vm.reentryCtx != nil {
 		return vm.reentryCtx
 	}
+	vm.armDeadline(ctx)
 	adopted, counter := core.AdoptEvalState(ctx, vm.deadline, vm.structDepth.Load())
 	vm.structDepth = counter
 	vm.reentryCtx = adopted
@@ -324,6 +358,9 @@ const checkInterval = 128
 // errors.Is(err, context.DeadlineExceeded/Canceled) still holds.
 func (vm *VM) pollCancel(ctx context.Context) error {
 	vm.budget = checkInterval
+	if !vm.deadlineArmed {
+		vm.armDeadline(ctx)
+	}
 	if !vm.deadline.IsZero() && !time.Now().Before(vm.deadline) {
 		return fmt.Errorf("vm: %w", context.DeadlineExceeded)
 	}

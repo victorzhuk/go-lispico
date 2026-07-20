@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `runtime.Engine.Func(name)` returns a reusable `*runtime.Fn` handle for
+  repeated calls to a resolved function binding.
+
 ### Changed
 
 - `runtime.New()` now defaults to bytecode VM execution, with form-by-form fallback to

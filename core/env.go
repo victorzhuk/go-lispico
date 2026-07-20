@@ -164,6 +164,23 @@ func (e *Env) Cell(name string) (*Cell, bool) {
 	return nil, false
 }
 
+// FuncCell resolves name to its owning function cell by walking the scope
+// chain, skipping tombstoned bindings. Lisp-2 only. Mirrors Cell for the
+// function namespace.
+func (e *Env) FuncCell(name string) (*Cell, bool) {
+	e.mu.RLock()
+	cell, ok := e.funcs[name]
+	live := ok && cell.v != nil
+	e.mu.RUnlock()
+	if live {
+		return cell, true
+	}
+	if e.parent != nil {
+		return e.parent.FuncCell(name)
+	}
+	return nil, false
+}
+
 // CellLocal resolves name to its owning cell in this scope only, without
 // walking to the parent. Used by the VM to guard a cache site: only a
 // locally-owned cell is safe to cache by env identity, since a cell owned by

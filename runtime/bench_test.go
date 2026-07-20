@@ -258,6 +258,51 @@ func BenchmarkEngine_CallBytecodeCanonical(b *testing.B) {
 	}
 }
 
+func BenchmarkEngine_FuncCall(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+	add, err := eng.Func("add")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		_, _ = add.Call(context.Background(), core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
+func BenchmarkEngine_FuncCallCallback(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+	add, err := eng.Func("add")
+	if err != nil {
+		b.Fatal(err)
+	}
+	eng.OnPluginCall(func(PluginCallEvent) {})
+
+	b.ResetTimer()
+	for b.Loop() {
+		_, _ = add.Call(context.Background(), core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
 // BenchmarkEngine_CallBytecodeCallback is BenchmarkEngine_CallBytecode with
 // an OnPluginCall callback registered — measures the with-callback cost
 // (timing + RLock + slice copy + dispatch) the fast path pays only when a

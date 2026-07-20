@@ -26,6 +26,8 @@ type Engine interface {
 	LoadDir(dir string) error
 	// Call invokes a named function with arguments.
 	Call(ctx context.Context, name string, args ...core.Value) (core.Value, error)
+	// Func resolves a named function once and returns a reusable call handle.
+	Func(name string) (*Fn, error)
 	// Bind binds a value to a name in the global environment.
 	Bind(name string, v core.Value) error
 	// Use registers and initializes a plugin.
@@ -223,7 +225,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	if cfg.bytecode {
-		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.limits, treeWalker, cfg.dialect)
+		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect)
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be

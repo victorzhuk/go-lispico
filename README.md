@@ -30,6 +30,7 @@ import (
     "log/slog"
     "os"
 
+    "github.com/victorzhuk/go-lispico/core"
     "github.com/victorzhuk/go-lispico/plugins/stdlib"
     "github.com/victorzhuk/go-lispico/runtime"
 )
@@ -54,6 +55,20 @@ func main() {
         panic(err)
     }
     fmt.Println(result) // 6
+
+    _, err = eng.Eval(context.Background(), "setup", "(defun add (a b) (+ a b))")
+    if err != nil {
+        panic(err)
+    }
+    add, err := eng.Func("add")
+    if err != nil {
+        panic(err)
+    }
+    sum, err := add.Call(context.Background(), core.Int{V: 2}, core.Int{V: 3})
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(sum) // 5
 }
 ```
 
