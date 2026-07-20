@@ -642,31 +642,35 @@ func (vm *VM) execNativeFast(op Opcode, argc int, env *core.Env) error {
 	return nil
 }
 
-// resolveGlobalValue resolves sym to its value and canonical flag for env,
-// reading them coherently under the owning env's read lock. A cached depth-0
-// site (env owns the name) skips the chain walk and reads through the cached
-// cell pointer; a miss publishes a fresh entry; an ancestor-owned name or a
-// site-less (hand-built) chunk falls back to an uncached chain walk. Only
-// depth-0 resolutions are cached — an ancestor cell could later be shadowed
-// by a new local bind of the same name without the site observing it. ok is
-// false when sym is unbound.
+// resolveGlobalValue resolves sym to its value and canonical flag for env. A
+// depth-0 site hit serves its immutable snapshot only while env identity,
+// name generation, and cell version still match; a version mismatch falls back
+// to the cell's locked read without publishing a replacement. A miss publishes
+// only live root-env cells; ancestor-owned names and site-less chunks fall back
+// to the ordinary chain walk.
 func (vm *VM) resolveGlobalValue(site *siteCache, env *core.Env, sym core.Symbol) (val core.Value, canonical bool, ok bool) {
 	if site != nil {
-		if entry := site.entry.Load(); entry != nil && entry.env == env && entry.gen == env.NameGen() {
-			if v, live, canon := entry.env.ReadCell(entry.cell); live {
-				return v, canon, true
+		if entry := site.entry.Load(); entry != nil && entry.env == env {
+			gen := env.NameGen()
+			ver := entry.cell.Version()
+			if entry.gen == gen && ver == entry.ver {
+				return entry.val, entry.canonical, true
 			}
-		}
-		// Publish only for the stable root env: a per-call child env is fresh
-		// every invocation, so caching it never hits again and just churns a
-		// siteEntry per call. Those fall through to the uncached chain walk.
-		if env == vm.globals {
-			if cell, found := env.CellLocal(sym.V); found {
-				site.entry.Store(&siteEntry{env: env, gen: env.NameGen(), cell: cell})
-				if v, live, canon := env.ReadCell(cell); live {
+			if ver != entry.ver {
+				if v, live, canon := entry.env.ReadCell(entry.cell); live {
 					return v, canon, true
 				}
-				return nil, false, false
+				v, found, canon := env.GetCanonical(sym.V)
+				return v, canon, found
+			}
+		}
+		if env == vm.globals {
+			if cell, found := env.CellLocal(sym.V); found {
+				v, live, canon, ver := env.ReadCellSnapshot(cell)
+				if live {
+					site.entry.Store(&siteEntry{env: env, gen: env.NameGen(), cell: cell, val: v, canonical: canon, ver: ver})
+					return v, canon, true
+				}
 			}
 		}
 	}

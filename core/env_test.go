@@ -347,6 +347,179 @@ func TestEnv_NameGen(t *testing.T) {
 	}
 }
 
+func TestEnv_CellVersion(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	env.Set("x", Int{V: 1})
+	cell, ok := env.Cell("x")
+	if !ok {
+		t.Fatal("expected cell for x")
+	}
+	assertVersion := func(want uint64) {
+		t.Helper()
+		if got := cell.Version(); got != want {
+			t.Fatalf("cell version = %d, want %d", got, want)
+		}
+	}
+
+	assertVersion(1)
+	env.Get("x")
+	env.GetCanonical("x")
+	env.ReadCell(cell)
+	_, _, _, snapVer := env.ReadCellSnapshot(cell)
+	if snapVer != 1 {
+		t.Fatalf("snapshot version = %d, want 1", snapVer)
+	}
+	env.Cell("x")
+	env.CellLocal("x")
+	env.Find("x")
+	env.VarNames()
+	assertVersion(1)
+
+	env.Set("x", Int{V: 2})
+	assertVersion(2)
+	env.SetCanonical("x", Int{V: 2})
+	assertVersion(3)
+	env.Set("x", Int{V: 2})
+	assertVersion(4)
+	env.Delete("x")
+	assertVersion(5)
+	env.Delete("x")
+	assertVersion(5)
+	env.Set("x", Int{V: 3})
+	assertVersion(6)
+}
+
+func TestEnv_FuncCellVersion(t *testing.T) {
+	t.Parallel()
+	parent := NewEnv(nil)
+	parentFunc := GoFunc{Name: "parent"}
+	parent.SetFunc("f", parentFunc)
+
+	env := parent.Child()
+	localFunc := GoFunc{Name: "local"}
+	env.SetFunc("f", localFunc)
+
+	env.mu.RLock()
+	cell := env.funcs["f"]
+	env.mu.RUnlock()
+	if cell == nil {
+		t.Fatal("expected function cell for f")
+	}
+	assertVersion := func(want uint64) {
+		t.Helper()
+		if got := cell.Version(); got != want {
+			t.Fatalf("function cell version = %d, want %d", got, want)
+		}
+	}
+	assertFuncName := func(got Value, want string) {
+		t.Helper()
+		fn, ok := got.(GoFunc)
+		if !ok {
+			t.Fatalf("function binding got %T, want GoFunc", got)
+		}
+		if fn.Name != want {
+			t.Fatalf("function binding name = %q, want %q", fn.Name, want)
+		}
+	}
+
+	assertVersion(1)
+	if v, ok := env.GetFunc("f"); !ok {
+		t.Fatal("GetFunc should find f")
+	} else {
+		assertFuncName(v, localFunc.Name)
+	}
+	if v, ok, canon := env.GetFuncCanonical("f"); !ok || canon {
+		t.Fatalf("GetFuncCanonical found=%v canonical=%v, want true false", ok, canon)
+	} else {
+		assertFuncName(v, localFunc.Name)
+	}
+	if _, _, _, snapVer := env.ReadCellSnapshot(cell); snapVer != 1 {
+		t.Fatalf("function snapshot version = %d, want 1", snapVer)
+	}
+	if names := env.FuncNames(); len(names) != 1 || names[0] != "f" {
+		t.Fatalf("FuncNames = %v, want [f]", names)
+	}
+	assertVersion(1)
+
+	canonFunc := GoFunc{Name: "canon"}
+	env.SetFuncCanonical("f", canonFunc)
+	assertVersion(2)
+	if v, ok, canon := env.GetFuncCanonical("f"); !ok || !canon {
+		t.Fatalf("canonical function found=%v canonical=%v, want true true", ok, canon)
+	} else {
+		assertFuncName(v, canonFunc.Name)
+	}
+
+	env.SetFunc("f", localFunc)
+	assertVersion(3)
+	if _, ok, canon := env.GetFuncCanonical("f"); !ok || canon {
+		t.Fatalf("rebound function found=%v canonical=%v, want true false", ok, canon)
+	}
+
+	env.Delete("f")
+	assertVersion(4)
+	if _, live, canon := env.ReadCell(cell); live || canon {
+		t.Fatalf("deleted function cell live=%v canonical=%v, want false false", live, canon)
+	}
+	if names := env.FuncNames(); len(names) != 0 {
+		t.Fatalf("FuncNames after Delete = %v, want []", names)
+	}
+	if v, ok := env.GetFunc("f"); !ok {
+		t.Fatal("GetFunc should find parent f after local Delete")
+	} else {
+		assertFuncName(v, parentFunc.Name)
+	}
+
+	env.Delete("f")
+	assertVersion(4)
+	env.SetFunc("f", localFunc)
+	assertVersion(5)
+}
+
+func TestEnv_FuncCell_ValueCanonicalCoherent(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+	nonCanon := GoFunc{Name: "custom"}
+	canon := GoFunc{Name: "canon"}
+	env.SetFunc("+", nonCanon)
+
+	env.mu.RLock()
+	cell := env.funcs["+"]
+	env.mu.RUnlock()
+	if cell == nil {
+		t.Fatal("expected function cell for +")
+	}
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; !stop.Load(); i++ {
+			if i%2 == 0 {
+				env.SetFunc("+", nonCanon)
+			} else {
+				env.SetFuncCanonical("+", canon)
+			}
+		}
+	}()
+
+	for range 500000 {
+		v, live, isCanon := env.ReadCell(cell)
+		if !live {
+			continue
+		}
+		if (v.(GoFunc).Name == nonCanon.Name) == isCanon {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("torn function read: value=%s canonical=%v", v.(GoFunc).Name, isCanon)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
 // TestEnv_Cell_ValueCanonicalCoherent proves value and canonical flag are
 // published as one unit: a concurrent reader never observes a rebind's new
 // value paired with the previous binding's canonical flag. Run under -race.

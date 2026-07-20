@@ -991,31 +991,85 @@ func TestVMVsTreeWalker_NativeOpFrozenBeforeRebind(t *testing.T) {
 	assert.Equal(t, core.Int{V: 3}, vmResult, "vm should freeze the operator before the rebind")
 }
 
-// TestVM_CachedSiteReflectsRebind proves a site cached on one run still
-// reflects a later rebind of the same name on the same env: the cell it
-// holds is written through by Set, so no re-resolution is needed.
+// TestVM_CachedSiteReflectsRebind proves a warmed global-read site observes a
+// later rebind of the same name under both namespace dialects.
 func TestVM_CachedSiteReflectsRebind(t *testing.T) {
 	t.Parallel()
 
-	env := core.NewEnv(nil)
-	env.Set("x", core.Int{V: 1})
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+	}{
+		{name: "lisp1", dialect: core.FullDialect()},
+		{name: "lisp2", dialect: core.FullDialect().Lisp2()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := core.NewEnv(nil)
+			env.Set("x", core.Int{V: 1})
 
-	forms, err := core.Read("x")
-	require.NoError(t, err)
-	chunks, err := compiler.CompileAll(forms)
-	require.NoError(t, err)
-	chunk := chunks[0]
+			forms, err := tt.dialect.Read("x")
+			require.NoError(t, err)
+			comp := compiler.NewCompilerWithDialect("<top>", &tt.dialect)
+			for _, form := range forms {
+				require.NoError(t, comp.Compile(form))
+			}
+			comp.Chunk().Emit(vm.OpReturn, 0)
+			comp.Chunk().EnsureSites()
+			chunk := comp.Chunk()
 
-	v := vm.New(env)
-	result, err := v.Run(context.Background(), chunk)
-	require.NoError(t, err)
-	assert.Equal(t, core.Int{V: 1}, result)
+			v := vm.New(env)
+			result, err := v.Run(context.Background(), chunk)
+			require.NoError(t, err)
+			assert.Equal(t, core.Int{V: 1}, result)
 
-	env.Set("x", core.Int{V: 2})
-	v.Reset()
-	result, err = v.Run(context.Background(), chunk)
-	require.NoError(t, err)
-	assert.Equal(t, core.Int{V: 2}, result, "cached site should observe the rebind")
+			env.Set("x", core.Int{V: 2})
+			v.Reset()
+			result, err = v.Run(context.Background(), chunk)
+			require.NoError(t, err)
+			assert.Equal(t, core.Int{V: 2}, result, "cached site should observe the rebind")
+		})
+	}
+}
+
+func TestVM_CachedSiteReflectsDelete(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+	}{
+		{name: "lisp1", dialect: core.FullDialect()},
+		{name: "lisp2", dialect: core.FullDialect().Lisp2()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := core.NewEnv(nil)
+			env.Set("x", core.Int{V: 1})
+
+			forms, err := tt.dialect.Read("x")
+			require.NoError(t, err)
+			comp := compiler.NewCompilerWithDialect("<top>", &tt.dialect)
+			for _, form := range forms {
+				require.NoError(t, comp.Compile(form))
+			}
+			comp.Chunk().Emit(vm.OpReturn, 0)
+			comp.Chunk().EnsureSites()
+			chunk := comp.Chunk()
+
+			v := vm.New(env)
+			result, err := v.Run(context.Background(), chunk)
+			require.NoError(t, err)
+			assert.Equal(t, core.Int{V: 1}, result)
+
+			env.Delete("x")
+			v.Reset()
+			_, err = v.Run(context.Background(), chunk)
+			require.Error(t, err)
+		})
+	}
 }
 
 // TestVM_MultipleNativeOpSitesResolveConsistently proves that several native

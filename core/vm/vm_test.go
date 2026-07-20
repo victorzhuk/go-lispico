@@ -1632,6 +1632,155 @@ func TestVM_SiteReResolvesAfterGenerationBump(t *testing.T) {
 	}
 }
 
+func TestVM_SiteSnapshotHitZeroAllocs(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 1})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "x"}},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	site := chunk.site(0)
+	require.NotNil(t, site)
+	require.NotNil(t, site.entry.Load())
+
+	sym := core.Symbol{V: "x"}
+	var got core.Value
+	var canonical, ok bool
+	allocs := testing.AllocsPerRun(1000, func() {
+		got, canonical, ok = v.resolveGlobalValue(site, env, sym)
+	})
+	require.True(t, ok)
+	require.False(t, canonical)
+	assert.Equal(t, core.Int{V: 1}, got)
+	if allocs != 0 {
+		t.Fatalf("stable site hit allocated %.1f times per run, want 0", allocs)
+	}
+}
+
+func TestVM_SiteVersionMismatchReadsCellWithoutRepublish(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 1})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "x"}},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+
+	env.Set("x", core.Int{V: 2})
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 2}, result)
+	assert.Same(t, firstEntry, chunk.site(0).entry.Load())
+}
+
+func TestVM_SiteVersionMismatchDeleteDoesNotRepublish(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 1})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "x"}},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	_, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+
+	env.Delete("x")
+	v.Reset()
+	_, err = v.Run(context.Background(), chunk)
+	require.Error(t, err)
+	assert.Same(t, firstEntry, chunk.site(0).entry.Load())
+}
+
+func TestVM_SiteDoesNotPublishTombstone(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 1})
+	env.Delete("x")
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "x"}},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	_, err := v.Run(context.Background(), chunk)
+	require.Error(t, err)
+	assert.Nil(t, chunk.site(0).entry.Load())
+}
+
+func TestVM_SiteCanonicalVersionMismatchUsesLockedRead(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var sum int64
+		for _, arg := range args {
+			sum += arg.(core.Int).V
+		}
+		return core.Int{V: sum}, nil
+	}})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpConst, 1),
+			Encode(OpConst, 2),
+			Encode(OpAdd, 2),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 3}, result)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+	require.True(t, firstEntry.canonical)
+
+	env.Set("+", core.GoFunc{Name: "+", Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+		return core.Int{V: 999}, nil
+	}})
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 999}, result)
+	assert.Same(t, firstEntry, chunk.site(0).entry.Load())
+}
+
 func TestVM_UncapturedLocalsNoEnv(t *testing.T) {
 	t.Parallel()
 	vm := New(core.NewEnv(nil))

@@ -78,14 +78,17 @@ type siteTable struct {
 	entries []siteCache
 }
 
-// siteEntry is a resolved global binding cached at one bytecode site: the
-// env it was resolved in, that env's name-binding generation at resolution
-// time, and the cell itself. Published once and read many times, so it is
-// immutable — a stale entry is replaced, never mutated.
+// siteEntry is a resolved global binding cached at one bytecode site: the env,
+// name generation, cell identity, and value/canonical snapshot captured at
+// publication. Published once and read many times, so it is immutable — a stale
+// entry is replaced, never mutated.
 type siteEntry struct {
-	env  *core.Env
-	gen  uint64
-	cell *core.Cell
+	env       *core.Env
+	cell      *core.Cell
+	val       core.Value
+	gen       uint64
+	ver       uint64
+	canonical bool
 }
 
 // siteCache is one chunk site's resolution cache. constIdx is fixed at

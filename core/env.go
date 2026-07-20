@@ -8,14 +8,18 @@ import (
 // Cell is a binding's storage cell, shared by every resolver holding a
 // reference to it so a rebind through one path is visible through all others
 // without a re-lookup. Its fields are guarded by the owning Env's lock: writes
-// go through Env.Set/SetCanonical/Delete under the write lock, reads through
-// the Env (Get/GetCanonical/ReadCell) under the read lock. Storing the value
+// go through Env.Set/SetCanonical/SetFunc/SetFuncCanonical/Delete under the
+// write lock, reads through the Env under the read lock. Storing the value
 // inline keeps a rebind allocation-free — the VM caches the cell pointer, not
 // the value, so it still avoids the map walk without boxing every write.
 type Cell struct {
 	v         Value // nil == tombstoned/unbound; guarded by the owning Env's lock
 	canonical bool  // guarded by the owning Env's lock
+	version   atomic.Uint64
 }
+
+// Version returns the cell mutation version.
+func (c *Cell) Version() uint64 { return c.version.Load() }
 
 // Env is a lexical scope: an immutable parent chain with a thread-safe local binding map.
 // Reads walk up the chain; writes are local-only.
@@ -25,8 +29,7 @@ type Env struct {
 	vars       map[string]*Cell
 	cell0      Cell // first binding's cell, inline to save a heap alloc per scope
 	cell0Used  bool
-	funcs      map[string]Value // function cell; nil until first SetFunc (Lisp-2 only)
-	funcCanon  map[string]bool  // function cell canonical markers; nil until first SetFuncCanonical
+	funcs      map[string]*Cell // function cell; nil until first SetFunc (Lisp-2 only)
 	eval       Evaluator
 	macroEpoch int           // bumped on each defmacro in this scope; used in bytecode cache key
 	newNameGen atomic.Uint64 // bumped whenever a name is newly bound (or revived from tombstone) in vars
@@ -61,6 +64,20 @@ func (e *Env) localCell(name string) *Cell {
 	return cell
 }
 
+// localFuncCell returns the function-cell owning name in this scope, creating it if
+// absent. Caller holds the write lock.
+func (e *Env) localFuncCell(name string) *Cell {
+	if cell, ok := e.funcs[name]; ok {
+		return cell
+	}
+	if e.funcs == nil {
+		e.funcs = make(map[string]*Cell)
+	}
+	cell := &Cell{}
+	e.funcs[name] = cell
+	return cell
+}
+
 // Set binds name in this (local) scope. Overwriting a canonical binding
 // removes the canonical marker, so a root-env rebind is detected as non-canonical.
 func (e *Env) Set(name string, val Value) {
@@ -72,6 +89,7 @@ func (e *Env) Set(name string, val Value) {
 	}
 	cell.v = val
 	cell.canonical = false
+	cell.version.Add(1)
 }
 
 // SetCanonical binds name as a canonical operator in this scope.
@@ -88,6 +106,7 @@ func (e *Env) SetCanonical(name string, val Value) {
 	}
 	cell.v = val
 	cell.canonical = true
+	cell.version.Add(1)
 }
 
 // GetCanonical resolves name like Get but also returns whether it is a canonical
@@ -118,6 +137,14 @@ func (e *Env) ReadCell(c *Cell) (Value, bool, bool) {
 	v, canon := c.v, c.canonical
 	e.mu.RUnlock()
 	return v, v != nil, canon
+}
+
+// ReadCellSnapshot returns a coherent cell snapshot and its mutation version.
+func (e *Env) ReadCellSnapshot(c *Cell) (Value, bool, bool, uint64) {
+	e.mu.RLock()
+	v, canon, ver := c.v, c.canonical, c.version.Load()
+	e.mu.RUnlock()
+	return v, v != nil, canon, ver
 }
 
 // Cell resolves name to its owning cell by walking the scope chain, skipping
@@ -198,11 +225,10 @@ func (e *Env) Get(name string) (Value, bool) {
 func (e *Env) SetFunc(name string, val Value) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.funcs == nil {
-		e.funcs = make(map[string]Value)
-	}
-	e.funcs[name] = val
-	delete(e.funcCanon, name)
+	cell := e.localFuncCell(name)
+	cell.v = val
+	cell.canonical = false
+	cell.version.Add(1)
 }
 
 // SetFuncCanonical binds name as a canonical operator in this scope's
@@ -214,23 +240,22 @@ func (e *Env) SetFunc(name string, val Value) {
 func (e *Env) SetFuncCanonical(name string, val Value) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.funcs == nil {
-		e.funcs = make(map[string]Value)
-	}
-	if e.funcCanon == nil {
-		e.funcCanon = make(map[string]bool)
-	}
-	e.funcs[name] = val
-	e.funcCanon[name] = true
+	cell := e.localFuncCell(name)
+	cell.v = val
+	cell.canonical = true
+	cell.version.Add(1)
 }
 
 // GetFunc walks the scope chain reading the function cell (Lisp-2 only).
 func (e *Env) GetFunc(name string) (Value, bool) {
 	e.mu.RLock()
-	val, ok := e.funcs[name]
+	var v Value
+	if cell, ok := e.funcs[name]; ok {
+		v = cell.v
+	}
 	e.mu.RUnlock()
-	if ok {
-		return val, true
+	if v != nil {
+		return v, true
 	}
 	if e.parent != nil {
 		return e.parent.GetFunc(name)
@@ -243,11 +268,14 @@ func (e *Env) GetFunc(name string) (Value, bool) {
 // (value, found, canonical).
 func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 	e.mu.RLock()
-	val, ok := e.funcs[name]
-	canon := e.funcCanon[name]
+	var v Value
+	var canon bool
+	if cell, ok := e.funcs[name]; ok {
+		v, canon = cell.v, cell.canonical
+	}
 	e.mu.RUnlock()
-	if ok {
-		return val, true, canon
+	if v != nil {
+		return v, true, canon
 	}
 	if e.parent != nil {
 		return e.parent.GetFuncCanonical(name)
@@ -319,12 +347,16 @@ func (e *Env) SetEvaluator(eval Evaluator) {
 func (e *Env) Delete(name string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if cell, ok := e.vars[name]; ok {
+	if cell, ok := e.vars[name]; ok && (cell.v != nil || cell.canonical) {
 		cell.v = nil
 		cell.canonical = false
+		cell.version.Add(1)
 	}
-	delete(e.funcs, name)
-	delete(e.funcCanon, name)
+	if cell, ok := e.funcs[name]; ok && (cell.v != nil || cell.canonical) {
+		cell.v = nil
+		cell.canonical = false
+		cell.version.Add(1)
+	}
 }
 
 // FuncNames returns a snapshot of the names bound in this scope's local
@@ -337,8 +369,10 @@ func (e *Env) FuncNames() []string {
 		return nil
 	}
 	names := make([]string, 0, len(e.funcs))
-	for name := range e.funcs {
-		names = append(names, name)
+	for name, cell := range e.funcs {
+		if cell.v != nil {
+			names = append(names, name)
+		}
 	}
 	return names
 }
@@ -369,7 +403,9 @@ func (e *Env) MergeInto(target *Env) {
 			target.Set(name, cell.v)
 		}
 	}
-	for name, val := range e.funcs {
-		target.SetFunc(name, val)
+	for name, cell := range e.funcs {
+		if cell.v != nil {
+			target.SetFunc(name, cell.v)
+		}
 	}
 }
