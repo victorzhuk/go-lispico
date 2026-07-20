@@ -38,7 +38,11 @@ func TestCL_Vocab_DrivesDialect(t *testing.T) {
 	t.Run("defun defines a function", func(t *testing.T) {
 		got, err := e.Eval(context.Background(), "cl", "(defun f (x) x)")
 		require.NoError(t, err)
-		assert.True(t, core.Keyword{V: "fn"}.Equals(got.Type()), "defun must return fn, got %T", got)
+		require.True(t, core.Keyword{V: "fn"}.Equals(got.Type()), "defun must return :fn, got %s", got.Type())
+
+		got, err = e.Eval(context.Background(), "cl", "(f 42)")
+		require.NoError(t, err)
+		assert.True(t, core.Int{V: 42}.Equals(got), "defun call should work, got %v", got)
 	})
 
 	t.Run("nil-only truthiness: false is truthy", func(t *testing.T) {

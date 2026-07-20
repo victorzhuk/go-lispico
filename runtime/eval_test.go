@@ -479,8 +479,11 @@ func TestEngineImpl_EvalDeadline(t *testing.T) {
 // testing.AllocsPerRun(1000, ...)) plus one alloc of headroom for noise; a
 // regression back to a per-call timer would push both well past these
 // ceilings.
+//
+// Pinned to tree-walker to isolate allocator effects from VM compile/cache
+// behavior while keeping the per-call timer contract explicit.
 func TestEngineDeadline_NoPerCallTimerAllocation(t *testing.T) {
-	e, err := New(nil, WithDialect(clojure.Dialect()))
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker())
 	require.NoError(t, err)
 	defer e.Close()
 
