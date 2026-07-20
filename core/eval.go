@@ -82,6 +82,8 @@ type evalState struct {
 	loopDepth   atomic.Int64
 	macroDepth  atomic.Int64
 	structDepth atomic.Int64
+	// shared lets lazy states alias the wrapper-owned counter without a second allocation per evalState.
+	shared *atomic.Int64
 	// deadline is the engine-owned evaluation deadline enforced by pollCancel.
 	// Zero means no engine deadline is set.
 	deadline time.Time
@@ -89,6 +91,46 @@ type evalState struct {
 	// to match structDepth and stay race-safe if this state is shared across
 	// sequential evaluator hops (e.g. VM GoFunc callbacks into the tree-walker).
 	budget atomic.Int64
+}
+
+func (st *evalState) counter() *atomic.Int64 {
+	if st.shared != nil {
+		return st.shared
+	}
+	return &st.structDepth
+}
+
+// lazyEvalStateCtx wraps a parent context and materializes an evalState on demand
+// only when the state key is read. This avoids allocations on non-re-entrant GoFunc
+// dispatch while preserving shared state across re-entrant evaluator calls.
+type lazyEvalStateCtx struct {
+	context.Context
+	deadline time.Time
+	counter  atomic.Int64
+	state    atomic.Pointer[evalState]
+}
+
+// Value returns either the current eval state or the parent context value.
+func (c *lazyEvalStateCtx) Value(key any) any {
+	if _, ok := key.(evalStateKey); ok {
+		if existing, ok := c.Context.Value(key).(*evalState); ok {
+			return existing
+		}
+
+		if st := c.state.Load(); st != nil {
+			return st
+		}
+		st := &evalState{
+			deadline: c.deadline,
+			shared:   &c.counter,
+		}
+		if c.state.CompareAndSwap(nil, st) {
+			return st
+		}
+		return c.state.Load()
+	}
+
+	return c.Context.Value(key)
 }
 
 // checkInterval bounds how many nodes run between batched cancellation
@@ -155,8 +197,7 @@ func PollEvalState(ctx context.Context) error {
 // pointer is never nil), enabling the VM to share a single structural depth
 // counter with the tree-walker across Apply callbacks.
 func EvalStructCounter(ctx context.Context) *atomic.Int64 {
-	st := evalStateFrom(ctx)
-	return &st.structDepth
+	return evalStateFrom(ctx).counter()
 }
 
 // WithEvalDeadline attaches an engine-owned evaluation deadline instant to
@@ -176,25 +217,28 @@ func EvalDeadlineFrom(ctx context.Context) time.Time {
 	return evalStateFrom(ctx).deadline
 }
 
-// AdoptEvalState returns ctx carrying an evalState (deadline set, structural-depth
-// counter seeded to seed) together with a pointer to that counter, so a caller
-// enforcing its own structural depth (the VM) can hand a re-entrant evaluator
-// the SAME counter. If ctx already carries an evalState, that state is reused
-// and seed is ignored.
+// AdoptEvalState adopts or creates eval state from ctx and returns a pointer to
+// the shared structural-depth counter. Reusing the same counter across
+// evaluator boundaries keeps budget limits consistent for nested VM -> GoFunc ->
+// evaluator calls. The state is lazy: evalState + context.WithValue allocation
+// are deferred until a GoFunc actually reads evalStateKey.
 func AdoptEvalState(ctx context.Context, deadline time.Time, seed int64) (context.Context, *atomic.Int64) {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
-		return ctx, &st.structDepth
+		return ctx, st.counter()
 	}
-	st := &evalState{deadline: deadline}
-	st.structDepth.Store(seed)
-	return context.WithValue(ctx, evalStateKey{}, st), &st.structDepth
+
+	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline}
+	w.counter.Store(seed)
+	return w, &w.counter
 }
 
 // HasEvalState reports whether ctx already carries evaluation state from an
 // enclosing evaluation. The Call fast path uses it to share the enclosing
 // structural-depth counter and deadline on a re-entrant call instead of
 // starting a fresh, independent resource budget (which would let nested calls
-// escape the ADR-0007 limits).
+// escape the ADR-0007 limits). On a lazily-adopted context (see AdoptEvalState)
+// the check materializes the state as a side effect — acceptable on re-entrant
+// paths, where the state is needed anyway.
 func HasEvalState(ctx context.Context) bool {
 	_, ok := ctx.Value(evalStateKey{}).(*evalState)
 	return ok
@@ -229,9 +273,10 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 		return val, nil
 	case Vector:
 		st := evalStateFrom(ctx)
-		st.structDepth.Add(1)
-		defer func() { st.structDepth.Add(-1) }()
-		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+		counter := st.counter()
+		counter.Add(1)
+		defer func() { counter.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
 		items := make([]Value, len(val.Items))
@@ -264,9 +309,10 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
 // evalMap evaluates every key and value of a map literal, producing a new map.
 func (e *engine) evalMap(ctx context.Context, m *HashMap, env *Env) (Value, error) {
 	st := evalStateFrom(ctx)
-	st.structDepth.Add(1)
-	defer func() { st.structDepth.Add(-1) }()
-	if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+	counter := st.counter()
+	counter.Add(1)
+	defer func() { counter.Add(-1) }()
+	if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 		return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 	}
 	result := NewHashMap()
@@ -465,9 +511,10 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			}
 		}
 		st := evalStateFrom(ctx)
-		st.structDepth.Add(1)
-		defer func() { st.structDepth.Add(-1) }()
-		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+		counter := st.counter()
+		counter.Add(1)
+		defer func() { counter.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
 		var result []Value
@@ -501,9 +548,10 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		return List{Items: result}, nil
 	case Vector:
 		st := evalStateFrom(ctx)
-		st.structDepth.Add(1)
-		defer func() { st.structDepth.Add(-1) }()
-		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+		counter := st.counter()
+		counter.Add(1)
+		defer func() { counter.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
 		result := make([]Value, len(val.Items))
@@ -517,9 +565,10 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		return Vector{Items: result}, nil
 	case *HashMap:
 		st := evalStateFrom(ctx)
-		st.structDepth.Add(1)
-		defer func() { st.structDepth.Add(-1) }()
-		if e.MaxStructuralDepth > 0 && int(st.structDepth.Load()) > e.MaxStructuralDepth {
+		counter := st.counter()
+		counter.Add(1)
+		defer func() { counter.Add(-1) }()
+		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
 		result := NewHashMap()

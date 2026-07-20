@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   body, `unquote-splicing`).
 - Added `runtime.WithTreeWalker()` as the documented rollback path from the VM-default
   behavior; VM/tree-walker mode options are last-wins.
+- `core.AdoptEvalState` now returns a lightweight context wrapper that materializes
+  the re-entrant evaluation state on first use instead of allocating it eagerly: a
+  `GoFunc` that never re-enters the evaluator pays one small allocation instead of
+  the state + derived-context pair. Re-entrant resource budgets (structural depth,
+  deadline) are shared with the enclosing run exactly as before, and a context
+  retained past its call stays snapshot-consistent — it never observes a recycled
+  pooled VM.
 
 ## [0.8.0] - 2026-07-19
 

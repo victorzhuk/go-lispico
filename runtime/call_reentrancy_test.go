@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +95,50 @@ func TestCallReentrancy_SharedStructuralDepthAcrossEngineCall(t *testing.T) {
 	assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
 }
 
+func TestCallReentrancy_SharedStructuralDepthAcrossMultipleDispatches(t *testing.T) {
+	t.Parallel()
+
+	lim := ResourceLimits{MaxReaderDepth: 200, MaxStructuralDepth: 6, MaxCollectionLen: 1 << 30, MaxCacheEntries: 4096}
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithResourceLimits(lim))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	_, err = eng.Eval(context.Background(), "def-inner-multi", "(defn inner-multi [] "+deepVector(6)+")")
+	require.NoError(t, err)
+
+	require.NoError(t, eng.Bind("arm-state", core.GoFunc{
+		Name: "arm-state",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			if !core.HasEvalState(ctx) {
+				return nil, errors.New("missing eval state")
+			}
+			if core.EvalStructCounter(ctx) == nil {
+				return nil, errors.New("missing structural counter")
+			}
+			return core.Nil{}, nil
+		},
+	}))
+	require.NoError(t, eng.Bind("reenter-multi", core.GoFunc{
+		Name: "reenter-multi",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return eng.Call(ctx, "inner-multi")
+		},
+	}))
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "def-bare-multi", "(defn bare-multi [] (do (arm-state) (reenter-multi)))")
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "def-combined-multi", "(defn combined-multi [] (do (arm-state) [(reenter-multi)]))")
+	require.NoError(t, err)
+
+	_, err = eng.Call(ctx, "bare-multi")
+	assert.NoError(t, err, "inner alone (depth 6 == limit) must succeed after prior GoFunc dispatch")
+
+	_, err = eng.Call(ctx, "combined-multi")
+	require.Error(t, err, "outer vector (1) + inner Engine.Call body (6) = 7 > 6 must reject after prior GoFunc dispatch")
+	assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+}
+
 // TestCallReentrancy_MaxCallDepthAcrossBoundary proves recursion through the
 // VM -> GoFunc -> tree-walker boundary is bounded by the engine's MaxEvalDepth
 // (a typed *core.LispicoError) rather than the Go call stack. The GoFunc
@@ -104,7 +149,8 @@ func TestCallReentrancy_MaxCallDepthAcrossBoundary(t *testing.T) {
 	t.Parallel()
 
 	recur, err := clojure.Dialect().ReadWithMaxDepth(
-		"(do (quasiquote ((unquote-splicing (quote ())))) (reenter2))", 200)
+		"(do (quasiquote ((unquote-splicing (quote ())))) (reenter2))", 200,
+	)
 	require.NoError(t, err)
 	require.Len(t, recur, 1)
 	recurForm := recur[0]
@@ -198,4 +244,83 @@ func TestCallReentrancy_ConcurrentRace(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestCallReentrancy_LazyEvalStateConcurrentMaterialization(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Now().Add(time.Minute)
+	ctx, wantCounter := core.AdoptEvalState(context.Background(), deadline, 3)
+
+	const workers = 2
+	counters := make(chan *atomic.Int64, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !core.HasEvalState(ctx) {
+				t.Error("missing eval state")
+				return
+			}
+			counters <- core.EvalStructCounter(ctx)
+		}()
+	}
+	wg.Wait()
+	close(counters)
+
+	for counter := range counters {
+		assert.Same(t, wantCounter, counter)
+		assert.Equal(t, int64(3), counter.Load())
+	}
+}
+
+func TestCallReentrancy_StashedLazyCtxSurvivesPooledVMReuse(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithTimeout(time.Hour))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	var stashed context.Context
+	require.NoError(t, eng.Bind("stash-ctx", core.GoFunc{
+		Name: "stash-ctx",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			stashed = ctx
+			return core.Nil{}, nil
+		},
+	}))
+	var liveCounter *atomic.Int64
+	require.NoError(t, eng.Bind("mutate-counter", core.GoFunc{
+		Name: "mutate-counter",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			liveCounter = core.EvalStructCounter(ctx)
+			liveCounter.Add(7)
+			return core.Nil{}, nil
+		},
+	}))
+
+	_, err = eng.Eval(context.Background(), "def-stash", "(defn stash [] (stash-ctx))")
+	require.NoError(t, err)
+	_, err = eng.Eval(context.Background(), "def-mutate", "(defn mutate [] (mutate-counter))")
+	require.NoError(t, err)
+
+	_, err = eng.Call(context.Background(), "stash")
+	require.NoError(t, err)
+	require.NotNil(t, stashed)
+
+	_, err = eng.Call(context.Background(), "mutate")
+	require.NoError(t, err)
+	require.NotNil(t, liveCounter)
+
+	stashedCounter := core.EvalStructCounter(stashed)
+	stashedDeadline := core.EvalDeadlineFrom(stashed)
+	require.NotZero(t, stashedDeadline)
+	assert.NotSame(t, liveCounter, stashedCounter)
+	assert.Equal(t, int64(0), stashedCounter.Load())
+	assert.Equal(t, int64(7), liveCounter.Load())
+
+	liveCounter.Add(11)
+	assert.Equal(t, int64(0), stashedCounter.Load())
+	assert.Equal(t, stashedDeadline, core.EvalDeadlineFrom(stashed))
 }

@@ -159,3 +159,32 @@ func TestCall_SteadyStateAllocatesOnlyValues(t *testing.T) {
 	})
 	assert.LessOrEqual(t, allocs, float64(1))
 }
+
+func TestCall_GoFuncDispatchKeepsEvalStateLazy(t *testing.T) {
+	if raceEnabled {
+		t.Skip("alloc counts are unreliable under the race detector")
+	}
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	defer eng.Close()
+
+	require.NoError(t, eng.Bind("noop", core.GoFunc{
+		Name: "noop",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		},
+	}))
+	_, err = eng.Eval(context.Background(), "setup", "(defn call-noop [] (noop))")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = eng.Call(ctx, "call-noop")
+	require.NoError(t, err)
+
+	allocs := testing.AllocsPerRun(200, func() {
+		_, _ = eng.Call(ctx, "call-noop")
+	})
+	t.Logf("GoFunc dispatch allocs/run: %.2f", allocs)
+	assert.LessOrEqual(t, allocs, float64(1), "lazy GoFunc dispatch alloc ceiling, got %v", allocs)
+}
