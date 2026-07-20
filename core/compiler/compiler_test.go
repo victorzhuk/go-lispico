@@ -884,7 +884,7 @@ func TestCompiler_NativeOp_DialectRebindStillNative(t *testing.T) {
 	clDialect := cl.Dialect()
 	c := NewCompilerWithDialect("test", &clDialect)
 	form := core.List{Items: []core.Value{
-		core.Symbol{V: "do"},
+		core.Symbol{V: "progn"},
 		core.List{Items: []core.Value{
 			core.Symbol{V: "def"},
 			core.Symbol{V: "+"},
