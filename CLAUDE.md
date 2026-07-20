@@ -18,8 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 8 plugins: `stdlib` and `data` are active; `fsm` is idle, no consumer;
   `llm`, `agent`, `lio`, `net`, `exec` are frozen
   (see `docs/adr/0004-kernel-first-mission.md`)
-- Consumer performance gate: a repo-owned gold set (`internal/goldset`) gates
-  VM adoption against ADR 0008 thresholds
+- Consumer performance gate: a repo-owned gold set (`internal/goldset`) records
+  VM promotion evidence and ongoing VM non-regression thresholds
   (see `docs/adr/0008-consumer-performance-gate.md`)
 
 ## Build & Test
@@ -110,7 +110,13 @@ These are the kernel names. Under the default CL dialect they are renamed: `do`â
 
 ## TCO
 
-The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit `loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary self-recursion is not auto-optimized and is bounded by the max eval depth. The bytecode VM (`vm/vm.go`) is an opt-in optimizer for a documented subset of forms, using O(1) stack `loop`/`recur` via the `OpLoop` back-jump; forms it does not compile fall back to the tree-walker, which is the default and complete path.
+The tree-walking evaluator (`eval.go`) optimizes tail calls only through explicit
+`loop`/`recur`, which iterate without growing the Go stack (Clojure-style). Ordinary
+self-recursion is not auto-optimized and is bounded by the max eval depth.
+`runtime.New()` defaults to the bytecode VM (`vm/vm.go`); unsupported forms fall back
+to the tree-walker for form-by-form execution. `runtime.WithTreeWalker()`
+rolls back to full tree-walker mode. `runtime.WithBytecode()` and
+`runtime.WithTreeWalker()` are last-wins; the later option controls the mode.
 
 ## Performance Targets
 

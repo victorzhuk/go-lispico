@@ -2,9 +2,21 @@
 status: superseded by ADR-0006
 ---
 
-# The bytecode VM is an opt-in hot-loop optimizer, not the default
+# The bytecode VM was the non-default hot-loop optimizer
 
-The tree-walking Evaluator stays the default and complete execution path. The bytecode VM is opt-in (`WithBytecode()`) and exists because it measurably wins on loop- and recursion-heavy code (roughly 2x faster, 10x less memory on tight arithmetic loops). It is not the default because for one-shot evaluations it is ~2x slower and allocates ~12x more, since it compiles and allocates a fresh machine per call.
+This superseded disposition kept the tree-walking Evaluator as the default and
+complete execution path. The bytecode VM was selected with `WithBytecode()`
+because it won on loop- and recursion-heavy code but lost one-shot evaluations
+while it compiled and allocated a fresh machine per call.
+
+## Amendment
+
+ADR 0006 reopened the default decision. After native arithmetic/comparison
+opcodes, slot-only locals, chunk caching, dialect-axis support, runtime
+integration coverage, and the gold-set parity/performance gate, the evidence
+supports VM promotion. The VM is now the default execution path; forms it still
+cannot compile fall back to the tree-walking Evaluator form-by-form. Use
+`runtime.WithTreeWalker()` to roll back to tree-walk-only execution.
 
 ## Consequences
 

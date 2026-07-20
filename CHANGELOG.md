@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `runtime.New()` now defaults to bytecode VM execution, with form-by-form fallback to
+  the tree-walking evaluator for unsupported forms (for example `defmacro` nested in a
+  body, `unquote-splicing`).
+- Added `runtime.WithTreeWalker()` as the documented rollback path from the VM-default
+  behavior; VM/tree-walker mode options are last-wins.
+
 ## [0.8.0] - 2026-07-19
 
 ### Changed
@@ -190,7 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal unevaluated.
 - Evaluation errors are now `*core.LispicoError` values carrying a `Code`, so
   `errors.As` and `errors.Is` work against them.
-- The bytecode VM (`runtime.WithBytecode()`) is an opt-in optimizer for a
+- The bytecode VM became selectable through `runtime.WithBytecode()` for a
   documented subset of forms; forms it cannot compile fall back to the
   tree-walking evaluator instead of failing.
 - `io/env-set` writes to a per-plugin overlay instead of the process
@@ -230,7 +238,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tree-walking evaluator with explicit `loop`/`recur` tail-call optimization
   and configurable max eval depth.
 - Bytecode compiler and stack-based VM covering the same 22 special forms,
-  enabled with `runtime.WithBytecode()`; on-disk compilation cache via
+  selectable with `runtime.WithBytecode()`; on-disk compilation cache via
   `runtime.WithBytecodeCache(dir)`.
 - Go embedding API (`runtime.Engine`): `Eval`, `EvalFile`, `Call`, `Bind`,
   plugin loading with `Use`/`UnloadPlugin`/`ReloadPlugin`, REPL, runtime

@@ -4,7 +4,16 @@ status: accepted
 
 # VM-first, staged: the bytecode VM becomes the performance path for every dialect
 
-The performance goal is an ultra-fast VM, and today's VM cannot deliver it: it recompiles and allocates a fresh machine per call (13x slower than the tree-walker on repeated file loads), dispatches `+`/`-`/`<` through full GoFunc calls in its best-case hot loops, mirrors every local write into a heap-allocated Env map, and is gated to the identity dialect — so the default Common Lisp Engine and fail-closed restricted dialects can never use it. ADR 0002's re-open condition (a cache wired into evaluation that beats the tree-walker end-to-end) becomes the active plan. The VM gains native arithmetic/comparison opcodes, slot-only locals with capture analysis, a compiled-chunk cache, and all three dialect axes: rename normalization to canonical kernel forms (delivering ADR 0005 consequence 4), the truthiness hook, and Lisp-2 function-cell resolution. The `IsIdentity()` bytecode gate goes away. The tree-walker remains the default and the complete fallback until benchmarks show the VM winning end-to-end, including one-shot evaluation; the default flips only then.
+At the time of this decision, the performance goal was an ultra-fast VM, and the VM could not deliver it: it recompiled and allocated a fresh machine per call (13x slower than the tree-walker on repeated file loads), dispatched `+`/`-`/`<` through full GoFunc calls in its best-case hot loops, mirrored every local write into a heap-allocated Env map, and was gated to the identity dialect — so the default Common Lisp Engine and fail-closed restricted dialects could never use it. ADR 0002's re-open condition (a cache wired into evaluation that beats the tree-walker end-to-end) became the active plan. The VM would gain native arithmetic/comparison opcodes, slot-only locals with capture analysis, a compiled-chunk cache, and all three dialect axes: rename normalization to canonical kernel forms (delivering ADR 0005 consequence 4), the truthiness hook, and Lisp-2 function-cell resolution. The `IsIdentity()` bytecode gate would go away. The tree-walker would remain the fallback for any form the VM could not compile until fresh benchmarks showed the VM winning end-to-end, including one-shot evaluation; the default would flip only then.
+
+## Amendment
+
+The promotion evidence is now complete: native arithmetic/comparison opcodes,
+slot-only locals, chunk caching, dialect-axis support, runtime integration
+coverage, and the gold-set parity/performance gate. `runtime.New()` now defaults
+to bytecode VM execution. Forms the VM cannot compile continue to defer to the
+Evaluator per form, and `runtime.WithTreeWalker()` is the explicit rollback to
+tree-walk-only execution.
 
 ## Consequences
 
@@ -16,5 +25,5 @@ The performance goal is an ultra-fast VM, and today's VM cannot deliver it: it r
 ## Considered options
 
 - Flip the default immediately: rejected — ships the measured one-shot regression until the cache lands.
-- Optimize the tree-walker only, leave the VM opt-in as-is: rejected — caps the ceiling and drops the ultra-performance goal.
+- Optimize the tree-walker only, leave the VM manually selected as-is: rejected — caps the ceiling and drops the ultra-performance goal.
 - Keep the identity-only gate: rejected — the default CL dialect and restricted policy dialects, the real consumers, would never benefit from any VM work.

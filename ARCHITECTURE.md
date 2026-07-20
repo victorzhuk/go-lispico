@@ -113,10 +113,8 @@ Supports:
 
 #### Evaluator
 
-Two evaluation modes:
-
-1. **Tree-walking** (`eval.go`): direct AST traversal — the default, complete path
-2. **Bytecode VM** (`vm/`): compiled execution
+1. **Bytecode VM** (`vm/`): compiled execution — the default path
+2. **Tree-walking** (`eval.go`): direct AST traversal for forms that do not compile in the VM
 
 Tail-call optimization is explicit: `loop`/`recur` iterate without growing the Go
 stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
@@ -210,7 +208,8 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
 
 - `WithMaxEvalDepth(n)` — Cap evaluation call depth
 - `WithTimeout(d)` — Per-eval timeout applied to `Eval` and `Call`
-- `WithBytecode()` — Enable the bytecode VM
+- `WithBytecode()` — Force bytecode VM execution (default)
+- `WithTreeWalker()` — Force tree-walker-only execution for rollback
 - `WithDialect(d)` — Select a custom dialect; the default is the Common Lisp
   dialect (`cl.Dialect()`). Select the Clojure-style surface with
   `WithDialect(clojure.Dialect())`.
@@ -219,6 +218,8 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
   `New` and immutable afterward. A zero field selects a conservative default;
   there is no "unlimited". Exceeding a ceiling returns a `*core.LispicoError`
   with `Code: "ResourceLimitError"`.
+
+Evaluator options are last-wins for mode selection.
 
 ### cmd/
 

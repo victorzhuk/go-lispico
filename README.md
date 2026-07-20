@@ -11,8 +11,8 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
   The names above are the kernel special-form names. Under the default
   CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
 
-- **Tree-walking evaluator** with `loop`/`recur` tail-call optimization
-- **Bytecode VM** with `runtime.WithBytecode()` — opt-in optimizer for hot loops
+- **Bytecode VM** (default) — compiled execution with per-form tree-walker fallback
+- **Tree-walking evaluator** with `loop`/`recur` tail-call optimization for fallback path
 - **Hot-reload** via `eng.Watch(ctx, dir)`
 - **Plugin system** for extending functionality
 
@@ -97,7 +97,7 @@ Interactive session with line editing, history, and multiline support:
 Flags:
 
 - `-dialect cl|clojure` — select dialect (default: `cl`)
-- `-bytecode` — enable the bytecode VM evaluator
+- `-bytecode` — force bytecode VM mode (default)
 
 File execution — evaluate file(s) in order, then exit:
 
@@ -151,12 +151,13 @@ register its own IO primitives, so the pure-computation plugins (`stdlib`,
 
 ## Bytecode VM
 
-The bytecode VM is available behind `runtime.WithBytecode()`. It is an opt-in
-optimizer for loop- and recursion-heavy code, covering a documented subset of
-forms — closures, variadics, macros, `loop`/`recur`, and `try`/`catch`/`throw`.
-Forms it does not compile (a `defmacro` nested in a body, `unquote-splicing`)
-fall back to the tree-walking evaluator, which remains the default and complete
-path when `WithBytecode()` is not passed.
+`runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (for example `defmacro` nested in a body, `unquote-splicing`).
+
+Evaluator control:
+
+- `runtime.WithTreeWalker()` — force tree-walk-only execution (rollback).
+- `runtime.WithBytecode()` — force VM execution.
+- `runtime.New()` options are last-wins; the later evaluator option controls mode.
 
 ## Resource limits
 
