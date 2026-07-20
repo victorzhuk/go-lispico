@@ -98,6 +98,10 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
+	if _, ok := fn.(core.Lambda); ok {
+		return be.tree.Apply(ctx, fn, args, env)
+	}
+
 	v := be.vmPool.Get().(*vm.VM)
 	v.Reset()
 	v.SetGlobals(env)

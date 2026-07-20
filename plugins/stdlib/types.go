@@ -134,12 +134,7 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("fn?: requires 1 argument")
 			}
-			switch args[0].(type) {
-			case core.GoFunc, core.Lambda:
-				return core.Bool{V: true}, nil
-			default:
-				return core.Bool{V: false}, nil
-			}
+			return core.Bool{V: args[0].Type().V == "fn"}, nil
 		},
 	})
 

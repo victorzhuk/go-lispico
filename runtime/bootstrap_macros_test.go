@@ -92,3 +92,19 @@ func TestBootstrap_GetIn(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 1}.Equals(result))
 }
+
+func TestDefaultVM_FunctionTypeAndPredicateParity(t *testing.T) {
+	t.Parallel()
+	eng, err := New(nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	require.NoError(t, eng.Use(stdlib.New()))
+
+	result, err := eng.Eval(context.Background(), "test", "(type (fn (x) x))")
+	require.NoError(t, err)
+	assert.True(t, core.Keyword{V: "fn"}.Equals(result))
+
+	result, err = eng.Eval(context.Background(), "test", "(fn? (fn (x) x))")
+	require.NoError(t, err)
+	assert.True(t, core.Bool{V: true}.Equals(result))
+}

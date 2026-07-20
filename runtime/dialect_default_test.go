@@ -31,8 +31,7 @@ func TestRuntime_DefaultIsCL(t *testing.T) {
 	// defun defines a function with CL-style List params.
 	got, err = eng.Eval(ctx, "defun", "(defun f (x) x)")
 	require.NoError(t, err, "defun must be callable under CL")
-	_, isLambda := got.(core.Lambda)
-	require.True(t, isLambda, "defun must return a Lambda")
+	require.True(t, core.Keyword{V: "fn"}.Equals(got.Type()), "defun result type must be :fn, got %v", got.Type())
 
 	// [1 2] is a parse error under CL (no bracket literals).
 	_, err = eng.Eval(ctx, "brackets", "[1 2]")

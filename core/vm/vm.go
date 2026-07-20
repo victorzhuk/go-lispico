@@ -24,7 +24,7 @@ func NewClosure(chunk *Chunk, env *core.Env) *Closure {
 }
 
 // Type implements core.Value.
-func (c *Closure) Type() core.Keyword { return core.Keyword{V: "closure"} }
+func (c *Closure) Type() core.Keyword { return core.Keyword{V: "fn"} }
 
 // String implements core.Value.
 func (c *Closure) String() string { return fmt.Sprintf("#<closure %s>", c.Chunk.Name) }
@@ -276,6 +276,13 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 			}
 		}
 		return vm.run(ctx)
+	case core.Lambda:
+		eval := vm.eval
+		if eval == nil {
+			eval = core.NewEvaluator()
+		}
+		return eval.Apply(vm.reentrantCtx(ctx), f, args, env)
+
 	case core.GoFunc:
 		eval := vm.eval
 		if eval == nil {
@@ -998,6 +1005,22 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			frameEnv = vm.frames[len(vm.frames)-1].env
 		}
 		result, err := f.Fn(vm.reentrantCtx(ctx), eval, args, frameEnv)
+		if err != nil {
+			return err
+		}
+		vm.stack = vm.stack[:len(vm.stack)-argc-1]
+		vm.push(result)
+
+	case core.Lambda:
+		eval := vm.eval
+		if eval == nil {
+			eval = core.NewEvaluator()
+		}
+		frameEnv := vm.globals
+		if len(vm.frames) > 0 {
+			frameEnv = vm.frames[len(vm.frames)-1].env
+		}
+		result, err := eval.Apply(vm.reentrantCtx(ctx), f, args, frameEnv)
 		if err != nil {
 			return err
 		}

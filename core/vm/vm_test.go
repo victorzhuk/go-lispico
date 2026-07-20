@@ -678,8 +678,8 @@ func TestVM_Reset(t *testing.T) {
 func TestClosure_Type(t *testing.T) {
 	c := NewClosure(&Chunk{Name: "test"}, nil)
 
-	if c.Type().V != "closure" {
-		t.Errorf("expected type 'closure', got %s", c.Type().V)
+	if c.Type().V != "fn" {
+		t.Errorf("expected type 'fn', got %s", c.Type().V)
 	}
 }
 
