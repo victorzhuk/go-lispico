@@ -112,11 +112,22 @@ func WithTimeout(timeout time.Duration) EngineOption {
 	}
 }
 
-// WithBytecode switches the engine to the bytecode VM evaluator instead of
-// the default tree-walking one.
+// WithBytecode explicitly selects the bytecode VM evaluator.
+//
+// The VM executes supported forms; unsupported forms still fall back to the
+// tree-walker for correctness.
 func WithBytecode() EngineOption {
 	return func(cfg *engineConfig) {
 		cfg.bytecode = true
+	}
+}
+
+// WithTreeWalker explicitly selects the tree-walking evaluator.
+//
+// Pass this after WithBytecode() to opt back out of bytecode.
+func WithTreeWalker() EngineOption {
+	return func(cfg *engineConfig) {
+		cfg.bytecode = false
 	}
 }
 
@@ -170,10 +181,14 @@ func WithDialect(d core.Dialect) EngineOption {
 }
 
 // New creates an Engine. log may be nil, in which case logging is discarded.
+//
+// Default evaluator is the bytecode VM with per-form tree-walker fallback on
+// unsupported bytecode forms.
 func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	cfg := engineConfig{
 		maxEvalDepth: 1000,
 		timeout:      30 * time.Second,
+		bytecode:     true,
 		dialect:      cl.Dialect(),
 	}
 
