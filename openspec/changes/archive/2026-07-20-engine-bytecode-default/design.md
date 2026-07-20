@@ -55,3 +55,14 @@ in the same release. If that change slips, this one holds.
 - README / ARCHITECTURE / CLAUDE.md / spec Purpose blocks: reword the VM's
   status; document `WithTreeWalker()`.
 - CHANGELOG: Changed entry, prominent, with the one-line rollback.
+
+## Verification evidence (task 4.3)
+
+Applied on top of `stdlib-startup-cache` (merged `240e8d7`). Benchstat over 6
+counts on the default engine, `BenchmarkEngine_StartupStdlibBytecode`:
+cache-disabled 116.5 µs ± 10% / 854 allocs; cache-warm 106.3 µs ± 11% /
+754 allocs. No startup regression ships in the release: both changes land
+together and the warm process reuses stdlib compilation artifacts. The ≤ ~40 µs
+warm target remains with the `stdlib-lazy-materialization` follow-up; the
+external article bench (Call/Callback/Rule probe rows) runs at release time
+against the published bench repo.

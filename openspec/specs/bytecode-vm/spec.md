@@ -9,16 +9,17 @@ the language; the tree-walking evaluator is the supported default.
 ## Requirements
 ### Requirement: Bytecode VM execution
 
-The bytecode VM SHALL be an opt-in evaluator, selectable with
-`runtime.WithBytecode()`, that produces results identical to the tree-walking
-evaluator for every program it compiles. It is a documented subset: for a form it
-does not compile it SHALL return a typed error, and the runtime SHALL fall back to
-the tree-walking evaluator for that form — never panicking, and never producing a
-result that differs from the tree-walker. Evaluations SHALL be isolated in their
-results: compiled chunks MAY be cached and reused, but no stack or frame state
-SHALL leak between `Eval` calls. VM instances SHALL be reused across evaluations —
-on both the `Eval` path and the `Apply`/`Call` path — rather than a fresh machine
-being allocated per call; a reused instance SHALL be reset before it runs the next
+The bytecode VM SHALL be the Engine's default evaluator — selectable away with
+`runtime.WithTreeWalker()`, selectable explicitly with `runtime.WithBytecode()`
+— and SHALL produce results identical to the tree-walking evaluator for every
+program it compiles. It is a documented subset: for a form it does not compile it
+SHALL return a typed error, and the runtime SHALL fall back to the tree-walking
+evaluator for that form — never panicking, and never producing a result that
+differs from the tree-walker. Evaluations SHALL be isolated in their results:
+compiled chunks MAY be cached and reused, but no stack or frame state SHALL leak
+between `Eval` calls. VM instances SHALL be reused across evaluations — on both
+the `Eval` path and the `Apply`/`Call` path — rather than a fresh machine being
+allocated per call; a reused instance SHALL be reset before it runs the next
 evaluation so no state leaks between them. Applying a closure through
 `Apply`/`ApplyPooled` SHALL enter the VM's call protocol directly, without
 synthesizing a per-call wrapper chunk.
@@ -31,6 +32,11 @@ error when no binding exists; locals resolved to slots keep slot mutation. A cat
 binding SHALL exist only in the handler scope: compiling a `try` normal body SHALL
 NOT reserve or shift the catch slot, and leaving the handler SHALL restore the
 previous local layout.
+
+#### Scenario: Default engine runs the VM
+
+- **WHEN** an Engine is constructed without evaluator options and evaluates a form inside the compiled subset
+- **THEN** the form SHALL execute on the bytecode VM, and `runtime.WithTreeWalker()` SHALL select the tree-walking evaluator instead
 
 #### Scenario: Supported forms match the tree-walker
 
@@ -64,7 +70,7 @@ previous local layout.
 
 #### Scenario: Call reuses a pooled VM
 
-- **WHEN** `Engine.Call` invokes a function repeatedly on one `WithBytecode()` engine
+- **WHEN** `Engine.Call` invokes a function repeatedly on one engine running the VM
 - **THEN** each call SHALL run on a reset, reused VM from the pool rather than a freshly allocated machine, and SHALL return the same result the tree-walker would
 
 #### Scenario: Skipped when/unless produces nil
@@ -89,7 +95,7 @@ previous local layout.
 
 #### Scenario: Apply enters the call protocol directly
 
-- **WHEN** `Engine.Call` applies a compiled closure on a `WithBytecode()` engine
+- **WHEN** `Engine.Call` applies a compiled closure on an engine running the VM
 - **THEN** the VM SHALL execute the closure through its call protocol without compiling or allocating a per-call wrapper chunk, and the result SHALL match the tree-walker's
 
 ### Requirement: Bytecode VM concurrency safety
