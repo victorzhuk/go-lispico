@@ -67,6 +67,48 @@ func TestNew_EvaluatorSelection(t *testing.T) {
 	}
 }
 
+func TestNew_EvaluatorSelectionExecutesSelectedPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	source := "(if nil 1 2)"
+
+	t.Run("default uses bytecode", func(t *testing.T) {
+		eng, err := New(nil)
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer eng.Close()
+
+		got, err := eng.Eval(ctx, "compiled-subset", source)
+		if !assert.NoError(t, err) {
+			return
+		}
+
+		assert.True(t, core.Int{V: 2}.Equals(got), "got %v", got)
+		assert.Equal(t, 1, cacheCount(t, eng))
+	})
+
+	t.Run("with-treewalker stays off VM", func(t *testing.T) {
+		eng, err := New(nil, WithTreeWalker())
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer eng.Close()
+
+		got, err := eng.Eval(ctx, "compiled-subset", source)
+		if !assert.NoError(t, err) {
+			return
+		}
+
+		assert.True(t, core.Int{V: 2}.Equals(got), "got %v", got)
+		impl, ok := eng.(*engineImpl)
+		if assert.True(t, ok) {
+			assert.Nil(t, impl.bytecodeEvaluator)
+		}
+	})
+}
+
 func TestNew_DefaultOptions(t *testing.T) {
 	t.Parallel()
 

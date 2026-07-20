@@ -8,6 +8,22 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+func treeIdentityLambda(t testing.TB) core.Lambda {
+	t.Helper()
+
+	env := core.NewEnv(nil)
+	forms, err := core.Read("(fn [x] x)")
+	require.NoError(t, err)
+	require.Len(t, forms, 1)
+
+	got, err := core.NewEvaluator().Eval(context.Background(), forms[0], env)
+	require.NoError(t, err)
+	lambda, ok := got.(core.Lambda)
+	require.True(t, ok)
+
+	return lambda
+}
+
 func TestVM_ApplyClosure(t *testing.T) {
 	t.Parallel()
 
@@ -79,6 +95,42 @@ func TestVM_ApplyPooled_GoFunc(t *testing.T) {
 	result, err := vm.ApplyPooled(context.Background(), fn, []core.Value{core.Int{V: 7}}, env)
 	require.NoError(t, err)
 	require.True(t, core.Int{V: 7}.Equals(result))
+}
+
+func TestVM_ApplyPooled_TreeLambdaFallsBackToEvaluator(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	vm := New(env, WithEvaluator(core.NewEvaluator()))
+	lambda := treeIdentityLambda(t)
+
+	result, err := vm.ApplyPooled(context.Background(), lambda, []core.Value{core.Int{V: 11}}, env)
+	require.NoError(t, err)
+	require.True(t, core.Int{V: 11}.Equals(result), "got %v", result)
+}
+
+func TestVM_OpCall_TreeLambdaFallsBackToEvaluator(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.Set("id", treeIdentityLambda(t))
+	chunk := &Chunk{
+		Name: "<main>",
+		Constants: []core.Value{
+			core.Symbol{V: "id"},
+			core.Int{V: 12},
+		},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpConst, 1),
+			Encode(OpCall, 1),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	result, err := New(env, WithEvaluator(core.NewEvaluator())).Run(context.Background(), chunk)
+	require.NoError(t, err)
+	require.True(t, core.Int{V: 12}.Equals(result), "got %v", result)
 }
 
 // TestVM_ApplyPreservesFreshIsolation proves VM.Apply still creates a fresh VM
