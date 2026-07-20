@@ -425,6 +425,66 @@ func TestCollections_Constructors(t *testing.T) {
 	})
 }
 
+func TestCollections_ConstructorArgIsolation(t *testing.T) {
+	env := setupEnv(t)
+
+	listValue, ok := env.Get("list")
+	if !ok {
+		t.Fatalf("list function not defined")
+	}
+	listFn, ok := listValue.(core.GoFunc)
+	if !ok {
+		t.Fatalf("expected list function, got %T", listValue)
+	}
+
+	listInput := []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}
+	listResult, err := listFn.Fn(context.Background(), core.NewEvaluator(), listInput, env)
+	if err != nil {
+		t.Fatalf("list constructor error: %v", err)
+	}
+	list, ok := listResult.(core.List)
+	if !ok {
+		t.Fatalf("expected list, got %T", listResult)
+	}
+
+	list.Items[0] = core.Int{V: 99}
+	if !listInput[0].Equals(core.Int{V: 1}) {
+		t.Fatalf("list constructor should copy args; mutating list changed caller arg: %v", listInput[0])
+	}
+	listInput[1] = core.Int{V: 88}
+	if !list.Items[1].Equals(core.Int{V: 2}) {
+		t.Fatalf("list constructor should copy args; mutating caller arg changed list item: %v", list.Items[1])
+	}
+
+	vectorValue, ok := env.Get("vector")
+	if !ok {
+		t.Fatalf("vector function not defined")
+	}
+	vectorFn, ok := vectorValue.(core.GoFunc)
+	if !ok {
+		t.Fatalf("expected vector function, got %T", vectorValue)
+	}
+
+	vectorInput := []core.Value{core.Int{V: 4}, core.Int{V: 5}, core.Int{V: 6}}
+	vectorResult, err := vectorFn.Fn(context.Background(), core.NewEvaluator(), vectorInput, env)
+	if err != nil {
+		t.Fatalf("vector constructor error: %v", err)
+	}
+	vector, ok := vectorResult.(core.Vector)
+	if !ok {
+		t.Fatalf("expected vector, got %T", vectorResult)
+	}
+
+	vector.Items[0] = core.Int{V: 77}
+	if !vectorInput[0].Equals(core.Int{V: 4}) {
+		t.Fatalf("vector constructor should copy args; mutating vector changed caller arg: %v", vectorInput[0])
+	}
+	vectorInput[1] = core.Int{V: 66}
+	if !vector.Items[1].Equals(core.Int{V: 5}) {
+		t.Fatalf("vector constructor should copy args; mutating caller arg changed vector item: %v", vector.Items[1])
+	}
+}
+
 func TestCollections_Access(t *testing.T) {
 	env := setupEnv(t)
 

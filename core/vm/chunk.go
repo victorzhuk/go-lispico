@@ -112,6 +112,37 @@ func (c *Chunk) EnsureSites() {
 	}
 }
 
+// CopyTreeFreshSites returns a per-engine copy of c and every nested subchunk.
+// Instruction, constant, local-name, and capture slices are shared; global-read
+// site tables are rebuilt with empty entries so cached resolutions never cross
+// engine boundaries.
+func (c *Chunk) CopyTreeFreshSites() *Chunk {
+	if c == nil {
+		return nil
+	}
+	out := &Chunk{
+		Name:       c.Name,
+		Arity:      c.Arity,
+		Variadic:   c.Variadic,
+		Locals:     c.Locals,
+		MaxStack:   c.MaxStack,
+		LocalNames: c.LocalNames,
+		Captured:   c.Captured,
+		FullEnv:    c.FullEnv,
+		Code:       c.Code,
+		Constants:  c.Constants,
+		Truthiness: c.Truthiness,
+	}
+	if len(c.SubChunks) > 0 {
+		out.SubChunks = make([]*Chunk, len(c.SubChunks))
+		for i, sub := range c.SubChunks {
+			out.SubChunks[i] = sub.CopyTreeFreshSites()
+		}
+	}
+	out.sites.Store(out.buildSites())
+	return out
+}
+
 // buildSites scans Code for OpGetGlobal reads, assigning one shared entry per
 // distinct symbol (constant index) so repeated reads of the same global reuse
 // a single cached resolution. Native ops need no site: their canonical

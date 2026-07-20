@@ -1,0 +1,335 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
+	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/stdlib"
+)
+
+func TestStdlibBootstrapCache_SecondEngineReusesArtifact(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	first := newBytecodeStdlibEngine(t)
+	defer first.Close()
+	assertStdlibBootstrapBehavior(t, first)
+
+	stats := stdlibBootstrapCacheStatsForTest()
+	assert.Equal(t, stdlibBootstrapCacheStats{Entries: 1, Misses: 1, Compiles: 1}, stats)
+
+	second := newBytecodeStdlibEngine(t)
+	defer second.Close()
+	assertStdlibBootstrapBehavior(t, second)
+
+	stats = stdlibBootstrapCacheStatsForTest()
+	assert.Equal(t, stdlibBootstrapCacheStats{Entries: 1, Hits: 1, Misses: 1, Compiles: 1}, stats)
+}
+
+func TestStdlibBootstrapCache_DisableHookForcesCompile(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(true)
+	defer restore()
+
+	first := newBytecodeStdlibEngine(t)
+	defer first.Close()
+	second := newBytecodeStdlibEngine(t)
+	defer second.Close()
+
+	stats := stdlibBootstrapCacheStatsForTest()
+	assert.Equal(t, stdlibBootstrapCacheStats{Compiles: 2}, stats)
+}
+
+func TestStdlibBootstrapCache_CachedAndDisabledBehaviorMatch(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+
+	warm := newBytecodeStdlibEngine(t)
+	require.NoError(t, warm.Close())
+	cached := newBytecodeStdlibEngine(t)
+	cachedResults := stdlibBootstrapResults(t, cached)
+	require.NoError(t, cached.Close())
+	restore()
+
+	clearStdlibBootstrapCacheForTest()
+	restore = setStdlibBootstrapCacheDisabledForTest(true)
+	disabled := newBytecodeStdlibEngine(t)
+	disabledResults := stdlibBootstrapResults(t, disabled)
+	require.NoError(t, disabled.Close())
+	restore()
+
+	require.Len(t, cachedResults, len(disabledResults))
+	for i := range cachedResults {
+		assert.True(t, cachedResults[i].Equals(disabledResults[i]), "result %d mismatch: cached=%v disabled=%v", i, cachedResults[i], disabledResults[i])
+	}
+}
+
+func TestStdlibBootstrapCache_CachedAndDisabledBehaviorMatchAcrossDialects(t *testing.T) {
+	testCases := []struct {
+		name string
+		opts []EngineOption
+	}{
+		{name: "cl"},
+		{name: "clojure", opts: []EngineOption{WithDialect(clojure.Dialect())}},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearStdlibBootstrapCacheForTest()
+
+			restore := setStdlibBootstrapCacheDisabledForTest(false)
+			t.Cleanup(restore)
+
+			warm := newBytecodeStdlibEngineWithOptions(t, tc.opts...)
+			require.NoError(t, warm.Close())
+			cached := newBytecodeStdlibEngineWithOptions(t, tc.opts...)
+			cachedResults := stdlibBootstrapResults(t, cached)
+			require.NoError(t, cached.Close())
+			restore()
+
+			clearStdlibBootstrapCacheForTest()
+
+			restore = setStdlibBootstrapCacheDisabledForTest(true)
+			t.Cleanup(restore)
+			disabled := newBytecodeStdlibEngineWithOptions(t, tc.opts...)
+			disabledResults := stdlibBootstrapResults(t, disabled)
+			require.NoError(t, disabled.Close())
+
+			require.Len(t, cachedResults, len(disabledResults))
+			for i := range cachedResults {
+				assert.True(t, cachedResults[i].Equals(disabledResults[i]), "result %d mismatch: cached=%v disabled=%v", i, cachedResults[i], disabledResults[i])
+			}
+		})
+	}
+}
+
+func TestStdlibBootstrapCache_ConcurrentFirstLoadRaceSafe(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer eng.Close()
+			if err := eng.Use(stdlib.New()); err != nil {
+				errs <- err
+				return
+			}
+			results, err := stdlibBootstrapResultsNoFatal(eng)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(results) != 2 || !(core.Int{V: 9}).Equals(results[0]) || !(core.Int{V: 7}).Equals(results[1]) {
+				errs <- fmt.Errorf("unexpected stdlib results: %v", results)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	stats := stdlibBootstrapCacheStatsForTest()
+	assert.Equal(t, 1, stats.Entries)
+	assert.GreaterOrEqual(t, stats.Compiles, 1)
+	assert.LessOrEqual(t, stats.Compiles, 8)
+}
+
+func TestUnloadPlugin_InvalidatesMacroCache(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	eng := newBytecodeStdlibEngine(t)
+	defer eng.Close()
+
+	_, err := eng.Eval(context.Background(), "warm", "(-> 1 (+ 2))")
+	require.NoError(t, err)
+	require.NoError(t, eng.UnloadPlugin(stdlib.New().Name()))
+
+	_, err = eng.Eval(context.Background(), "after-unload", "(-> 1 (+ 2))")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "undefined")
+}
+
+func TestReloadPlugin_InvalidatesMacroCache(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	eng := newBytecodeStdlibEngine(t)
+	defer eng.Close()
+
+	ctx := context.Background()
+
+	_, err := eng.Eval(ctx, "override", "(defmacro -> [x & forms] '(+ 4 5))")
+	require.NoError(t, err)
+
+	beforeReload, err := eng.Eval(ctx, "before-reload", "(-> 1 (+ 2))")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 9}.Equals(beforeReload), "custom macro override path: (-> 1 (+ 2)) => 9")
+
+	require.NoError(t, eng.ReloadPlugin(stdlib.New()))
+
+	afterReload, err := eng.Eval(ctx, "after-reload", "(-> 1 (+ 2))")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 3}.Equals(afterReload), "reloaded stdlib macro path: (-> 1 (+ 2)) => 3")
+}
+
+func TestStdlibBootstrapCache_SameDialect_EnginesIsolateDefinitions(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	first := newBytecodeStdlibEngine(t)
+	defer first.Close()
+	second := newBytecodeStdlibEngine(t)
+	defer second.Close()
+
+	assertStdlibBootstrapBehavior(t, first)
+	assertStdlibBootstrapBehavior(t, second)
+
+	_, err := first.Eval(context.Background(), "define-marker", "(def isolation-marker 99)")
+	require.NoError(t, err)
+
+	got, err := first.Eval(context.Background(), "read-marker", "isolation-marker")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 99}.Equals(got))
+
+	_, err = second.Eval(context.Background(), "other-engine-read-marker", "isolation-marker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "undefined")
+}
+
+func TestStdlibBootstrapCache_UnloadPluginOneEngineLeavesOtherUsable(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	first := newBytecodeStdlibEngine(t)
+	defer first.Close()
+	second := newBytecodeStdlibEngine(t)
+	defer second.Close()
+
+	_, err := second.Eval(context.Background(), "bind-second", "(def retained-in-second 7)")
+	require.NoError(t, err)
+
+	require.NoError(t, first.UnloadPlugin(stdlib.New().Name()))
+
+	_, err = second.Eval(context.Background(), "use-second", "(-> 1 (+ 2) (* 3))")
+	require.NoError(t, err)
+	_, err = second.Eval(context.Background(), "read-second", "retained-in-second")
+	require.NoError(t, err)
+
+	_, err = first.Eval(context.Background(), "use-first", "(-> 1 (+ 2) (* 3))")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "undefined")
+}
+
+func TestStdlibBootstrapCache_DialectArtifactsAreSeparated(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	cl := newBytecodeStdlibEngineWithOptions(t)
+	defer cl.Close()
+	clojureEng := newBytecodeStdlibEngineWithOptions(t, WithDialect(clojure.Dialect()))
+	defer clojureEng.Close()
+
+	assertStdlibBootstrapBehavior(t, cl)
+	assertStdlibBootstrapBehavior(t, clojureEng)
+
+	stats := stdlibBootstrapCacheStatsForTest()
+	assert.Equal(t, 2, stats.Entries)
+	assert.Equal(t, 2, stats.Misses)
+	assert.Equal(t, 2, stats.Compiles)
+}
+
+func TestStdlibBootstrapCache_CacheCeilingByDialectFingerprint(t *testing.T) {
+	clearStdlibBootstrapCacheForTest()
+	restore := setStdlibBootstrapCacheDisabledForTest(false)
+	defer restore()
+
+	const totalDialects = maxStdlibBootstrapArtifacts + 16
+	for i := 0; i < totalDialects; i++ {
+		eng := newBytecodeStdlibEngineWithOptions(
+			t,
+			WithDialect(syntheticStdlibDialect(i)),
+		)
+		_, err := eng.Eval(context.Background(), "warm", "(-> 1 (+ 2) (* 3))")
+		require.NoError(t, err)
+		require.NoError(t, eng.Close())
+	}
+
+	stats := stdlibBootstrapCacheStatsForTest()
+	assert.LessOrEqual(t, stats.Entries, maxStdlibBootstrapArtifacts)
+	assert.GreaterOrEqual(t, stats.Compiles, maxStdlibBootstrapArtifacts)
+}
+
+func syntheticStdlibDialect(i int) core.Dialect {
+	return clojure.Dialect().Add(fmt.Sprintf("stdlib-cache-dialect-%d", i), "if")
+}
+
+func newBytecodeStdlibEngineWithOptions(t *testing.T, opts ...EngineOption) Engine {
+	t.Helper()
+	options := make([]EngineOption, 0, len(opts)+1)
+	options = append(options, WithBytecode())
+	options = append(options, opts...)
+
+	eng, err := New(nil, options...)
+	require.NoError(t, err)
+	require.NoError(t, eng.Use(stdlib.New()))
+	return eng
+}
+
+func newBytecodeStdlibEngine(t *testing.T) Engine {
+	return newBytecodeStdlibEngineWithOptions(t, WithDialect(clojure.Dialect()))
+}
+
+func assertStdlibBootstrapBehavior(t *testing.T, eng Engine) {
+	t.Helper()
+	results := stdlibBootstrapResults(t, eng)
+	assert.True(t, core.Int{V: 9}.Equals(results[0]), "thread-first result = %v", results[0])
+	assert.True(t, core.Int{V: 7}.Equals(results[1]), "get-in result = %v", results[1])
+}
+
+func stdlibBootstrapResults(t *testing.T, eng Engine) []core.Value {
+	t.Helper()
+	ctx := context.Background()
+	threaded, err := eng.Eval(ctx, "thread-first", "(-> 1 (+ 2) (* 3))")
+	require.NoError(t, err)
+	getIn, err := eng.Eval(ctx, "get-in", "(get-in (hash-map :a (hash-map :b 7)) (vector :a :b))")
+	require.NoError(t, err)
+	return []core.Value{threaded, getIn}
+}
+
+func stdlibBootstrapResultsNoFatal(eng Engine) ([]core.Value, error) {
+	ctx := context.Background()
+	threaded, err := eng.Eval(ctx, "thread-first", "(-> 1 (+ 2) (* 3))")
+	if err != nil {
+		return nil, err
+	}
+	getIn, err := eng.Eval(ctx, "get-in", "(get-in (hash-map :a (hash-map :b 7)) (vector :a :b))")
+	if err != nil {
+		return nil, err
+	}
+	return []core.Value{threaded, getIn}, nil
+}

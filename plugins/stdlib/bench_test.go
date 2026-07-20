@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/core/compiler"
+	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
 func mergeGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
@@ -70,6 +72,97 @@ func BenchmarkMerge(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkBootstrapPhases(b *testing.B) {
+	ctx := context.Background()
+	entries := stdlibBootstrapEntries()
+
+	b.Run("read", func(b *testing.B) {
+		source := entries[len(entries)-1].source
+		for b.Loop() {
+			if _, err := core.Read(source); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("macro-expand", func(b *testing.B) {
+		source := entries[0].source
+		forms, err := core.Read(source)
+		if err != nil {
+			b.Fatal(err)
+		}
+		env := core.NewEnv(nil)
+		macro := core.NewEvaluator()
+		for b.Loop() {
+			if _, err := macro.MacroExpand(ctx, forms[0], env); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("compile-validate", func(b *testing.B) {
+		source := entries[len(entries)-1].source
+		forms, err := core.Read(source)
+		if err != nil {
+			b.Fatal(err)
+		}
+		form := forms[0]
+		for b.Loop() {
+			comp := compiler.NewCompiler("<bench>")
+			if err := comp.Compile(form); err != nil {
+				b.Fatal(err)
+			}
+			comp.Chunk().Emit(vm.OpReturn, 0)
+			comp.MarkCaptures()
+			if err := comp.Chunk().Validate(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("env-populate", func(b *testing.B) {
+		for b.Loop() {
+			env := core.NewEnv(nil)
+			env.SetEvaluator(core.NewEvaluator())
+			registerBuiltinsForBench(New(), env)
+		}
+	})
+
+	b.Run("binding-mirror", func(b *testing.B) {
+		for b.Loop() {
+			env := core.NewEnv(nil)
+			env.SetEvaluator(core.NewEvaluator())
+			registerBuiltinsForBench(New(), env)
+			before := snapshotBootstrapBindings(env)
+			for _, name := range []string{"->", "->>", "as->", "if-let", "when-let", "get-in"} {
+				env.Set(name, core.Int{V: 1})
+			}
+			New().mirrorBootstrapBindings(env, before)
+		}
+	})
+}
+
+func registerBuiltinsForBench(p *Plugin, env *core.Env) {
+	p.registerArithmetic(env)
+	p.registerComparison(env)
+	p.registerStrings(env)
+	p.registerCollections(env)
+	p.registerHigherOrder(env)
+	p.registerControl(env)
+	p.registerTypes(env)
+}
+
+func snapshotBootstrapBindings(env *core.Env) map[string]struct{} {
+	before := make(map[string]struct{})
+	for _, name := range env.VarNames() {
+		before[name] = struct{}{}
+	}
+	for _, name := range env.FuncNames() {
+		before[name] = struct{}{}
+	}
+	return before
 }
 
 func TestMerge_LinearGrowth(t *testing.T) {

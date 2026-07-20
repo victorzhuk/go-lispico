@@ -22,7 +22,7 @@ func (p *Plugin) registerCollections(env *core.Env) {
 	env.Set("list", core.GoFunc{
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			return core.List{Items: args}, nil
+			return core.List{Items: append([]core.Value(nil), args...)}, nil
 		},
 	})
 
@@ -73,7 +73,7 @@ func (p *Plugin) registerCollections(env *core.Env) {
 	env.Set("vector", core.GoFunc{
 		Name: "vector",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			return core.Vector{Items: args}, nil
+			return core.Vector{Items: append([]core.Value(nil), args...)}, nil
 		},
 	})
 

@@ -26,6 +26,47 @@ func BenchmarkEngine_Creation(b *testing.B) {
 	}
 }
 
+func BenchmarkEngine_StartupStdlibBytecode(b *testing.B) {
+	b.Run("cache-disabled", func(b *testing.B) {
+		clearStdlibBootstrapCacheForTest()
+		restore := setStdlibBootstrapCacheDisabledForTest(true)
+		defer restore()
+		benchmarkEngineStartupStdlibBytecode(b)
+	})
+	b.Run("cache-warm", func(b *testing.B) {
+		clearStdlibBootstrapCacheForTest()
+		restore := setStdlibBootstrapCacheDisabledForTest(false)
+		defer restore()
+		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+		benchmarkEngineStartupStdlibBytecode(b)
+	})
+}
+
+func benchmarkEngineStartupStdlibBytecode(b *testing.B) {
+	ctx := context.Background()
+	for b.Loop() {
+		eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := eng.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := eng.Eval(ctx, "startup", "(get-in (hash-map :a 1) (vector :a))"); err != nil {
+			b.Fatal(err)
+		}
+		eng.Close()
+	}
+}
+
 func BenchmarkEngine_EvalSimple(b *testing.B) {
 	eng, err := New(nil)
 	if err != nil {

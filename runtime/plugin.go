@@ -21,6 +21,18 @@ func (e *engineImpl) snapshotBindings() []string {
 	return unionOf(e.rootEnv.VarNames(), e.rootEnv.FuncNames())
 }
 
+func (e *engineImpl) removePluginBindings(name string) {
+	if len(e.bindings[name]) == 0 {
+		delete(e.bindings, name)
+		return
+	}
+	for n := range e.bindings[name] {
+		e.rootEnv.Delete(n)
+	}
+	delete(e.bindings, name)
+	e.rootEnv.BumpMacroEpoch()
+}
+
 func (e *engineImpl) Use(p core.Plugin) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -64,10 +76,7 @@ func (e *engineImpl) UnloadPlugin(name string) error {
 
 	e.registry.Unregister(name)
 
-	for n := range e.bindings[name] {
-		e.rootEnv.Delete(n)
-	}
-	delete(e.bindings, name)
+	e.removePluginBindings(name)
 
 	e.stats.decPlugins()
 	e.logger.Info("plugin unloaded", "name", name, "version", p.Metadata().Version)
@@ -83,10 +92,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	oldPlugin, hadOld := e.registry.Get(name)
 
 	if hadOld {
-		for n := range e.bindings[name] {
-			e.rootEnv.Delete(n)
-		}
-		delete(e.bindings, name)
+		e.removePluginBindings(name)
 		e.registry.Unregister(name)
 	}
 

@@ -96,3 +96,61 @@ func TestChunkPatchJump(t *testing.T) {
 		t.Errorf("patched jump operand = %d, want 2", got)
 	}
 }
+
+func TestChunkCopyTreeFreshSites(t *testing.T) {
+	sym := core.Symbol{V: "x"}
+	sub := &Chunk{
+		Name:      "<fn>",
+		Code:      []Instruction{Encode(OpGetGlobal, 0), Encode(OpReturn, 0)},
+		Constants: []core.Value{sym},
+	}
+	root := &Chunk{
+		Name:      "<top>",
+		Code:      []Instruction{Encode(OpGetGlobal, 0), Encode(OpClosure, 0), Encode(OpReturn, 0)},
+		Constants: []core.Value{sym},
+		SubChunks: []*Chunk{sub},
+	}
+	root.EnsureSites()
+	sub.EnsureSites()
+
+	env := core.NewEnv(nil)
+	env.Set("x", core.Int{V: 1})
+	cell, ok := env.CellLocal("x")
+	if !ok {
+		t.Fatal("missing cell")
+	}
+	root.site(0).entry.Store(&siteEntry{env: env, cell: cell, val: core.Int{V: 1}, gen: env.NameGen(), ver: cell.Version()})
+	sub.site(0).entry.Store(&siteEntry{env: env, cell: cell, val: core.Int{V: 1}, gen: env.NameGen(), ver: cell.Version()})
+
+	copied := root.CopyTreeFreshSites()
+	if copied == root {
+		t.Fatal("root chunk pointer shared")
+	}
+	if copied.SubChunks[0] == root.SubChunks[0] {
+		t.Fatal("subchunk pointer shared")
+	}
+	if &copied.Code[0] != &root.Code[0] {
+		t.Fatal("code slice not shared")
+	}
+	if &copied.Constants[0] != &root.Constants[0] {
+		t.Fatal("constant slice not shared")
+	}
+	if copied.site(0) == nil {
+		t.Fatal("root site table missing")
+	}
+	if copied.site(0).entry.Load() != nil {
+		t.Fatal("root site entry copied")
+	}
+	if copied.SubChunks[0].site(0) == nil {
+		t.Fatal("subchunk site table missing")
+	}
+	if copied.SubChunks[0].site(0).entry.Load() != nil {
+		t.Fatal("subchunk site entry copied")
+	}
+	if root.site(0).entry.Load() == nil {
+		t.Fatal("source root site entry cleared")
+	}
+	if sub.site(0).entry.Load() == nil {
+		t.Fatal("source subchunk site entry cleared")
+	}
+}
