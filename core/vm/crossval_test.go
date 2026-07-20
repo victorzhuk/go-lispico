@@ -1175,26 +1175,54 @@ func TestVM_ConcurrentBindAndExecute(t *testing.T) {
 	require.NoError(t, err)
 	chunk := chunks[0]
 
+	warmed := vm.New(env)
+	warmResult, warmErr := warmed.Run(context.Background(), chunk)
+	require.NoError(t, warmErr)
+	require.IsType(t, core.Int{}, warmResult)
+
+	const (
+		rebinds             = 2000
+		readers             = 4
+		executionsPerReader = 500
+	)
+	totalReads := readers * executionsPerReader
+	results := make([]core.Value, totalReads)
+	errs := make([]error, totalReads)
+
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := range 2000 {
+		for i := range rebinds {
 			env.Set("x", core.Int{V: int64(i)})
 		}
 	}()
-	go func() {
-		defer wg.Done()
-		for range 2000 {
-			v := vm.New(env)
-			result, err := v.Run(context.Background(), chunk)
-			assert.NoError(t, err)
-			if _, ok := result.(core.Int); !ok {
-				t.Errorf("expected Int, got %T", result)
+	for reader := 0; reader < readers; reader++ {
+		base := reader * executionsPerReader
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < executionsPerReader; i++ {
+				v := vm.New(env)
+				result, runErr := v.Run(context.Background(), chunk)
+				idx := base + i
+				results[idx] = result
+				errs[idx] = runErr
 			}
-		}
-	}()
+		}(base)
+	}
 	wg.Wait()
+
+	for i := range totalReads {
+		assert.NoError(t, errs[i], "reader execution %d", i)
+		intResult, ok := results[i].(core.Int)
+		assert.True(t, ok, "reader execution %d got %T", i, results[i])
+		if !ok {
+			continue
+		}
+		assert.GreaterOrEqual(t, intResult.V, int64(0), "reader execution %d value should be old-or-new", i)
+		assert.Less(t, intResult.V, int64(rebinds), "reader execution %d value should be old-or-new", i)
+	}
 }
 
 // TestVMVsTreeWalker_NativeOpCanonicalRestoredDuringArgs covers the direction
