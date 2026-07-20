@@ -83,3 +83,26 @@ stdlib closures publish sites against their own root env only.
   change's measured startup still misses the target.
 - Caching user `Eval` sources across engines — macro-epoch reproducibility
   does not hold there.
+
+## Profile findings (task 1.1)
+
+Startup loop (New + Use(stdlib.New()) + one eval + Close), bytecode default:
+cache disabled 144.7 µs / 854 allocs; warm process 109.8 µs / 754 allocs
+(−34.9 µs, −100 allocs). pprof on the cold loop attributes the reusable-form
+cost to `core.Read` (~100 ms of a 2 s capture), `Compile` (~60 ms),
+`MacroExpand` (~10 ms); env population and binding mirroring dominate the
+remaining startup and stay per-engine by design.
+
+Reuse boundary chosen from the profile: compiled chunk trees for reproducible
+pure-Lisp stdlib forms. Only the `get-in` defn qualifies today; the five
+macro-defining forms (`->`, `->>`, `as->`, `if-let`, `when-let`) are excluded
+because a compiled `Macro` value would capture its defining env, breaking
+cross-engine isolation. They still load per engine (cheap: read + tree-walk
+definition, no per-engine recompilation of bodies).
+
+Verification (task 4.2): benchstat over 6 counts, `BenchmarkEngine_StartupStdlibBytecode`
+— cache-disabled 111.3 µs ± 17% / 854 allocs; cache-warm 107.5 µs ± 8% /
+754 allocs (−3.4% time, −11.7% allocs). The ≤ ~40 µs warm target is not met:
+startup cost is dominated by per-engine env population and Go-builtin
+registration, not stdlib compilation. The `stdlib-lazy-materialization`
+follow-up remains the path to the target.

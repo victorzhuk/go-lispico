@@ -234,6 +234,15 @@ bump SHALL be reclaimed, and the cache SHALL enforce the Engine's configured
 chunk-cache-size ceiling, so a long-lived Engine that evaluates many distinct
 sources or repeatedly redefines macros stays within its memory budget.
 
+Additionally, plugin-load compilation SHALL be reusable across Engines within a
+process: loading identical plugin source under an identical dialect fingerprint
+into a second Engine SHALL NOT repeat macro expansion and compilation, provided
+the source's expansion is fully determined by the dialect and the source itself.
+This process-level tier SHALL be bounded, SHALL share only immutable compiled
+artifacts, and SHALL NOT share per-engine resolution state: each Engine resolves
+globals against its own environments, and no binding, macro, or canonical flag
+SHALL leak between Engines through the shared artifacts.
+
 #### Scenario: Repeated evaluation reuses the chunk
 
 - **WHEN** the same source is evaluated twice on one Engine under the VM
@@ -248,6 +257,16 @@ sources or repeatedly redefines macros stays within its memory budget.
 
 - **WHEN** an Engine repeatedly evaluates distinct sources and redefines macros far beyond the chunk-cache-size ceiling
 - **THEN** the cache entry count SHALL stay at or below the configured ceiling, and results SHALL remain correct for whatever is evaluated next
+
+#### Scenario: Second engine skips plugin recompilation
+
+- **WHEN** a second Engine with the same dialect loads the same stdlib plugin source in one process
+- **THEN** the load SHALL reuse the process-level compiled artifacts without repeating expansion or compilation, and every stdlib definition SHALL behave identically to a freshly compiled load
+
+#### Scenario: Shared artifacts leak no engine state
+
+- **WHEN** two Engines built from shared plugin artifacts each define new bindings and one unloads the plugin
+- **THEN** neither Engine SHALL observe the other's bindings or unload, and `go test -race` SHALL report no data race across concurrent engine construction
 
 ### Requirement: Dialect-axis execution
 
