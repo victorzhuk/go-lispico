@@ -8,7 +8,7 @@ import (
 )
 
 func (p *Plugin) registerTypes(env *core.Env) {
-	env.Set("type", core.GoFunc{
+	env.RegisterValue("type", core.GoFunc{
 		Name: "type",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -16,9 +16,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			}
 			return args[0].Type(), nil
 		},
-	})
+	}, false)
 
-	env.Set("nil?", core.GoFunc{
+	env.RegisterValue("nil?", core.GoFunc{
 		Name: "nil?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -27,9 +27,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Nil)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("bool?", core.GoFunc{
+	env.RegisterValue("bool?", core.GoFunc{
 		Name: "bool?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -38,9 +38,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Bool)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("int?", core.GoFunc{
+	env.RegisterValue("int?", core.GoFunc{
 		Name: "int?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -49,9 +49,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Int)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("float?", core.GoFunc{
+	env.RegisterValue("float?", core.GoFunc{
 		Name: "float?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -60,9 +60,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Float)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string?", core.GoFunc{
+	env.RegisterValue("string?", core.GoFunc{
 		Name: "string?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -71,9 +71,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.String)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("keyword?", core.GoFunc{
+	env.RegisterValue("keyword?", core.GoFunc{
 		Name: "keyword?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -82,9 +82,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Keyword)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("symbol?", core.GoFunc{
+	env.RegisterValue("symbol?", core.GoFunc{
 		Name: "symbol?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -93,9 +93,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Symbol)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("list?", core.GoFunc{
+	env.RegisterValue("list?", core.GoFunc{
 		Name: "list?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -104,9 +104,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.List)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("vector?", core.GoFunc{
+	env.RegisterValue("vector?", core.GoFunc{
 		Name: "vector?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -115,9 +115,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Vector)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("map?", core.GoFunc{
+	env.RegisterValue("map?", core.GoFunc{
 		Name: "map?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -126,9 +126,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(*core.HashMap)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("fn?", core.GoFunc{
+	env.RegisterValue("fn?", core.GoFunc{
 		Name: "fn?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -136,9 +136,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			}
 			return core.Bool{V: args[0].Type().V == "fn"}, nil
 		},
-	})
+	}, false)
 
-	env.Set("macro?", core.GoFunc{
+	env.RegisterValue("macro?", core.GoFunc{
 		Name: "macro?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -147,9 +147,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			_, ok := args[0].(core.Macro)
 			return core.Bool{V: ok}, nil
 		},
-	})
+	}, false)
 
-	env.Set("str->keyword", core.GoFunc{
+	env.RegisterValue("str->keyword", core.GoFunc{
 		Name: "str->keyword",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -161,9 +161,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			}
 			return core.Keyword(s), nil
 		},
-	})
+	}, false)
 
-	env.Set("keyword->str", core.GoFunc{
+	env.RegisterValue("keyword->str", core.GoFunc{
 		Name: "keyword->str",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -175,9 +175,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			}
 			return core.String(k), nil
 		},
-	})
+	}, false)
 
-	env.Set("int->float", core.GoFunc{
+	env.RegisterValue("int->float", core.GoFunc{
 		Name: "int->float",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -189,9 +189,9 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			}
 			return core.Float{V: float64(i.V)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("float->int", core.GoFunc{
+	env.RegisterValue("float->int", core.GoFunc{
 		Name: "float->int",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -203,5 +203,5 @@ func (p *Plugin) registerTypes(env *core.Env) {
 			}
 			return core.Int{V: int64(f.V)}, nil
 		},
-	})
+	}, false)
 }

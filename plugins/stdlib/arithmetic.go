@@ -9,7 +9,7 @@ import (
 )
 
 func (p *Plugin) registerArithmetic(env *core.Env) {
-	env.SetCanonical("+", core.GoFunc{
+	env.RegisterValue("+", core.GoFunc{
 		Name: "+",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			var intSum int64
@@ -40,9 +40,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			}
 			return core.BoxInt(intSum), nil
 		},
-	})
+	}, true)
 
-	env.SetCanonical("-", core.GoFunc{
+	env.RegisterValue("-", core.GoFunc{
 		Name: "-",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -94,9 +94,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			}
 			return core.BoxInt(intResult), nil
 		},
-	})
+	}, true)
 
-	env.SetCanonical("*", core.GoFunc{
+	env.RegisterValue("*", core.GoFunc{
 		Name: "*",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -131,9 +131,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			}
 			return core.BoxInt(intProd), nil
 		},
-	})
+	}, true)
 
-	env.SetCanonical("/", core.GoFunc{
+	env.RegisterValue("/", core.GoFunc{
 		Name: "/",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
@@ -171,9 +171,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.Float{V: dividend}, nil
 		},
-	})
+	}, true)
 
-	env.Set("mod", core.GoFunc{
+	env.RegisterValue("mod", core.GoFunc{
 		Name: "mod",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -193,9 +193,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.BoxInt(a.V % b.V), nil
 		},
-	})
+	}, false)
 
-	env.Set("quot", core.GoFunc{
+	env.RegisterValue("quot", core.GoFunc{
 		Name: "quot",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -215,9 +215,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.BoxInt(a.V / b.V), nil
 		},
-	})
+	}, false)
 
-	env.Set("pow", core.GoFunc{
+	env.RegisterValue("pow", core.GoFunc{
 		Name: "pow",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -246,29 +246,29 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.Float{V: math.Pow(base, exp)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("sqrt", core.GoFunc{
+	env.RegisterValue("sqrt", core.GoFunc{
 		Name: "sqrt",
 		Fn:   unaryMathFunc(math.Sqrt),
-	})
+	}, false)
 
-	env.Set("abs", core.GoFunc{
+	env.RegisterValue("abs", core.GoFunc{
 		Name: "abs",
 		Fn:   unaryMathFunc(math.Abs),
-	})
+	}, false)
 
-	env.Set("floor", core.GoFunc{
+	env.RegisterValue("floor", core.GoFunc{
 		Name: "floor",
 		Fn:   unaryMathFunc(math.Floor),
-	})
+	}, false)
 
-	env.Set("ceil", core.GoFunc{
+	env.RegisterValue("ceil", core.GoFunc{
 		Name: "ceil",
 		Fn:   unaryMathFunc(math.Ceil),
-	})
+	}, false)
 
-	env.Set("zero?", core.GoFunc{
+	env.RegisterValue("zero?", core.GoFunc{
 		Name: "zero?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -284,9 +284,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return core.BoxBool(false), nil
 			}
 		},
-	})
+	}, false)
 
-	env.Set("pos?", core.GoFunc{
+	env.RegisterValue("pos?", core.GoFunc{
 		Name: "pos?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -302,9 +302,9 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return core.BoxBool(false), nil
 			}
 		},
-	})
+	}, false)
 
-	env.Set("neg?", core.GoFunc{
+	env.RegisterValue("neg?", core.GoFunc{
 		Name: "neg?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -320,17 +320,17 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return core.BoxBool(false), nil
 			}
 		},
-	})
+	}, false)
 
-	env.Set("max", core.GoFunc{
+	env.RegisterValue("max", core.GoFunc{
 		Name: "max",
 		Fn:   minMaxFunc(true),
-	})
+	}, false)
 
-	env.Set("min", core.GoFunc{
+	env.RegisterValue("min", core.GoFunc{
 		Name: "min",
 		Fn:   minMaxFunc(false),
-	})
+	}, false)
 }
 
 func unaryMathFunc(fn func(float64) float64) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {

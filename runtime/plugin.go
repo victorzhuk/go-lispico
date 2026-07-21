@@ -18,7 +18,38 @@ type PluginStatus struct {
 // bindings tracks per-plugin names to delete on unload/reload.
 // Last writer wins; unload removes what this plugin introduced.
 func (e *engineImpl) snapshotBindings() []string {
-	return unionOf(e.rootEnv.VarNames(), e.rootEnv.FuncNames())
+	return unionOf(e.rootEnv.LocalNames(), e.rootEnv.LocalFuncNames())
+}
+
+// populateTemplateBindings merges every name the lazy template layer holds
+// for pluginName into e.bindings (so UnloadPlugin deletes template entries
+// along with materialized ones) and activates the layer on this engine.
+func (e *engineImpl) populateTemplateBindings(pluginName string) {
+	if e.lazyMaterializer == nil {
+		return
+	}
+	dialectFP := e.lazyMaterializer.dialectFP
+	k := stdlibTemplateKey{dialectFP: dialectFP, pluginName: pluginName}
+	layer, ok := stdlibLazyTemplateRegistry.layerFor(k)
+	if !ok {
+		return
+	}
+	entries := stdlibLazyTemplateRegistry.snapshotEntries(layer)
+	if len(entries) == 0 {
+		return
+	}
+	if e.bindings == nil {
+		e.bindings = make(map[string]map[string]struct{})
+	}
+	owned, ok := e.bindings[pluginName]
+	if !ok {
+		owned = make(map[string]struct{}, len(entries))
+		e.bindings[pluginName] = owned
+	}
+	for name := range entries {
+		owned[name] = struct{}{}
+	}
+	e.lazyMaterializer.activate(pluginName, owned)
 }
 
 func (e *engineImpl) removePluginBindings(name string) {
@@ -43,10 +74,13 @@ func (e *engineImpl) Use(p core.Plugin) error {
 
 	before := e.snapshotBindings()
 
+	e.loadingPlugin = p.Name()
 	if err := p.Init(e.rootEnv); err != nil {
+		e.loadingPlugin = ""
 		e.registry.Unregister(p.Name())
 		return fmt.Errorf("init plugin %s: %w", p.Name(), err)
 	}
+	e.loadingPlugin = ""
 
 	e.applyVocabulary()
 
@@ -58,6 +92,7 @@ func (e *engineImpl) Use(p core.Plugin) error {
 		}
 		e.bindings[p.Name()] = added
 	}
+	e.populateTemplateBindings(p.Name())
 
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", p.Name(), "version", p.Metadata().Version)
@@ -77,6 +112,9 @@ func (e *engineImpl) UnloadPlugin(name string) error {
 	e.registry.Unregister(name)
 
 	e.removePluginBindings(name)
+	if e.lazyMaterializer != nil {
+		e.lazyMaterializer.deactivate(name)
+	}
 
 	e.stats.decPlugins()
 	e.logger.Info("plugin unloaded", "name", name, "version", p.Metadata().Version)
@@ -105,13 +143,16 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 
 	before := e.snapshotBindings()
 
+	e.loadingPlugin = name
 	if err := p.Init(e.rootEnv); err != nil {
+		e.loadingPlugin = ""
 		e.registry.Unregister(name)
 		if hadOld {
 			e.registry.RegisterNoCheck(oldPlugin)
 		}
 		return fmt.Errorf("init plugin %s: %w", name, err)
 	}
+	e.loadingPlugin = ""
 
 	e.applyVocabulary()
 
@@ -123,6 +164,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		}
 		e.bindings[name] = added
 	}
+	e.populateTemplateBindings(name)
 
 	if !hadOld {
 		e.stats.incPlugins()

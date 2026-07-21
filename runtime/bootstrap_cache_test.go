@@ -43,6 +43,14 @@ func TestStdlibBootstrapCache_DisableHookForcesCompile(t *testing.T) {
 	second := newBytecodeStdlibEngine(t)
 	defer second.Close()
 
+	// get-in's compiled artifact is deferred to first touch; touching it on
+	// both engines with the cache disabled forces one compile per engine.
+	for _, eng := range []Engine{first, second} {
+		v, err := eng.Eval(context.Background(), "touch", "(get-in {:a {:b 1}} [:a :b])")
+		require.NoError(t, err)
+		require.True(t, core.Int{V: 1}.Equals(v))
+	}
+
 	stats := stdlibBootstrapCacheStatsForTest()
 	assert.Equal(t, stdlibBootstrapCacheStats{Compiles: 2}, stats)
 }
@@ -274,7 +282,7 @@ func TestStdlibBootstrapCache_CacheCeilingByDialectFingerprint(t *testing.T) {
 			t,
 			WithDialect(syntheticStdlibDialect(i)),
 		)
-		_, err := eng.Eval(context.Background(), "warm", "(-> 1 (+ 2) (* 3))")
+		_, err := eng.Eval(context.Background(), "warm", "(get-in {:a {:b 1}} [:a :b])")
 		require.NoError(t, err)
 		require.NoError(t, eng.Close())
 	}

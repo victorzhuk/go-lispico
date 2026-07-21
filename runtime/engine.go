@@ -75,6 +75,8 @@ type engineImpl struct {
 	evalCallbacks     []func(EvalEvent)
 	pluginCallbacks   []func(PluginCallEvent)
 	callbacksActive   atomic.Bool // one-way: no unregister API, so once true it stays true
+	lazyMaterializer  *stdlibLazyMaterializer
+	loadingPlugin     string // plugin whose Init is running inside Use/ReloadPlugin; template registrations are attributed to it
 }
 
 type engineConfig struct {
@@ -236,6 +238,10 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	e.evaluator = evaluator
 	e.treeWalker = treeWalker
 
+	// Deferrable stdlib bindings: install the per-engine lazy layer on the
+	// root env. With no template registered its miss-path consult is a no-op.
+	installLazyLayer(e)
+
 	log.Debug("engine created", "maxEvalDepth", cfg.maxEvalDepth, "timeout", cfg.timeout, "bytecode", cfg.bytecode)
 
 	return e, nil
@@ -341,7 +347,7 @@ func (e *engineImpl) applyVocabulary() {
 	}
 
 	goFuncs := make(map[string]core.Value)
-	for _, name := range e.rootEnv.VarNames() {
+	for _, name := range e.rootEnv.LocalNames() {
 		v, ok := e.rootEnv.Get(name)
 		if !ok {
 			continue
@@ -377,7 +383,7 @@ func (e *engineImpl) applyVocabulary() {
 	// native-op fast path — which under Lisp-2 freezes off the function cell —
 	// still fires; a defun rebind lands through SetFunc and loses it again.
 	if e.config.dialect.IsLisp2() {
-		for _, name := range e.rootEnv.VarNames() {
+		for _, name := range e.rootEnv.LocalNames() {
 			v, ok, canon := e.rootEnv.GetCanonical(name)
 			if !ok {
 				continue

@@ -14,11 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 	"github.com/victorzhuk/go-lispico/runtime"
 )
+
+var lazyOffOnce sync.Once
 
 type Mode string
 
@@ -32,6 +35,9 @@ var Modes = []Mode{ModeEvaluator, ModeVM}
 
 // NewEngine builds the engine configuration the gate measures: Clojure
 // dialect plus stdlib, with explicit evaluator selection per mode.
+// GOLDSET_LAZY=off forces eager stdlib registration for the whole test
+// process (once, never restored: the suite is fully parallel, so a
+// per-engine toggle would race sibling constructions).
 func NewEngine(mode Mode) (runtime.Engine, error) {
 	opts := []runtime.EngineOption{runtime.WithDialect(clojure.Dialect())}
 	switch mode {
@@ -41,6 +47,9 @@ func NewEngine(mode Mode) (runtime.Engine, error) {
 		opts = append(opts, runtime.WithBytecode())
 	default:
 		return nil, fmt.Errorf("goldset: unknown mode %q", mode)
+	}
+	if os.Getenv("GOLDSET_LAZY") == "off" {
+		lazyOffOnce.Do(func() { runtime.SetStdlibLazyDisabledForTesting(true) })
 	}
 	eng, err := runtime.New(nil, opts...)
 	if err != nil {

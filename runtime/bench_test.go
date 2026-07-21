@@ -48,6 +48,128 @@ func BenchmarkEngine_StartupStdlibBytecode(b *testing.B) {
 		b.ResetTimer()
 		benchmarkEngineStartupStdlibBytecode(b)
 	})
+	// eager-warm reproduces the pre-lazy startup: stdlib fully executed into
+	// the root env at Use time (bootstrap artifact cache warm).
+	b.Run("eager-warm", func(b *testing.B) {
+		clearStdlibBootstrapCacheForTest()
+		restoreCache := setStdlibBootstrapCacheDisabledForTest(false)
+		defer restoreCache()
+		restoreLazy := SetStdlibLazyDisabledForTesting(true)
+		defer restoreLazy()
+		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+		benchmarkEngineStartupStdlibBytecode(b)
+	})
+}
+
+// BenchmarkEngine_UseStdlibBytecode isolates construction+Use+Close (no
+// eval): the per-request embedder floor under lazy vs eager stdlib load.
+func BenchmarkEngine_UseStdlibBytecode(b *testing.B) {
+	run := func(b *testing.B) {
+		for b.Loop() {
+			eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := eng.Use(stdlib.New()); err != nil {
+				b.Fatal(err)
+			}
+			eng.Close()
+		}
+	}
+	b.Run("lazy", func(b *testing.B) {
+		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+		run(b)
+	})
+	b.Run("eager", func(b *testing.B) {
+		restoreLazy := SetStdlibLazyDisabledForTesting(true)
+		defer restoreLazy()
+		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+		run(b)
+	})
+}
+
+// BenchmarkEngine_StartupFullSurfaceBytecode measures the lazy/eager
+// convergence claim: a script that touches the full stdlib surface (all
+// template entries materialize) must cost the same as eager startup, since
+// deferred work is only shifted, not removed.
+func BenchmarkEngine_StartupFullSurfaceBytecode(b *testing.B) {
+	// One top-level form per entry: macros only expand at top level.
+	fullSurface := []string{
+		"(+ 1 2)", "(- 5 3)", "(* 2 4)", "(/ 8 2)", "(mod 7 3)", "(quot 7 2)", "(pow 2 3)", "(sqrt 4)", "(abs -1)", "(floor 1.5)", "(ceil 1.5)", "(zero? 0)", "(pos? 1)", "(neg? -1)", "(max 1 2)", "(min 1 2)",
+		"(= 1 1)", "(< 1 2)", "(> 2 1)", "(<= 1 1)", "(>= 2 2)",
+		"(str \"a\" \"b\")", "(first [1 2])", "(rest [1 2])", "(cons 1 [2])", "(list 1 2)", "(concat [1] [2])", "(count [1 2])", "(nth [1 2] 0)", "(reverse [1 2])", "(sort [2 1])",
+		"(map (fn [x] (+ x 1)) [1 2])", "(filter (fn [x] (> x 1)) [1 2])", "(reduce + 0 [1 2])", "(apply + [1 2])", "(type 1)", "(get {:a 1} :a)",
+		"(get-in {:a {:b 2}} [:a :b])",
+		"(-> 1 (+ 2))", "(->> [1 2] (map (fn [x] (+ x 1))))", "(as-> 1 x (+ x 1))", "(if-let [x 1] x 0)", "(when-let [x 1] x)",
+	}
+	run := func(b *testing.B) {
+		ctx := context.Background()
+		for b.Loop() {
+			eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := eng.Use(stdlib.New()); err != nil {
+				b.Fatal(err)
+			}
+			for _, src := range fullSurface {
+				if _, err := eng.Eval(ctx, "full-surface", src); err != nil {
+					b.Fatal(err)
+				}
+			}
+			eng.Close()
+		}
+	}
+	b.Run("lazy", func(b *testing.B) {
+		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+		run(b)
+	})
+	b.Run("eager", func(b *testing.B) {
+		restoreLazy := SetStdlibLazyDisabledForTesting(true)
+		defer restoreLazy()
+		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+		run(b)
+	})
 }
 
 func benchmarkEngineStartupStdlibBytecode(b *testing.B) {

@@ -8,6 +8,7 @@ import (
 )
 
 type bootstrapEntry struct {
+	name     string
 	source   string
 	reusable bool
 }
@@ -18,35 +19,35 @@ type stdlibBootstrapEvaluator interface {
 
 func stdlibBootstrapEntries() []bootstrapEntry {
 	return []bootstrapEntry{
-		{source: `(defmacro -> [x & forms]
+		{name: "->", source: `(defmacro -> [x & forms]
   (reduce (fn [acc form] (if (list? form) (cons (first form) (cons acc (rest form))) (list form acc))) x forms))`},
 
-		{source: `(defmacro ->> [x & forms]
+		{name: "->>", source: `(defmacro ->> [x & forms]
   (reduce (fn [acc form] (if (list? form) (concat form (list acc)) (list form acc))) x forms))`},
 
-		{source: `(defmacro as-> [expr name & forms]
+		{name: "as->", source: `(defmacro as-> [expr name & forms]
   (let* [bindings (reduce (fn [acc form] (conj acc name form)) [name expr] forms)]
     (list (quote let*) bindings name)))`},
 
-		{source: `(defmacro if-let [bindings then else]
+		{name: "if-let", source: `(defmacro if-let [bindings then else]
   (let* [name (first bindings)
          val (first (rest bindings))]
     (list (quote let) (vector name val)
       (list (quote if) name then else))))`},
 
-		{source: `(defmacro when-let [bindings & body]
+		{name: "when-let", source: `(defmacro when-let [bindings & body]
   (let* [name (first bindings)
          val (first (rest bindings))]
     (list (quote let) (vector name val)
       (cons (quote when) (cons name body)))))`},
 
-		{source: `(defn get-in [m ks]
+		{name: "get-in", source: `(defn get-in [m ks]
   (reduce (fn [acc k] (get acc k)) m ks))`, reusable: true},
 	}
 }
 
 func (p *Plugin) mirrorBootstrapBindings(env *core.Env, before map[string]struct{}) {
-	for _, name := range env.VarNames() {
+	for _, name := range env.LocalNames() {
 		if _, existed := before[name]; existed {
 			continue
 		}
@@ -72,14 +73,20 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 	cacheEval, _ := env.Evaluator().(stdlibBootstrapEvaluator)
 
 	before := make(map[string]struct{})
-	for _, name := range env.VarNames() {
+	for _, name := range env.LocalNames() {
 		before[name] = struct{}{}
 	}
-	for _, name := range env.FuncNames() {
+	for _, name := range env.LocalFuncNames() {
 		before[name] = struct{}{}
 	}
 
 	for _, entry := range bootstrapCode {
+		// A lazy layer defers the definition behind first touch; the
+		// materializer executes this same source then (see
+		// stdlibLazyMaterializer.materializeBootstrap).
+		if env.RegisterSource(entry.name, entry.source, entry.reusable) {
+			continue
+		}
 		if entry.reusable && cacheEval != nil {
 			_, err := cacheEval.EvalStdlibBootstrap(ctx, entry.source, env)
 			if err != nil {

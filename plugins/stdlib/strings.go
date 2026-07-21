@@ -10,7 +10,7 @@ import (
 )
 
 func (p *Plugin) registerStrings(env *core.Env) {
-	env.Set("str", core.GoFunc{
+	env.RegisterValue("str", core.GoFunc{
 		Name: "str",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			var buf strings.Builder
@@ -19,9 +19,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 			}
 			return core.String{V: buf.String()}, nil
 		},
-	})
+	}, false)
 
-	env.Set("format", core.GoFunc{
+	env.RegisterValue("format", core.GoFunc{
 		Name: "format",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
@@ -43,9 +43,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 			}
 			return core.String{V: fmt.Sprintf(fmtStr.V, fmtArgs...)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/join", core.GoFunc{
+	env.RegisterValue("string/join", core.GoFunc{
 		Name: "string/join",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -74,9 +74,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.String{V: strings.Join(parts, sep.V)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/split", core.GoFunc{
+	env.RegisterValue("string/split", core.GoFunc{
 		Name: "string/split",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -98,24 +98,24 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.List{Items: items}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/trim", core.GoFunc{
+	env.RegisterValue("string/trim", core.GoFunc{
 		Name: "string/trim",
 		Fn:   unaryStringFunc(strings.TrimSpace),
-	})
+	}, false)
 
-	env.Set("string/upper", core.GoFunc{
+	env.RegisterValue("string/upper", core.GoFunc{
 		Name: "string/upper",
 		Fn:   unaryStringFunc(strings.ToUpper),
-	})
+	}, false)
 
-	env.Set("string/lower", core.GoFunc{
+	env.RegisterValue("string/lower", core.GoFunc{
 		Name: "string/lower",
 		Fn:   unaryStringFunc(strings.ToLower),
-	})
+	}, false)
 
-	env.Set("string/replace", core.GoFunc{
+	env.RegisterValue("string/replace", core.GoFunc{
 		Name: "string/replace",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 3 {
@@ -132,9 +132,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.String{V: strings.ReplaceAll(s.V, old.V, new.V)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/contains?", core.GoFunc{
+	env.RegisterValue("string/contains?", core.GoFunc{
 		Name: "string/contains?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -150,9 +150,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.Bool{V: strings.Contains(s.V, substr.V)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/starts-with?", core.GoFunc{
+	env.RegisterValue("string/starts-with?", core.GoFunc{
 		Name: "string/starts-with?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -168,9 +168,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.Bool{V: strings.HasPrefix(s.V, prefix.V)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/ends-with?", core.GoFunc{
+	env.RegisterValue("string/ends-with?", core.GoFunc{
 		Name: "string/ends-with?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -186,9 +186,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.Bool{V: strings.HasSuffix(s.V, suffix.V)}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/length", core.GoFunc{
+	env.RegisterValue("string/length", core.GoFunc{
 		Name: "string/length",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -202,9 +202,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.Int{V: int64(len([]rune(s.V)))}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string/lines", core.GoFunc{
+	env.RegisterValue("string/lines", core.GoFunc{
 		Name: "string/lines",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -224,9 +224,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.List{Items: items}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string->int", core.GoFunc{
+	env.RegisterValue("string->int", core.GoFunc{
 		Name: "string->int",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -245,9 +245,9 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.Int{V: i}, nil
 		},
-	})
+	}, false)
 
-	env.Set("string->float", core.GoFunc{
+	env.RegisterValue("string->float", core.GoFunc{
 		Name: "string->float",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -266,7 +266,7 @@ func (p *Plugin) registerStrings(env *core.Env) {
 
 			return core.Float{V: f}, nil
 		},
-	})
+	}, false)
 }
 
 func unaryStringFunc(fn func(string) string) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {

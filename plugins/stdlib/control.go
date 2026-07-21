@@ -8,7 +8,7 @@ import (
 )
 
 func (p *Plugin) registerControl(env *core.Env) {
-	env.Set("assert", core.GoFunc{
+	env.RegisterValue("assert", core.GoFunc{
 		Name: "assert",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
@@ -36,5 +36,5 @@ func (p *Plugin) registerControl(env *core.Env) {
 
 			return core.Nil{}, nil
 		},
-	})
+	}, false)
 }
