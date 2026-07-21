@@ -41,7 +41,14 @@ type handler struct {
 	addr        int
 	frameDepth  int
 	stackDepth  int
+	freezeDepth int
 	structDepth int64
+}
+
+type freezeRec struct {
+	depth int
+	op    Opcode
+	val   core.Value
 }
 
 // VM is a stack-based bytecode virtual machine.
@@ -57,13 +64,7 @@ type VM struct {
 	eval               core.Evaluator
 	structDepth        *atomic.Int64
 	maxStructuralDepth int
-	// nativeOp freezes, per operand-stack slot, the native opcode a canonical
-	// operator was resolved to when OpGetGlobal pushed it — matching the
-	// tree-walker's resolve-head-before-args order. dispatchNativeOp consumes
-	// it instead of re-reading the cell after arguments (which could have
-	// rebound the operator). A zero entry (OpConst, never a native op) means
-	// "not a canonical native operator"; push zeroes each slot it writes.
-	nativeOp []Opcode
+	freezeStack        []freezeRec
 	// deadline is the engine-owned evaluation deadline enforced at the VM's
 	// batched cancellation checks. Zero means no engine deadline is set.
 	deadline      time.Time
@@ -138,7 +139,7 @@ func (vm *VM) reset() {
 	vm.structDepth = &vm.ownStructDepth
 	vm.ownStructDepth.Store(0)
 	vm.reentryCtx = nil
-	vm.nativeOp = vm.nativeOp[:0]
+	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
@@ -155,7 +156,7 @@ func (vm *VM) Reset() {
 	vm.structDepth = &vm.ownStructDepth
 	vm.ownStructDepth.Store(0)
 	vm.reentryCtx = nil
-	vm.nativeOp = vm.nativeOp[:0]
+	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
@@ -212,10 +213,6 @@ func (vm *VM) reentrantCtx(ctx context.Context) context.Context {
 
 func (vm *VM) push(v core.Value) {
 	vm.stack = append(vm.stack, v)
-	slot := len(vm.stack) - 1
-	if slot < len(vm.nativeOp) {
-		vm.nativeOp[slot] = 0
-	}
 }
 
 // growStack ensures vm.stack has capacity for base+maxStack, so pushes within
@@ -243,14 +240,8 @@ func (vm *VM) reloadFrame() (chunk *Chunk, code []Instruction, ip, base int, env
 	return frame.chunk, frame.chunk.Code, frame.ip, frame.base, frame.env, truthy
 }
 
-// freezeNativeOp records that the operator at slot resolved to a canonical
-// native op, so its later dispatch takes the native fast path regardless of an
-// intervening rebind. Called by OpGetGlobal after push, overriding push's zero.
-func (vm *VM) freezeNativeOp(slot int, op Opcode) {
-	if slot >= len(vm.nativeOp) {
-		vm.nativeOp = append(vm.nativeOp, make([]Opcode, slot+1-len(vm.nativeOp))...)
-	}
-	vm.nativeOp[slot] = op
+func (vm *VM) pushFreeze(depth int, op Opcode, val core.Value) {
+	vm.freezeStack = append(vm.freezeStack, freezeRec{depth: depth, op: op, val: val})
 }
 
 func (vm *VM) pop() (core.Value, error) {
@@ -439,18 +430,30 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 
 		case OpGetGlobal:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
-			val, canon, ok := vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
+			val, _, ok := vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
 			vm.push(val)
-			// Native operators freeze their canonical eligibility here, at
-			// head-resolution time, so a rebind during argument evaluation
-			// cannot flip the fast-path decision (tree-walker parity).
+
+		case OpFreezeNative:
+			sym := chunk.Constants[instr.A()].(core.Symbol)
+			val, canon, ok := vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
+			if !ok {
+				return nil, core.NewUndefinedError(sym.V)
+			}
+			// No push. Record the freeze marker (or the head-time value) at the
+			// current stack depth — the depth that the upcoming fused native op
+			// will use as its argument base.
+			d := len(vm.stack)
 			if canon && isNativeOpSymbol(sym.V) {
 				if op, isOp := nativeSymbolToOp(sym.V); isOp {
-					vm.freezeNativeOp(len(vm.stack)-1, op)
+					vm.pushFreeze(d, op, val)
+				} else {
+					vm.pushFreeze(d, OpConst, val)
 				}
+			} else {
+				vm.pushFreeze(d, OpConst, val)
 			}
 
 		case OpSetGlobal:
@@ -475,18 +478,27 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 
 		case OpGetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
-			v, found, canon := env.GetFuncCanonical(sym.V)
+			v, found, _ := env.GetFuncCanonical(sym.V)
 			if !found {
 				return nil, core.NewUndefinedError(sym.V)
 			}
 			vm.push(v)
-			// Lisp-2 native-op heads resolve here (compileNativeOp emits
-			// OpGetFunc for them), so the freeze has to happen here too —
-			// mirrors OpGetGlobal above.
+
+		case OpFreezeNativeFunc:
+			sym := chunk.Constants[instr.A()].(core.Symbol)
+			v, found, canon := env.GetFuncCanonical(sym.V)
+			if !found {
+				return nil, core.NewUndefinedError(sym.V)
+			}
+			d := len(vm.stack)
 			if canon && isNativeOpSymbol(sym.V) {
 				if op, isOp := nativeSymbolToOp(sym.V); isOp {
-					vm.freezeNativeOp(len(vm.stack)-1, op)
+					vm.pushFreeze(d, op, v)
+				} else {
+					vm.pushFreeze(d, OpConst, v)
 				}
+			} else {
+				vm.pushFreeze(d, OpConst, v)
 			}
 
 		case OpSetFunc:
@@ -617,13 +629,11 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			ip = instr.A()
 
 		case OpSetupTry:
-			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), structDepth: vm.structDepth.Load()})
-
+			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), freezeDepth: len(vm.freezeStack), structDepth: vm.structDepth.Load()})
 		case OpPopTry:
 			if len(vm.handlers) > 0 {
 				vm.handlers = vm.handlers[:len(vm.handlers)-1]
 			}
-
 		case OpThrow:
 			value, err := vm.pop()
 			if err != nil {
@@ -643,36 +653,54 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				}
 			}
 			chunk, code, ip, base, env, truthy = vm.reloadFrame()
-
 		}
 	}
 }
 
-// dispatchNativeOp executes a native arithmetic/comparison opcode. The stack
-// holds [operator, arg1, ...] with the operator at fnIdx. The fast path is
-// taken only when OpGetGlobal froze this operator as a canonical native op for
-// this opcode (nativeOp[fnIdx]) — the decision made at head-resolution time,
-// before arguments ran, matching the tree-walker. Otherwise it falls back to
-// calling the operator value already on the stack.
+// dispatchNativeOp executes a native arithmetic/comparison opcode from [args...] on
+// the current operand stack, using the frozen marker when available.
 func (vm *VM) dispatchNativeOp(ctx context.Context, env *core.Env, op Opcode, argc int) error {
-	if argc < 0 || argc+1 > len(vm.stack) {
+	if argc < 0 || argc > len(vm.stack) {
 		return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("native: argc=%d exceeds stack", argc)}
 	}
-
-	fnIdx := len(vm.stack) - argc - 1
-	if fnIdx >= 0 && fnIdx < len(vm.nativeOp) && vm.nativeOp[fnIdx] == op {
-		vm.nativeOp[fnIdx] = 0
-		return vm.execNativeFast(op, argc, env)
+	d := len(vm.stack) - argc
+	if len(vm.freezeStack) > 0 && vm.freezeStack[len(vm.freezeStack)-1].depth == d {
+		rec := vm.freezeStack[len(vm.freezeStack)-1]
+		vm.freezeStack = vm.freezeStack[:len(vm.freezeStack)-1]
+		if rec.op == op {
+			return vm.execNativeFastFused(op, argc, env)
+		}
+		if rec.val != nil {
+			// Splice the head-time operator under the args; vm.call expects
+			// [operator, arg1, ...] on top of the stack.
+			vm.stack = append(vm.stack, core.Nil{})
+			copy(vm.stack[d+1:], vm.stack[d:len(vm.stack)-1])
+			vm.stack[d] = rec.val
+			return vm.call(ctx, argc, false)
+		}
 	}
-
+	// Recovery: hand-built chunk without a preceding freeze. Resolve the
+	// operator symbol via the opcode identity (Lisp-1 default — Lisp-2
+	// hand-built chunks are expected to emit OpFreezeNativeFunc first).
+	sym, ok := opToNativeSymbol(op)
+	if !ok {
+		return &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("native: no marker and op %v not native", op)}
+	}
+	val, found, _ := env.GetCanonical(sym)
+	if !found {
+		return core.NewUndefinedError(sym)
+	}
+	vm.stack = append(vm.stack, core.Nil{})
+	copy(vm.stack[d+1:], vm.stack[d:len(vm.stack)-1])
+	vm.stack[d] = val
 	return vm.call(ctx, argc, false)
 }
 
-// execNativeFast runs op over the argc values already on top of the stack,
-// replacing them and the operator below them with the result.
-func (vm *VM) execNativeFast(op Opcode, argc int, env *core.Env) error {
-	fnIdx := len(vm.stack) - argc - 1
-	args := vm.stack[len(vm.stack)-argc:]
+// execNativeFastFused runs op over the argc values already on top of the stack,
+// replacing them with the result (the operator head slot was already dropped).
+func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
+	d := len(vm.stack) - argc
+	args := vm.stack[d:]
 	eval := vm.eval
 	if eval == nil {
 		eval = core.NewEvaluator()
@@ -681,7 +709,7 @@ func (vm *VM) execNativeFast(op Opcode, argc int, env *core.Env) error {
 	if err != nil {
 		return err
 	}
-	vm.stack = vm.stack[:fnIdx]
+	vm.stack = vm.stack[:d]
 	vm.push(result)
 	return nil
 }
@@ -752,6 +780,32 @@ func nativeSymbolToOp(name string) (Opcode, bool) {
 		return OpEq, true
 	}
 	return 0, false
+}
+
+// opToNativeSymbol returns the symbol name for op, or "" if op is not a
+// native arithmetic/comparison opcode. Inverse of nativeSymbolToOp.
+func opToNativeSymbol(op Opcode) (string, bool) {
+	switch op {
+	case OpAdd:
+		return "+", true
+	case OpSub:
+		return "-", true
+	case OpMul:
+		return "*", true
+	case OpDiv:
+		return "/", true
+	case OpLt:
+		return "<", true
+	case OpGt:
+		return ">", true
+	case OpLe:
+		return "<=", true
+	case OpGe:
+		return ">=", true
+	case OpEq:
+		return "=", true
+	}
+	return "", false
 }
 
 func execNative(eval core.Evaluator, op Opcode, args []core.Value, env *core.Env) (core.Value, error) {

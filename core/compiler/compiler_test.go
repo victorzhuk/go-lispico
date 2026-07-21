@@ -593,7 +593,7 @@ func TestCompiler_NativeOpAdd(t *testing.T) {
 
 	chunk := c.Chunk()
 	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpGetGlobal, chunk.Code[0].Op(), "head must be OpGetGlobal")
+	assert.Equal(t, vm.OpFreezeNative, chunk.Code[0].Op(), "head must be OpFreezeNative")
 	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
 	assert.Equal(t, vm.OpAdd, chunk.Code[3].Op())
@@ -610,7 +610,7 @@ func TestCompiler_NativeOpSub(t *testing.T) {
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
 	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpGetGlobal, chunk.Code[0].Op())
+	assert.Equal(t, vm.OpFreezeNative, chunk.Code[0].Op())
 	assert.Equal(t, vm.OpSub, chunk.Code[3].Op())
 }
 
@@ -796,15 +796,15 @@ func TestCompiler_NativeOp_Dialect(t *testing.T) {
 	clDialect := cl.Dialect()
 	clojureDialect := clojure.Dialect()
 	// CL is Lisp-2: a native op head resolves through the function cell
-	// (OpGetFunc), same as any other call head under compileCall. Clojure is
-	// Lisp-1: the value cell (OpGetGlobal) is the only namespace.
+	// (OpFreezeNativeFunc), same as any other call head under compileCall.
+	// Clojure is Lisp-1: the value cell (OpFreezeNative) is the only namespace.
 	cases := []struct {
 		name    string
 		dialect *core.Dialect
 		headOp  vm.Opcode
 	}{
-		{"cl", &clDialect, vm.OpGetFunc},
-		{"clojure", &clojureDialect, vm.OpGetGlobal},
+		{"cl", &clDialect, vm.OpFreezeNativeFunc},
+		{"clojure", &clojureDialect, vm.OpFreezeNative},
 	}
 
 	for _, tc := range cases {

@@ -143,10 +143,10 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 	return out
 }
 
-// buildSites scans Code for OpGetGlobal reads, assigning one shared entry per
-// distinct symbol (constant index) so repeated reads of the same global reuse
-// a single cached resolution. Native ops need no site: their canonical
-// decision is frozen at the operator's OpGetGlobal.
+// buildSites scans Code for OpGetGlobal and OpFreezeNative reads, assigning one
+// shared entry per distinct symbol (constant index) so repeated reads of the same
+// global reuse a single cached resolution. Native function-cell reads emit via
+// OpGetFunc and keep no site.
 func (c *Chunk) buildSites() *siteTable {
 	idx := make([]int32, len(c.Code))
 	for i := range idx {
@@ -155,7 +155,7 @@ func (c *Chunk) buildSites() *siteTable {
 	bySym := map[int32]int32{}
 	var entries []siteCache
 	for ip, inst := range c.Code {
-		if inst.Op() != OpGetGlobal {
+		if inst.Op() != OpGetGlobal && inst.Op() != OpFreezeNative {
 			continue
 		}
 		constIdx := int32(inst.A())
@@ -267,7 +267,8 @@ func (c *Chunk) Validate() error {
 			if a < 0 || a >= len(c.Constants) {
 				return bytecodeErrorf("%s: constant index %d out of range", op, a)
 			}
-		case OpGetGlobal, OpSetGlobal, OpSetLexical, OpGetFunc, OpSetFunc:
+		case OpGetGlobal, OpSetGlobal, OpSetLexical, OpGetFunc, OpSetFunc,
+			OpFreezeNative, OpFreezeNativeFunc:
 			if a < 0 || a >= len(c.Constants) {
 				return bytecodeErrorf("%s: constant index %d out of range", op, a)
 			}

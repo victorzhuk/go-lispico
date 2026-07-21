@@ -1003,7 +1003,7 @@ func TestVM_NativeOpAdd(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0), // +
+		Encode(OpFreezeNative, 0), // +
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),
@@ -1031,7 +1031,7 @@ func TestVM_NativeOpSub(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpSub, 2),
 		Encode(OpReturn, 0),
@@ -1059,7 +1059,7 @@ func TestVM_NativeOpMul(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpMul, 2),
 		Encode(OpReturn, 0),
@@ -1095,7 +1095,7 @@ func TestVM_NativeOpDiv(t *testing.T) {
 	env.SetCanonical("/", core.GoFunc{Name: "/", Fn: fn})
 	v := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpDiv, 2),
 		Encode(OpReturn, 0),
@@ -1110,7 +1110,7 @@ func TestVM_NativeOpDiv(t *testing.T) {
 	}
 
 	chunk2 := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpDiv, 2),
 		Encode(OpReturn, 0),
@@ -1130,7 +1130,7 @@ func TestVM_NativeOpLt(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpLt, 2),
 		Encode(OpReturn, 0),
@@ -1153,7 +1153,7 @@ func TestVM_NativeOpGt(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpGt, 2),
 		Encode(OpReturn, 0),
@@ -1176,7 +1176,7 @@ func TestVM_NativeOpLe(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpLe, 2),
 		Encode(OpReturn, 0),
@@ -1199,7 +1199,7 @@ func TestVM_NativeOpGe(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpGe, 2),
 		Encode(OpReturn, 0),
@@ -1222,7 +1222,7 @@ func TestVM_NativeOpEq(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpEq, 2),
 		Encode(OpReturn, 0),
@@ -1245,7 +1245,7 @@ func TestVM_NativeOp_EqString(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpEq, 2),
 		Encode(OpReturn, 0),
@@ -1278,7 +1278,7 @@ func TestVM_NativeOp_ReboundFallback(t *testing.T) {
 	}})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),
@@ -1314,7 +1314,7 @@ func TestVM_NativeOp_ChildRebind(t *testing.T) {
 
 	vm := New(child)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),
@@ -1364,7 +1364,7 @@ func TestVM_NativeOp_FallbackEnv(t *testing.T) {
 	child.Set("secret", core.Int{V: 42})
 
 	subChunk := &Chunk{Name: "inner"}
-	subChunk.Emit(OpGetGlobal, subChunk.AddConstant(core.Symbol{V: "+"}))
+	subChunk.Emit(OpFreezeNative, subChunk.AddConstant(core.Symbol{V: "+"}))
 	subChunk.Emit(OpConst, subChunk.AddConstant(core.Int{V: 1}))
 	subChunk.Emit(OpConst, subChunk.AddConstant(core.Int{V: 2}))
 	subChunk.Emit(OpAdd, 2)
@@ -1403,17 +1403,15 @@ func TestVM_NativeOp_SetClearsCanonical(t *testing.T) {
 	env.Set("+", core.GoFunc{Name: "+", Fn: origFn})
 	vm := New(env)
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),
 	}}
 	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
-	// dispatchNativeOp checks GetCanonical which returns false after Set.
-	// Then vm.call resolves the GoFunc and calls it. Since we lost native
-	// fast path, the fallback goes through vm.call/apply which pushes a
-	// frame and calls the GoFunc directly — the same origFn runs, producing
-	// 3 via the normal call path instead of native fast path.
+	// The freeze resolves + as non-canonical after Set, so dispatchNativeOp
+	// falls back to vm.call with the head-time captured value. The same
+	// origFn runs, producing 3 via the normal call path.
 	result, err := vm.Run(context.Background(), chunk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1424,7 +1422,7 @@ func TestVM_NativeOp_SetClearsCanonical(t *testing.T) {
 }
 
 // TestVM_NativeOp_LookupTimeCapture proves canonical status is captured at
-// OpGetGlobal time, not re-resolved after args. A custom + (non-canonical)
+// OpFreezeNative time, not re-resolved after args. A custom + (non-canonical)
 // is bound, then an arg GoFunc restores canonical as a side effect. The
 // dispatch must use the pre-resolved non-canonical status → fallback →
 // custom fn returns 999, not native 3.
@@ -1461,11 +1459,11 @@ func TestVM_NativeOp_LookupTimeCapture(t *testing.T) {
 	}
 	root.Set("restore", restoreFn)
 
-	// (+ (restore) 2): OpGetGlobal + resolves customPlus (non-canonical),
+	// (+ (restore) 2): OpFreezeNative + resolves customPlus (non-canonical),
 	// then (restore) side-effect restores canonical, then OpAdd dispatches.
-	// Lookup-time capture → no canonicalSlot → fallback → customPlus → 999.
+	// Lookup-time capture → fallback record holds customPlus → 999.
 	chunk := &Chunk{Name: "test"}
-	chunk.Emit(OpGetGlobal, chunk.AddConstant(core.Symbol{V: "+"}))
+	chunk.Emit(OpFreezeNative, chunk.AddConstant(core.Symbol{V: "+"}))
 	chunk.Emit(OpGetGlobal, chunk.AddConstant(core.Symbol{V: "restore"}))
 	chunk.Emit(OpCall, 0)
 	chunk.Emit(OpConst, chunk.AddConstant(core.Int{V: 2}))
@@ -1482,10 +1480,10 @@ func TestVM_NativeOp_LookupTimeCapture(t *testing.T) {
 	}
 }
 
-// TestVM_NativeOp_OpcodeMismatch proves a site resolving canonical + cannot
-// be used to fast-path an OpSub instruction. A hand-built chunk points an
-// OpSub at +'s site; nativeSymbolToOp("+") != OpSub, so the guard rejects
-// the fast path and falls back to calling +.
+// TestVM_NativeOp_OpcodeMismatch proves a freeze resolving canonical + cannot
+// be used to fast-path an OpSub instruction. A hand-built chunk freezes + then
+// dispatches OpSub; the recorded marker (OpAdd) != OpSub, so the guard rejects
+// the fast path and falls back to calling the head-time captured +.
 func TestVM_NativeOp_OpcodeMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -1501,7 +1499,7 @@ func TestVM_NativeOp_OpcodeMismatch(t *testing.T) {
 	}})
 
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpSub, 2),
 		Encode(OpReturn, 0),
@@ -1537,7 +1535,7 @@ func TestVM_NativeOp_FastPathSkipsGoFunc(t *testing.T) {
 	})
 
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),
@@ -1559,9 +1557,9 @@ func TestVM_NativeOp_FastPathSkipsGoFunc(t *testing.T) {
 }
 
 // TestVM_NativeOp_NonCanonicalSiteFallsBackToCall proves that when a native
-// op's site resolves to a live but non-canonical cell (here, "+" rebound to
+// op's head resolves to a live but non-canonical cell (here, "+" rebound to
 // a plain GoFunc via Set instead of SetCanonical), dispatchNativeOp calls
-// the pushed value instead of taking the native fast path.
+// the head-time captured value instead of taking the native fast path.
 func TestVM_NativeOp_NonCanonicalSiteFallsBackToCall(t *testing.T) {
 	t.Parallel()
 
@@ -1571,7 +1569,7 @@ func TestVM_NativeOp_NonCanonicalSiteFallsBackToCall(t *testing.T) {
 	}})
 
 	chunk := &Chunk{Name: "test", Code: []Instruction{
-		Encode(OpGetGlobal, 0),
+		Encode(OpFreezeNative, 0),
 		Encode(OpConst, 1), Encode(OpConst, 2),
 		Encode(OpAdd, 2),
 		Encode(OpReturn, 0),

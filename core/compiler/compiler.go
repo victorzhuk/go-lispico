@@ -582,21 +582,15 @@ func (c *Compiler) compileCall(items []core.Value) error {
 	return nil
 }
 
-// compileNativeOp emits a native arithmetic/comparison opcode for a list form
-// whose head is a non-shadowed symbol. It emits the operator's head lookup
-// (OpGetFunc under a Lisp-2 dialect — CL resolves callable heads through the
-// function cell, not the value cell, so a defun rebind must be observed there
-// too; OpGetGlobal otherwise), preserving head-resolution order and freezing
-// the operator's canonical-native eligibility at that point, then compiles
-// each argument, then the native opcode with operand = number of arguments.
-// The VM dispatches natively only when the operator was frozen as canonical,
-// else it calls the pushed operator value.
+// compileNativeOp emits a zero-stack-effect head freeze, then each argument, then
+// the fused native opcode. Lisp-2 freezes the function cell; Lisp-1 freezes the
+// value cell. The VM dispatches natively only when that frozen head was canonical.
 func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
 	sym := items[0].(core.Symbol)
 	if c.dialect != nil && c.dialect.IsLisp2() {
-		c.chunk.Emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
+		c.chunk.Emit(vm.OpFreezeNativeFunc, c.chunk.AddConstant(sym))
 	} else {
-		c.emitGetGlobal(sym)
+		c.chunk.Emit(vm.OpFreezeNative, c.chunk.AddConstant(sym))
 	}
 
 	for _, arg := range items[1:] {
