@@ -18,4 +18,4 @@
 ## 4. Measure and verify
 
 - [x] 4.1 `go test ./...`, `-race`, crossval green; `GOLDSET_MODE=vm` gate non-increasing. (B/op and allocs/op non-increasing on all cells at the doubled-benchtime rerun.)
-- [x] 4.2 Benchstat ≥6 at post-poll/post-versioned-reads baseline: fib bytecode, arithmetic-loop goldset cells, boundary `add`. Adopt on a confirmed win; otherwise archive as measured-and-rejected with numbers. → **REJECTED**: `loop-sum` inconclusive on both the 1s pair (p=0.645) and the doubled-benchtime pair (p=0.739); burden of proof not met. Numbers and rationale in REJECTION.md; raw output in benchstat-1s.txt / benchstat-2s.txt.
+- [x] 4.2 Benchstat ≥6 at post-poll/post-versioned-reads baseline: fib bytecode, arithmetic-loop goldset cells, boundary `add`. → **ADOPTED (maintainer override)**: `loop-sum` inconclusive on both pairs (1s p=0.645, 2s p=0.739); ADR 0008 burden-of-proof not met, but landed on instruction-count/dispatch merits (fib 20→16). Rationale in DECISION.md; raw output in benchstat-1s.txt / benchstat-2s.txt.

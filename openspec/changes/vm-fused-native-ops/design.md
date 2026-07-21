@@ -82,13 +82,22 @@ suite) are the regression net.
 ## MaxStack accounting
 
 Canonical path peaks one slot LOWER than today (no operator slot). Fallback
-peaks at today's level (operator spliced in). Compiler keeps charging the
-operator slot in `MaxStack` — conservative, correct for both paths, no
-accounting change needed.
+peaks one slot HIGHER than canonical (the splice appends the operator before
+`vm.call`). `stackDelta` for the fused opcodes is `-argc` (unchanged), so
+`computeMaxStack` sizes the stack to the canonical peak; the fallback splice's
+transient +1 is absorbed by `append` growing capacity on the rare rebound path.
+No accounting change is needed — the splice never indexes out of range because
+it grows the slice before the `copy`.
 
-## Measurement gate
+## Measurement outcome
 
-Prototype first on the fib/goldset shapes; adopt only if benchstat (≥6 runs)
-shows a real win at the post-poll/post-versioned-reads baseline and the
-`GOLDSET_MODE=vm` gate is non-increasing. If the win is under noise, archive
-the change as measured-and-rejected with the numbers.
+Benchstat at the post-versioned-reads baseline (raw output: `benchstat-1s.txt`
+and `benchstat-2s.txt`): `GOLDSET_MODE=vm` B/op and allocs/op non-increasing on
+all cells at the doubled-benchtime rerun; `loop-sum` (the engine-sensitive cell
+the change targets) inconclusive on both pairs (1s p=0.645, 2s p=0.739), with
+scattered wins on data-dominated cells that did not replicate consistently.
+Per ADR 0008's burden-of-proof rule the gate was not met; the maintainer
+landed the change anyway on instruction-count and dispatch-traffic grounds
+(fib body 20→16 instructions, −4 operator head dispatches per call) — see
+DECISION.md. The site-cache + versioned-reads work already made the operator
+head read cheap enough that removing it is noise-level at this baseline.
