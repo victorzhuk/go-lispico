@@ -13,8 +13,8 @@ The tree-walking interpreter in `core/eval.go` — the default and complete exec
 _Avoid_: interpreter, VM, runtime
 
 **VM**:
-An opt-in stack machine in `core/vm` that runs bytecode for a subset of forms to speed up hot loops; not the default and not at full parity.
-_Avoid_: evaluator, interpreter
+The stack machine in `core/vm` that runs bytecode for the compiled subset of forms; the default engine path since the bytecode-default flip (`runtime.WithTreeWalker()` rolls back), deferring to the Evaluator for unsupported forms.
+_Avoid_: evaluator, interpreter, opt-in executor
 
 **Compiler**:
 Translates the AST into bytecode for the VM (`core/compiler`); unrelated to native-code compilation.
@@ -125,12 +125,50 @@ One Engine is the unit of trust isolation. Code from different trust levels runs
 _Avoid_: session, tenant, per-Eval isolation
 
 **Resource limits**:
-Per-Engine, construction-time ceilings that keep adversarial or accidental input from exhausting the host — reader nesting depth, evaluator structural depth (Vector/HashMap/quasiquote descent), collection length (`range`), and chunk-cache size. Fail-closed with a clean error, never a fatal stack overflow. Distinct from `MaxDepth`, which bounds function-call/macro depth per evaluation.
+Per-Engine, construction-time ceilings that keep adversarial or accidental input from exhausting the host — reader nesting depth, evaluator structural depth (Vector/HashMap/quasiquote descent), collection length (`range`), chunk-cache entries/bytes/nodes, per-evaluation reductions and allocation bytes, and per-env retained bytes/slots. Fail-closed with a clean error, never a fatal stack overflow. Distinct from `MaxDepth`, which bounds function-call/macro depth per evaluation.
 _Avoid_: quota, timeout (that is `WithTimeout`), sandbox
 
 **Evaluation deadline**:
 The cooperative wall-clock limit carried by context; Engine supplies a safe default unless an embedder fully owns every evaluation lifecycle and explicitly disables it with `WithTimeout(0)`.
 _Avoid_: resource limit, instruction budget
+
+### Metering
+
+**Reduction**:
+One unit of evaluator work, defined per evaluator: tree-walker trampoline iteration or form dispatch; VM instruction decode; macro-expansion step; compiler-emitted instruction; GoFunc dispatch. Counts are not comparable across evaluators — parity is same-ceiling, same-terminal-error behavior.
+_Avoid_: fuel, tick, instruction budget
+
+**Allocation charge**:
+Deterministic approximate bytes debited at a normative charge site — VM make-ops, tree-walker literals, compiler emit, GoFunc result shallow size, reader bridge — using the Size table.
+_Avoid_: heap usage, real bytes (Go allocator behavior is explicitly not what is measured)
+
+**Size table**:
+The fixed, architecture-independent per-type byte costs owned by ADR 0011; shared by allocation charges, retained-state charges, and chunk deep bytes. Never `unsafe.Sizeof`.
+_Avoid_: sizeof, platform size
+
+**Terminal error**:
+`context.Canceled`, `context.DeadlineExceeded`, or `ResourceLimitError` — unwinds through `try`/`catch` uncaught to the host. Thrown Lisp values are never terminal.
+_Avoid_: fatal error, panic
+
+**Meter**:
+The embedder-implemented `runtime.Meter` the engine draws compute credit from and settles retained deltas against. The engine never composes ledgers or knows ranks — composition lives in the embedder (yagel's Coordinator).
+_Avoid_: session ledger, rank, coordinator, budget
+
+**Lease**:
+One compute-credit draw from the Meter, at most 1,024 reductions / 64 KiB; one active per evaluation; the unconsumed remainder returns exactly once at evaluation end or unwind.
+_Avoid_: reservation, quota
+
+**Owned capacity**:
+Bytes + slots an env's backing actually holds, charged on new-slot writes by the Size table; logical length is irrelevant. Deletion tombstones without release; `Rebuild` is the only release path.
+_Avoid_: env size, binding count
+
+**Load scope**:
+The retained child env returned by `Engine.LoadScope`, captured by the handler closures a load defines; the embedder owns its lifecycle (usage probe, rebuild, release).
+_Avoid_: routine env (the embedder-side name for the same thing)
+
+**Unfit chunk**:
+A compiled chunk that alone exceeds a cache ceiling or is denied by the Meter: it runs uncached; admission denial is never an evaluation error.
+_Avoid_: rejected chunk, oversized error
 
 ## Relationships
 
@@ -154,7 +192,7 @@ _Avoid_: resource limit, instruction budget
 > **Dev:** "Is `+` a special form?"
 > **Designer:** "No — `+` is a **Builtin** from the stdlib **Plugin**; its arguments are evaluated first. `if` is a **Special form**: the **Evaluator** decides which branch to run. `defmacro` defines a **Macro**, which rewrites code before evaluation."
 > **Dev:** "When I turn on the **VM**, does it run everything?"
-> **Designer:** "It runs a subset, but it now covers all dialects and caches compiled chunks per `Engine`. Anything it still can't compile defers to the **Evaluator** — the VM is an optimization for hot loops and repeated loads, not a replacement, and it stays opt-in via `WithBytecode()`."
+> **Designer:** "It runs a subset, but it now covers all dialects and caches compiled chunks per `Engine`. Anything it still can't compile defers to the **Evaluator** — the VM is an optimization for hot loops and repeated loads, not a replacement; it is the default since the bytecode-default flip, with `WithTreeWalker()` as the rollback."
 
 ## Flagged ambiguities
 
@@ -187,3 +225,6 @@ _Avoid_: resource limit, instruction budget
 - Inconclusive benchstat on hosted runners had no defined outcome — resolved: one rerun at doubled benchtime, then improvement cells fail and non-regression cells pass (burden of proof lies with the claim).
 - A pinned or checked-out consumer could couple the public release job to the private YAGEL repo — resolved: the gate runs the repo-owned **Gold set** instead, self-contained and always runnable; no cross-repo secret and no private output in public logs. Representativeness is maintained by evolving the corpus against measured consumer needs.
 - Race-detector cleanliness could be read as part of the timed run — resolved: race runs are separate and untimed; no timing threshold is evaluated under the race detector.
+- "the evaluators SHALL agree on counter values" appeared in an early metering draft — resolved: **Reduction** counts are evaluator-specific by construction; parity is same-ceiling, same-**Terminal error** behavior only.
+- "LRU eviction continues" appeared in the cache-bounds draft while eviction was actually a random map delete — resolved: deterministic LRU is a requirement of the change, not existing behavior.
+- "session ledger" risked becoming an engine concept — resolved: the engine consumes a **Meter**; ledgers, ranks, and session totals belong to the embedder.

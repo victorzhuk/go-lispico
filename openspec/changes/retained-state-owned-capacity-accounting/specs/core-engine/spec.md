@@ -5,13 +5,17 @@
 ### Requirement: Env owned-capacity accounting
 
 The core evaluator SHALL charge an env's owned-capacity counter on every new
-binding write — `let` / `fn` / `defn` / `defmacro` in the tree-walker and
-per-call frame env allocation in the VM — and SHALL raise
-`Code: "ResourceLimitError"` when a new binding would exceed the env's
-configured byte or slot ceiling. Rebinding through an existing `Cell` SHALL
-NOT charge. Deleting a binding SHALL tombstone the slot without decrementing
-the counter. Capturing an env through a closure SHALL NOT transfer or
-double-count ownership.
+binding write — `def` / `let` / `fn` params / `defn` / `defmacro` in the
+tree-walker and per-call frame env writes in the VM — and SHALL raise
+`Code: "ResourceLimitError"` (terminal) when a new binding would exceed the
+env's configured byte or slot ceiling, leaving the env unmodified. Rebinding
+through an existing `Cell` and reviving a tombstoned `Cell` SHALL NOT charge.
+Deleting a binding SHALL tombstone without decrementing. `Rebuild` SHALL
+preserve `*Env` identity and live `*Cell` identity, drop tombstoned cells,
+recompute counters, and bump the name generation so cached resolutions of
+dropped cells invalidate. Counters SHALL be uniform across persistent and
+transient envs; a transient env's counter dies with the env. Capturing an env
+through a closure SHALL NOT transfer or double-count ownership.
 
 #### Scenario: Slot ceiling fails closed
 
@@ -30,15 +34,20 @@ double-count ownership.
 
 #### Scenario: Delete tombstones but does not release
 
-- **WHEN** a binding is deleted and the env is then asked for its retained slot count
-- **THEN** the count SHALL be unchanged from before the delete
+- **WHEN** a binding is deleted and the env's retained counters are read
+- **THEN** the counters SHALL be unchanged from before the delete
 
-#### Scenario: Rebuild releases dead-bucket capacity
+#### Scenario: Rebuild preserves live cell identity
 
-- **WHEN** an env has had many bindings added and then most deleted, and `Rebuild` is called
-- **THEN** the resulting env SHALL have a retained slot count equal to the live binding set, and the old backing SHALL be releasable by the garbage collector
+- **WHEN** `Rebuild` runs while a VM site cache holds a resolution for a live binding and another for a deleted one
+- **THEN** the live resolution SHALL keep serving the current value and the deleted one SHALL observe the binding unbound, with no stale value served
+
+#### Scenario: Transient frame envs are counted but vanish
+
+- **WHEN** a VM call allocates a frame env, binds locals, and returns
+- **THEN** the bindings SHALL have charged that env's own counter, the per-env ceiling SHALL apply, and no persistent counter SHALL retain the charge after return
 
 #### Scenario: Closure capture does not double-count
 
-- **WHEN** a `Lambda` captures an env and the env's bindings are later inspected
+- **WHEN** a `Lambda` captures an env and the env's counters are later inspected
 - **THEN** the captured env's counters SHALL be the same as before the capture

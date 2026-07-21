@@ -1,6 +1,6 @@
 ## 0. Gate
 
-- [ ] 0.1 Confirm the trigger post-`stdlib-startup-cache`: warm-startup measurement + per-request embedder profile show env population dominating. If not met, archive with numbers, stop here.
+- [x] 0.1 Confirm the trigger post-`stdlib-startup-cache`: warm-startup measurement + per-request embedder profile show env population dominating. If not met, archive with numbers, stop here. — MET: stdlib-startup-cache's own measurement (archive/2026-07-20-stdlib-startup-cache/design.md, task 4.2): warm 107.5 µs / 754 allocs vs ≤ ~40 µs target, cost dominated by per-engine env population + Go-builtin registration.
 
 ## 1. Template layer
 
