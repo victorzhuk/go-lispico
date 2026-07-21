@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"sync/atomic"
@@ -965,12 +964,7 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	body := args[:len(args)-1]
 	result, err := e.evalBody(ctx, body, env)
 	if err != nil {
-		// Resource-limit breaches are a hard safety boundary: never catchable,
-		// so a program cannot recover from resource exhaustion and continue.
-		// This matches the bytecode VM, whose structural-depth opcode returns
-		// the error directly rather than routing it through throw.
-		var lerr *LispicoError
-		if errors.As(err, &lerr) && lerr.Code == CodeResourceLimit {
+		if IsTerminalEvalError(err) {
 			return nil, err
 		}
 		catchEnv := env.Child()

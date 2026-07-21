@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -475,6 +476,83 @@ func TestVMVsTreeWalker_TryCatch(t *testing.T) {
 			compare(t, env, tt.src)
 		})
 	}
+}
+
+func runTerminalErrorNotCaught(t *testing.T, src string, newRun func() (context.Context, *core.Env, func()), opts ...vm.VMOption) {
+	t.Helper()
+
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+
+	treeCtx, treeEnv, treeCleanup := newRun()
+	defer treeCleanup()
+
+	treeEval := core.NewEvaluator()
+	var treeErr error
+	for _, form := range forms {
+		_, treeErr = treeEval.Eval(treeCtx, form, treeEnv)
+	}
+	require.Error(t, treeErr, "tree-walker should surface terminal error")
+	require.True(t, core.IsTerminalEvalError(treeErr), "tree-walker returned non-terminal error %T: %v", treeErr, treeErr)
+
+	vmCtx, vmEnv, vmCleanup := newRun()
+	defer vmCleanup()
+
+	vmEval := vm.New(vmEnv, opts...)
+	var vmErr error
+	for _, chunk := range chunks {
+		_, vmErr = vmEval.Run(vmCtx, chunk)
+	}
+	require.Error(t, vmErr, "vm should surface terminal error")
+	require.True(t, core.IsTerminalEvalError(vmErr), "vm returned non-terminal error %T: %v", vmErr, vmErr)
+}
+
+func TestVMVsTreeWalker_TerminalErrorNotCaught(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancelled through call", func(t *testing.T) {
+		t.Parallel()
+
+		newRun := func() (context.Context, *core.Env, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			env := newCrossValEnv()
+			env.Set("cancel-now", core.GoFunc{Name: "cancel-now", Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+				cancel()
+				return nil, ctx.Err()
+			}})
+			return ctx, env, cancel
+		}
+
+		runTerminalErrorNotCaught(t, `(try (cancel-now) (catch e e))`, newRun)
+	})
+
+	t.Run("resource limit", func(t *testing.T) {
+		t.Parallel()
+
+		newRun := func() (context.Context, *core.Env, func()) {
+			env := newCrossValEnv()
+			env.Set("limit", core.GoFunc{Name: "limit", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+				return nil, core.NewResourceLimitError("limit")
+			}})
+			return context.Background(), env, func() {}
+		}
+
+		runTerminalErrorNotCaught(t, `(try (limit) (catch e e))`, newRun)
+	})
+
+	t.Run("deadline exceeded in loop", func(t *testing.T) {
+		t.Parallel()
+
+		newRun := func() (context.Context, *core.Env, func()) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			return ctx, newCrossValEnv(), cancel
+		}
+
+		runTerminalErrorNotCaught(t, `(try (loop [i 1000000000] (if (= i 0) i (recur (- i 1)))) (catch e e))`, newRun)
+	})
 }
 
 func TestVMVsTreeWalker_WhenUnlessValuePosition(t *testing.T) {

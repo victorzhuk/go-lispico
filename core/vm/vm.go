@@ -355,11 +355,19 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 			vm.push(arg)
 		}
 		if err := vm.call(ctx, len(args), false); err != nil {
+			if core.IsTerminalEvalError(err) {
+				vm.Reset()
+				return nil, err
+			}
 			if !vm.throw(core.String{V: err.Error()}) {
 				return nil, err
 			}
 		}
-		return vm.run(ctx)
+		result, err := vm.run(ctx)
+		if core.IsTerminalEvalError(err) {
+			vm.Reset()
+		}
+		return result, err
 	case core.Lambda:
 		eval := vm.eval
 		if eval == nil {
@@ -426,7 +434,11 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	base := len(vm.stack)
 	vm.frames = append(vm.frames, Frame{chunk: chunk, base: base, env: vm.globals})
 	vm.growStack(base, chunk.MaxStack)
-	return vm.run(ctx)
+	result, err := vm.run(ctx)
+	if core.IsTerminalEvalError(err) {
+		vm.Reset()
+	}
+	return result, err
 }
 
 // run drives the dispatch loop from the current top frame until vm.frames
@@ -638,6 +650,10 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 		case OpCall:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), false); err != nil {
+				if core.IsTerminalEvalError(err) {
+					vm.Reset()
+					return nil, err
+				}
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
@@ -647,6 +663,10 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 		case OpTailCall:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), true); err != nil {
+				if core.IsTerminalEvalError(err) {
+					vm.Reset()
+					return nil, err
+				}
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
@@ -773,6 +793,10 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.dispatchNativeOp(ctx, env, instr.Op(), instr.A()); err != nil {
+				if core.IsTerminalEvalError(err) {
+					vm.Reset()
+					return nil, err
+				}
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}

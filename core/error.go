@@ -1,6 +1,10 @@
 package core
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 // LispicoError is the error type returned by reader, eval, and type-checking
 // failures. Code identifies the error class; Source/Line/Col are set when the
@@ -24,6 +28,25 @@ func (e *LispicoError) Error() string {
 
 // Unwrap returns the wrapped cause, if any, for errors.Is/errors.As support.
 func (e *LispicoError) Unwrap() error { return e.Cause }
+
+// IsTerminalEvalError returns true if err represents an uncatchable terminal
+// error: context.Canceled, context.DeadlineExceeded (matched via errors.Is,
+// including wrapped forms), or a *LispicoError with Code == CodeResourceLimit
+// (matched via errors.As).
+func IsTerminalEvalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var lerr *LispicoError
+	if errors.As(err, &lerr) && lerr.Code == CodeResourceLimit {
+		return true
+	}
+	return false
+}
 
 // NewReadError builds a LispicoError for a tokenizer/parser failure at the
 // given line and column.

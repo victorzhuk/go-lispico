@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -37,6 +39,34 @@ func TestLispicoError_Unwrap(t *testing.T) {
 	e := &LispicoError{Code: "EvalError", Message: "wrapped", Cause: cause}
 	if !errors.Is(e, cause) {
 		t.Error("Unwrap should expose Cause via errors.Is")
+	}
+}
+
+func TestIsTerminalEvalError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "plain error", err: errors.New("boom"), want: false},
+		{name: "context canceled", err: context.Canceled, want: true},
+		{name: "context deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "wrapped canceled", err: fmt.Errorf("vm: %w", context.Canceled), want: true},
+		{name: "resource limit", err: &LispicoError{Code: CodeResourceLimit, Message: "limit"}, want: true},
+		{name: "throw error", err: &LispicoError{Code: "ThrowError", Message: "context deadline exceeded"}, want: false},
+		{name: "eval error", err: &LispicoError{Code: "EvalError", Message: "context deadline exceeded"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsTerminalEvalError(tt.err); got != tt.want {
+				t.Fatalf("IsTerminalEvalError(%v) = %t, want %t", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
