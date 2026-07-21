@@ -26,35 +26,39 @@ LT 2                ; frozen-canonical → compute over 2 arg slots
 ## Freeze bookkeeping without a stack anchor
 
 Today `nativeOp` is keyed by the operator's stack index (`fnIdx`). With no
-operator slot, the key becomes the stack depth at freeze time — which equals
-the base of the upcoming arguments, and equals `len(stack) - argc` at the
-fused op. Nested operators compose exactly as today because each freeze keys a
-distinct depth (`(+ (* a b) c)`: `+` freezes at depth d, `*` at d+1).
+operator slot, per-depth keying breaks twice: the first argument push lands
+on the freeze depth (push-time clearing would erase the marker), and nested
+operators in argument position freeze at the SAME depth (`(+ (* a b) c)`:
+both `+` and `*` freeze at depth d — nothing is pushed between them). As
+built, the markers form a LIFO stack instead:
 
-Two parallel per-VM scratch arrays indexed by stack depth (both already exist
-in shape via `nativeOp`):
-
-- `nativeOp[d] = op` — frozen-canonical marker (existing array, unchanged).
-- `opFallback[d] = value` — head-time-resolved operator value, set only when
-  the freeze finds the binding non-canonical.
+- `freezeStack []freezeRec`, `freezeRec{depth, op, val}` — one record per
+  freeze, appended at head-resolution time.
+- canonical native → `{depth, op, val}`; non-canonical → `{depth, OpConst, val}`
+  with `val` the head-time-resolved operator value. Canonical records keep
+  `val` too, so an opcode mismatch (hand-built chunks) can still fall back
+  to calling the head-time value.
 
 `FREEZE_NATIVE` resolves through the same site/cell path `OpGetGlobal` uses
 (value cell for Lisp-1, function cell for Lisp-2 — `compileNativeOp` picks the
-emission today and keeps doing so), then stores one of the two markers.
-Consumed markers are zeroed exactly as `nativeOp` is zeroed today, including
-the existing push-time clearing that guards stale entries.
+emission today and keeps doing so), then pushes one record. Argument pushes
+never touch the stack; nested freezes complete (their fused op pops) before
+the outer fused op, so the top record at dispatch is always this op's freeze.
+Try-handler setup snapshots `freezeDepth` so an unwind drops records from
+aborted computations while preserving outer pending freezes.
 
 ## Fused execution
 
 At `OpAdd`…`OpEq` with `argc`: `d := len(stack) - argc`.
 
-- `nativeOp[d] == op` → `execNativeFast` over `stack[d:]`, truncate to `d`,
-  push result. No operator slot involved.
-- else (`opFallback[d]` set) → grow stack by one, `copy(stack[d+1:], stack[d:])`,
-  `stack[d] = opFallback[d]`, then `vm.call(ctx, argc, false)` — the layout
-  `[operator, args...]` vm.call expects. The splice is ≤argc word copies on a
-  path that only runs when a canonical operator was rebound; today's fallback
-  costs a full `OpGetGlobal` push anyway.
+- top record has `depth == d` and `op == opcode` → pop, `execNativeFastFused`
+  over `stack[d:]`, truncate to `d`, push result. No operator slot involved.
+- top record has `depth == d` but `op != opcode` (or `op == OpConst`) → pop,
+  grow stack by one, `copy(stack[d+1:], stack[d:])`, `stack[d] = rec.val`,
+  then `vm.call(ctx, argc, false)` — the layout `[operator, args...]`
+  vm.call expects. The splice is ≤argc word copies on a path that only runs
+  when a canonical operator was rebound; today's fallback costs a full
+  `OpGetGlobal` push anyway.
 - neither marker set (hand-built chunk executing the opcode without a
   preceding freeze) → validation rejects it: `Chunk.Validate` requires every
   fused opcode to be dominated by a `FREEZE_NATIVE`... — NO. Static dominance
