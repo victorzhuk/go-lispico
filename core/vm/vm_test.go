@@ -1752,7 +1752,7 @@ func TestVM_SiteCanonicalVersionMismatchUsesLockedRead(t *testing.T) {
 		Name:      "test",
 		Constants: []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}},
 		Code: []Instruction{
-			Encode(OpGetGlobal, 0),
+			Encode(OpFreezeNative, 0),
 			Encode(OpConst, 1),
 			Encode(OpConst, 2),
 			Encode(OpAdd, 2),
@@ -1917,4 +1917,115 @@ func TestVM_StructDepthLeakAcrossPooledReuse(t *testing.T) {
 	result, err := v.Run(context.Background(), vectorLiteralChunk())
 	require.NoError(t, err, "a later evaluation on the reused VM must see the full structural-depth budget")
 	assert.True(t, result.Equals(core.Vector{Items: []core.Value{core.Int{V: 1}}}))
+}
+
+// TestVM_NativeOp_FreezeUnwoundOnThrow proves throw() truncates freezeStack to
+// the handler's snapshot. A canonical + is frozen, then rebound to a custom
+// 999 fn inside the try body, then a throw fires. The catch body's OpAdd at the
+// same depth must NOT consume the stale canonical freeze (→ native 3); it must
+// re-resolve via recovery and observe the rebind (→ 999).
+func TestVM_NativeOp_FreezeUnwoundOnThrow(t *testing.T) {
+	t.Parallel()
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		var s int64
+		for _, a := range args {
+			s += a.(core.Int).V
+		}
+		return core.Int{V: s}, nil
+	}})
+	env.Set("rebind", core.GoFunc{Name: "rebind", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, e *core.Env) (core.Value, error) {
+		e.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Int{V: 999}, nil
+		}})
+		return core.Nil{}, nil
+	}})
+
+	chunk := &Chunk{Name: "freeze-throw", Code: []Instruction{
+		Encode(OpSetupTry, 6),     // 0: handler at 6
+		Encode(OpFreezeNative, 0), // 1: freeze + (canonical → rec{0,OpAdd})
+		Encode(OpGetGlobal, 1),    // 2: rebind
+		Encode(OpCall, 0),         // 3: rebind → env.Set + → custom 999
+		Encode(OpConst, 2),        // 4: "boom"
+		Encode(OpThrow, 0),        // 5: throw
+		Encode(OpPop, 0),          // 6: handler — discard thrown value
+		Encode(OpConst, 3),        // 7: 1
+		Encode(OpConst, 4),        // 8: 2
+		Encode(OpAdd, 2),          // 9: native add at depth 0
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Symbol{V: "rebind"}, core.String{V: "boom"}, core.Int{V: 1}, core.Int{V: 2}}
+	chunk.EnsureSites()
+
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.Int{V: 999}), "catch OpAdd must observe the rebind via recovery, not the stale canonical freeze")
+}
+
+// TestVM_NativeOp_FreezeNativeFunc proves the Lisp-2 freeze path resolves the
+// operator through the function cell (GetFuncCanonical) and takes the native
+// fast path when canonical, invoking no GoFunc.
+func TestVM_NativeOp_FreezeNativeFunc(t *testing.T) {
+	t.Parallel()
+	var callCount int
+	env := core.NewEnv(nil)
+	env.SetFuncCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		callCount++
+		return core.Int{V: 0}, nil
+	}})
+
+	chunk := &Chunk{Name: "freeze-func", Code: []Instruction{
+		Encode(OpFreezeNativeFunc, 0),
+		Encode(OpConst, 1), Encode(OpConst, 2),
+		Encode(OpAdd, 2),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}}
+	chunk.EnsureSites()
+
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.Int{V: 3}))
+	assert.Equal(t, 0, callCount, "canonical fast path must skip the GoFunc")
+}
+
+// TestVM_NativeOp_FreezeStackLIFONested proves nested operators in argument
+// position freeze at the same depth and dispatch in LIFO order. (+ (* 2 3) 4):
+// freeze + at depth 0, then freeze * at depth 0 (a per-depth design would
+// overwrite; LIFO pushes a second record). OpMul pops the * record; OpAdd pops
+// the + record. Both must take the native fast path.
+func TestVM_NativeOp_FreezeStackLIFONested(t *testing.T) {
+	t.Parallel()
+	var addCalls, mulCalls int
+	env := core.NewEnv(nil)
+	env.SetCanonical("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		addCalls++
+		return core.Int{V: 0}, nil
+	}})
+	env.SetCanonical("*", core.GoFunc{Name: "*", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		mulCalls++
+		return core.Int{V: 0}, nil
+	}})
+
+	chunk := &Chunk{Name: "nested-lifo", Code: []Instruction{
+		Encode(OpFreezeNative, 0), // +
+		Encode(OpFreezeNative, 1), // *
+		Encode(OpConst, 2),        // 2
+		Encode(OpConst, 3),        // 3
+		Encode(OpMul, 2),          // (* 2 3) → 6, pops * record
+		Encode(OpConst, 4),        // 4
+		Encode(OpAdd, 2),          // (+ 6 4) → 10, pops + record
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "+"}, core.Symbol{V: "*"}, core.Int{V: 2}, core.Int{V: 3}, core.Int{V: 4}}
+	chunk.EnsureSites()
+
+	vm := New(env)
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(core.Int{V: 10}))
+	assert.Equal(t, 0, mulCalls, "* must take the native fast path")
+	assert.Equal(t, 0, addCalls, "+ must take the native fast path (LIFO preserved the outer + freeze)")
 }

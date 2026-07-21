@@ -239,7 +239,7 @@ func BenchmarkEngine_CallBytecodePlain(b *testing.B) {
 // native-op fast path actually optimizes. Unlike BenchmarkEngine_CallBytecode
 // (which binds `+` via Engine.Bind, clearing the canonical flag and forcing a
 // GoFunc fallback), this reflects the shipped runtime: canonical `+` compiles
-// to OpAdd and executes via execNativeFast, no GoFunc call frame.
+// to OpAdd and executes via execNativeFastFused, no GoFunc call frame.
 func BenchmarkEngine_CallBytecodeCanonical(b *testing.B) {
 	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	if err != nil {

@@ -64,7 +64,12 @@ type VM struct {
 	eval               core.Evaluator
 	structDepth        *atomic.Int64
 	maxStructuralDepth int
-	freezeStack        []freezeRec
+	// freezeStack is a LIFO of pending native-op head resolutions: each
+	// OpFreezeNative/OpFreezeNativeFunc pushes a record at head-resolution
+	// time, each fused OpAdd..OpEq pops the matching record at dispatch.
+	// throw unwinds it to the handler's snapshot (set at OpSetupTry) so
+	// records from aborted computations cannot misfire in a catch body.
+	freezeStack []freezeRec
 	// deadline is the engine-owned evaluation deadline enforced at the VM's
 	// batched cancellation checks. Zero means no engine deadline is set.
 	deadline      time.Time
@@ -1072,6 +1077,7 @@ func (vm *VM) throw(value core.Value) bool {
 		return false
 	}
 	vm.stack = vm.stack[:h.stackDepth]
+	vm.freezeStack = vm.freezeStack[:h.freezeDepth]
 	vm.push(value)
 	frame := &vm.frames[len(vm.frames)-1]
 	frame.ip = h.addr

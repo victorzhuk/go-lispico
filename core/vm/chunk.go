@@ -146,7 +146,7 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 // buildSites scans Code for OpGetGlobal and OpFreezeNative reads, assigning one
 // shared entry per distinct symbol (constant index) so repeated reads of the same
 // global reuse a single cached resolution. Native function-cell reads emit via
-// OpGetFunc and keep no site.
+// OpFreezeNativeFunc and keep no site.
 func (c *Chunk) buildSites() *siteTable {
 	idx := make([]int32, len(c.Code))
 	for i := range idx {
