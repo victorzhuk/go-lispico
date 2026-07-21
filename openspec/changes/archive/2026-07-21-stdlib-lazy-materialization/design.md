@@ -36,6 +36,31 @@ from its own definition (pathological) resolves via the reservation, matching
 eager-load order effects. This reservation dance is the riskiest part of the
 design — it gets dedicated concurrency tests.
 
+## Implementation note (as built)
+
+The reservation dance landed as a **per-name mutex** held across execution,
+not a placeholder cell: Go exposes no goroutine identity, so a placeholder
+cannot distinguish a recursive same-goroutine touch from a concurrent
+foreign one — the placeholder leaked to concurrent readers and returned the
+wrong value. Mutex-across-execute gives the required guarantees: at-most-once
+per name, cross-name dependency chains recurse freely (distinct mutexes, no
+global lock held across execution), no env.mu/engine.mu held across eval.
+Recursive same-name first-touch is impossible by payload construction: every
+deferred entry is a `defmacro`/`defn` whose body is not evaluated when the
+definition is materialized (verified against the stdlib bootstrap sources).
+
+Two further deviations from the sketch above, same equivalence contract:
+
+- The template registry is restricted to the stdlib plugin. A process-shared
+  template entry must be stateless; stdlib's values are audited (the one
+  registration-time capture, `range`'s collection limit, now resolves per
+  call). Third-party plugins bind eagerly, exactly as before — arbitrary
+  plugin closures may capture per-engine state and must never be shared.
+- `VarNames`/`FuncNames` force full materialization (spec: enumeration
+  surfaces observe the full surface); internal bookkeeping
+  (`snapshotBindings`, `applyVocabulary`, bootstrap mirroring) uses
+  non-forcing `LocalNames`/`LocalFuncNames` so `Use()` stays lazy.
+
 ## What forces materialization
 
 Every observation surface, enumerated and tested:

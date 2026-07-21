@@ -1,0 +1,54 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/runtime
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEngine_Creation-24                      	  167490	      7363 ns/op	    5766 B/op	      75 allocs/op
+BenchmarkEngine_Creation-24                      	  194530	      6798 ns/op	    5766 B/op	      75 allocs/op
+BenchmarkEngine_Creation-24                      	  170713	      7021 ns/op	    5766 B/op	      75 allocs/op
+BenchmarkEngine_Creation-24                      	  188680	      7407 ns/op	    5766 B/op	      75 allocs/op
+BenchmarkEngine_Creation-24                      	  175971	      6688 ns/op	    5766 B/op	      75 allocs/op
+BenchmarkEngine_Creation-24                      	  160204	      6630 ns/op	    5766 B/op	      75 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   17884	     65142 ns/op	   62260 B/op	     454 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   19861	     61415 ns/op	   62270 B/op	     454 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   20248	     60349 ns/op	   62267 B/op	     454 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   19614	     60494 ns/op	   62253 B/op	     454 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   18964	     62993 ns/op	   62266 B/op	     454 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   18920	     60036 ns/op	   62266 B/op	     454 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   22746	     53101 ns/op	   55492 B/op	     359 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   19260	     59508 ns/op	   55489 B/op	     359 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   20947	     55429 ns/op	   55504 B/op	     359 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   20737	     58702 ns/op	   55485 B/op	     359 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   23916	     50973 ns/op	   55489 B/op	     359 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   21948	     54567 ns/op	   55486 B/op	     359 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/eager-warm-24             	   10000	    109453 ns/op	  109369 B/op	     759 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/eager-warm-24             	    9969	    110550 ns/op	  109361 B/op	     759 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/eager-warm-24             	   10000	    114301 ns/op	  109377 B/op	     759 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/eager-warm-24             	   10000	    118220 ns/op	  109393 B/op	     759 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/eager-warm-24             	   10000	    113572 ns/op	  109344 B/op	     759 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/eager-warm-24             	   10861	    111254 ns/op	  109387 B/op	     759 allocs/op
+BenchmarkEngine_UseStdlibBytecode/lazy-24                       	   47181	     25717 ns/op	   23251 B/op	     242 allocs/op
+BenchmarkEngine_UseStdlibBytecode/lazy-24                       	   41906	     26474 ns/op	   23250 B/op	     242 allocs/op
+BenchmarkEngine_UseStdlibBytecode/lazy-24                       	   45760	     25373 ns/op	   23251 B/op	     242 allocs/op
+BenchmarkEngine_UseStdlibBytecode/lazy-24                       	   39805	     27631 ns/op	   23248 B/op	     242 allocs/op
+BenchmarkEngine_UseStdlibBytecode/lazy-24                       	   47832	     24609 ns/op	   23250 B/op	     242 allocs/op
+BenchmarkEngine_UseStdlibBytecode/lazy-24                       	   51006	     23937 ns/op	   23249 B/op	     242 allocs/op
+BenchmarkEngine_UseStdlibBytecode/eager-24                      	   12541	     95971 ns/op	   94027 B/op	     697 allocs/op
+BenchmarkEngine_UseStdlibBytecode/eager-24                      	   12442	     96635 ns/op	   94029 B/op	     697 allocs/op
+BenchmarkEngine_UseStdlibBytecode/eager-24                      	   10000	    100140 ns/op	   94033 B/op	     697 allocs/op
+BenchmarkEngine_UseStdlibBytecode/eager-24                      	   10000	    100757 ns/op	   94030 B/op	     697 allocs/op
+BenchmarkEngine_UseStdlibBytecode/eager-24                      	   12888	     91811 ns/op	   94031 B/op	     697 allocs/op
+BenchmarkEngine_UseStdlibBytecode/eager-24                      	   12096	    100089 ns/op	   94025 B/op	     697 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/lazy-24              	    4188	    301651 ns/op	  216109 B/op	    2469 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/lazy-24              	    4620	    294080 ns/op	  216141 B/op	    2469 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/lazy-24              	    3903	    309636 ns/op	  216196 B/op	    2469 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/lazy-24              	    4206	    314024 ns/op	  216111 B/op	    2469 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/lazy-24              	    3763	    311355 ns/op	  216037 B/op	    2468 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/lazy-24              	    3752	    297636 ns/op	  216111 B/op	    2469 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/eager-24             	    4216	    285486 ns/op	  211028 B/op	    2245 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/eager-24             	    4375	    278847 ns/op	  210825 B/op	    2245 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/eager-24             	    3962	    283314 ns/op	  210961 B/op	    2245 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/eager-24             	    3658	    411049 ns/op	  210997 B/op	    2245 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/eager-24             	    5196	    406202 ns/op	  211149 B/op	    2245 allocs/op
+BenchmarkEngine_StartupFullSurfaceBytecode/eager-24             	    4311	    283411 ns/op	  211227 B/op	    2245 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/runtime	58.604s

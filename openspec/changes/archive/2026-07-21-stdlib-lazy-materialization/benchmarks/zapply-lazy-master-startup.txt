@@ -1,0 +1,18 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/runtime
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   10000	    112740 ns/op	  115736 B/op	     849 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   12339	     97081 ns/op	  115765 B/op	     849 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   12009	    103543 ns/op	  115795 B/op	     849 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   10000	    120276 ns/op	  115824 B/op	     849 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   10000	    110805 ns/op	  115763 B/op	     849 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-disabled-24         	   10000	    115142 ns/op	  115798 B/op	     849 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   10000	    101228 ns/op	  108991 B/op	     754 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   10000	    103989 ns/op	  109053 B/op	     754 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   10000	    110097 ns/op	  109043 B/op	     754 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   10000	    107561 ns/op	  109012 B/op	     754 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   10000	    106272 ns/op	  109033 B/op	     754 allocs/op
+BenchmarkEngine_StartupStdlibBytecode/cache-warm-24             	   10000	    106245 ns/op	  109010 B/op	     754 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/runtime	13.397s
