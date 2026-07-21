@@ -39,7 +39,7 @@ func TestVM_ApplyClosure(t *testing.T) {
 			Encode(OpReturn, 0),
 		},
 	}
-	closure := NewClosure(chunk, env)
+	closure := NewClosure(chunk, nil, env)
 
 	result, err := vm.Apply(context.Background(), closure, []core.Value{core.Int{V: 2}, core.Int{V: 3}}, env)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestVM_ApplyPooled_Basic(t *testing.T) {
 			Encode(OpReturn, 0),
 		},
 	}
-	closure := NewClosure(chunk, env)
+	closure := NewClosure(chunk, nil, env)
 
 	// First call on fresh VM
 	result, err := vm.ApplyPooled(context.Background(), closure, []core.Value{core.Int{V: 42}}, env)
@@ -150,7 +150,7 @@ func TestVM_ApplyPreservesFreshIsolation(t *testing.T) {
 			Encode(OpReturn, 0),
 		},
 	}
-	closure := NewClosure(chunk, env)
+	closure := NewClosure(chunk, nil, env)
 
 	// VM.Apply must not affect receiver state
 	beforeStack := vm.stackSize()
@@ -232,8 +232,8 @@ func TestVM_ApplyPooled_Parity(t *testing.T) {
 		args []core.Value
 		want core.Value
 	}{
-		{"fixed arity closure", NewClosure(fixed, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}}, core.Int{V: 2}},
-		{"variadic closure", NewClosure(variadic, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}},
+		{"fixed arity closure", NewClosure(fixed, nil, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}}, core.Int{V: 2}},
+		{"variadic closure", NewClosure(variadic, nil, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}},
 		{"keyword", core.Keyword{V: "name"}, []core.Value{m}, core.String{V: "Alice"}},
 		{"gofunc", goFn, []core.Value{core.Int{V: 5}}, core.Int{V: 5}},
 	}
@@ -267,7 +267,7 @@ func TestVM_ApplyPooled_ArityErrorNoPartialState(t *testing.T) {
 			Encode(OpReturn, 0),
 		},
 	}
-	closure := NewClosure(chunk, env)
+	closure := NewClosure(chunk, nil, env)
 
 	beforeStack := vm.stackSize()
 	beforeFrames := vm.frameCount()
@@ -299,7 +299,7 @@ func TestVM_ApplyPooled_NoWrapperChunkAllocs(t *testing.T) {
 			Encode(OpReturn, 0),
 		},
 	}
-	closure := NewClosure(chunk, env)
+	closure := NewClosure(chunk, nil, env)
 	args := []core.Value{core.Int{V: 42}}
 	ctx := context.Background()
 
@@ -337,7 +337,7 @@ func TestVM_ApplyPooled_AllocationRegression(t *testing.T) {
 			Encode(OpReturn, 0),
 		},
 	}
-	closure := NewClosure(chunk, env)
+	closure := NewClosure(chunk, nil, env)
 	args := []core.Value{core.Int{V: 42}}
 	ctx := context.Background()
 

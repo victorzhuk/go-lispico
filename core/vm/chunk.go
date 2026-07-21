@@ -46,13 +46,13 @@ type Chunk struct {
 	// LocalNames holds each local's source name, indexed by slot.
 	LocalNames []string
 	// Captured marks which local slots are referenced by nested closures.
-	// Indexed like LocalNames. A true entry means the local must be mirrored
-	// to an Env so closures can access it via OpGetGlobal.
+	// Indexed like LocalNames. A true entry means the slot holds a *cellBox
+	// allocated at the binding site; reads and writes go through the box.
 	Captured []bool
-	// FullEnv forces all locals to be mirrored to an Env, even uncaptured ones.
-	// Set when capture analysis encounters an unanalyzable construct, as a
-	// conservative fallback preserving current behavior.
-	FullEnv bool
+	// Caps describes how OpClosure materializes this chunk's capture array
+	// from the enclosing context: one descriptor per free variable, in the
+	// order OpGetCap/OpSetCap operands index.
+	Caps []CapDesc
 	// Code is the compiled instruction sequence.
 	Code []Instruction
 	// Constants is the chunk's constant pool, indexed by AddConstant.
@@ -68,6 +68,16 @@ type Chunk struct {
 	// so concurrent runs of a shared chunk never race on it. Nil until built —
 	// the VM then resolves globals through the ordinary chain walk.
 	sites atomic.Pointer[siteTable]
+}
+
+// CapDesc describes how OpClosure builds one entry of a sub-chunk's capture
+// array. A descriptor either points at the box held in the enclosing frame's
+// slot Slot, or reuses the box the enclosing closure already captured at
+// index Cap (transitive capture through nested closures).
+type CapDesc struct {
+	Slot     int
+	Cap      int
+	FromCaps bool
 }
 
 // siteTable is a chunk's global-read cache: entries keyed by symbol, and idx
@@ -128,7 +138,7 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 		MaxStack:   c.MaxStack,
 		LocalNames: c.LocalNames,
 		Captured:   c.Captured,
-		FullEnv:    c.FullEnv,
+		Caps:       c.Caps,
 		Code:       c.Code,
 		Constants:  c.Constants,
 		Truthiness: c.Truthiness,
@@ -288,15 +298,31 @@ func (c *Chunk) Validate() error {
 			if a < 0 || a >= len(c.Code) {
 				return bytecodeErrorf("%s: handler target %d out of range", op, a)
 			}
-		case OpGetLocal, OpSetLocal:
+		case OpGetLocal, OpSetLocal, OpGetCell, OpSetCell, OpBindCell:
 			if a < 0 || a >= c.MaxStack {
 				return bytecodeErrorf("%s: local slot %d out of range", op, a)
+			}
+		case OpGetCap, OpSetCap:
+			if a < 0 || a >= len(c.Caps) {
+				return bytecodeErrorf("%s: capture index %d out of range", op, a)
 			}
 		case OpClosure:
 			if a < 0 || a >= len(c.SubChunks) {
 				return bytecodeErrorf("%s: subchunk index %d out of range", op, a)
 			}
-			if err := c.SubChunks[a].Validate(); err != nil {
+			sub := c.SubChunks[a]
+			for i, d := range sub.Caps {
+				if d.FromCaps {
+					if d.Cap < 0 || d.Cap >= len(c.Caps) {
+						return bytecodeErrorf("%s: capture descriptor %d: enclosing capture index %d out of range", op, i, d.Cap)
+					}
+				} else if d.Slot < 0 || d.Slot >= c.MaxStack {
+					return bytecodeErrorf("%s: capture descriptor %d: slot %d out of range", op, i, d.Slot)
+				} else if d.Slot >= len(c.Captured) || !c.Captured[d.Slot] {
+					return bytecodeErrorf("%s: capture descriptor %d: slot %d is not marked captured", op, i, d.Slot)
+				}
+			}
+			if err := sub.Validate(); err != nil {
 				return err
 			}
 		}

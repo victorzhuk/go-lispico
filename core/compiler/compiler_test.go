@@ -938,7 +938,7 @@ func TestCompiler_CaptureAnalysis_Uncaptured(t *testing.T) {
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 	assert.Nil(t, sub.Captured)
-	assert.False(t, sub.FullEnv)
+	assert.Empty(t, sub.Caps)
 }
 
 func TestCompiler_CaptureAnalysis_DirectCapture(t *testing.T) {
@@ -957,11 +957,12 @@ func TestCompiler_CaptureAnalysis_DirectCapture(t *testing.T) {
 
 	require.NotNil(t, sub.Captured)
 	assert.True(t, sub.Captured[0])
-	assert.True(t, sub.FullEnv)
 
 	inner := sub.SubChunks[0]
 	assert.Nil(t, inner.Captured)
-	assert.False(t, inner.FullEnv)
+	require.Equal(t, []vm.CapDesc{{Slot: 0}}, inner.Caps)
+	require.Equal(t, vm.OpGetCap, inner.Code[0].Op())
+	assert.Equal(t, 0, inner.Code[0].A())
 }
 
 func TestCompiler_CaptureAnalysis_TransitiveCapture(t *testing.T) {
@@ -984,15 +985,15 @@ func TestCompiler_CaptureAnalysis_TransitiveCapture(t *testing.T) {
 
 	require.NotNil(t, sub.Captured)
 	assert.True(t, sub.Captured[0])
-	assert.True(t, sub.FullEnv)
 
 	middle := sub.SubChunks[0]
 	assert.Nil(t, middle.Captured)
-	assert.False(t, middle.FullEnv)
+	require.Equal(t, []vm.CapDesc{{Slot: 0}}, middle.Caps)
 
 	inner := middle.SubChunks[0]
 	assert.Nil(t, inner.Captured)
-	assert.False(t, inner.FullEnv)
+	require.Equal(t, []vm.CapDesc{{FromCaps: true, Cap: 0}}, inner.Caps)
+	require.Equal(t, vm.OpGetCap, inner.Code[0].Op())
 }
 
 func TestCompiler_CaptureAnalysis_LexicalShadowing(t *testing.T) {
@@ -1010,11 +1011,12 @@ func TestCompiler_CaptureAnalysis_LexicalShadowing(t *testing.T) {
 	sub := c.Chunk().SubChunks[0]
 
 	assert.Nil(t, sub.Captured)
-	assert.False(t, sub.FullEnv)
+	assert.Empty(t, sub.Caps)
 
 	inner := sub.SubChunks[0]
 	assert.Nil(t, inner.Captured)
-	assert.False(t, inner.FullEnv)
+	assert.Empty(t, inner.Caps)
+	require.Equal(t, vm.OpGetLocal, inner.Code[0].Op())
 }
 
 func TestCompiler_CaptureAnalysis_FnParamVariadic(t *testing.T) {
@@ -1038,11 +1040,10 @@ func TestCompiler_CaptureAnalysis_FnParamVariadic(t *testing.T) {
 	require.NotNil(t, sub.Captured)
 	assert.False(t, sub.Captured[0])
 	assert.True(t, sub.Captured[1])
-	assert.True(t, sub.FullEnv)
 
 	inner := sub.SubChunks[0]
 	assert.Nil(t, inner.Captured)
-	assert.False(t, inner.FullEnv)
+	require.Equal(t, []vm.CapDesc{{Slot: 1}}, inner.Caps)
 }
 
 func TestCompiler_CaptureAnalysis_Quote(t *testing.T) {
@@ -1060,7 +1061,7 @@ func TestCompiler_CaptureAnalysis_Quote(t *testing.T) {
 
 	// quote treats x as data, not a symbol reference
 	assert.Nil(t, sub.Captured)
-	assert.False(t, sub.FullEnv)
+	assert.Empty(t, sub.Caps)
 }
 
 func TestCompiler_CaptureAnalysis_QuasiquoteUnquote(t *testing.T) {
@@ -1084,7 +1085,6 @@ func TestCompiler_CaptureAnalysis_QuasiquoteUnquote(t *testing.T) {
 
 	// quasiquote compiles ~x, producing OpGetLocal (not a constant)
 	assert.Nil(t, sub.Captured)
-	assert.False(t, sub.FullEnv)
 
 	// Verify x is actually compiled to distinguish from quote
 	found := false
@@ -1097,7 +1097,7 @@ func TestCompiler_CaptureAnalysis_QuasiquoteUnquote(t *testing.T) {
 	assert.True(t, found, "x should compile as OpGetLocal inside quasiquote/unquote")
 }
 
-func TestCompiler_CaptureAnalysis_FullEnv(t *testing.T) {
+func TestCompiler_CaptureAnalysis_NoLocals(t *testing.T) {
 	c := NewCompiler("test")
 	form := core.List{Items: []core.Value{
 		core.Symbol{V: "fn"},
@@ -1107,9 +1107,95 @@ func TestCompiler_CaptureAnalysis_FullEnv(t *testing.T) {
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
-	// fn with no captures and no locals should have FullEnv=false
 	assert.Nil(t, sub.Captured)
-	assert.False(t, sub.FullEnv)
+	assert.Empty(t, sub.Caps)
+}
+
+// TestCompiler_CellEmission_CapturedSlot proves finalize rewrites a captured
+// let's binding to OpBindCell and leaves uncaptured slots on plain opcodes.
+func TestCompiler_CellEmission_CapturedSlot(t *testing.T) {
+	c := NewCompiler("test")
+	forms, err := core.Read("(let [x 1 y 2] (fn [] (+ x y)))")
+	require.NoError(t, err)
+	require.NoError(t, c.Compile(forms[0]))
+	c.Chunk().Emit(vm.OpReturn, 0)
+	c.MarkCaptures()
+
+	chunk := c.Chunk()
+	require.NotNil(t, chunk.Captured)
+	assert.True(t, chunk.Captured[0], "x captured")
+	assert.True(t, chunk.Captured[1], "y captured")
+
+	var binds, closures int
+	for _, inst := range chunk.Code {
+		switch inst.Op() {
+		case vm.OpBindCell:
+			binds++
+		case vm.OpClosure:
+			closures++
+		case vm.OpSetLocal:
+			t.Fatalf("captured slot store not rewritten: %v", inst)
+		}
+	}
+	assert.Equal(t, 2, binds)
+	assert.Equal(t, 1, closures)
+
+	inner := chunk.SubChunks[0]
+	require.Len(t, inner.Caps, 2)
+	assert.Equal(t, vm.CapDesc{Slot: 0}, inner.Caps[0])
+	assert.Equal(t, vm.CapDesc{Slot: 1}, inner.Caps[1])
+}
+
+// TestCompiler_CellEmission_UncapturedSlotUntouched proves slots no closure
+// references keep the plain local opcodes byte-for-byte.
+func TestCompiler_CellEmission_UncapturedSlotUntouched(t *testing.T) {
+	c := NewCompiler("test")
+	forms, err := core.Read("(let [x 1 y 2] (+ x y))")
+	require.NoError(t, err)
+	require.NoError(t, c.Compile(forms[0]))
+	c.Chunk().Emit(vm.OpReturn, 0)
+	c.MarkCaptures()
+
+	assert.Nil(t, c.Chunk().Captured)
+	var sets, gets int
+	for _, inst := range c.Chunk().Code {
+		switch inst.Op() {
+		case vm.OpSetLocal:
+			sets++
+		case vm.OpGetLocal:
+			gets++
+		case vm.OpGetCell, vm.OpSetCell, vm.OpBindCell, vm.OpGetCap, vm.OpSetCap:
+			t.Fatalf("cell opcode on uncaptured chunk: %v", inst)
+		}
+	}
+	assert.Equal(t, 2, sets)
+	assert.Equal(t, 2, gets)
+}
+
+// TestCompiler_CellEmission_SetOnCaptured proves set! on a captured own local
+// rewrites to OpSetCell (write-through), not OpBindCell.
+func TestCompiler_CellEmission_SetOnCaptured(t *testing.T) {
+	c := NewCompiler("test")
+	forms, err := core.Read("(let [x 1] (fn [] x) (set! x 5) x)")
+	require.NoError(t, err)
+	require.NoError(t, c.Compile(forms[0]))
+	c.Chunk().Emit(vm.OpReturn, 0)
+	c.MarkCaptures()
+
+	var bindCell, setCell, getCell int
+	for _, inst := range c.Chunk().Code {
+		switch inst.Op() {
+		case vm.OpBindCell:
+			bindCell++
+		case vm.OpSetCell:
+			setCell++
+		case vm.OpGetCell:
+			getCell++
+		}
+	}
+	assert.Equal(t, 1, bindCell, "binding site boxes once")
+	assert.Equal(t, 1, setCell, "set! writes through")
+	assert.Equal(t, 1, getCell, "own read derefs")
 }
 
 func TestCompileAll(t *testing.T) {

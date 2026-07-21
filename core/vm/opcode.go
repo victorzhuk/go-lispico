@@ -48,6 +48,12 @@ const (
 
 	OpStructEnter
 	OpStructLeave
+
+	OpGetCell
+	OpSetCell
+	OpBindCell
+	OpGetCap
+	OpSetCap
 )
 
 var opNames = [...]string{
@@ -90,6 +96,11 @@ var opNames = [...]string{
 	OpSetFunc:          "SET_FUNC",
 	OpStructEnter:      "STRUCT_ENTER",
 	OpStructLeave:      "STRUCT_LEAVE",
+	OpGetCell:          "GET_CELL",
+	OpSetCell:          "SET_CELL",
+	OpBindCell:         "BIND_CELL",
+	OpGetCap:           "GET_CAP",
+	OpSetCap:           "SET_CAP",
 }
 
 // String implements fmt.Stringer.

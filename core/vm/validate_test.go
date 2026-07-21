@@ -96,6 +96,79 @@ func TestChunkValidate_RejectsMalformed(t *testing.T) {
 			},
 		},
 		{
+			name: "OpGetCell slot exceeds MaxStack",
+			chunk: &vm.Chunk{
+				Code:     []vm.Instruction{vm.Encode(vm.OpGetCell, 3), vm.Encode(vm.OpReturn, 0)},
+				MaxStack: 2,
+			},
+		},
+		{
+			name: "OpSetCell slot exceeds MaxStack",
+			chunk: &vm.Chunk{
+				Code:     []vm.Instruction{vm.Encode(vm.OpTrue, 0), vm.Encode(vm.OpSetCell, 3), vm.Encode(vm.OpReturn, 0)},
+				MaxStack: 2,
+			},
+		},
+		{
+			name: "OpBindCell slot exceeds MaxStack",
+			chunk: &vm.Chunk{
+				Code:     []vm.Instruction{vm.Encode(vm.OpTrue, 0), vm.Encode(vm.OpBindCell, 3), vm.Encode(vm.OpReturn, 0)},
+				MaxStack: 2,
+			},
+		},
+		{
+			name: "OpGetCap capture index out of range",
+			chunk: &vm.Chunk{
+				Code: []vm.Instruction{vm.Encode(vm.OpGetCap, 0), vm.Encode(vm.OpReturn, 0)},
+			},
+		},
+		{
+			name: "OpSetCap capture index out of range",
+			chunk: &vm.Chunk{
+				Code: []vm.Instruction{vm.Encode(vm.OpTrue, 0), vm.Encode(vm.OpSetCap, 1), vm.Encode(vm.OpReturn, 0)},
+				Caps: []vm.CapDesc{{Slot: 0}},
+			},
+		},
+		{
+			name: "OpClosure descriptor slot exceeds MaxStack",
+			chunk: &vm.Chunk{
+				Code:     []vm.Instruction{vm.Encode(vm.OpClosure, 0), vm.Encode(vm.OpReturn, 0)},
+				MaxStack: 1,
+				Captured: []bool{true, true},
+				SubChunks: []*vm.Chunk{
+					{
+						Code: []vm.Instruction{vm.Encode(vm.OpGetCap, 0), vm.Encode(vm.OpReturn, 0)},
+						Caps: []vm.CapDesc{{Slot: 3}},
+					},
+				},
+			},
+		},
+		{
+			name: "OpClosure descriptor slot not marked captured",
+			chunk: &vm.Chunk{
+				Code:     []vm.Instruction{vm.Encode(vm.OpClosure, 0), vm.Encode(vm.OpReturn, 0)},
+				MaxStack: 1,
+				SubChunks: []*vm.Chunk{
+					{
+						Code: []vm.Instruction{vm.Encode(vm.OpGetCap, 0), vm.Encode(vm.OpReturn, 0)},
+						Caps: []vm.CapDesc{{Slot: 0}},
+					},
+				},
+			},
+		},
+		{
+			name: "OpClosure transitive descriptor capture index out of range",
+			chunk: &vm.Chunk{
+				Code: []vm.Instruction{vm.Encode(vm.OpClosure, 0), vm.Encode(vm.OpReturn, 0)},
+				SubChunks: []*vm.Chunk{
+					{
+						Code: []vm.Instruction{vm.Encode(vm.OpGetCap, 0), vm.Encode(vm.OpReturn, 0)},
+						Caps: []vm.CapDesc{{FromCaps: true, Cap: 0}},
+					},
+				},
+			},
+		},
+		{
 			name: "OpSetLocal slot exceeds MaxStack",
 			chunk: &vm.Chunk{
 				Code:     []vm.Instruction{vm.Encode(vm.OpTrue, 0), vm.Encode(vm.OpSetLocal, 3), vm.Encode(vm.OpReturn, 0)},
@@ -177,6 +250,39 @@ func TestChunkValidate_AcceptsWellFormed(t *testing.T) {
 	}
 }
 
+func TestChunkValidate_AcceptsWellFormedCells(t *testing.T) {
+	t.Parallel()
+
+	sub := &vm.Chunk{
+		MaxStack: 1,
+		Caps:     []vm.CapDesc{{Slot: 0}},
+		Code: []vm.Instruction{
+			vm.Encode(vm.OpGetCap, 0),
+			vm.Encode(vm.OpSetCap, 0),
+			vm.Encode(vm.OpReturn, 0),
+		},
+	}
+	chunk := &vm.Chunk{
+		Locals:    1,
+		MaxStack:  2,
+		Captured:  []bool{true},
+		SubChunks: []*vm.Chunk{sub},
+		Code: []vm.Instruction{
+			vm.Encode(vm.OpConst, 0),
+			vm.Encode(vm.OpBindCell, 0),
+			vm.Encode(vm.OpGetCell, 0),
+			vm.Encode(vm.OpSetCell, 0),
+			vm.Encode(vm.OpClosure, 0),
+			vm.Encode(vm.OpReturn, 0),
+		},
+		Constants: []core.Value{core.Int{V: 42}},
+	}
+
+	if err := chunk.Validate(); err != nil {
+		t.Fatalf("expected well-formed cell chunk to validate, got %v", err)
+	}
+}
+
 // Validate must never reject bytecode the compiler itself produces — every
 // construction path that reaches Run calls it first.
 func TestChunkValidate_AcceptsCompilerOutput(t *testing.T) {
@@ -189,6 +295,9 @@ func TestChunkValidate_AcceptsCompilerOutput(t *testing.T) {
 		`(let* [x 1 y (+ x 1)] (* x y))`,
 		`(def f (fn [n] (if (< n 2) n (+ (f (- n 1)) (f (- n 2))))))`,
 		`(defn sum-to [n] (loop [i n acc 0] (if (= i 0) acc (recur (- i 1) (+ acc i)))))`,
+		`(defn counter [] (let [n 0] (fn [] (set! n (+ n 1)) n)))`,
+		`(def outer (fn [x] (fn [] (fn [] x))))`,
+		`(let [x 1] (fn [] x) (set! x 2) x)`,
 		`(try (throw "boom") (catch e e))`,
 		`(quasiquote (1 2 (unquote (+ 1 2))))`,
 		`[1 2 3]`,

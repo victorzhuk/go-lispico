@@ -390,6 +390,7 @@ func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src strin
 	}
 	comp.Chunk().Emit(vm.OpReturn, 0)
 	comp.Chunk().EnsureSites()
+	comp.MarkCaptures()
 
 	v := vm.New(env)
 	vmResult, err := v.Run(context.Background(), comp.Chunk())
@@ -1324,4 +1325,250 @@ func TestVM_AncestorClosureNativeOpsNeverCallGoFunc(t *testing.T) {
 	}
 	require.True(t, core.Int{V: 5}.Equals(result))
 	require.Zero(t, addCalls, "ancestor-owned canonical + must stay on the native path, never calling its GoFunc")
+}
+
+// captureCell is one 1.1 crossval cell pinning tree-walker capture semantics.
+// lisp2 rewrites every stored-closure call as funcall; the tree-walker's
+// expected value is the spec the VM must match on both dialects.
+type captureCell struct {
+	name     string
+	lisp1    string
+	lisp2    string
+	expected core.Value
+}
+
+func runCaptureCell(t *testing.T, dialect core.Dialect, src string) (treeResult, vmResult core.Value) {
+	t.Helper()
+
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEval, err := core.NewEvaluatorWithDialect(dialect)
+	require.NoError(t, err, "new evaluator with dialect")
+	treeEnv := stdlibEnv()
+	bridgeLisp2(dialect, treeEnv)
+	for _, form := range forms {
+		treeResult, err = treeEval.Eval(context.Background(), form, treeEnv)
+		require.NoError(t, err, "tree-walker eval")
+	}
+
+	comp := compiler.NewCompilerWithDialect("<top>", &dialect)
+	for _, form := range forms {
+		require.NoError(t, comp.Compile(form), "compile")
+	}
+	comp.Chunk().Emit(vm.OpReturn, 0)
+	comp.Chunk().EnsureSites()
+	comp.MarkCaptures()
+	require.NoError(t, comp.Chunk().Validate(), "validate")
+
+	vmEnv := stdlibEnv()
+	bridgeLisp2(dialect, vmEnv)
+	v := vm.New(vmEnv)
+	vmResult, err = v.Run(context.Background(), comp.Chunk())
+	require.NoError(t, err, "vm run")
+	return treeResult, vmResult
+}
+
+// bridgeLisp2 mirrors stdlib GoFuncs into the function cell, replicating the
+// engine's Lisp-2 head-resolution bridge for a hand-built env.
+func bridgeLisp2(dialect core.Dialect, env *core.Env) {
+	if !dialect.IsLisp2() {
+		return
+	}
+	for _, name := range env.VarNames() {
+		v, ok, canon := env.GetCanonical(name)
+		if !ok {
+			continue
+		}
+		if _, isGoFunc := v.(core.GoFunc); isGoFunc {
+			if canon {
+				env.SetFuncCanonical(name, v)
+			} else {
+				env.SetFunc(name, v)
+			}
+		}
+	}
+}
+
+// TestVMVsTreeWalker_ClosureCaptureSemantics pins the tree-walker's capture
+// behavior as the spec for flat closures: shared loop bindings, fresh
+// let-in-loop bindings, sibling set! aliasing, defining-scope mutation
+// visibility, and transitive capture through nested closures. The expected
+// values were recorded from the tree-walker, not from the VM.
+func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
+	t.Parallel()
+
+	cells := []captureCell{
+		{
+			name: "closure in loop shares the loop binding across iterations",
+			lisp1: `
+(def f0 nil)
+(def f1 nil)
+(loop [i 0]
+  (if (< i 2)
+    (do (if (= i 0) (set! f0 (fn [] i)) (set! f1 (fn [] i)))
+        (recur (+ i 1)))
+    (list (f0) (f1))))`,
+			lisp2: `
+(def f0 nil)
+(def f1 nil)
+(loop [i 0]
+  (if (< i 2)
+    (do (if (= i 0) (set! f0 (fn [] i)) (set! f1 (fn [] i)))
+        (recur (+ i 1)))
+    (list (funcall f0) (funcall f1))))`,
+			expected: core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 2}}},
+		},
+		{
+			name: "closure over let in loop gets a fresh binding per iteration",
+			lisp1: `
+(def g0 nil)
+(def g1 nil)
+(loop [i 0]
+  (if (< i 2)
+    (do (let [x (* i 10)]
+          (if (= i 0) (set! g0 (fn [] x)) (set! g1 (fn [] x))))
+        (recur (+ i 1)))
+    (list (g0) (g1))))`,
+			lisp2: `
+(def g0 nil)
+(def g1 nil)
+(loop [i 0]
+  (if (< i 2)
+    (do (let [x (* i 10)]
+          (if (= i 0) (set! g0 (fn [] x)) (set! g1 (fn [] x))))
+        (recur (+ i 1)))
+    (list (funcall g0) (funcall g1))))`,
+			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 10}}},
+		},
+		{
+			name: "sibling closures alias one binding through set!",
+			lisp1: `
+(def counter
+  (let [n 0]
+    (list (fn [] (set! n (+ n 1)) n)
+          (fn [] n))))
+(def bump (first counter))
+(def read-n (nth counter 1))
+(bump)
+(bump)
+(read-n)`,
+			lisp2: `
+(def counter
+  (let [n 0]
+    (list (fn [] (set! n (+ n 1)) n)
+          (fn [] n))))
+(def bump (first counter))
+(def read-n (nth counter 1))
+(funcall bump)
+(funcall bump)
+(funcall read-n)`,
+			expected: core.Int{V: 2},
+		},
+		{
+			name: "defining scope mutation is visible to an already created closure",
+			lisp1: `
+(def get-x nil)
+(let [x 1]
+  (set! get-x (fn [] x))
+  (set! x 42))
+(get-x)`,
+			lisp2: `
+(def get-x nil)
+(let [x 1]
+  (set! get-x (fn [] x))
+  (set! x 42))
+(funcall get-x)`,
+			expected: core.Int{V: 42},
+		},
+		{
+			name: "transitive capture through nested closures shares one binding",
+			lisp1: `
+(def mk-outer
+  (fn []
+    (let [x 10]
+      (fn [] (fn [] (set! x (+ x 5)) x)))))
+(def mid (mk-outer))
+(def inner (mid))
+(list (inner) (inner))`,
+			lisp2: `
+(def mk-outer
+  (fn []
+    (let [x 10]
+      (fn [] (fn [] (set! x (+ x 5)) x)))))
+(def mid (funcall mk-outer))
+(def inner (funcall mid))
+(list (funcall inner) (funcall inner))`,
+			expected: core.List{Items: []core.Value{core.Int{V: 15}, core.Int{V: 20}}},
+		},
+		{
+			name: "loop body mutating a captured local writes through",
+			lisp1: `
+(def tick nil)
+(let [count 0]
+  (set! tick (fn [] (set! count (+ count 1)) count))
+  (loop [i 0]
+    (if (< i 5)
+      (do (tick) (recur (+ i 1)))
+      (tick))))`,
+			lisp2: `
+(def tick nil)
+(let [count 0]
+  (set! tick (fn [] (set! count (+ count 1)) count))
+  (loop [i 0]
+    (if (< i 5)
+      (do (funcall tick) (recur (+ i 1)))
+      (funcall tick))))`,
+			expected: core.Int{V: 6},
+		},
+		{
+			name: "variadic rest param capture",
+			lisp1: `
+(def mk-v (fn [x & rest] (fn [] (list x rest))))
+(def v1 (mk-v 1 2 3))
+(v1)`,
+			lisp2: `
+(def mk-v (fn [x & rest] (fn [] (list x rest))))
+(def v1 (funcall mk-v 1 2 3))
+(funcall v1)`,
+			expected: core.List{Items: []core.Value{core.Int{V: 1}, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}}},
+		},
+		{
+			name: "catch binding capture",
+			lisp1: `
+(def h nil)
+(try (throw "boom") (catch e (set! h (fn [] e))))
+(h)`,
+			lisp2: `
+(def h nil)
+(try (throw "boom") (catch e (set! h (fn [] e))))
+(funcall h)`,
+			expected: core.String{V: "boom"},
+		},
+	}
+
+	dialects := []struct {
+		name string
+		d    core.Dialect
+	}{
+		{"lisp1", core.FullDialect()},
+		{"lisp2", core.FullDialect().Lisp2()},
+	}
+	for _, cell := range cells {
+		for _, dt := range dialects {
+			t.Run(cell.name+"/"+dt.name, func(t *testing.T) {
+				t.Parallel()
+				src := cell.lisp1
+				if dt.name == "lisp2" {
+					src = cell.lisp2
+				}
+				treeResult, vmResult := runCaptureCell(t, dt.d, src)
+				assert.True(t, cell.expected.Equals(treeResult),
+					"tree-walker result %v != pinned expected %v", treeResult, cell.expected)
+				assert.True(t, treeResult.Equals(vmResult),
+					"VM result %v (%T) != tree-walker result %v (%T)",
+					vmResult, vmResult, treeResult, treeResult)
+			})
+		}
+	}
 }

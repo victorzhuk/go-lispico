@@ -35,6 +35,12 @@ type Compiler struct {
 	parent  *Compiler
 	loops   []loopFrame
 	dialect *core.Dialect
+	// caps lists the free variables this chunk captures from its enclosing
+	// context, parallel to chunk.Caps.
+	caps []string
+	// binds marks instruction indices that bind (rather than mutate) a local,
+	// so finalize can tell a box-allocating store from a write-through.
+	binds map[int]bool
 }
 
 type loopFrame struct {
@@ -49,24 +55,26 @@ type local struct {
 
 // NewCompiler creates a Compiler that emits into a new chunk named name.
 func NewCompiler(name string) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name, FullEnv: true}}
+	return &Compiler{chunk: &vm.Chunk{Name: name}}
 }
 
 // NewCompilerWithDialect creates a Compiler that emits into a new chunk named name
 // with access to the dialect for dialect-dependent compilation.
 func NewCompilerWithDialect(name string, dialect *core.Dialect) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name, FullEnv: true, Truthiness: dialect.TruthyFunc()}, dialect: dialect}
+	return &Compiler{chunk: &vm.Chunk{Name: name, Truthiness: dialect.TruthyFunc()}, dialect: dialect}
 }
 
 // Chunk returns the chunk the compiler is emitting into.
 func (c *Compiler) Chunk() *vm.Chunk { return c.chunk }
 
-// MarkCaptures runs capture analysis on the finished chunk, clearing the
-// conservative FullEnv default when no local is captured by a nested closure.
-// Without it a top-level chunk mirrors every local to the env on each write —
-// wasteful for hot loops that only rebind stack slots. Must be called once Code
-// is final. CompileAll does this per form; single-form callers must too.
-func (c *Compiler) MarkCaptures() { markCaptures(c.chunk, nil) }
+// MarkCaptures finalizes capture handling for the finished chunk: it rewrites
+// every access to a captured local from slot opcodes to cell opcodes (boxing
+// at binding sites, write-through at mutation sites) and computes MaxStack.
+// Capture registration itself happens during compilation: a closure body's
+// free-variable references resolve through the compiler parent chain at
+// emission time. Must be called once Code is final. CompileAll does this per
+// form; single-form callers must too.
+func (c *Compiler) MarkCaptures() { c.finalize() }
 
 // emitGetGlobal emits OpGetGlobal for sym. The VM's site cache is built later
 // from Code (Chunk.EnsureSites), so no per-site bookkeeping is needed here.
@@ -91,6 +99,8 @@ func (c *Compiler) Compile(form core.Value) error {
 	case core.Symbol:
 		if idx := c.resolveLocal(f.V); idx >= 0 {
 			c.chunk.Emit(vm.OpGetLocal, idx)
+		} else if c.parent != nil && c.ancestorBinds(f.V) {
+			c.chunk.Emit(vm.OpGetCap, c.ensureCapture(f.V))
 		} else {
 			c.emitGetGlobal(f)
 		}
@@ -307,7 +317,7 @@ func (c *Compiler) compileFn(args []core.Value) error {
 	sub.chunk.Arity = len(params)
 	sub.chunk.Variadic = variadic.V != ""
 	sub.chunk.EnsureSites()
-	markCaptures(sub.chunk, collectAncestors(c))
+	sub.finalize()
 	idx := len(c.chunk.SubChunks)
 	c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
 	c.chunk.Emit(vm.OpClosure, idx)
@@ -351,7 +361,7 @@ func (c *Compiler) compileLet(args []core.Value) error {
 		if _, ok := bindings.Items[i].(core.Symbol); !ok {
 			return core.NewTypeError("symbol", bindings.Items[i])
 		}
-		c.chunk.Emit(vm.OpSetLocal, base+i/2)
+		c.emitBind(base + i/2)
 	}
 	for i := 0; i < len(bindings.Items); i += 2 {
 		c.addLocal(bindings.Items[i].(core.Symbol).V)
@@ -386,7 +396,7 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 			return core.NewTypeError("symbol", bindings.Items[i])
 		}
 		c.addLocal(sym.V)
-		c.chunk.Emit(vm.OpSetLocal, len(c.locals)-1)
+		c.emitBind(len(c.locals) - 1)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -409,6 +419,8 @@ func (c *Compiler) compileSet(args []core.Value) error {
 	}
 	if idx := c.resolveLocal(sym.V); idx >= 0 {
 		c.chunk.Emit(vm.OpSetLocal, idx)
+	} else if c.parent != nil && c.ancestorBinds(sym.V) {
+		c.chunk.Emit(vm.OpSetCap, c.ensureCapture(sym.V))
 	} else {
 		c.chunk.Emit(vm.OpSetLexical, c.chunk.AddConstant(sym))
 	}
@@ -470,7 +482,7 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 		}
 		slots = append(slots, len(c.locals))
 		c.addLocal(name.V)
-		c.chunk.Emit(vm.OpSetLocal, len(c.locals)-1)
+		c.emitBind(len(c.locals) - 1)
 	}
 	startIP := len(c.chunk.Code)
 	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots})
@@ -537,7 +549,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	c.chunk.PatchJumpTo(setup, handlerAddr)
 	catchSlot := len(c.locals)
 	c.addLocal(errSym.V)
-	c.chunk.Emit(vm.OpSetLocal, catchSlot)
+	c.emitBind(catchSlot)
 	if err := c.compileDo(catchClause.Items[bodyStart:]); err != nil {
 		return err
 	}
@@ -630,79 +642,83 @@ func (c *Compiler) addLocal(name string) {
 	c.chunk.LocalNames = append(c.chunk.LocalNames, name)
 }
 
-// captureAncestor carries a chunk and its local names for capture analysis.
-// Used by markCaptures to walk the ancestor chain of nested closures.
-type captureAncestor struct {
-	chunk  *vm.Chunk
-	locals []string
-}
-
-// collectAncestors walks the Compiler parent chain to build a slice of
-// captureAncestor entries. The caller's own chunk appears first, then its
-// parent, etc., matching the order capture checks apply.
-func collectAncestors(c *Compiler) []captureAncestor {
-	var ancestors []captureAncestor
-	for p := c; p != nil; p = p.parent {
-		ancestors = append(ancestors, captureAncestor{chunk: p.chunk, locals: p.chunk.LocalNames})
+// emitBind emits the store for a local binding site, recording it so
+// finalize boxes (rather than writes through) when the slot is captured.
+func (c *Compiler) emitBind(slot int) {
+	ip := c.chunk.Emit(vm.OpSetLocal, slot)
+	if c.binds == nil {
+		c.binds = map[int]bool{}
 	}
-	return ancestors
+	c.binds[ip] = true
 }
 
-// markCaptures walks the chunk tree rooted at root, identifying locals in each
-// ancestor that are referenced by OpGetGlobal instructions in descendant
-// (closure) chunks. Those locals are marked as captured so the VM knows to
-// mirror them to an Env. After analysis, FullEnv is cleared for chunks where
-// no captures were found.
-// The ancestors slice holds chunks from the compiler parent chain that may
-// contain locals referenced by closures within the root.
-func markCaptures(root *vm.Chunk, ancestors []captureAncestor) {
-	walkCaptureTree(root, ancestors)
-}
-
-func walkCaptureTree(chunk *vm.Chunk, ancestors []captureAncestor) {
-	// Recurse into children first — they report captures into ancestors.
-	for _, child := range chunk.SubChunks {
-		childAncestors := make([]captureAncestor, 0, len(ancestors)+1)
-		childAncestors = append(childAncestors, captureAncestor{chunk: chunk, locals: chunk.LocalNames})
-		childAncestors = append(childAncestors, ancestors...)
-		walkCaptureTree(child, childAncestors)
+// markCaptured flags an own local slot as captured by a nested closure.
+func (c *Compiler) markCaptured(slot int) {
+	for len(c.chunk.Captured) <= slot {
+		c.chunk.Captured = append(c.chunk.Captured, false)
 	}
+	c.chunk.Captured[slot] = true
+}
 
-	// Check each OpGetGlobal/OpSetLexical against ancestor local names.
-	for _, inst := range chunk.Code {
-		if inst.Op() != vm.OpGetGlobal && inst.Op() != vm.OpSetLexical {
+// ancestorBinds reports whether any enclosing compiler binds name as a local.
+func (c *Compiler) ancestorBinds(name string) bool {
+	for p := c.parent; p != nil; p = p.parent {
+		if p.resolveLocal(name) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureCapture registers name in this chunk's capture list, returning its
+// index, and extends chunk.Caps with the descriptor OpClosure needs to
+// materialize it: the enclosing frame's slot when the parent binds name
+// (marking that slot captured), or the parent's own capture index when the
+// binding lives further out (transitive capture). Callers must have confirmed
+// via ancestorBinds that the parent chain can supply name.
+func (c *Compiler) ensureCapture(name string) int {
+	for i, n := range c.caps {
+		if n == name {
+			return i
+		}
+	}
+	p := c.parent
+	var desc vm.CapDesc
+	if slot := p.resolveLocal(name); slot >= 0 {
+		p.markCaptured(slot)
+		desc = vm.CapDesc{Slot: slot}
+	} else {
+		desc = vm.CapDesc{FromCaps: true, Cap: p.ensureCapture(name)}
+	}
+	c.caps = append(c.caps, name)
+	c.chunk.Caps = append(c.chunk.Caps, desc)
+	return len(c.caps) - 1
+}
+
+// finalize rewrites the finished chunk's code for captured locals: reads
+// become OpGetCell, mutation stores OpSetCell, and recorded binding sites
+// OpBindCell, leaving uncaptured slots on the plain local opcodes. It then
+// computes MaxStack. Nested chunks are finalized by their own compilers right
+// after their bodies complete, so a chunk's Captured set is complete by the
+// time finalize runs.
+func (c *Compiler) finalize() {
+	chunk := c.chunk
+	for ip, inst := range chunk.Code {
+		op, a := inst.Op(), inst.A()
+		if a >= len(chunk.Captured) || !chunk.Captured[a] {
 			continue
 		}
-		sym, err := chunk.GetSymbolConstant(inst.A())
-		if err != nil {
-			continue
-		}
-		for _, anc := range ancestors {
-			for slot, name := range anc.locals {
-				if name == sym.V {
-					if anc.chunk.Captured == nil {
-						anc.chunk.Captured = make([]bool, anc.chunk.Locals)
-					}
-					anc.chunk.Captured[slot] = true
-				}
+		switch op {
+		case vm.OpGetLocal:
+			chunk.Code[ip] = vm.Encode(vm.OpGetCell, a)
+		case vm.OpSetLocal:
+			if c.binds[ip] {
+				chunk.Code[ip] = vm.Encode(vm.OpBindCell, a)
+			} else {
+				chunk.Code[ip] = vm.Encode(vm.OpSetCell, a)
 			}
 		}
 	}
-
-	// Clear FullEnv when capture analysis found nothing to capture.
-	if chunk.FullEnv {
-		has := false
-		for _, c := range chunk.Captured {
-			if c {
-				has = true
-				break
-			}
-		}
-		if !has {
-			chunk.FullEnv = false
-		}
-	}
-
 	chunk.MaxStack = computeMaxStack(chunk)
 }
 
@@ -751,7 +767,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		sub.chunk.Arity = len(params)
 		sub.chunk.Variadic = variadic.V != ""
 		sub.chunk.EnsureSites()
-		markCaptures(sub.chunk, collectAncestors(c))
+		sub.finalize()
 		idx := len(c.chunk.SubChunks)
 		c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
 		c.chunk.Emit(vm.OpClosure, idx)
@@ -970,7 +986,7 @@ func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {
 		}
 		comp.chunk.Emit(vm.OpReturn, 0)
 		comp.chunk.EnsureSites()
-		markCaptures(comp.chunk, nil)
+		comp.finalize()
 		if err := comp.chunk.Validate(); err != nil {
 			return nil, err
 		}

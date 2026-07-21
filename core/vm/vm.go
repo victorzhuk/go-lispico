@@ -13,16 +13,38 @@ import (
 
 var nowFunc = time.Now
 
-// Closure is a compiled function: a Chunk paired with the lexical
-// environment it closed over. It implements core.Value.
+// Closure is a compiled function: a Chunk paired with the flat capture array
+// holding exactly the free variables it uses, plus the globals env its body
+// resolves non-local names against. It implements core.Value.
 type Closure struct {
-	Chunk *Chunk
-	Env   *core.Env
+	Chunk   *Chunk
+	caps    []*cellBox
+	globals *core.Env
 }
 
-// NewClosure creates a Closure over chunk in env.
-func NewClosure(chunk *Chunk, env *core.Env) *Closure {
-	return &Closure{Chunk: chunk, Env: env}
+// cellBox is the shared storage cell for a captured local: one allocation at
+// the binding site, written through on every mutation, referenced directly by
+// every closure over the variable. VM-internal: unlike core.Cell it carries no
+// canonical flag or version, since captured locals never participate in
+// name-keyed env lookup or site caching.
+type cellBox struct {
+	v core.Value
+}
+
+// cellBox sits in frame slots, so it must satisfy core.Value even though user
+// code never observes one: OpGetCell/OpGetCap push the cell's content, never
+// the cell itself.
+func (b *cellBox) Type() core.Keyword { return core.Keyword{V: "cell"} }
+func (b *cellBox) String() string     { return "#<cell>" }
+func (b *cellBox) Equals(o core.Value) bool {
+	other, ok := o.(*cellBox)
+	return ok && b == other
+}
+
+// NewClosure creates a Closure over chunk with the given capture array and
+// globals env.
+func NewClosure(chunk *Chunk, caps []*cellBox, globals *core.Env) *Closure {
+	return &Closure{Chunk: chunk, caps: caps, globals: globals}
 }
 
 // Type implements core.Value.
@@ -236,13 +258,13 @@ func (vm *VM) growStack(base, maxStack int) {
 // reloadFrame reads the top frame's state into Run's per-frame dispatch
 // locals after a helper that can push, pop, or replace frames (vm.call,
 // vm.throw) returns. Callers must only call it when vm.frames is non-empty.
-func (vm *VM) reloadFrame() (chunk *Chunk, code []Instruction, ip, base int, env *core.Env, truthy func(core.Value) bool) {
+func (vm *VM) reloadFrame() (chunk *Chunk, code []Instruction, ip, base int, env *core.Env, caps []*cellBox, truthy func(core.Value) bool) {
 	frame := &vm.frames[len(vm.frames)-1]
 	truthy = core.IsTruthy
 	if frame.chunk.Truthiness != nil {
 		truthy = frame.chunk.Truthiness
 	}
-	return frame.chunk, frame.chunk.Code, frame.ip, frame.base, frame.env, truthy
+	return frame.chunk, frame.chunk.Code, frame.ip, frame.base, frame.env, frame.caps, truthy
 }
 
 func (vm *VM) pushFreeze(depth int, op Opcode, val core.Value) {
@@ -380,7 +402,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 // Callers must have already pushed the frame to execute (and, for a call,
 // its callee + args below it on vm.stack) — see Run and apply.
 func (vm *VM) run(ctx context.Context) (core.Value, error) {
-	chunk, code, ip, base, env, truthy := vm.reloadFrame()
+	chunk, code, ip, base, env, caps, truthy := vm.reloadFrame()
 	vm.budget = checkInterval
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("vm: %w", err)
@@ -427,11 +449,61 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				return nil, err
 			}
 			vm.stack[slot] = top
-			if idx < len(chunk.LocalNames) {
-				if chunk.FullEnv || (idx < len(chunk.Captured) && chunk.Captured[idx]) {
-					env.Set(chunk.LocalNames[idx], top)
-				}
+
+		case OpGetCell:
+			slot := base + instr.A()
+			if slot < 0 || slot >= len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("cell slot %d out of range", instr.A())}
 			}
+			box, ok := vm.stack[slot].(*cellBox)
+			if !ok {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("cell slot %d does not hold a cell", instr.A())}
+			}
+			vm.push(box.v)
+
+		case OpSetCell:
+			slot := base + instr.A()
+			if slot < 0 || slot >= len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("cell slot %d out of range", instr.A())}
+			}
+			box, ok := vm.stack[slot].(*cellBox)
+			if !ok {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("cell slot %d does not hold a cell", instr.A())}
+			}
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			box.v = top
+
+		case OpBindCell:
+			slot := base + instr.A()
+			if slot < 0 || slot >= len(vm.stack) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("cell slot %d out of range", instr.A())}
+			}
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			vm.stack[slot] = &cellBox{v: top}
+
+		case OpGetCap:
+			idx := instr.A()
+			if idx < 0 || idx >= len(caps) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("capture index %d out of range", idx)}
+			}
+			vm.push(caps[idx].v)
+
+		case OpSetCap:
+			idx := instr.A()
+			if idx < 0 || idx >= len(caps) {
+				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("capture index %d out of range", idx)}
+			}
+			top, err := vm.peek()
+			if err != nil {
+				return nil, err
+			}
+			caps[idx].v = top
 
 		case OpGetGlobal:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
@@ -538,7 +610,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 					return nil, err
 				}
 			}
-			chunk, code, ip, base, env, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpTailCall:
 			vm.frames[len(vm.frames)-1].ip = ip
@@ -547,7 +619,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 					return nil, err
 				}
 			}
-			chunk, code, ip, base, env, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpReturn:
 			result, err := vm.pop()
@@ -568,7 +640,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				return result, nil
 			}
 			vm.push(result)
-			chunk, code, ip, base, env, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpMakeList:
 			n := instr.A()
@@ -621,7 +693,23 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			vm.structDepth.Add(-int64(n))
 
 		case OpClosure:
-			vm.push(NewClosure(chunk.SubChunks[instr.A()], env))
+			sub := chunk.SubChunks[instr.A()]
+			var subCaps []*cellBox
+			if len(sub.Caps) > 0 {
+				subCaps = make([]*cellBox, len(sub.Caps))
+				for i, d := range sub.Caps {
+					if d.FromCaps {
+						subCaps[i] = caps[d.Cap]
+					} else {
+						box, ok := vm.stack[base+d.Slot].(*cellBox)
+						if !ok {
+							return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("capture slot %d does not hold a cell", d.Slot)}
+						}
+						subCaps[i] = box
+					}
+				}
+			}
+			vm.push(NewClosure(sub, subCaps, env))
 
 		case OpDup:
 			top, err := vm.peek()
@@ -648,7 +736,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if !vm.throw(coerceThrow(value)) {
 				return nil, core.NewTypeError("handler", core.Nil{})
 			}
-			chunk, code, ip, base, env, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
 			vm.frames[len(vm.frames)-1].ip = ip
@@ -657,7 +745,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 					return nil, err
 				}
 			}
-			chunk, code, ip, base, env, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 		}
 	}
 }
@@ -1152,13 +1240,6 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		}
 		vm.depth++
 
-		needsEnv := needsCallEnv(f.Chunk)
-
-		var callEnv *core.Env
-		if needsEnv {
-			callEnv = core.NewEnv(f.Env)
-		}
-
 		if tail && len(vm.frames) > 0 {
 			vm.depth--
 			frame := &vm.frames[len(vm.frames)-1]
@@ -1169,28 +1250,15 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				copy(vm.stack[target:], args[:fixed])
 				vm.stack[target+fixed] = rest
 				vm.stack = vm.stack[:target+fixed+1]
-				if needsEnv {
-					for i := range fixed {
-						callEnv.Set(f.Chunk.LocalNames[i], args[i])
-					}
-					callEnv.Set(f.Chunk.LocalNames[fixed], rest)
-				}
 			} else {
 				copy(vm.stack[target:], args)
 				vm.stack = vm.stack[:target+len(args)]
-				if needsEnv {
-					for i := range min(len(args), len(f.Chunk.LocalNames)) {
-						callEnv.Set(f.Chunk.LocalNames[i], args[i])
-					}
-				}
 			}
+			boxCaptured(f.Chunk, vm.stack[target:])
 			frame.chunk = f.Chunk
 			frame.ip = 0
-			if needsEnv {
-				frame.env = callEnv
-			} else {
-				frame.env = f.Env
-			}
+			frame.env = f.globals
+			frame.caps = f.caps
 			frame.isClosure = true
 			vm.growStack(target, f.Chunk.MaxStack)
 		} else {
@@ -1203,30 +1271,17 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				}
 				vm.stack[base+fixed] = rest
 				vm.stack = vm.stack[:base+fixed+1]
-				if needsEnv {
-					for i := range fixed {
-						callEnv.Set(f.Chunk.LocalNames[i], args[i])
-					}
-					callEnv.Set(f.Chunk.LocalNames[fixed], rest)
-				}
 			} else {
 				copy(vm.stack[base:], args)
 				vm.stack = vm.stack[:base+argc]
-				if needsEnv {
-					for i := range min(len(args), len(f.Chunk.LocalNames)) {
-						callEnv.Set(f.Chunk.LocalNames[i], args[i])
-					}
-				}
 			}
-			frameEnv := f.Env
-			if needsEnv {
-				frameEnv = callEnv
-			}
+			boxCaptured(f.Chunk, vm.stack[base:])
 			vm.frames = append(vm.frames, Frame{
 				chunk:     f.Chunk,
 				ip:        0,
 				base:      base,
-				env:       frameEnv,
+				env:       f.globals,
+				caps:      f.caps,
 				isClosure: true,
 			})
 			vm.growStack(base, f.Chunk.MaxStack)
@@ -1238,24 +1293,17 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 	return nil
 }
 
-// needsCallEnv returns true if the chunk requires per-call Env allocation —
-// either because capture analysis was inconclusive (FullEnv) or because at
-// least one local is captured. When false, the frame reuses the closure's
-// parent env and allocates no Env for local bindings.
-func needsCallEnv(chunk *Chunk) bool {
-	return chunk.FullEnv || !allLocalsUncaptured(chunk)
-}
-
-// allLocalsUncaptured returns true when no local slot in the chunk is marked
-// as captured and FullEnv is false.
-func allLocalsUncaptured(chunk *Chunk) bool {
-	if chunk.FullEnv {
-		return false
-	}
-	for _, c := range chunk.Captured {
-		if c {
-			return false
+// boxCaptured replaces each captured parameter's value in slots with a shared
+// cell, so the frame and every closure over it read and write one storage
+// location. Captured slots beyond the parameters are boxed later, at their
+// OpBindCell binding site.
+func boxCaptured(chunk *Chunk, slots []core.Value) {
+	for i, captured := range chunk.Captured {
+		if i >= len(slots) {
+			break
+		}
+		if captured {
+			slots[i] = &cellBox{v: slots[i]}
 		}
 	}
-	return true
 }

@@ -19,7 +19,8 @@ func computeMaxStack(chunk *vm.Chunk) int {
 	height, peak, maxSlot := 0, 0, -1
 	for _, inst := range chunk.Code {
 		op, a := inst.Op(), inst.A()
-		if op == vm.OpGetLocal || op == vm.OpSetLocal {
+		if op == vm.OpGetLocal || op == vm.OpSetLocal ||
+			op == vm.OpGetCell || op == vm.OpSetCell || op == vm.OpBindCell {
 			if a > maxSlot {
 				maxSlot = a
 			}
@@ -42,7 +43,8 @@ func computeMaxStack(chunk *vm.Chunk) int {
 // stackDelta returns op's net effect on the operand stack for operand a.
 func stackDelta(op vm.Opcode, a int) int {
 	switch op {
-	case vm.OpNil, vm.OpTrue, vm.OpFalse, vm.OpConst, vm.OpGetGlobal, vm.OpGetLocal, vm.OpGetFunc, vm.OpDup, vm.OpClosure:
+	case vm.OpNil, vm.OpTrue, vm.OpFalse, vm.OpConst, vm.OpGetGlobal, vm.OpGetLocal, vm.OpGetFunc, vm.OpDup, vm.OpClosure,
+		vm.OpGetCell, vm.OpGetCap:
 		return 1
 	case vm.OpPop, vm.OpJumpIfFalse, vm.OpThrow, vm.OpReturn:
 		return -1

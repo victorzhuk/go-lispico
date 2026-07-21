@@ -676,7 +676,7 @@ func TestVM_Reset(t *testing.T) {
 }
 
 func TestClosure_Type(t *testing.T) {
-	c := NewClosure(&Chunk{Name: "test"}, nil)
+	c := NewClosure(&Chunk{Name: "test"}, nil, nil)
 
 	if c.Type().V != "fn" {
 		t.Errorf("expected type 'fn', got %s", c.Type().V)
@@ -684,7 +684,7 @@ func TestClosure_Type(t *testing.T) {
 }
 
 func TestClosure_String(t *testing.T) {
-	c := NewClosure(&Chunk{Name: "my-fn"}, nil)
+	c := NewClosure(&Chunk{Name: "my-fn"}, nil, nil)
 
 	expected := "#<closure my-fn>"
 	if c.String() != expected {
@@ -696,9 +696,9 @@ func TestClosure_Equals(t *testing.T) {
 	chunk := &Chunk{Name: "test"}
 	env := core.NewEnv(nil)
 
-	c1 := NewClosure(chunk, env)
-	c2 := NewClosure(chunk, env)
-	c3 := NewClosure(&Chunk{Name: "other"}, env)
+	c1 := NewClosure(chunk, nil, env)
+	c2 := NewClosure(chunk, nil, env)
+	c3 := NewClosure(&Chunk{Name: "other"}, nil, env)
 
 	if !c1.Equals(c1) {
 		t.Error("closure should equal itself")
@@ -1371,7 +1371,7 @@ func TestVM_NativeOp_FallbackEnv(t *testing.T) {
 	subChunk.Emit(OpReturn, 0)
 
 	mainChunk := &Chunk{Name: "main"}
-	mainChunk.Emit(OpConst, mainChunk.AddConstant(NewClosure(subChunk, child)))
+	mainChunk.Emit(OpConst, mainChunk.AddConstant(NewClosure(subChunk, nil, child)))
 	mainChunk.Emit(OpCall, 0)
 	mainChunk.Emit(OpReturn, 0)
 
@@ -1787,7 +1787,6 @@ func TestVM_UncapturedLocalsNoEnv(t *testing.T) {
 		Locals:     1,
 		LocalNames: []string{"x"},
 		Captured:   nil,
-		FullEnv:    false,
 		Code: []Instruction{
 			Encode(OpConst, 0),
 			Encode(OpSetLocal, 0),
@@ -1802,7 +1801,7 @@ func TestVM_UncapturedLocalsNoEnv(t *testing.T) {
 	assert.True(t, result.Equals(core.Int{V: 42}))
 }
 
-func TestVM_CapturedLocalsUseEnv(t *testing.T) {
+func TestVM_CapturedLocalUsesCell(t *testing.T) {
 	t.Parallel()
 	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
@@ -1810,11 +1809,10 @@ func TestVM_CapturedLocalsUseEnv(t *testing.T) {
 		Locals:     1,
 		LocalNames: []string{"x"},
 		Captured:   []bool{true},
-		FullEnv:    false,
 		Code: []Instruction{
 			Encode(OpConst, 0),
-			Encode(OpSetLocal, 0),
-			Encode(OpGetLocal, 0),
+			Encode(OpBindCell, 0),
+			Encode(OpGetCell, 0),
 			Encode(OpReturn, 0),
 		},
 		Constants: []core.Value{core.Int{V: 42}},
@@ -1825,27 +1823,28 @@ func TestVM_CapturedLocalsUseEnv(t *testing.T) {
 	assert.True(t, result.Equals(core.Int{V: 42}))
 }
 
-func TestVM_FullEnvUsesEnv(t *testing.T) {
+func TestVM_CapturedCellWriteThrough(t *testing.T) {
 	t.Parallel()
 	vm := New(core.NewEnv(nil))
 	chunk := &Chunk{
 		Name:       "test",
 		Locals:     1,
 		LocalNames: []string{"x"},
-		Captured:   nil,
-		FullEnv:    true,
+		Captured:   []bool{true},
 		Code: []Instruction{
 			Encode(OpConst, 0),
-			Encode(OpSetLocal, 0),
-			Encode(OpGetLocal, 0),
+			Encode(OpBindCell, 0),
+			Encode(OpConst, 1),
+			Encode(OpSetCell, 0),
+			Encode(OpGetCell, 0),
 			Encode(OpReturn, 0),
 		},
-		Constants: []core.Value{core.Int{V: 42}},
+		Constants: []core.Value{core.Int{V: 42}, core.Int{V: 7}},
 	}
 
 	result, err := vm.Run(context.Background(), chunk)
 	require.NoError(t, err)
-	assert.True(t, result.Equals(core.Int{V: 42}))
+	assert.True(t, result.Equals(core.Int{V: 7}))
 }
 
 // tryCatchStructLeakChunk builds a chunk equivalent to:
