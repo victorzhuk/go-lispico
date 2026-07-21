@@ -136,12 +136,14 @@ func WithTreeWalker() EngineOption {
 }
 
 // ResourceLimits configures resource ceilings for an Engine. All fields are
-// immutable after construction. A zero field is replaced with its default.
+// immutable after construction. A non-positive field is replaced with its default.
 type ResourceLimits struct {
 	MaxReaderDepth     int
 	MaxStructuralDepth int
 	MaxCollectionLen   int
 	MaxCacheEntries    int
+	MaxReductions      int
+	MaxAllocationBytes int
 }
 
 const (
@@ -149,6 +151,8 @@ const (
 	defaultMaxStructuralDepth = 1024
 	defaultMaxCollectionLen   = 10_000_000
 	defaultMaxCacheEntries    = 4096
+	defaultMaxReductions      = 10_000_000
+	defaultMaxAllocationBytes = 64 * 1024 * 1024
 )
 
 func resolveLimits(l ResourceLimits) ResourceLimits {
@@ -163,6 +167,12 @@ func resolveLimits(l ResourceLimits) ResourceLimits {
 	}
 	if l.MaxCacheEntries <= 0 {
 		l.MaxCacheEntries = defaultMaxCacheEntries
+	}
+	if l.MaxReductions <= 0 {
+		l.MaxReductions = defaultMaxReductions
+	}
+	if l.MaxAllocationBytes <= 0 {
+		l.MaxAllocationBytes = defaultMaxAllocationBytes
 	}
 	return l
 }

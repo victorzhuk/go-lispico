@@ -383,21 +383,28 @@ func (d Dialect) Read(src string) ([]Value, error) {
 // limiting the parser's nesting depth to maxDepth. maxDepth ≤ 0 selects the
 // default (1024).
 func (d Dialect) ReadWithMaxDepth(src string, maxDepth int) ([]Value, error) {
+	forms, _, err := d.ReadWithMaxDepthStats(src, maxDepth)
+	return forms, err
+}
+
+// ReadWithMaxDepthStats tokenizes and parses src under the Dialect's reader
+// flags, returning the parsed forms and deterministic allocation-metering stats.
+func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, ReaderStats, error) {
 	r := NewReaderWithFlags(src, d.readerFlags())
 	tokens, err := r.Tokenize()
 	if err != nil {
-		return nil, err
+		return nil, ReaderStats{}, err
 	}
 	p := NewParserWithDepth(tokens, maxDepth)
 	var forms []Value
 	for p.peek().typ != tokenEOF {
 		form, err := p.Parse()
 		if err != nil {
-			return nil, err
+			return nil, ReaderStats{}, err
 		}
 		forms = append(forms, form)
 	}
-	return forms, nil
+	return forms, p.Stats(), nil
 }
 
 // IsIdentity reports whether d is the identity dialect — the full kernel base

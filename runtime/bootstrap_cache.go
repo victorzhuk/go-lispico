@@ -14,7 +14,7 @@ const maxStdlibBootstrapArtifacts = 64
 
 type stdlibBootstrapKey struct {
 	dialectFP  string
-	sourceHash string
+	sourceHash sourceHash
 }
 
 type stdlibBootstrapArtifact struct {

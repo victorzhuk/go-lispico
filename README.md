@@ -176,24 +176,26 @@ Evaluator control:
 
 ## Resource limits
 
-`runtime.WithResourceLimits(runtime.ResourceLimits{…})` configures four
+`runtime.WithResourceLimits(runtime.ResourceLimits{…})` configures six
 resource ceilings before construction:
 
-| Field             | Default     | Effect                                  |
-| ----------------- | ----------- | --------------------------------------- |
-| `MaxReaderDepth`  | 1024        | Maximum nesting depth of s-expressions  |
-| `MaxStructuralDepth` | 1024     | Maximum structural depth of evaluated/   |
-|                   |             | compiled Vector, HashMap, and           |
-|                   |             | quasiquote List literals                |
-| `MaxCollectionLen`| 10,000,000  | Maximum length of `range`-produced list |
-| `MaxCacheEntries` | 4096        | Maximum bytecode chunk cache entries    |
+| Field | Default | Effect |
+| --- | ---: | --- |
+| `MaxReaderDepth` | 1024 | Maximum nesting depth of s-expressions |
+| `MaxStructuralDepth` | 1024 | Maximum structural depth of evaluated / compiled `Vector`, `HashMap`, and quasiquote `List` literals |
+| `MaxCollectionLen` | 10,000,000 | Maximum length of `range`-produced lists |
+| `MaxCacheEntries` | 4096 | Maximum bytecode chunk cache entries |
+| `MaxReductions` | 10,000,000 | Maximum reductions charged to one evaluation across reader bridge, macro expansion, compiler, evaluator, and `GoFunc` dispatch |
+| `MaxAllocationBytes` | 64 MiB | Maximum shallow allocation bytes charged to one evaluation |
 
-A zero field selects the default. Ceilings are immutable after `New`.
+A non-positive field selects the default. Ceilings are immutable after `New`.
 Exceeding one returns a `*core.LispicoError` with `Code: "ResourceLimitError"`.
 Structural depth is enforced at evaluation time in both evaluators so
 a dead-branch over-limit literal (`(if false <deep> 1)`) is not rejected.
-The evaluators share a single counter across GoFunc callbacks (`map`, `filter`,
-`reduce`) so nested constructors inside callbacks do not bypass the limit.
+Reductions piggyback the existing 128-step cancellation budget in both
+evaluators, and allocation charging uses the fixed deterministic size table in
+ADR 0011. Reader output is charged before the first form runs; VM/tree-walker
+work and `GoFunc` re-entry share one per-evaluation ledger.
 
 ## Status
 

@@ -23,9 +23,11 @@ type macroExpander interface {
 	MacroExpand(ctx context.Context, form core.Value, env *core.Env) (core.Value, error)
 }
 
+type sourceHash [sha256.Size]byte
+
 // cacheKey uniquely identifies a compiled chunk in the bytecode cache.
 type cacheKey struct {
-	sourceHash string
+	sourceHash sourceHash
 	formIndex  int
 	dialectFP  string
 	macroEpoch int
@@ -47,6 +49,8 @@ type bytecodeEvaluator struct {
 	maxStructuralDepth int
 	maxCollectionLen   int
 	maxCacheEntries    int
+	maxReductions      int
+	maxAllocBytes      int
 }
 
 func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
@@ -57,6 +61,8 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 		maxStructuralDepth: limits.MaxStructuralDepth,
 		maxCollectionLen:   limits.MaxCollectionLen,
 		maxCacheEntries:    limits.MaxCacheEntries,
+		maxReductions:      limits.MaxReductions,
+		maxAllocBytes:      limits.MaxAllocationBytes,
 		macro:              treeWalker.(macroExpander),
 		tree:               treeWalker,
 		dialect:            dialect,
@@ -83,7 +89,7 @@ func (be *bytecodeEvaluator) treeFallbackCtx(ctx context.Context) context.Contex
 }
 
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
-	ctx = core.EnsureEvalState(ctx)
+	ctx = core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
@@ -92,16 +98,22 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 		return nil, fmt.Errorf("macro expand: %w", err)
 	}
 	comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
+	comp.SetEvalMeter(core.EvalMeterFrom(ctx))
 	if err := comp.Compile(expanded); err != nil {
 		if isUnsupportedInBytecode(err) {
 			return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
 		}
 		return nil, fmt.Errorf("compile: %w", err)
 	}
-	comp.Chunk().Emit(vm.OpReturn, 0)
+	if err := comp.EmitReturn(); err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
 	comp.MarkCaptures()
 	chunk := comp.Chunk()
 	if err := chunk.Validate(); err != nil {
+		return nil, err
+	}
+	if err := chargeCompiledChunk(ctx, chunk); err != nil {
 		return nil, err
 	}
 	// A one-shot eval is never reused, so its global reads resolve through the
@@ -110,18 +122,22 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 }
 
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	ctx = core.EnsureEvalState(ctx)
+	ctx = core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
 	if _, ok := fn.(core.Lambda); ok {
-		return be.tree.Apply(ctx, fn, args, env)
+		result, err := be.tree.Apply(ctx, fn, args, env)
+		if err == nil {
+			err = core.FlushEvalState(ctx)
+		}
+		return result, err
 	}
-
 	v := be.vmPool.Get().(*vm.VM)
 	v.Reset()
 	v.SetGlobals(env)
 	v.SetDeadline(core.EvalDeadlineFrom(ctx))
+	v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
 	result, err := v.ApplyPooled(ctx, fn, args, env)
 	be.vmPool.Put(v)
@@ -137,15 +153,12 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 func (be *bytecodeEvaluator) applyOnVM(v *vm.VM, ctx context.Context, fn core.Value, args []core.Value, env *core.Env, timeout time.Duration) (core.Value, error) {
 	v.SetGlobals(env)
 	if core.HasEvalState(ctx) {
-		// Re-entrant Call (a GoFunc calling back through Engine.Call, or a caller
-		// evaluating within an outer evaluation): share the enclosing structural-
-		// depth counter and deadline so ADR-0007 limits hold across the boundary,
-		// matching Apply. Otherwise this is a top-level Call: the VM's own zeroed
-		// counter and lazy timeout avoid entry-time evalState and clock work.
 		vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
 		v.SetDeadline(core.EvalDeadlineFrom(ctx))
+		v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	} else {
 		v.SetTimeout(timeout)
+		v.SetResourceLimits(be.maxReductions, be.maxAllocBytes)
 	}
 	return v.ApplyPooled(ctx, fn, args, env)
 }
@@ -153,10 +166,9 @@ func (be *bytecodeEvaluator) applyOnVM(v *vm.VM, ctx context.Context, fn core.Va
 func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen }
 
 // EvalCached evaluates form with caching: macro-expands, checks the chunk cache
-// by key (sourceHash, formIndex, dialectFP, macroEpoch), compiles on miss, and
 // runs via a pooled VM.
-func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash string, formIndex int) (core.Value, error) {
-	ctx = core.EnsureEvalState(ctx)
+func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash sourceHash, formIndex int) (core.Value, error) {
+	ctx = core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
@@ -187,16 +199,22 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		be.mu.Unlock()
 
 		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
+		comp.SetEvalMeter(core.EvalMeterFrom(ctx))
 		if err := comp.Compile(expanded); err != nil {
 			if isUnsupportedInBytecode(err) {
 				return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
 			}
 			return nil, fmt.Errorf("compile: %w", err)
 		}
-		comp.Chunk().Emit(vm.OpReturn, 0)
+		if err := comp.EmitReturn(); err != nil {
+			return nil, fmt.Errorf("compile: %w", err)
+		}
 		comp.MarkCaptures()
 		chunk = comp.Chunk()
 		if err := chunk.Validate(); err != nil {
+			return nil, err
+		}
+		if err := chargeCompiledChunk(ctx, chunk); err != nil {
 			return nil, err
 		}
 
@@ -234,6 +252,7 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 	} else {
 		v.SetTimeout(be.timeout)
 	}
+	v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
 	result, err := v.Run(ctx, chunk)
 	be.vmPool.Put(v)
@@ -263,14 +282,46 @@ func (e *engineImpl) evalDeadline(ctx context.Context, start time.Time) time.Tim
 	return bound
 }
 
+func (e *engineImpl) evalResourceContext(ctx context.Context) context.Context {
+	return core.WithEvalResourceLimits(ctx, e.config.limits.MaxReductions, e.config.limits.MaxAllocationBytes)
+}
+
+func (e *engineImpl) readForms(ctx context.Context, input string) ([]core.Value, error) {
+	forms, stats, err := e.config.dialect.ReadWithMaxDepthStats(input, e.config.limits.MaxReaderDepth)
+	if err != nil {
+		return nil, err
+	}
+	if err := core.ChargeEvalReader(ctx, stats); err != nil {
+		return nil, err
+	}
+	return forms, nil
+}
+
+func chargeCompiledChunk(ctx context.Context, chunk *vm.Chunk) error {
+	return core.ChargeEvalAllocBytes(ctx, compiledChunkBytes(chunk))
+}
+
+func compiledChunkBytes(chunk *vm.Chunk) int64 {
+	if chunk == nil {
+		return 0
+	}
+	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + core.ValueSlotsBytes(len(chunk.Constants))
+	for _, c := range chunk.Constants {
+		bytes += core.ValueShallowBytes(c)
+	}
+	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
+	for _, sub := range chunk.SubChunks {
+		bytes += compiledChunkBytes(sub)
+	}
+	return bytes
+}
+
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
 	start := time.Now()
 
-	// Seed the shared evalState once for the whole form loop; the deadline
-	// stays zero so the VM still arms the engine timeout lazily.
-	ctx = core.EnsureEvalState(ctx)
+	ctx = e.evalResourceContext(ctx)
 
-	forms, err := e.config.dialect.ReadWithMaxDepth(input, e.config.limits.MaxReaderDepth)
+	forms, err := e.readForms(ctx, input)
 	if err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
@@ -282,18 +333,26 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 	env := e.rootEnv
 	e.mu.RUnlock()
 
-	// Bytecode path: use cached compilation.
 	if be := e.bytecodeEvaluator; be != nil {
 		var result core.Value = core.Nil{}
 		sourceHash := sha256Hash(input)
 		for i, form := range forms {
 			result, err = be.EvalCached(ctx, form, env, sourceHash, i)
 			if err != nil {
+				if ferr := core.FlushEvalState(ctx); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+					err = ferr
+				}
 				dur := time.Since(start)
 				e.stats.recordEval(dur, err)
 				e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 				return nil, fmt.Errorf("eval: %w", err)
 			}
+		}
+		if err := core.FlushEvalState(ctx); err != nil {
+			dur := time.Since(start)
+			e.stats.recordEval(dur, err)
+			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+			return nil, fmt.Errorf("eval: %w", err)
 		}
 		dur := time.Since(start)
 		e.stats.recordEval(dur, nil)
@@ -302,18 +361,26 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 		return result, nil
 	}
 
-	// Tree-walker path.
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
 
 	var result core.Value = core.Nil{}
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, env)
 		if err != nil {
+			if ferr := core.FlushEvalState(ctx); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				err = ferr
+			}
 			dur := time.Since(start)
 			e.stats.recordEval(dur, err)
 			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 			return nil, fmt.Errorf("eval: %w", err)
 		}
+	}
+	if err := core.FlushEvalState(ctx); err != nil {
+		dur := time.Since(start)
+		e.stats.recordEval(dur, err)
+		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		return nil, fmt.Errorf("eval: %w", err)
 	}
 
 	dur := time.Since(start)
@@ -323,10 +390,8 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 	return result, nil
 }
 
-// sha256Hash returns a hex-encoded SHA-256 hash of s.
-func sha256Hash(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return fmt.Sprintf("%x", h[:])
+func sha256Hash(s string) sourceHash {
+	return sha256.Sum256([]byte(s))
 }
 
 func (e *engineImpl) EvalFile(path string) (core.Value, error) {
@@ -410,6 +475,10 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 // PinnedFn.Call — so the per-call VM lifecycle stays in the caller and a
 // single apply step is shared across every entry point.
 func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM) (core.Value, error) {
+	if core.HasEvalState(ctx) {
+		ctx = e.evalResourceContext(ctx)
+	}
+
 	active := e.callbacksActive.Load()
 	var start time.Time
 	if active {
@@ -429,8 +498,14 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 			}
 			deadline = e.evalDeadline(ctx, deadlineStart)
 		}
+		if !core.HasEvalState(ctx) {
+			ctx = e.evalResourceContext(ctx)
+		}
 		ctx = core.WithEvalDeadline(ctx, deadline)
 		result, err = e.evaluator.Apply(ctx, fn, args, env)
+		if err == nil {
+			err = core.FlushEvalState(ctx)
+		}
 	}
 	counter.Add(1)
 	if active {
@@ -461,9 +536,10 @@ func (e *engineImpl) Bind(name string, v core.Value) error {
 func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error) {
 	start := time.Now()
 
+	ctx = e.evalResourceContext(ctx)
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
 
-	forms, err := e.config.dialect.ReadWithMaxDepth(source, e.config.limits.MaxReaderDepth)
+	forms, err := e.readForms(ctx, source)
 	if err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
@@ -486,11 +562,20 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
+			if ferr := core.FlushEvalState(ctx); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				err = ferr
+			}
 			dur := time.Since(start)
 			e.stats.recordEval(dur, err)
 			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 			return nil, fmt.Errorf("eval: %w", err)
 		}
+	}
+	if err := core.FlushEvalState(ctx); err != nil {
+		dur := time.Since(start)
+		e.stats.recordEval(dur, err)
+		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		return nil, fmt.Errorf("eval: %w", err)
 	}
 
 	dur := time.Since(start)

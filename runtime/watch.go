@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/victorzhuk/go-lispico/core"
 )
 
 type fileWatcher struct {
@@ -103,7 +105,8 @@ func (w *fileWatcher) reloadFile(path string) {
 		return
 	}
 
-	forms, err := w.engine.config.dialect.ReadWithMaxDepth(string(content), w.engine.config.limits.MaxReaderDepth)
+	ctx := w.engine.evalResourceContext(core.DetachEvalState(w.ctx))
+	forms, err := w.engine.readForms(ctx, string(content))
 	if err != nil {
 		w.engine.logger.Error("parse file", "path", path, "error", err)
 		return
@@ -112,11 +115,15 @@ func (w *fileWatcher) reloadFile(path string) {
 	childEnv := w.engine.rootEnv.Child()
 
 	for _, form := range forms {
-		_, err := w.engine.evaluator.Eval(w.ctx, form, childEnv)
+		_, err := w.engine.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
 			w.engine.logger.Error("eval form in file", "path", path, "error", err)
 			return
 		}
+	}
+	if err := core.FlushEvalState(ctx); err != nil {
+		w.engine.logger.Error("eval form in file", "path", path, "error", err)
+		return
 	}
 
 	childEnv.MergeInto(w.engine.rootEnv)

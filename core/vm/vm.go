@@ -98,7 +98,13 @@ type VM struct {
 	timeout       time.Duration
 	deadlineArmed bool
 	// budget counts instructions until the next batched cancellation check.
-	budget int
+	budget        int
+	flushedBudget int
+	meter         core.EvalMeter
+	maxReductions int64
+	maxAllocBytes int64
+	reductions    int64
+	allocBytes    int64
 	// ownStructDepth is the VM's private structural-depth counter. structDepth
 	// points here until a re-entrant GoFunc dispatch adopts a shared counter
 	// (see reentrantCtx); Reset restores the pointer and zeroes this back out.
@@ -170,6 +176,13 @@ func (vm *VM) reset() {
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
+	vm.meter = core.EvalMeter{}
+	vm.maxReductions = 0
+	vm.maxAllocBytes = 0
+	vm.reductions = 0
+	vm.allocBytes = 0
+	vm.budget = 0
+	vm.flushedBudget = 0
 }
 
 // Reset clears the VM state (stacks, frames, handlers, depth) so the
@@ -187,6 +200,13 @@ func (vm *VM) Reset() {
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
+	vm.meter = core.EvalMeter{}
+	vm.maxReductions = 0
+	vm.maxAllocBytes = 0
+	vm.reductions = 0
+	vm.allocBytes = 0
+	vm.budget = 0
+	vm.flushedBudget = 0
 }
 
 // ResetIncremental clears only the dirtiable cross-call state left behind by a
@@ -218,6 +238,13 @@ func (vm *VM) ResetIncremental() error {
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
+	vm.meter = core.EvalMeter{}
+	vm.maxReductions = 0
+	vm.maxAllocBytes = 0
+	vm.reductions = 0
+	vm.allocBytes = 0
+	vm.budget = 0
+	vm.flushedBudget = 0
 	return nil
 }
 
@@ -242,6 +269,106 @@ func (vm *VM) SetTimeout(d time.Duration) {
 	vm.deadlineArmed = false
 }
 
+func (vm *VM) SetEvalMeter(m core.EvalMeter) {
+	vm.meter = m
+	snap := m.Snapshot()
+	vm.maxReductions = snap.MaxReductions
+	vm.maxAllocBytes = snap.MaxAllocationBytes
+	vm.reductions = 0
+	vm.allocBytes = 0
+	vm.flushedBudget = vm.budget
+}
+
+func (vm *VM) SetResourceLimits(maxReductions, maxAllocBytes int) {
+	vm.meter = core.EvalMeter{}
+	vm.maxReductions = int64(maxReductions)
+	vm.maxAllocBytes = int64(maxAllocBytes)
+	if vm.maxReductions <= 0 {
+		vm.maxReductions = core.DefaultMaxReductions
+	}
+	if vm.maxAllocBytes <= 0 {
+		vm.maxAllocBytes = core.DefaultMaxAllocationBytes
+	}
+	vm.reductions = 0
+	vm.allocBytes = 0
+	vm.flushedBudget = vm.budget
+}
+
+func (vm *VM) chargeReductions(n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	if vm.meter.Valid() {
+		return vm.meter.ChargeReductions(n)
+	}
+	if vm.maxReductions <= 0 {
+		return nil
+	}
+	vm.reductions += n
+	if vm.reductions > vm.maxReductions {
+		return core.NewResourceLimitError(fmt.Sprintf("reduction limit %d exceeded", vm.maxReductions))
+	}
+	return nil
+}
+
+func (vm *VM) flushConsumedReductions() error {
+	used := vm.flushedBudget - vm.budget
+	if used <= 0 {
+		return nil
+	}
+	vm.flushedBudget = vm.budget
+	return vm.chargeReductions(int64(used))
+}
+
+func (vm *VM) chargeAllocBytes(n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	if vm.meter.Valid() {
+		return vm.meter.ChargeAllocBytes(n)
+	}
+	if vm.maxAllocBytes <= 0 {
+		return nil
+	}
+	vm.allocBytes += n
+	if vm.allocBytes > vm.maxAllocBytes {
+		return core.NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", vm.maxAllocBytes))
+	}
+	return nil
+}
+
+func (vm *VM) chargeValue(v core.Value) error {
+	return vm.chargeAllocBytes(core.ValueShallowBytes(v))
+}
+
+func (vm *VM) meterSnapshot() core.EvalMeterSnapshot {
+	if vm.meter.Valid() {
+		return vm.meter.Snapshot()
+	}
+	return core.EvalMeterSnapshot{
+		MaxReductions:      vm.maxReductions,
+		MaxAllocationBytes: vm.maxAllocBytes,
+		Reductions:         vm.reductions,
+		AllocationBytes:    vm.allocBytes,
+	}
+}
+
+func (vm *VM) syncMeterFromReentry() {
+	if vm.reentryCtx == nil {
+		return
+	}
+	m := core.EvalMeterIfMaterialized(vm.reentryCtx)
+	if !m.Valid() {
+		return
+	}
+	vm.meter = m
+	snap := m.Snapshot()
+	vm.maxReductions = snap.MaxReductions
+	vm.maxAllocBytes = snap.MaxAllocationBytes
+	vm.reductions = snap.Reductions
+	vm.allocBytes = snap.AllocationBytes
+}
+
 func (vm *VM) armDeadline(ctx context.Context) {
 	if vm.deadlineArmed || vm.timeout <= 0 {
 		return
@@ -259,15 +386,21 @@ func (vm *VM) armDeadline(ctx context.Context) {
 // back into the evaluator enforces the same resource budget across the
 // boundary. Only reached on a real GoFunc dispatch — the native-op fast path
 // never calls it.
-func (vm *VM) reentrantCtx(ctx context.Context) context.Context {
+func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
+	if err := vm.flushConsumedReductions(); err != nil {
+		return nil, err
+	}
 	if vm.reentryCtx != nil {
-		return vm.reentryCtx
+		return vm.reentryCtx, nil
 	}
 	vm.armDeadline(ctx)
-	adopted, counter := core.AdoptEvalState(ctx, vm.deadline, vm.structDepth.Load())
+	adopted, counter, meter := core.AdoptEvalStateWithMeter(ctx, vm.deadline, vm.structDepth.Load(), vm.meterSnapshot())
 	vm.structDepth = counter
+	if meter.Valid() {
+		vm.meter = meter
+	}
 	vm.reentryCtx = adopted
-	return adopted
+	return adopted, nil
 }
 
 func (vm *VM) push(v core.Value) {
@@ -324,6 +457,12 @@ func (vm *VM) peek() (core.Value, error) {
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
 	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth))
 	fresh.structDepth = v.structDepth
+	fresh.deadline = v.deadline
+	fresh.timeout = v.timeout
+	fresh.deadlineArmed = v.deadlineArmed
+	fresh.meter = v.meter
+	fresh.maxReductions = v.maxReductions
+	fresh.maxAllocBytes = v.maxAllocBytes
 	return fresh.apply(ctx, fn, args, env)
 }
 
@@ -373,14 +512,35 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		if eval == nil {
 			eval = core.NewEvaluator()
 		}
-		return eval.Apply(vm.reentrantCtx(ctx), f, args, env)
+		reCtx, err := vm.reentrantCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, err := eval.Apply(reCtx, f, args, env)
+		vm.syncMeterFromReentry()
+		return result, err
 
 	case core.GoFunc:
 		eval := vm.eval
 		if eval == nil {
 			eval = core.NewEvaluator()
 		}
-		return f.Fn(vm.reentrantCtx(ctx), eval, args, env)
+		reCtx, err := vm.reentrantCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := vm.chargeReductions(1); err != nil {
+			return nil, err
+		}
+		result, err := f.Fn(reCtx, eval, args, env)
+		vm.syncMeterFromReentry()
+		if err != nil {
+			return nil, err
+		}
+		if err := vm.chargeValue(result); err != nil {
+			return nil, err
+		}
+		return result, nil
 	case core.Keyword:
 		if len(args) != 1 {
 			return nil, keywordArityError(len(args))
@@ -415,7 +575,11 @@ const checkInterval = 128
 // vm.budget for the next batch. Errors are wrapped with the "vm: " prefix so
 // errors.Is(err, context.DeadlineExceeded/Canceled) still holds.
 func (vm *VM) pollCancel(ctx context.Context) error {
+	if err := vm.flushConsumedReductions(); err != nil {
+		return err
+	}
 	vm.budget = checkInterval
+	vm.flushedBudget = checkInterval
 	if !vm.deadlineArmed {
 		vm.armDeadline(ctx)
 	}
@@ -448,6 +612,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 func (vm *VM) run(ctx context.Context) (core.Value, error) {
 	chunk, code, ip, base, env, caps, truthy := vm.reloadFrame()
 	vm.budget = checkInterval
+	vm.flushedBudget = checkInterval
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("vm: %w", err)
 	}
@@ -689,6 +854,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				vm.handlers = vm.handlers[:len(vm.handlers)-1]
 			}
 			if len(vm.frames) == 0 {
+				if err := vm.flushConsumedReductions(); err != nil {
+					return nil, err
+				}
 				return result, nil
 			}
 			vm.push(result)
@@ -698,6 +866,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			n := instr.A()
 			if n < 0 || n > len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-list: %d items exceeds stack", n)}
+			}
+			if err := vm.chargeAllocBytes(core.ListShallowBytes(n)); err != nil {
+				return nil, err
 			}
 			items := make([]core.Value, n)
 			copy(items, vm.stack[len(vm.stack)-n:])
@@ -709,15 +880,22 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if n < 0 || n > len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-vector: %d items exceeds stack", n)}
 			}
+			if err := vm.chargeAllocBytes(core.VectorShallowBytes(n)); err != nil {
+				return nil, err
+			}
 			items := make([]core.Value, n)
 			copy(items, vm.stack[len(vm.stack)-n:])
 			vm.stack = vm.stack[:len(vm.stack)-n]
 			vm.push(core.Vector{Items: items})
 
 		case OpMakeMap:
-			n := instr.A() * 2
+			pairCount := instr.A()
+			n := pairCount * 2
 			if n < 0 || n > len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-map: %d items exceeds stack", n)}
+			}
+			if err := vm.chargeAllocBytes(core.HashMapShallowBytes(pairCount)); err != nil {
+				return nil, err
 			}
 			pairs := vm.stack[len(vm.stack)-n:]
 			hm := core.NewHashMap()
@@ -746,6 +924,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 
 		case OpClosure:
 			sub := chunk.SubChunks[instr.A()]
+			if err := vm.chargeAllocBytes(core.ClosureShallowBytes(len(sub.Caps))); err != nil {
+				return nil, err
+			}
 			var subCaps []*cellBox
 			if len(sub.Caps) > 0 {
 				subCaps = make([]*cellBox, len(sub.Caps))
@@ -1245,8 +1426,19 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if len(vm.frames) > 0 {
 			frameEnv = vm.frames[len(vm.frames)-1].env
 		}
-		result, err := f.Fn(vm.reentrantCtx(ctx), eval, args, frameEnv)
+		reCtx, err := vm.reentrantCtx(ctx)
 		if err != nil {
+			return err
+		}
+		if err := vm.chargeReductions(1); err != nil {
+			return err
+		}
+		result, err := f.Fn(reCtx, eval, args, frameEnv)
+		vm.syncMeterFromReentry()
+		if err != nil {
+			return err
+		}
+		if err := vm.chargeValue(result); err != nil {
 			return err
 		}
 		vm.stack = vm.stack[:len(vm.stack)-argc-1]
@@ -1261,7 +1453,12 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if len(vm.frames) > 0 {
 			frameEnv = vm.frames[len(vm.frames)-1].env
 		}
-		result, err := eval.Apply(vm.reentrantCtx(ctx), f, args, frameEnv)
+		reCtx, err := vm.reentrantCtx(ctx)
+		if err != nil {
+			return err
+		}
+		result, err := eval.Apply(reCtx, f, args, frameEnv)
+		vm.syncMeterFromReentry()
 		if err != nil {
 			return err
 		}

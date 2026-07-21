@@ -214,10 +214,11 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
   dialect (`cl.Dialect()`). Select the Clojure-style surface with
   `WithDialect(clojure.Dialect())`.
 - `WithResourceLimits(l)` — Set resource ceilings (`MaxReaderDepth`,
-  `MaxStructuralDepth`, `MaxCollectionLen`, `MaxCacheEntries`), applied once at
-  `New` and immutable afterward. A zero field selects a conservative default;
-  there is no "unlimited". Exceeding a ceiling returns a `*core.LispicoError`
-  with `Code: "ResourceLimitError"`.
+  `MaxStructuralDepth`, `MaxCollectionLen`, `MaxCacheEntries`,
+  `MaxReductions`, `MaxAllocationBytes`), applied once at `New` and immutable
+  afterward. A non-positive field selects a conservative default; there is no
+  "unlimited". Exceeding a ceiling returns a `*core.LispicoError` with
+  `Code: "ResourceLimitError"`.
 
 Evaluator options are last-wins for mode selection.
 
@@ -296,17 +297,23 @@ Source Code
 Resource ceilings protect host availability against adversarial or accidental
 input. The reader bounds parser nesting (`MaxReaderDepth`) at parse time, so a
 deeply nested source returns a typed error instead of a fatal stack overflow.
-The evaluator bounds structural descent into Vector/HashMap literals and
-quasiquote (`MaxStructuralDepth`); this counter lives on the per-evaluation
-`evalState` carried in `context.Context`, so it is shared by BOTH the
-tree-walker and the bytecode VM and stays continuous across evaluator callbacks
-(`map`/`filter`/`reduce` invoke `eval.Apply`, which reuses the same counter).
-Enforcement is lazy — only structure that is actually evaluated/executed is
-counted, so a dead-branch over-limit literal is not rejected and the two
-evaluators agree. `range` caps its result length (`MaxCollectionLen`) and checks
-`ctx` cooperatively; the bytecode chunk cache is bounded (`MaxCacheEntries`)
-and reclaims entries orphaned by a macro-epoch bump. Resource-limit breaches are
-a hard safety boundary and are not catchable by `try`/`catch`.
+Reader output is also charged into the evaluation's allocation ledger before the
+first form executes. The evaluator bounds structural descent into
+`Vector`/`HashMap` literals and quasiquote (`MaxStructuralDepth`); this counter
+lives on the per-evaluation `evalState` carried in `context.Context`, so it is
+shared by BOTH the tree-walker and the bytecode VM and stays continuous across
+evaluator callbacks (`map`/`filter`/`reduce` invoke `eval.Apply`, and VM
+`GoFunc` re-entry adopts the same ledger). Enforcement is lazy — only
+structure that is actually evaluated/executed is counted, so a dead-branch
+over-limit literal is not rejected and the two evaluators agree. `range` caps
+its result length (`MaxCollectionLen`) and checks `ctx` cooperatively; the
+bytecode chunk cache is bounded (`MaxCacheEntries`) and reclaims entries
+orphaned by a macro-epoch bump. `MaxReductions` counts macro expansion,
+compiler emission, evaluator work, and `GoFunc` dispatch via the existing
+128-step cancellation budget, while `MaxAllocationBytes` charges the fixed
+deterministic size table from ADR 0011 at reader, compiler, VM, tree-walker,
+and `GoFunc` result boundaries. Resource-limit breaches are a hard safety
+boundary and are not catchable by `try`/`catch`.
 
 ### Plugin Loading Flow
 

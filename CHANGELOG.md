@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline) are shared with the enclosing run exactly as before, and a context
   retained past its call stays snapshot-consistent — it never observes a recycled
   pooled VM.
+- `runtime.WithResourceLimits` now also bounds per-evaluation reductions
+  (`MaxReductions`, default `10_000_000`) and cumulative shallow allocation
+  (`MaxAllocationBytes`, default `64 MiB`). Reader output, macro expansion,
+  compiler emission, evaluator work, VM make-ops, and `GoFunc` dispatch/results
+  all charge the same evaluation ledger, and limit breaches remain terminal
+  `ResourceLimitError`s.
 
 ## [0.8.0] - 2026-07-19
 

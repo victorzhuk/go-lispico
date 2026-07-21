@@ -8,6 +8,11 @@ import (
 
 const defaultReaderDepth = 1024
 
+type ReaderStats struct {
+	Nodes int64
+	Bytes int64
+}
+
 type tokenType int
 
 const (
@@ -288,6 +293,7 @@ type Parser struct {
 	pos      int
 	maxDepth int
 	depth    int
+	stats    ReaderStats
 }
 
 func NewParser(tokens []token) *Parser {
@@ -299,6 +305,15 @@ func NewParserWithDepth(tokens []token, maxDepth int) *Parser {
 		maxDepth = defaultReaderDepth
 	}
 	return &Parser{tokens: tokens, maxDepth: maxDepth}
+}
+
+func (p *Parser) Stats() ReaderStats { return p.stats }
+
+func (p *Parser) addNode(bytes int64) {
+	p.stats.Nodes++
+	if bytes > 0 {
+		p.stats.Bytes += bytes
+	}
 }
 
 func (p *Parser) peek() token {
@@ -370,23 +385,30 @@ func (p *Parser) parseForm() (Value, error) {
 		return p.parseUnquoteSplicing()
 	case tokenString:
 		p.next()
+		p.addNode(int64(len(tok.val)))
 		return String{V: tok.val}, nil
 	case tokenNumber:
 		p.next()
+		p.addNode(0)
 		return parseNumber(tok.val, tok.line, tok.col)
 	case tokenSymbol:
 		p.next()
 		switch tok.val {
 		case "nil":
+			p.addNode(0)
 			return Nil{}, nil
 		case "true":
+			p.addNode(0)
 			return Bool{V: true}, nil
 		case "false":
+			p.addNode(0)
 			return Bool{V: false}, nil
 		}
+		p.addNode(int64(len(tok.val)))
 		return Symbol{V: tok.val}, nil
 	case tokenKeyword:
 		p.next()
+		p.addNode(int64(len(tok.val)))
 		return Keyword{V: tok.val}, nil
 	default:
 		return nil, NewReadError(
@@ -413,6 +435,7 @@ func (p *Parser) parseList() (Value, error) {
 		return nil, err
 	}
 
+	p.addNode(0)
 	return List{Items: items}, nil
 }
 
@@ -432,6 +455,7 @@ func (p *Parser) parseVector() (Value, error) {
 		return nil, err
 	}
 
+	p.addNode(0)
 	return Vector{Items: items}, nil
 }
 
@@ -464,6 +488,7 @@ func (p *Parser) parseHashMap() (Value, error) {
 		return nil, err
 	}
 
+	p.addNode(0)
 	return m, nil
 }
 
@@ -473,6 +498,8 @@ func (p *Parser) parseFunctionRef() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.addNode(int64(len("function")))
+	p.addNode(0)
 	return List{Items: []Value{Symbol{V: "function"}, form}}, nil
 }
 
@@ -492,6 +519,7 @@ func (p *Parser) parseReaderVector() (Value, error) {
 		return nil, err
 	}
 
+	p.addNode(0)
 	return Vector{Items: items}, nil
 }
 
@@ -501,6 +529,8 @@ func (p *Parser) parseQuote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.addNode(int64(len("quote")))
+	p.addNode(0)
 	return List{Items: []Value{Symbol{V: "quote"}, form}}, nil
 }
 
@@ -510,6 +540,8 @@ func (p *Parser) parseQuasiquote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.addNode(int64(len("quasiquote")))
+	p.addNode(0)
 	return List{Items: []Value{Symbol{V: "quasiquote"}, form}}, nil
 }
 
@@ -519,6 +551,8 @@ func (p *Parser) parseUnquote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.addNode(int64(len("unquote")))
+	p.addNode(0)
 	return List{Items: []Value{Symbol{V: "unquote"}, form}}, nil
 }
 
@@ -528,6 +562,8 @@ func (p *Parser) parseUnquoteSplicing() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.addNode(int64(len("unquote-splicing")))
+	p.addNode(0)
 	return List{Items: []Value{Symbol{V: "unquote-splicing"}, form}}, nil
 }
 

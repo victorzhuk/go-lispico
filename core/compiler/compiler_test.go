@@ -1230,6 +1230,46 @@ func TestCompiler_ConstantDedup(t *testing.T) {
 	assert.Equal(t, 1, chunk.Code[2].A())
 }
 
+func TestCompiler_ChargesReductionsPerInstruction(t *testing.T) {
+	ctx := core.WithEvalResourceLimits(t.Context(), 2, 1<<20)
+	meter := core.EvalMeterFrom(ctx)
+	c := NewCompiler("test")
+	c.SetEvalMeter(meter)
+
+	err := c.Compile(core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}})
+	require.Error(t, err)
+
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+	assert.Equal(t, int64(3), meter.Snapshot().Reductions)
+}
+
+func TestCompiler_DeepEmitStopsAtReductionLimit(t *testing.T) {
+	ctx := core.WithEvalResourceLimits(t.Context(), 1, 1<<20)
+	meter := core.EvalMeterFrom(ctx)
+	c := NewCompiler("test")
+	c.SetEvalMeter(meter)
+
+	items := make([]core.Value, 0, 257)
+	items = append(items, core.Symbol{V: "and"})
+	for i := range 256 {
+		items = append(items, core.Int{V: int64(i)})
+	}
+	err := c.Compile(core.List{Items: items})
+	require.Error(t, err)
+
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+	assert.Equal(t, int64(2), meter.Snapshot().Reductions)
+	require.Len(t, c.Chunk().Code, 1)
+	assert.Equal(t, vm.OpConst, c.Chunk().Code[0].Op())
+
+	require.Error(t, c.EmitReturn())
+	require.Len(t, c.Chunk().Code, 1)
+}
+
 type unknownValue struct{}
 
 func (unknownValue) Type() core.Keyword     { return core.Keyword{V: "unknown"} }

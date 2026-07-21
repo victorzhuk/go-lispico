@@ -35,6 +35,8 @@ type Compiler struct {
 	parent  *Compiler
 	loops   []loopFrame
 	dialect *core.Dialect
+	meter   core.EvalMeter
+	err     error
 	// caps lists the free variables this chunk captures from its enclosing
 	// context, parallel to chunk.Caps.
 	caps []string
@@ -67,6 +69,34 @@ func NewCompilerWithDialect(name string, dialect *core.Dialect) *Compiler {
 // Chunk returns the chunk the compiler is emitting into.
 func (c *Compiler) Chunk() *vm.Chunk { return c.chunk }
 
+// SetEvalMeter attaches the evaluation meter charged by subsequent emitted instructions.
+func (c *Compiler) SetEvalMeter(m core.EvalMeter) { c.meter = m }
+
+// EmitReturn emits the trailing return instruction expected by executable chunks.
+func (c *Compiler) EmitReturn() error {
+	c.emit(vm.OpReturn, 0)
+	return c.err
+}
+
+func (c *Compiler) emit(op vm.Opcode, a int) int {
+	if c.err != nil {
+		return 0
+	}
+	if err := c.meter.ChargeReductions(1); err != nil {
+		c.err = err
+		return 0
+	}
+	return c.chunk.Emit(op, a)
+}
+
+func (c *Compiler) emitJump(op vm.Opcode) int {
+	return c.emit(op, 0xFFFFFF)
+}
+
+func (c *Compiler) emitLoop(start int) int {
+	return c.emit(vm.OpLoop, start)
+}
+
 // MarkCaptures finalizes capture handling for the finished chunk: it rewrites
 // every access to a captured local from slot opcodes to cell opcodes (boxing
 // at binding sites, write-through at mutation sites) and computes MaxStack.
@@ -79,46 +109,51 @@ func (c *Compiler) MarkCaptures() { c.finalize() }
 // emitGetGlobal emits OpGetGlobal for sym. The VM's site cache is built later
 // from Code (Chunk.EnsureSites), so no per-site bookkeeping is needed here.
 func (c *Compiler) emitGetGlobal(sym core.Symbol) {
-	c.chunk.Emit(vm.OpGetGlobal, c.chunk.AddConstant(sym))
+	c.emit(vm.OpGetGlobal, c.chunk.AddConstant(sym))
 }
 
 // Compile emits bytecode for form into the compiler's chunk.
 func (c *Compiler) Compile(form core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	switch f := form.(type) {
 	case core.Nil:
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 	case core.Bool:
 		if f.V {
-			c.chunk.Emit(vm.OpTrue, 0)
+			c.emit(vm.OpTrue, 0)
 		} else {
-			c.chunk.Emit(vm.OpFalse, 0)
+			c.emit(vm.OpFalse, 0)
 		}
 	case core.Int, core.Float, core.String, core.Keyword:
-		c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(form))
+		c.emit(vm.OpConst, c.chunk.AddConstant(form))
 
 	case core.Symbol:
 		if idx := c.resolveLocal(f.V); idx >= 0 {
-			c.chunk.Emit(vm.OpGetLocal, idx)
+			c.emit(vm.OpGetLocal, idx)
 		} else if c.parent != nil && c.ancestorBinds(f.V) {
-			c.chunk.Emit(vm.OpGetCap, c.ensureCapture(f.V))
+			c.emit(vm.OpGetCap, c.ensureCapture(f.V))
 		} else {
 			c.emitGetGlobal(f)
 		}
 
 	case core.List:
-		return c.compileList(f)
+		if err := c.compileList(f); err != nil {
+			return err
+		}
 
 	case core.Vector:
-		c.chunk.Emit(vm.OpStructEnter, 1)
+		c.emit(vm.OpStructEnter, 1)
 		for _, item := range f.Items {
 			if err := c.Compile(item); err != nil {
 				return err
 			}
 		}
-		c.chunk.Emit(vm.OpMakeVector, len(f.Items))
-		c.chunk.Emit(vm.OpStructLeave, 1)
+		c.emit(vm.OpMakeVector, len(f.Items))
+		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
-		c.chunk.Emit(vm.OpStructEnter, 1)
+		c.emit(vm.OpStructEnter, 1)
 		var pairs [][2]core.Value
 		f.Each(func(k, v core.Value) {
 			pairs = append(pairs, [2]core.Value{k, v})
@@ -131,17 +166,23 @@ func (c *Compiler) Compile(form core.Value) error {
 				return err
 			}
 		}
-		c.chunk.Emit(vm.OpMakeMap, len(pairs))
-		c.chunk.Emit(vm.OpStructLeave, 1)
+		c.emit(vm.OpMakeMap, len(pairs))
+		c.emit(vm.OpStructLeave, 1)
 	default:
 		return compileErrf("compile: unknown form type %T", form)
+	}
+	if c.err != nil {
+		return c.err
 	}
 	return nil
 }
 
 func (c *Compiler) compileList(f core.List) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(f.Items) == 0 {
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 		return nil
 	}
 	head, isSym := f.Items[0].(core.Symbol)
@@ -176,7 +217,7 @@ func (c *Compiler) compileList(f core.List) error {
 				if !ok {
 					return fmt.Errorf("function: argument must be symbol, got %T", f.Items[1])
 				}
-				c.chunk.Emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
+				c.emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
 				return nil
 			case "funcall":
 				// funcall evaluates its first argument as a value expression and calls it.
@@ -191,7 +232,7 @@ func (c *Compiler) compileList(f core.List) error {
 						return err
 					}
 				}
-				c.chunk.Emit(vm.OpCall, len(f.Items[2:]))
+				c.emit(vm.OpCall, len(f.Items[2:]))
 				return nil
 			case "let":
 				return c.compileLet(f.Items[1:])
@@ -203,7 +244,7 @@ func (c *Compiler) compileList(f core.List) error {
 				if len(f.Items) < 2 {
 					return compileErrf("quote: missing value")
 				}
-				c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(f.Items[1]))
+				c.emit(vm.OpConst, c.chunk.AddConstant(f.Items[1]))
 				return nil
 			case "cond":
 				return c.compileCond(f.Items[1:])
@@ -248,30 +289,36 @@ func (c *Compiler) compileList(f core.List) error {
 }
 
 func (c *Compiler) compileIf(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) < 2 {
 		return compileErrf("if: expected condition and then branch, got %d args", len(args))
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
-	jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
+	jumpFalse := c.emitJump(vm.OpJumpIfFalse)
 	if err := c.Compile(args[1]); err != nil {
 		return err
 	}
-	jumpEnd := c.chunk.EmitJump(vm.OpJump)
+	jumpEnd := c.emitJump(vm.OpJump)
 	c.chunk.PatchJump(jumpFalse)
 	if len(args) > 2 {
 		if err := c.Compile(args[2]); err != nil {
 			return err
 		}
 	} else {
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 	}
 	c.chunk.PatchJump(jumpEnd)
 	return nil
 }
 
 func (c *Compiler) compileDef(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) != 2 {
 		return compileErrf("compile def: expected 2 args, got %d", len(args))
 	}
@@ -282,11 +329,14 @@ func (c *Compiler) compileDef(args []core.Value) error {
 	if err := c.Compile(args[1]); err != nil {
 		return err
 	}
-	c.chunk.Emit(vm.OpSetGlobal, c.chunk.AddConstant(sym))
+	c.emit(vm.OpSetGlobal, c.chunk.AddConstant(sym))
 	return nil
 }
 
 func (c *Compiler) compileFn(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) == 0 {
 		return compileErrf("fn requires at least 2 arguments (params body...)")
 	}
@@ -302,6 +352,7 @@ func (c *Compiler) compileFn(args []core.Value) error {
 		sub = NewCompilerWithDialect("<fn>", c.dialect)
 	}
 	sub.parent = c
+	sub.meter = c.meter
 	for _, p := range params {
 		sub.addLocal(p.V)
 	}
@@ -313,33 +364,42 @@ func (c *Compiler) compileFn(args []core.Value) error {
 			return err
 		}
 	}
-	sub.chunk.Emit(vm.OpReturn, 0)
+	sub.emit(vm.OpReturn, 0)
+	if sub.err != nil {
+		return sub.err
+	}
 	sub.chunk.Arity = len(params)
 	sub.chunk.Variadic = variadic.V != ""
 	sub.chunk.EnsureSites()
 	sub.finalize()
 	idx := len(c.chunk.SubChunks)
 	c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
-	c.chunk.Emit(vm.OpClosure, idx)
+	c.emit(vm.OpClosure, idx)
 	return nil
 }
 
 func (c *Compiler) compileDo(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	for i, form := range args {
 		if err := c.Compile(form); err != nil {
 			return err
 		}
 		if i < len(args)-1 {
-			c.chunk.Emit(vm.OpPop, 0)
+			c.emit(vm.OpPop, 0)
 		}
 	}
 	if len(args) == 0 {
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 	}
 	return nil
 }
 
 func (c *Compiler) compileLet(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) == 0 {
 		return compileErrf("compile let: missing bindings vector")
 	}
@@ -375,6 +435,9 @@ func (c *Compiler) compileLet(args []core.Value) error {
 }
 
 func (c *Compiler) compileLetStar(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) < 2 {
 		return compileErrf("let*: expected bindings and body")
 	}
@@ -407,6 +470,9 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 }
 
 func (c *Compiler) compileSet(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) != 2 {
 		return compileErrf("compile set!: expected 2 args, got %d", len(args))
 	}
@@ -418,43 +484,49 @@ func (c *Compiler) compileSet(args []core.Value) error {
 		return err
 	}
 	if idx := c.resolveLocal(sym.V); idx >= 0 {
-		c.chunk.Emit(vm.OpSetLocal, idx)
+		c.emit(vm.OpSetLocal, idx)
 	} else if c.parent != nil && c.ancestorBinds(sym.V) {
-		c.chunk.Emit(vm.OpSetCap, c.ensureCapture(sym.V))
+		c.emit(vm.OpSetCap, c.ensureCapture(sym.V))
 	} else {
-		c.chunk.Emit(vm.OpSetLexical, c.chunk.AddConstant(sym))
+		c.emit(vm.OpSetLexical, c.chunk.AddConstant(sym))
 	}
 	return nil
 }
 
 func (c *Compiler) compileWhen(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) == 0 {
 		return compileErrf("when: missing condition")
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
-	jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
+	jumpFalse := c.emitJump(vm.OpJumpIfFalse)
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
 	}
-	jumpEnd := c.chunk.EmitJump(vm.OpJump)
+	jumpEnd := c.emitJump(vm.OpJump)
 	c.chunk.PatchJump(jumpFalse)
-	c.chunk.Emit(vm.OpNil, 0)
+	c.emit(vm.OpNil, 0)
 	c.chunk.PatchJump(jumpEnd)
 	return nil
 }
 
 func (c *Compiler) compileUnless(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) == 0 {
 		return compileErrf("unless: missing condition")
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
-	jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
-	c.chunk.Emit(vm.OpNil, 0)
-	jumpEnd := c.chunk.EmitJump(vm.OpJump)
+	jumpFalse := c.emitJump(vm.OpJumpIfFalse)
+	c.emit(vm.OpNil, 0)
+	jumpEnd := c.emitJump(vm.OpJump)
 	c.chunk.PatchJump(jumpFalse)
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -464,6 +536,9 @@ func (c *Compiler) compileUnless(args []core.Value) error {
 }
 
 func (c *Compiler) compileLoop(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) < 2 {
 		return compileErrf("loop: expected binding vector and body")
 	}
@@ -494,6 +569,9 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 }
 
 func (c *Compiler) compileRecur(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(c.loops) == 0 {
 		return compileErrf("recur outside loop")
 	}
@@ -507,14 +585,17 @@ func (c *Compiler) compileRecur(args []core.Value) error {
 		}
 	}
 	for i := len(loop.slots) - 1; i >= 0; i-- {
-		c.chunk.Emit(vm.OpSetLocal, loop.slots[i])
-		c.chunk.Emit(vm.OpPop, 0)
+		c.emit(vm.OpSetLocal, loop.slots[i])
+		c.emit(vm.OpPop, 0)
 	}
-	c.chunk.EmitLoop(loop.start)
+	c.emitLoop(loop.start)
 	return nil
 }
 
 func (c *Compiler) compileTry(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) < 2 {
 		return compileErrf("try: expected body and catch clause")
 	}
@@ -539,12 +620,12 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	body := args[:len(args)-1]
 
 	base := len(c.locals)
-	setup := c.chunk.EmitJump(vm.OpSetupTry)
+	setup := c.emitJump(vm.OpSetupTry)
 	if err := c.compileDo(body); err != nil {
 		return err
 	}
-	c.chunk.Emit(vm.OpPopTry, 0)
-	skip := c.chunk.EmitJump(vm.OpJump)
+	c.emit(vm.OpPopTry, 0)
+	skip := c.emitJump(vm.OpJump)
 	handlerAddr := len(c.chunk.Code)
 	c.chunk.PatchJumpTo(setup, handlerAddr)
 	catchSlot := len(c.locals)
@@ -559,21 +640,27 @@ func (c *Compiler) compileTry(args []core.Value) error {
 }
 
 func (c *Compiler) compileThrow(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) != 1 {
 		return compileErrf("throw: expected 1 argument, got %d", len(args))
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
-	c.chunk.Emit(vm.OpThrow, 0)
+	c.emit(vm.OpThrow, 0)
 	return nil
 }
 
 func (c *Compiler) compileCall(items []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	// Lisp-2: emit OpGetFunc for the head symbol instead of OpGetGlobal.
 	if c.dialect != nil && c.dialect.IsLisp2() {
 		if sym, ok := items[0].(core.Symbol); ok {
-			c.chunk.Emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
+			c.emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
 		} else {
 			if err := c.Compile(items[0]); err != nil {
 				return err
@@ -590,7 +677,7 @@ func (c *Compiler) compileCall(items []core.Value) error {
 		}
 	}
 	argc := len(items) - 1
-	c.chunk.Emit(vm.OpCall, argc)
+	c.emit(vm.OpCall, argc)
 	return nil
 }
 
@@ -598,11 +685,14 @@ func (c *Compiler) compileCall(items []core.Value) error {
 // the fused native opcode. Lisp-2 freezes the function cell; Lisp-1 freezes the
 // value cell. The VM dispatches natively only when that frozen head was canonical.
 func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
+	if c.err != nil {
+		return c.err
+	}
 	sym := items[0].(core.Symbol)
 	if c.dialect != nil && c.dialect.IsLisp2() {
-		c.chunk.Emit(vm.OpFreezeNativeFunc, c.chunk.AddConstant(sym))
+		c.emit(vm.OpFreezeNativeFunc, c.chunk.AddConstant(sym))
 	} else {
-		c.chunk.Emit(vm.OpFreezeNative, c.chunk.AddConstant(sym))
+		c.emit(vm.OpFreezeNative, c.chunk.AddConstant(sym))
 	}
 
 	for _, arg := range items[1:] {
@@ -610,7 +700,7 @@ func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
 			return err
 		}
 	}
-	c.chunk.Emit(op, len(items[1:]))
+	c.emit(op, len(items[1:]))
 	return nil
 }
 
@@ -645,7 +735,13 @@ func (c *Compiler) addLocal(name string) {
 // emitBind emits the store for a local binding site, recording it so
 // finalize boxes (rather than writes through) when the slot is captured.
 func (c *Compiler) emitBind(slot int) {
-	ip := c.chunk.Emit(vm.OpSetLocal, slot)
+	if c.err != nil {
+		return
+	}
+	ip := c.emit(vm.OpSetLocal, slot)
+	if c.err != nil {
+		return
+	}
 	if c.binds == nil {
 		c.binds = map[int]bool{}
 	}
@@ -733,6 +829,9 @@ func isElse(v core.Value) bool {
 }
 
 func (c *Compiler) compileDefn(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) < 2 {
 		return compileErrf("defn: expected name and params")
 	}
@@ -752,6 +851,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 			sub = NewCompilerWithDialect("<fn>", c.dialect)
 		}
 		sub.parent = c
+		sub.meter = c.meter
 		for _, p := range params {
 			sub.addLocal(p.V)
 		}
@@ -763,15 +863,18 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 				return err
 			}
 		}
-		sub.chunk.Emit(vm.OpReturn, 0)
+		sub.emit(vm.OpReturn, 0)
+		if sub.err != nil {
+			return sub.err
+		}
 		sub.chunk.Arity = len(params)
 		sub.chunk.Variadic = variadic.V != ""
 		sub.chunk.EnsureSites()
 		sub.finalize()
 		idx := len(c.chunk.SubChunks)
 		c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
-		c.chunk.Emit(vm.OpClosure, idx)
-		c.chunk.Emit(vm.OpSetFunc, c.chunk.AddConstant(name))
+		c.emit(vm.OpClosure, idx)
+		c.emit(vm.OpSetFunc, c.chunk.AddConstant(name))
 		return nil
 	}
 	fnItems := append([]core.Value{core.Symbol{V: "fn"}, args[1]}, args[2:]...)
@@ -780,28 +883,34 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 }
 
 func (c *Compiler) compileNot(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) != 1 {
 		return compileErrf("not: expected 1 argument, got %d", len(args))
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
 	}
-	jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
-	c.chunk.Emit(vm.OpFalse, 0)
-	jumpEnd := c.chunk.EmitJump(vm.OpJump)
+	jumpFalse := c.emitJump(vm.OpJumpIfFalse)
+	c.emit(vm.OpFalse, 0)
+	jumpEnd := c.emitJump(vm.OpJump)
 	c.chunk.PatchJump(jumpFalse)
-	c.chunk.Emit(vm.OpTrue, 0)
+	c.emit(vm.OpTrue, 0)
 	c.chunk.PatchJump(jumpEnd)
 	return nil
 }
 
 func (c *Compiler) compileCond(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	clauses, err := c.condNormalizer()(args)
 	if err != nil {
 		return err
 	}
 	if len(clauses) == 0 {
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 		return nil
 	}
 	var jumps []int
@@ -819,15 +928,15 @@ func (c *Compiler) compileCond(args []core.Value) error {
 		if err := c.Compile(test); err != nil {
 			return err
 		}
-		jumpFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
+		jumpFalse := c.emitJump(vm.OpJumpIfFalse)
 		if err := c.Compile(expr); err != nil {
 			return err
 		}
-		jumps = append(jumps, c.chunk.EmitJump(vm.OpJump))
+		jumps = append(jumps, c.emitJump(vm.OpJump))
 		c.chunk.PatchJump(jumpFalse)
 	}
 	if !hasElse {
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 	}
 	for _, jump := range jumps {
 		c.chunk.PatchJump(jump)
@@ -843,8 +952,11 @@ func (c *Compiler) condNormalizer() func([]core.Value) ([]core.Value, error) {
 }
 
 func (c *Compiler) compileAnd(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) == 0 {
-		c.chunk.Emit(vm.OpTrue, 0)
+		c.emit(vm.OpTrue, 0)
 		return nil
 	}
 	if err := c.Compile(args[0]); err != nil {
@@ -852,10 +964,10 @@ func (c *Compiler) compileAnd(args []core.Value) error {
 	}
 	var jumps []int
 	for i := 1; i < len(args); i++ {
-		c.chunk.Emit(vm.OpDup, 0)
-		jump := c.chunk.EmitJump(vm.OpJumpIfFalse)
+		c.emit(vm.OpDup, 0)
+		jump := c.emitJump(vm.OpJumpIfFalse)
 		jumps = append(jumps, jump)
-		c.chunk.Emit(vm.OpPop, 0)
+		c.emit(vm.OpPop, 0)
 		if err := c.Compile(args[i]); err != nil {
 			return err
 		}
@@ -867,8 +979,11 @@ func (c *Compiler) compileAnd(args []core.Value) error {
 }
 
 func (c *Compiler) compileOr(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) == 0 {
-		c.chunk.Emit(vm.OpNil, 0)
+		c.emit(vm.OpNil, 0)
 		return nil
 	}
 	if err := c.Compile(args[0]); err != nil {
@@ -876,11 +991,11 @@ func (c *Compiler) compileOr(args []core.Value) error {
 	}
 	var jumpEnds []int
 	for i := 1; i < len(args); i++ {
-		c.chunk.Emit(vm.OpDup, 0)
-		jumpIfFalse := c.chunk.EmitJump(vm.OpJumpIfFalse)
-		jumpEnds = append(jumpEnds, c.chunk.EmitJump(vm.OpJump))
+		c.emit(vm.OpDup, 0)
+		jumpIfFalse := c.emitJump(vm.OpJumpIfFalse)
+		jumpEnds = append(jumpEnds, c.emitJump(vm.OpJump))
 		c.chunk.PatchJump(jumpIfFalse)
-		c.chunk.Emit(vm.OpPop, 0)
+		c.emit(vm.OpPop, 0)
 		if err := c.Compile(args[i]); err != nil {
 			return err
 		}
@@ -892,6 +1007,9 @@ func (c *Compiler) compileOr(args []core.Value) error {
 }
 
 func (c *Compiler) compileQuasiquote(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	if len(args) != 1 {
 		return compileErrf("quasiquote: expected 1 argument, got %d", len(args))
 	}
@@ -899,6 +1017,9 @@ func (c *Compiler) compileQuasiquote(args []core.Value) error {
 }
 
 func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
 	switch val := v.(type) {
 	case core.List:
 		if len(val.Items) > 0 {
@@ -914,30 +1035,30 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 				}
 			}
 		}
-		c.chunk.Emit(vm.OpStructEnter, 1)
+		c.emit(vm.OpStructEnter, 1)
 		for _, item := range val.Items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
 				return err
 			}
 		}
-		c.chunk.Emit(vm.OpMakeList, len(val.Items))
-		c.chunk.Emit(vm.OpStructLeave, 1)
+		c.emit(vm.OpMakeList, len(val.Items))
+		c.emit(vm.OpStructLeave, 1)
 	case core.Vector:
-		c.chunk.Emit(vm.OpStructEnter, 1)
+		c.emit(vm.OpStructEnter, 1)
 		for _, item := range val.Items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
 				return err
 			}
 		}
-		c.chunk.Emit(vm.OpMakeVector, len(val.Items))
-		c.chunk.Emit(vm.OpStructLeave, 1)
+		c.emit(vm.OpMakeVector, len(val.Items))
+		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
 		d := literalDepth(val)
-		c.chunk.Emit(vm.OpStructEnter, d)
-		c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(val))
-		c.chunk.Emit(vm.OpStructLeave, d)
+		c.emit(vm.OpStructEnter, d)
+		c.emit(vm.OpConst, c.chunk.AddConstant(val))
+		c.emit(vm.OpStructLeave, d)
 	default:
-		c.chunk.Emit(vm.OpConst, c.chunk.AddConstant(val))
+		c.emit(vm.OpConst, c.chunk.AddConstant(val))
 	}
 	return nil
 }
@@ -984,7 +1105,10 @@ func CompileAll(forms []core.Value) ([]*vm.Chunk, error) {
 		if err := comp.Compile(form); err != nil {
 			return nil, err
 		}
-		comp.chunk.Emit(vm.OpReturn, 0)
+		comp.emit(vm.OpReturn, 0)
+		if comp.err != nil {
+			return nil, comp.err
+		}
 		comp.chunk.EnsureSites()
 		comp.finalize()
 		if err := comp.chunk.Validate(); err != nil {

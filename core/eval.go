@@ -73,14 +73,19 @@ func copyKernel() map[string]formFn {
 	return forms
 }
 
-// evalState holds the depth counters for a single top-level evaluation. It is
+// evalState holds the counters for a single top-level evaluation. It is
 // carried in the context so concurrent evaluations on one engine never share
-// call/loop/macro state.
+// depth, reduction, or allocation state.
 type evalState struct {
-	callDepth   atomic.Int64
-	loopDepth   atomic.Int64
-	macroDepth  atomic.Int64
-	structDepth atomic.Int64
+	callDepth     atomic.Int64
+	loopDepth     atomic.Int64
+	macroDepth    atomic.Int64
+	structDepth   atomic.Int64
+	reductions    atomic.Int64
+	allocBytes    atomic.Int64
+	evalDepth     atomic.Int64
+	maxReductions int64
+	maxAllocBytes int64
 	// shared lets lazy states alias the wrapper-owned counter without a second allocation per evalState.
 	shared *atomic.Int64
 	// deadline is the engine-owned evaluation deadline enforced by pollCancel.
@@ -104,9 +109,13 @@ func (st *evalState) counter() *atomic.Int64 {
 // dispatch while preserving shared state across re-entrant evaluator calls.
 type lazyEvalStateCtx struct {
 	context.Context
-	deadline time.Time
-	counter  atomic.Int64
-	state    atomic.Pointer[evalState]
+	deadline      time.Time
+	counter       atomic.Int64
+	state         atomic.Pointer[evalState]
+	maxReductions int64
+	maxAllocBytes int64
+	reductions    int64
+	allocBytes    int64
 }
 
 // Value returns either the current eval state or the parent context value.
@@ -119,10 +128,11 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 		if st := c.state.Load(); st != nil {
 			return st
 		}
-		st := &evalState{
-			deadline: c.deadline,
-			shared:   &c.counter,
-		}
+		st := newEvalStateWithLimits(c.maxReductions, c.maxAllocBytes)
+		st.deadline = c.deadline
+		st.shared = &c.counter
+		st.reductions.Store(c.reductions)
+		st.allocBytes.Store(c.allocBytes)
 		if c.state.CompareAndSwap(nil, st) {
 			return st
 		}
@@ -134,17 +144,30 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 
 // checkInterval bounds how many nodes run between batched cancellation
 // checks. A fresh budget starts at 0 (its zero value), so the first check
-// (force=false) sees Add(-1) go negative and fires immediately, then every
+// (force=false) fires immediately without charging reductions, then every
 // checkInterval thereafter.
-const checkInterval = 128
+const checkInterval int64 = 128
 
 // pollCancel checks the engine deadline and ctx for cancellation. A batched
 // (force=false) check only runs once every checkInterval calls; a forced
 // check always runs, for latency-bounding call/loop boundaries.
 func (st *evalState) pollCancel(ctx context.Context, force bool) error {
-	if !force {
-		if st.budget.Add(-1) > 0 {
+	if force {
+		if err := st.flushReductions(); err != nil {
+			return err
+		}
+		if err := st.chargeReductions(1); err != nil {
+			return err
+		}
+	} else {
+		remaining := st.budget.Add(-1)
+		if remaining > 0 {
 			return nil
+		}
+		if remaining == 0 {
+			if err := st.chargeReductions(checkInterval); err != nil {
+				return err
+			}
 		}
 	}
 	st.budget.Store(checkInterval)
@@ -162,14 +185,14 @@ func ensureEvalState(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
 		return ctx
 	}
-	return context.WithValue(ctx, evalStateKey{}, &evalState{})
+	return context.WithValue(ctx, evalStateKey{}, newEvalState())
 }
 
 func evalStateFrom(ctx context.Context) *evalState {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
 		return st
 	}
-	return &evalState{}
+	return newEvalState()
 }
 
 // DetachEvalState returns a copy of ctx with a fresh evalState attached,
@@ -177,7 +200,7 @@ func evalStateFrom(ctx context.Context) *evalState {
 // goroutine should evaluate with its own depth counters so it cannot race or
 // trip MaxDepth against another evaluation that shares the same ancestor ctx.
 func DetachEvalState(ctx context.Context) context.Context {
-	return context.WithValue(ctx, evalStateKey{}, &evalState{})
+	return context.WithValue(ctx, evalStateKey{}, newEvalState())
 }
 
 // EnsureEvalState returns a context with a fresh evalState attached if one
@@ -222,13 +245,26 @@ func EvalDeadlineFrom(ctx context.Context) time.Time {
 // evaluator calls. The state is lazy: evalState + context.WithValue allocation
 // are deferred until a GoFunc actually reads evalStateKey.
 func AdoptEvalState(ctx context.Context, deadline time.Time, seed int64) (context.Context, *atomic.Int64) {
+	adopted, counter, _ := AdoptEvalStateWithMeter(ctx, deadline, seed, EvalMeterSnapshot{})
+	return adopted, counter
+}
+
+func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, seed int64, snap EvalMeterSnapshot) (context.Context, *atomic.Int64, EvalMeter) {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
-		return ctx, st.counter()
+		return ctx, st.counter(), EvalMeter{st: st}
 	}
 
-	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline}
+	maxReductions := snap.MaxReductions
+	if maxReductions <= 0 {
+		maxReductions = DefaultMaxReductions
+	}
+	maxAllocBytes := snap.MaxAllocationBytes
+	if maxAllocBytes <= 0 {
+		maxAllocBytes = DefaultMaxAllocationBytes
+	}
+	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline, maxReductions: maxReductions, maxAllocBytes: maxAllocBytes, reductions: snap.Reductions, allocBytes: snap.AllocationBytes}
 	w.counter.Store(seed)
-	return w, &w.counter
+	return w, &w.counter, EvalMeter{}
 }
 
 // HasEvalState reports whether ctx already carries evaluation state from an
@@ -259,24 +295,36 @@ func (e *engine) Apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 }
 
 // Eval evaluates form in env, returning the result.
-func (e *engine) Eval(ctx context.Context, v Value, env *Env) (Value, error) {
+func (e *engine) Eval(ctx context.Context, v Value, env *Env) (result Value, err error) {
 	ctx = ensureEvalState(ctx)
 
 	st := evalStateFrom(ctx)
+	top := st.evalDepth.Add(1) == 1
+	defer func() {
+		st.evalDepth.Add(-1)
+		if top {
+			if ferr := st.flushReductions(); ferr != nil {
+				result = nil
+				err = ferr
+			}
+		}
+	}()
+
 	if err := st.pollCancel(ctx, false); err != nil {
 		return nil, err
 	}
-
 	switch val := v.(type) {
 	case Nil, Bool, Int, Float, String, Keyword, GoFunc, Lambda, Macro:
 		return val, nil
 	case Vector:
-		st := evalStateFrom(ctx)
 		counter := st.counter()
 		counter.Add(1)
 		defer func() { counter.Add(-1) }()
 		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
+		if err := st.chargeAllocBytes(VectorShallowBytes(len(val.Items))); err != nil {
+			return nil, err
 		}
 		items := make([]Value, len(val.Items))
 		for i, item := range val.Items {
@@ -313,6 +361,9 @@ func (e *engine) evalMap(ctx context.Context, m *HashMap, env *Env) (Value, erro
 	defer func() { counter.Add(-1) }()
 	if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 		return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+	}
+	if err := st.chargeAllocBytes(HashMapShallowBytes(m.Len())); err != nil {
+		return nil, err
 	}
 	result := NewHashMap()
 	for _, pair := range m.Pairs() {
@@ -392,7 +443,17 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 
 		switch f := fn.(type) {
 		case GoFunc:
-			return f.Fn(ctx, e, args, env)
+			if err := st.chargeReductions(1); err != nil {
+				return nil, err
+			}
+			result, err := f.Fn(ctx, e, args, env)
+			if err != nil {
+				return nil, err
+			}
+			if err := st.chargeAllocBytes(ValueShallowBytes(result)); err != nil {
+				return nil, err
+			}
+			return result, nil
 		case Lambda:
 			child, err := f.Env.ChildVariadic(f.Params, args, f.Variadic)
 			if err != nil {
@@ -470,6 +531,9 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 // expansion as a Value. Does NOT evaluate the result — that is the caller's job.
 func (e *engine) expandMacroForm(ctx context.Context, m Macro, args []Value) (Value, error) {
 	st := evalStateFrom(ctx)
+	if err := st.chargeReductions(1); err != nil {
+		return nil, err
+	}
 	if int(st.macroDepth.Load()) >= e.maxMacroDepth {
 		return nil, evalErrorf("macro expansion depth %d exceeded", e.maxMacroDepth)
 	}
@@ -516,6 +580,9 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
+		if err := st.chargeAllocBytes(MeterCollectionHeaderBytes); err != nil {
+			return nil, err
+		}
 		var result []Value
 		for _, item := range val.Items {
 			if list, ok := item.(List); ok && len(list.Items) > 0 {
@@ -529,8 +596,14 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 					}
 					switch seq := expanded.(type) {
 					case List:
+						if err := st.chargeAllocBytes(ValueSlotsBytes(len(seq.Items))); err != nil {
+							return nil, err
+						}
 						result = append(result, seq.Items...)
 					case Vector:
+						if err := st.chargeAllocBytes(ValueSlotsBytes(len(seq.Items))); err != nil {
+							return nil, err
+						}
 						result = append(result, seq.Items...)
 					default:
 						return nil, evalErrorf("unquote-splicing requires a sequence, got %T", expanded)
@@ -540,6 +613,9 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			}
 			expanded, err := e.expandQuasiquote(ctx, item, env)
 			if err != nil {
+				return nil, err
+			}
+			if err := st.chargeAllocBytes(MeterValueSlotBytes); err != nil {
 				return nil, err
 			}
 			result = append(result, expanded)
@@ -552,6 +628,9 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		defer func() { counter.Add(-1) }()
 		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
+		if err := st.chargeAllocBytes(VectorShallowBytes(len(val.Items))); err != nil {
+			return nil, err
 		}
 		result := make([]Value, len(val.Items))
 		for i, item := range val.Items {
@@ -569,6 +648,9 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		defer func() { counter.Add(-1) }()
 		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
+		}
+		if err := st.chargeAllocBytes(HashMapShallowBytes(val.Len())); err != nil {
+			return nil, err
 		}
 		result := NewHashMap()
 		for _, pair := range val.Pairs() {
