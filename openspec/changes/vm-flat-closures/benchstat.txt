@@ -1,0 +1,55 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+                           │ /tmp/vm-flat-closures-master.txt │  /tmp/vm-flat-closures-branch.txt  │
+                           │              sec/op              │    sec/op     vs base              │
+Goldset/counter-closure-24                       7.806µ ±  7%   7.378µ ±  4%  -5.48% (p=0.041 n=6)
+Goldset/guard-nil-24                             4.207µ ± 17%   4.070µ ±  7%       ~ (p=0.485 n=6)
+Goldset/kw-lookup-24                             4.311µ ±  4%   4.214µ ±  3%       ~ (p=0.589 n=6)
+Goldset/loop-sum-24                              15.10µ ±  7%   16.45µ ±  9%  +8.93% (p=0.026 n=6)
+Goldset/merge-config-24                          8.859µ ±  7%   8.354µ ±  4%       ~ (p=0.093 n=6)
+Goldset/pipeline-24                              9.200µ ±  8%   8.888µ ±  9%       ~ (p=0.132 n=6)
+Goldset/registry-fold-24                         8.803µ ± 17%   8.972µ ±  8%       ~ (p=0.818 n=6)
+Goldset/route-decision-24                        6.260µ ±  4%   6.658µ ± 29%       ~ (p=0.180 n=6)
+Goldset/rule-load-24                             17.82µ ±  6%   17.92µ ±  3%       ~ (p=1.000 n=6)
+Goldset/safe-parse-24                            7.739µ ±  6%   7.721µ ± 11%       ~ (p=0.937 n=6)
+Goldset/text-render-24                           4.732µ ±  6%   4.869µ ±  7%       ~ (p=0.180 n=6)
+Goldset/twice-macro-24                           8.697µ ±  6%   8.897µ ± 11%       ~ (p=0.699 n=6)
+geomean                                          7.847µ         7.856µ        +0.12%
+
+                           │ /tmp/vm-flat-closures-master.txt │  /tmp/vm-flat-closures-branch.txt  │
+                           │               B/op               │     B/op      vs base              │
+Goldset/counter-closure-24                       8.603Ki ± 0%   8.319Ki ± 0%  -3.30% (p=0.002 n=6)
+Goldset/guard-nil-24                             4.244Ki ± 0%   4.247Ki ± 0%  +0.08% (p=0.002 n=6)
+Goldset/kw-lookup-24                             4.432Ki ± 0%   4.436Ki ± 0%  +0.08% (p=0.006 n=6)
+Goldset/loop-sum-24                              4.752Ki ± 0%   4.754Ki ± 0%  +0.05% (p=0.013 n=6)
+Goldset/merge-config-24                          9.954Ki ± 0%   9.962Ki ± 0%  +0.08% (p=0.002 n=6)
+Goldset/pipeline-24                              9.036Ki ± 0%   9.104Ki ± 0%  +0.76% (p=0.002 n=6)
+Goldset/registry-fold-24                         10.01Ki ± 0%   10.05Ki ± 0%  +0.39% (p=0.002 n=6)
+Goldset/route-decision-24                        8.151Ki ± 0%   8.188Ki ± 0%  +0.46% (p=0.002 n=6)
+Goldset/rule-load-24                             19.06Ki ± 0%   19.46Ki ± 0%  +2.10% (p=0.002 n=6)
+Goldset/safe-parse-24                            8.733Ki ± 0%   8.774Ki ± 0%  +0.46% (p=0.002 n=6)
+Goldset/text-render-24                           4.715Ki ± 0%   4.751Ki ± 0%  +0.76% (p=0.002 n=6)
+Goldset/twice-macro-24                           7.115Ki ± 0%   7.314Ki ± 0%  +2.80% (p=0.002 n=6)
+geomean                                          7.497Ki        7.525Ki       +0.38%
+
+                           │ /tmp/vm-flat-closures-master.txt │  /tmp/vm-flat-closures-branch.txt  │
+                           │            allocs/op             │ allocs/op   vs base                │
+Goldset/counter-closure-24                         89.00 ± 0%   88.00 ± 0%  -1.12% (p=0.002 n=6)
+Goldset/guard-nil-24                               52.00 ± 0%   52.00 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/kw-lookup-24                               54.00 ± 0%   54.00 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/loop-sum-24                                114.0 ± 0%   114.0 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/merge-config-24                            101.0 ± 0%   101.0 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/pipeline-24                                103.0 ± 0%   103.0 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/registry-fold-24                           113.0 ± 0%   113.0 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/route-decision-24                          78.00 ± 0%   78.00 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/rule-load-24                               254.0 ± 0%   254.0 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/safe-parse-24                              110.0 ± 0%   110.0 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/text-render-24                             70.00 ± 0%   70.00 ± 0%       ~ (p=1.000 n=6) ¹
+Goldset/twice-macro-24                             112.0 ± 0%   112.0 ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                            95.45        95.36       -0.09%
+¹ all samples are equal
+
+# loop-sum latency rerun at -benchtime=2s (ADR 0008 inconclusive-handling):
+# Goldset/loop-sum-24: 18.50µ ± 60% vs 18.05µ ± 8%  ~ (p=0.240 n=6) — non-regression confirmed; the 1s +8.93% reading was noise.

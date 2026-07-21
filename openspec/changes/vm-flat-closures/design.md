@@ -90,3 +90,37 @@ the versioned-read machinery where nothing reads it. Kept VM-internal.
 
 The change is VM-internal with the tree-walker untouched; `WithTreeWalker()`
 remains the behavioral reference and escape hatch throughout.
+
+## Soundness audit
+
+Task 3.3 audit of every runtime path that could observe a local by name
+after the lexical env chain is dropped from VM closures. Result: no compiled-
+subset path resolves caller locals by name; the invariant holds.
+
+- `OpGetGlobal`/`OpSetLexical` surviving in compiled code resolve only names
+  the compiler proved unbound in every enclosing scope (`ancestorBinds` at
+  emission). The tree-walker's chain walk reaches the same answer for those
+  names: the chain's lexical entries are exactly the ancestor locals the
+  compiler excluded, so both fall through to the same global env. These
+  opcodes resolve against the closure's `globals` — the env captured at
+  `OpClosure` time, equal to the old `f.Env`.
+- `set!` on a captured variable compiles to `OpSetCap`/`OpSetCell`
+  (write-through), never to a name lookup.
+- GoFunc re-entrancy (`vm.call` passes the frame env to GoFunc callbacks):
+  stdlib GoFuncs use the env only to `eval.Apply` function *values*, which
+  carry their own caps/globals; none resolve caller locals by name in it.
+  `assert`'s `eval.Eval(arg, env)` re-evaluates an already VM-computed
+  (self-evaluating) value, not a raw form — the VM evaluates arguments
+  before any GoFunc runs, so no GoFunc ever receives a form that could
+  name a caller local.
+- Tree-walker `Lambda` values called from the VM resolve names against
+  their own captured creation env (`core/eval.go` applies them via
+  `f.Env.ChildVariadic`), independent of the VM frame's env.
+- `quote`/quasiquote symbols are constants (data), never resolved.
+- `defmacro` and `unquote-splicing` fall back whole-form at compile
+  (`CodeUnsupported`), so no VM closure exists while tree-walked code runs.
+- `def` inside a closure body (`OpSetGlobal`) now writes to the closure's
+  `globals` — the same target today's uncaptured closures already use (the
+  tree-walker writes to the per-call env instead; that divergence predates
+  this change for uncaptured closures and this change only extends the
+  established VM behavior to captured ones).
