@@ -189,6 +189,38 @@ func (vm *VM) Reset() {
 	vm.deadlineArmed = false
 }
 
+// ResetIncremental clears only the dirtiable cross-call state left behind by a
+// successful call (a GoFunc dispatch that adopted a shared structural-depth
+// counter and deadline via reentrantCtx/AdoptEvalState) without re-truncating
+// the stacks, frames, handlers, freezeStack and depth that the run/apply loop
+// already restored on a clean top-level exit. Used by stateful handle paths
+// (PinnedFn) that own a private VM and want the steady-state allocation cost
+// to stay at the per-call overhead rather than the full Reset path.
+//
+// Callers MUST have verified a clean post-run invariant (empty frames,
+// truncated stack, empty handlers and freezeStack, zero depth). If any of those
+// is dirty, ResetIncremental falls through to a full Reset and reports which
+// invariant was violated so the caller can investigate; it never silently
+// reuses stale state.
+func (vm *VM) ResetIncremental() error {
+	if len(vm.frames) != 0 || len(vm.handlers) != 0 || len(vm.freezeStack) != 0 || vm.depth != 0 {
+		vm.Reset()
+		return fmt.Errorf("vm: ResetIncremental invariant violated (frames=%d handlers=%d freezeStack=%d depth=%d)",
+			len(vm.frames), len(vm.handlers), len(vm.freezeStack), vm.depth)
+	}
+	if l := len(vm.stack); l != 0 {
+		vm.Reset()
+		return fmt.Errorf("vm: ResetIncremental invariant violated (stack len=%d, want 0)", l)
+	}
+	vm.ownStructDepth.Store(0)
+	vm.structDepth = &vm.ownStructDepth
+	vm.reentryCtx = nil
+	vm.deadline = time.Time{}
+	vm.timeout = 0
+	vm.deadlineArmed = false
+	return nil
+}
+
 // SetGlobals replaces the VM's globals (root environment) pointer.
 // Used when reusing a pooled VM for a different environment.
 func (vm *VM) SetGlobals(env *core.Env) {

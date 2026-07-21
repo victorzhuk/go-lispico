@@ -64,3 +64,40 @@ const CodeResourceLimit = "ResourceLimitError"
 func NewResourceLimitError(msg string) *LispicoError {
 	return &LispicoError{Code: CodeResourceLimit, Message: msg}
 }
+
+// CodeConcurrentUse classifies a *LispicoError reporting that a stateful
+// runtime handle (currently a PinnedFn) was used in a way that violates its
+// single-owner contract: concurrent entry from another goroutine, or a
+// re-entrant call from within the handle's own execution. The handle stays
+// usable; the offending call is rejected without mutating the handle.
+const CodeConcurrentUse = "ConcurrentUseError"
+
+// NewConcurrentUseError builds a LispicoError reporting that handle name was
+// used in violation of its single-owner contract.
+func NewConcurrentUseError(name string) *LispicoError {
+	return &LispicoError{Code: CodeConcurrentUse, Message: fmt.Sprintf("concurrent use of handle %q: each handle is owned by exactly one goroutine and must not be re-entered from its own execution", name)}
+}
+
+// CodePanic classifies a *LispicoError reporting that a user-supplied GoFunc
+// panicked inside a runtime entry point (currently PinnedFn.Call). The panic
+// is recovered, the handle's VM is reset fully, and the panic value is
+// wrapped so the caller observes a typed error rather than a propagated panic.
+const CodePanic = "PanicError"
+
+// NewPanicError builds a LispicoError reporting that a user GoFunc panicked
+// inside handle name's runtime path.
+func NewPanicError(name string, panicValue any) *LispicoError {
+	return &LispicoError{Code: CodePanic, Message: fmt.Sprintf("recovered panic in pinned call %q: %v", name, panicValue)}
+}
+
+// CodeVMState classifies a *LispicoError reporting that a handle's private VM
+// was left in a dirty state after an apply (the steady-state ResetIncremental
+// invariant was violated). The handle runs a full Reset before returning so
+// the next call sees a clean VM.
+const CodeVMState = "VMStateError"
+
+// NewVMStateError builds a LispicoError reporting that handle name's private
+// VM was left in a dirty state after an apply.
+func NewVMStateError(name string, cause error) *LispicoError {
+	return &LispicoError{Code: CodeVMState, Message: fmt.Sprintf("pinned call %q left the VM in a dirty state; full reset applied: %v", name, cause), Cause: cause}
+}

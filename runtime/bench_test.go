@@ -303,6 +303,63 @@ func BenchmarkEngine_FuncCallCallback(b *testing.B) {
 	}
 }
 
+// BenchmarkEngine_PinnedFnCall mirrors BenchmarkEngine_FuncCall but on the
+// single-owner PinnedFn path. The body is a GoFunc-free defn — the bench
+// targets the steady-state allocation cost of the private VM (incremental
+// reset, no pool Get/Put). A GoFunc-free body must report 0 allocs/op; any
+// allocation here signals a regression in the private-VM reset strategy.
+func BenchmarkEngine_PinnedFnCall(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+	add, err := eng.Func("add")
+	if err != nil {
+		b.Fatal(err)
+	}
+	pinned := add.Pin()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = pinned.Call(context.Background(), core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
+// BenchmarkEngine_PinnedFnCallCallback mirrors BenchmarkEngine_FuncCallCallback
+// on the single-owner PinnedFn path with OnPluginCall registered. Measures
+// the with-callback cost the same way as the Fn variant — a true like-for-like.
+func BenchmarkEngine_PinnedFnCallCallback(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	_, _ = eng.Eval(context.Background(), "setup", "(defn add [a b] (+ a b))")
+	add, err := eng.Func("add")
+	if err != nil {
+		b.Fatal(err)
+	}
+	pinned := add.Pin()
+	eng.OnPluginCall(func(PluginCallEvent) {})
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = pinned.Call(context.Background(), core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
 // BenchmarkEngine_CallBytecodeCallback is BenchmarkEngine_CallBytecode with
 // an OnPluginCall callback registered — measures the with-callback cost
 // (timing + RLock + slice copy + dispatch) the fast path pays only when a

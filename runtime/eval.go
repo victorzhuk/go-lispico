@@ -128,14 +128,13 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 	return result, err
 }
 
-// applyBoundary is the Engine.Call fast path: it runs fn on a pooled VM WITHOUT
-// wrapping ctx in a per-call evalState. The VM lazily arms the engine timeout
-// and uses its own structural-depth counter; a re-entrant GoFunc gets a shared
-// counter lazily (see vm.reentrantCtx). Callers on the WithBytecode() path use
-// this instead of Apply.
-func (be *bytecodeEvaluator) applyBoundary(ctx context.Context, fn core.Value, args []core.Value, env *core.Env, timeout time.Duration) (core.Value, error) {
-	v := be.vmPool.Get().(*vm.VM)
-	v.Reset()
+// applyOnVM is the shared apply step used by Engine.Call, Fn.Call, and
+// PinnedFn.Call through callBoundary: it sets globals, arms the VM
+// depth/deadline, and runs ApplyPooled. The caller owns v and its lifecycle
+// — Apply has its own pool Get/Put path (eval.go:112-129) and does not call
+// through here. WithEvalState branching is the single source of truth for
+// resource-budget sharing at the Go-Lisp boundary.
+func (be *bytecodeEvaluator) applyOnVM(v *vm.VM, ctx context.Context, fn core.Value, args []core.Value, env *core.Env, timeout time.Duration) (core.Value, error) {
 	v.SetGlobals(env)
 	if core.HasEvalState(ctx) {
 		// Re-entrant Call (a GoFunc calling back through Engine.Call, or a caller
@@ -148,9 +147,7 @@ func (be *bytecodeEvaluator) applyBoundary(ctx context.Context, fn core.Value, a
 	} else {
 		v.SetTimeout(timeout)
 	}
-	result, err := v.ApplyPooled(ctx, fn, args, env)
-	be.vmPool.Put(v)
-	return result, err
+	return v.ApplyPooled(ctx, fn, args, env)
 }
 
 func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen }
@@ -397,10 +394,22 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 		}
 		return nil, fmt.Errorf("undefined function: %s", name)
 	}
-	return e.callBoundary(ctx, name, fn, env, counter, args)
+	if be := e.bytecodeEvaluator; be != nil {
+		v := be.vmPool.Get().(*vm.VM)
+		v.Reset()
+		defer be.vmPool.Put(v)
+		return e.callBoundary(ctx, name, fn, env, counter, args, v)
+	}
+	return e.callBoundary(ctx, name, fn, env, counter, args, nil)
 }
 
-func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value) (core.Value, error) {
+// callBoundary is the unified Engine.Call fast path: it arms timing, dispatches
+// to the bytecode applyOnVM (or the tree-walker when bytecode is off), and
+// fires stats/callbacks around the apply. The caller supplies v — a pool-
+// acquired VM for Engine.Call and Fn.Call, or a private handle-owned VM for
+// PinnedFn.Call — so the per-call VM lifecycle stays in the caller and a
+// single apply step is shared across every entry point.
+func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM) (core.Value, error) {
 	active := e.callbacksActive.Load()
 	var start time.Time
 	if active {
@@ -410,7 +419,7 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 	var result core.Value
 	var err error
 	if be := e.bytecodeEvaluator; be != nil {
-		result, err = be.applyBoundary(ctx, fn, args, env, e.config.timeout)
+		result, err = be.applyOnVM(v, ctx, fn, args, env, e.config.timeout)
 	} else {
 		var deadline time.Time
 		if e.config.timeout > 0 {
