@@ -175,12 +175,16 @@ native-opcode emission for an operator that is not a special form and not locall
 shadowed. The operator head SHALL be resolved through the cell the active dialect
 uses for head position — the value cell for a Lisp-1 dialect, the function cell for
 a Lisp-2 dialect (the default CL surface) — so that a rebind through that cell is
-observed. When the operator symbol is locally shadowed or its head-cell binding is
-no longer the canonical stdlib builtin, execution SHALL fall back to the ordinary
-call path over the resolved value. Canonical status SHALL be determined through the
-operator's resolved binding, not re-derived by a per-execution environment walk,
-and a canonical operator SHALL take the native path on every execution — not
-intermittently.
+observed, and the resolution SHALL occur before argument evaluation, freezing both
+the canonical decision and, when non-canonical, the operator value, so a rebind
+during argument evaluation affects neither. Resolving a canonical operator head
+SHALL NOT materialize the operator value onto the value stack — the canonical
+path SHALL touch only the argument slots. When the operator symbol is locally
+shadowed or its head-cell binding is no longer the canonical stdlib builtin,
+execution SHALL fall back to the ordinary call path over the head-time-resolved
+value. Canonical status SHALL be determined through the operator's resolved
+binding, not re-derived by a per-execution environment walk, and a canonical
+operator SHALL take the native path on every execution — not intermittently.
 
 #### Scenario: Hot loop avoids builtin dispatch
 
@@ -192,6 +196,11 @@ intermittently.
 - **WHEN** `(+ a b)` or `(< a b)` is compiled with a configured dialect (the default CL dialect or clojure) and run on a `WithBytecode()` engine
 - **THEN** the operator SHALL compile to and execute as its native opcode with no `GoFunc` dispatch, matching the tree-walker's result
 
+#### Scenario: Canonical operator adds no stack traffic
+
+- **WHEN** a compiled body applies a canonical native operator under the VM
+- **THEN** execution SHALL push and pop only the operator's arguments and result — no operator value SHALL transit the value stack
+
 #### Scenario: Promotion parity
 
 - **WHEN** `(+ 1 2.5)` and `(< 1 1.5)` run under the VM
@@ -201,6 +210,11 @@ intermittently.
 
 - **WHEN** a program rebinds `+` to a custom function and then calls `(+ 1 2)` under the VM
 - **THEN** the custom function SHALL be called, matching tree-walker behavior
+
+#### Scenario: Mid-argument rebind does not flip the decision
+
+- **WHEN** an argument expression of a canonical `(+ ...)` application rebinds `+` while the arguments are being evaluated
+- **THEN** that application SHALL complete under the decision and value resolved before argument evaluation, matching the tree-walker's head-then-arguments order
 
 #### Scenario: Lisp-2 function-cell rebind falls back
 
