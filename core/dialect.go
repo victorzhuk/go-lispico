@@ -278,9 +278,10 @@ func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok 
 	return "", false, false
 }
 
-// TruthyFunc returns nil because all dialects use core.IsTruthy for conditional forms.
+// TruthyFunc returns the predicate used by dialect-specific conditional evaluation.
+// Default behavior uses core.IsTruthy (nil and false are falsy).
 func (d Dialect) TruthyFunc() func(Value) bool {
-	return nil
+	return IsTruthy
 }
 
 // IsBaseEmpty reports whether the Dialect starts from an empty base.
