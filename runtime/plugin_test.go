@@ -213,6 +213,58 @@ func TestReloadPlugin_InitFailure_KeepsOld(t *testing.T) {
 	assert.Equal(t, "1.0.0", loaded.Metadata().Version)
 }
 
+type failingBindingPlugin struct {
+	bindingPlugin
+	err error
+}
+
+func (p *failingBindingPlugin) Init(env *core.Env) error {
+	if err := p.bindingPlugin.Init(env); err != nil {
+		return err
+	}
+	return p.err
+}
+
+func TestReloadPlugin_InitFailure_RestoresOldBindings(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	oldPlugin := &bindingPlugin{name: t.Name(), names: []string{"old-func"}, funcs: []string{"old-cl-func"}}
+	require.NoError(t, eng.Use(oldPlugin))
+
+	err = eng.ReloadPlugin(&failingBindingPlugin{
+		bindingPlugin: bindingPlugin{name: t.Name(), names: []string{"new-func"}, funcs: []string{"new-cl-func"}},
+		err:           errors.New("init failed"),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "init plugin")
+
+	loaded, exists := eng.Registry().Get(t.Name())
+	require.True(t, exists)
+	require.Equal(t, "1.0.0", loaded.Metadata().Version)
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "test", `(old-func)`)
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "test", `(old-cl-func)`)
+	require.NoError(t, err)
+
+	var le *core.LispicoError
+	_, err = eng.Eval(ctx, "test", `(new-func)`)
+	require.Error(t, err)
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+
+	_, err = eng.Eval(ctx, "test", `(new-cl-func)`)
+	require.Error(t, err)
+	require.True(t, errors.As(err, &le), "expected LispicoError")
+	assert.Equal(t, "UndefinedError", le.Code)
+}
+
 func TestListPlugins_Empty(t *testing.T) {
 	t.Parallel()
 

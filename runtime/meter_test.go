@@ -368,6 +368,82 @@ func TestMeter_ContextRootDefsChargeDistinctMeters(t *testing.T) {
 	}
 }
 
+func TestMeter_MergeIntoDistinctMetersRebuildRelease(t *testing.T) {
+	engineMeter := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(engineMeter))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	meterA := &recordingMeter{}
+	meterB := &recordingMeter{}
+	meterC := &recordingMeter{}
+
+	if _, err := eng.Eval(WithMeter(t.Context(), meterA), "rootA", "(def x [1 2 3])"); err != nil {
+		t.Fatalf("Eval A: %v", err)
+	}
+	snapA := meterA.snapshot()
+	if snapA.chargeCalls != 1 || snapA.chargedBytes == 0 || snapA.chargedSlots != 1 {
+		t.Fatalf("meterA ChargeRetained = calls %d (%d,%d), want 1 positive/1", snapA.chargeCalls, snapA.chargedBytes, snapA.chargedSlots)
+	}
+
+	if _, err := eng.Eval(WithMeter(t.Context(), meterB), "rootB", "(def y [4 5 6])"); err != nil {
+		t.Fatalf("Eval B: %v", err)
+	}
+	snapB := meterB.snapshot()
+	if snapB.chargeCalls != 1 || snapB.chargedBytes == 0 || snapB.chargedSlots != 1 {
+		t.Fatalf("meterB ChargeRetained = calls %d (%d,%d), want 1 positive/1", snapB.chargeCalls, snapB.chargedBytes, snapB.chargedSlots)
+	}
+
+	_, scope, err := eng.LoadScope(WithMeter(t.Context(), meterC), "(def z [7 8 9])", nil)
+	if err != nil {
+		t.Fatalf("LoadScope: %v", err)
+	}
+	snapC := meterC.snapshot()
+	if snapC.chargeCalls != 1 || snapC.chargedBytes == 0 || snapC.chargedSlots != 1 {
+		t.Fatalf("meterC ChargeRetained = calls %d (%d,%d), want 1 positive/1", snapC.chargeCalls, snapC.chargedBytes, snapC.chargedSlots)
+	}
+
+	if err := scope.MergeInto(eng.RootEnv()); err != nil {
+		t.Fatalf("MergeInto: %v", err)
+	}
+	if engineMeter.snapshot().chargeCalls != 0 {
+		t.Fatalf("engine meter charge calls = %d, want 0", engineMeter.snapshot().chargeCalls)
+	}
+
+	rootEnv := eng.RootEnv()
+	rootEnv.Delete("x")
+	freedBytes, freedSlots := rootEnv.Rebuild()
+	if freedBytes != snapA.chargedBytes || freedSlots != snapA.chargedSlots {
+		t.Fatalf("rootEnv.Rebuild x freed = (%d,%d), want meterA charge (%d,%d)", freedBytes, freedSlots, snapA.chargedBytes, snapA.chargedSlots)
+	}
+	if meterA.snapshot().releaseCalls != 1 || meterB.snapshot().releaseCalls != 0 || meterC.snapshot().releaseCalls != 0 {
+		t.Fatalf("release after x = A:%d B:%d C:%d, want 1/0/0", meterA.snapshot().releaseCalls, meterB.snapshot().releaseCalls, meterC.snapshot().releaseCalls)
+	}
+
+	rootEnv.Delete("y")
+	freedBytes, freedSlots = rootEnv.Rebuild()
+	if freedBytes != snapB.chargedBytes || freedSlots != snapB.chargedSlots {
+		t.Fatalf("rootEnv.Rebuild y freed = (%d,%d), want meterB charge (%d,%d)", freedBytes, freedSlots, snapB.chargedBytes, snapB.chargedSlots)
+	}
+	if meterA.snapshot().releaseCalls != 1 || meterB.snapshot().releaseCalls != 1 || meterC.snapshot().releaseCalls != 0 {
+		t.Fatalf("release after y = A:%d B:%d C:%d, want 1/1/0", meterA.snapshot().releaseCalls, meterB.snapshot().releaseCalls, meterC.snapshot().releaseCalls)
+	}
+
+	rootEnv.Delete("z")
+	freedBytes, freedSlots = rootEnv.Rebuild()
+	if freedBytes != snapC.chargedBytes || freedSlots != snapC.chargedSlots {
+		t.Fatalf("rootEnv.Rebuild z freed = (%d,%d), want meterC charge (%d,%d)", freedBytes, freedSlots, snapC.chargedBytes, snapC.chargedSlots)
+	}
+	if meterA.snapshot().releaseCalls != 1 || meterB.snapshot().releaseCalls != 1 || meterC.snapshot().releaseCalls != 1 {
+		t.Fatalf("release after z = A:%d B:%d C:%d, want 1/1/1", meterA.snapshot().releaseCalls, meterB.snapshot().releaseCalls, meterC.snapshot().releaseCalls)
+	}
+	if engineMeter.snapshot().releaseCalls != 0 {
+		t.Fatalf("engine meter release calls = %d, want 0", engineMeter.snapshot().releaseCalls)
+	}
+}
+
 func TestMeter_ConcurrentEvaluations(t *testing.T) {
 	m := &recordingMeter{}
 	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))

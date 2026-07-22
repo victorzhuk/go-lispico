@@ -99,6 +99,13 @@ func (e *Env) SetRetainedMeter(m any) {
 	e.retainedMeter, _ = m.(sessionMeter)
 }
 
+// RetainedMeter returns the retained-capacity meter bound to this scope.
+func (e *Env) RetainedMeter() any {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.retainedMeter
+}
+
 // RegisterValue binds name through the lazy layer when one is installed,
 // deferring the binding behind first touch; otherwise it binds the value
 // cell immediately (applyVocabulary's bridge mirrors the function cell).
@@ -909,19 +916,84 @@ func (e *Env) MergeInto(target *Env) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	target.mu.Lock()
+	defer target.mu.Unlock()
+
 	for name, cell := range e.vars {
 		if cell.v != nil {
-			if err := target.Set(name, cell.v); err != nil {
+			if err := target.mergeCell(name, cell, false); err != nil {
 				return err
 			}
 		}
 	}
 	for name, cell := range e.funcs {
 		if cell.v != nil {
-			if err := target.SetFunc(name, cell.v); err != nil {
+			if err := target.mergeFuncCell(name, cell, false); err != nil {
 				return err
 			}
 		}
 	}
+	return nil
+}
+
+func (e *Env) MergeIntoCanonical(target *Env) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	target.mu.Lock()
+	defer target.mu.Unlock()
+
+	for name, cell := range e.vars {
+		if cell.v != nil {
+			if err := target.mergeCell(name, cell, true); err != nil {
+				return err
+			}
+		}
+	}
+	for name, cell := range e.funcs {
+		if cell.v != nil {
+			if err := target.mergeFuncCell(name, cell, true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Env) mergeCell(name string, src *Cell, canonical bool) error {
+	cell, ok := e.vars[name]
+	if !ok {
+		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
+			return err
+		}
+		cell = e.localCell(name)
+		e.newNameGen.Add(1)
+	}
+	cell.v = src.v
+	cell.canonical = canonical
+	cell.retainedMeter = src.retainedMeter
+	cell.retainedBytes = src.retainedBytes
+	cell.rebuilt = src.rebuilt
+	cell.version.Add(1)
+	return nil
+}
+
+func (e *Env) mergeFuncCell(name string, src *Cell, canonical bool) error {
+	cell, ok := e.funcs[name]
+	if e.funcs == nil {
+		ok = false
+	}
+	if !ok {
+		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
+			return err
+		}
+		cell = e.localFuncCell(name)
+	}
+	cell.v = src.v
+	cell.canonical = canonical
+	cell.retainedMeter = src.retainedMeter
+	cell.retainedBytes = src.retainedBytes
+	cell.rebuilt = src.rebuilt
+	cell.version.Add(1)
 	return nil
 }

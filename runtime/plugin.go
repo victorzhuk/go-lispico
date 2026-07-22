@@ -65,6 +65,48 @@ func (e *engineImpl) removePluginBindings(name string) {
 	e.rootEnv.BumpMacroEpoch()
 }
 
+type rootEnvSnapshot struct {
+	vars  map[string]core.Value
+	funcs map[string]core.Value
+}
+
+func (e *engineImpl) snapshotRootEnv() rootEnvSnapshot {
+	vars := make(map[string]core.Value)
+	for _, name := range e.rootEnv.LocalNames() {
+		if v, ok := e.rootEnv.Get(name); ok {
+			vars[name] = v
+		}
+	}
+	funcs := make(map[string]core.Value)
+	for _, name := range e.rootEnv.LocalFuncNames() {
+		if v, ok := e.rootEnv.GetFunc(name); ok {
+			funcs[name] = v
+		}
+	}
+	return rootEnvSnapshot{vars: vars, funcs: funcs}
+}
+
+func (e *engineImpl) restoreRootEnv(s rootEnvSnapshot) {
+	for _, name := range e.rootEnv.LocalNames() {
+		if _, ok := s.vars[name]; !ok {
+			e.rootEnv.Delete(name)
+		}
+	}
+	for _, name := range e.rootEnv.LocalFuncNames() {
+		if _, ok := s.funcs[name]; !ok {
+			e.rootEnv.Delete(name)
+		}
+	}
+	for name, v := range s.vars {
+		_ = e.rootEnv.Set(name, v)
+	}
+	for name, v := range s.funcs {
+		_ = e.rootEnv.SetFunc(name, v)
+	}
+	e.rootEnv.Rebuild()
+	e.rootEnv.BumpMacroEpoch()
+}
+
 func (e *engineImpl) Use(p core.Plugin) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -170,6 +212,11 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 
 	name := p.Name()
 	oldPlugin, hadOld := e.registry.Get(name)
+	oldRoot := e.snapshotRootEnv()
+	var oldBindings map[string]struct{}
+	if hadOld {
+		oldBindings = e.bindings[name]
+	}
 
 	if hadOld {
 		e.removePluginBindings(name)
@@ -179,6 +226,10 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 	if err := e.registry.Register(p); err != nil {
 		if hadOld {
 			e.registry.RegisterNoCheck(oldPlugin)
+			if oldBindings != nil {
+				e.bindings[name] = oldBindings
+			}
+			e.restoreRootEnv(oldRoot)
 		}
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
@@ -191,6 +242,10 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 		e.rollbackPluginUse(name, before)
 		if hadOld {
 			e.registry.RegisterNoCheck(oldPlugin)
+			if oldBindings != nil {
+				e.bindings[name] = oldBindings
+			}
+			e.restoreRootEnv(oldRoot)
 		}
 		return startErr
 	}
@@ -206,6 +261,10 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 			e.rollbackPluginUse(name, before)
 			if hadOld {
 				e.registry.RegisterNoCheck(oldPlugin)
+				if oldBindings != nil {
+					e.bindings[name] = oldBindings
+				}
+				e.restoreRootEnv(oldRoot)
 			}
 		}
 	}()

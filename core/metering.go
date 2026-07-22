@@ -263,6 +263,11 @@ func (st *evalState) settleRetained() error {
 	if len(st.pendingCellAllocs) == 0 {
 		return nil
 	}
+	for _, pending := range st.pendingCellAllocs {
+		if pending.env.RetainedMeter() == nil && pending.meter != nil {
+			pending.env.SetRetainedMeter(pending.meter)
+		}
+	}
 	charges := make([]retainedCharge, 0, 1)
 	for _, pending := range st.pendingCellAllocs {
 		if pending.meter == nil || (pending.bytes == 0 && pending.slots == 0) {
