@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -64,7 +65,7 @@ func (e *engineImpl) removePluginBindings(name string) {
 	e.rootEnv.BumpMacroEpoch()
 }
 
-func (e *engineImpl) Use(p core.Plugin) error {
+func (e *engineImpl) Use(p core.Plugin) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -73,18 +74,31 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	}
 
 	before := e.snapshotBindings()
+	beforeUsage := retainedUsageOf(e.rootEnv)
+	beforeRootCells := snapshotCellSet(e.rootEnv)
+	ctx := e.evalResourceContext(context.Background())
+	top, startErr := core.StartEval(ctx)
+	if startErr != nil {
+		e.registry.Unregister(p.Name())
+		return startErr
+	}
+	defer func() {
+		if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
+			err = finishErr
+		}
+	}()
 
 	e.loadingPlugin = p.Name()
-	if err := p.Init(e.rootEnv); err != nil {
+	if initErr := p.Init(e.rootEnv); initErr != nil {
 		e.loadingPlugin = ""
 		e.registry.Unregister(p.Name())
-		return fmt.Errorf("init plugin %s: %w", p.Name(), err)
+		return fmt.Errorf("init plugin %s: %w", p.Name(), initErr)
 	}
 	e.loadingPlugin = ""
 
-	if err := e.applyVocabulary(); err != nil {
+	if vocabErr := e.applyVocabulary(); vocabErr != nil {
 		e.registry.Unregister(p.Name())
-		return fmt.Errorf("apply vocabulary for plugin %s: %w", p.Name(), err)
+		return fmt.Errorf("apply vocabulary for plugin %s: %w", p.Name(), vocabErr)
 	}
 
 	after := e.snapshotBindings()
@@ -97,6 +111,9 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	}
 	e.populateTemplateBindings(p.Name())
 
+	if err := e.settleRetained(ctx, beforeUsage, beforeRootCells, nil, retainedUsage{}, nil); err != nil {
+		return err
+	}
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", p.Name(), "version", p.Metadata().Version)
 

@@ -44,8 +44,20 @@ var stdlibBootstrapArtifacts = &stdlibBootstrapArtifactCache{
 // EvalStdlibBootstrap evaluates a reusable stdlib bootstrap source through the
 // bytecode VM. Compilation artifacts are process-scoped; each engine runs a
 // chunk-tree copy with fresh global-read site tables.
-func (be *bytecodeEvaluator) EvalStdlibBootstrap(ctx context.Context, source string, env *core.Env) (core.Value, error) {
-	ctx = core.EnsureEvalState(ctx)
+func (be *bytecodeEvaluator) EvalStdlibBootstrap(ctx context.Context, source string, env *core.Env) (result core.Value, err error) {
+	ctx = be.evalResourceContext(ctx)
+	if core.HasEvalMeter(ctx) {
+		top, err := core.StartEval(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				result = nil
+				err = ferr
+			}
+		}()
+	}
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
@@ -61,7 +73,7 @@ func (be *bytecodeEvaluator) EvalStdlibBootstrap(ctx context.Context, source str
 	}
 	stdlibBootstrapArtifacts.countCompile()
 
-	result, err := be.runStdlibBootstrapArtifact(ctx, artifact, env)
+	result, err = be.runStdlibBootstrapArtifact(ctx, artifact, env)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +88,7 @@ func (be *bytecodeEvaluator) compileStdlibBootstrapArtifact(ctx context.Context,
 	}
 
 	macro := core.NewEvaluator()
+	macro.SetFallbackEvalMeter(be.engineMeter)
 	chunks := make([]*vm.Chunk, 0, len(forms))
 	for _, form := range forms {
 		expanded, err := macro.MacroExpand(ctx, form, env)
@@ -83,10 +96,14 @@ func (be *bytecodeEvaluator) compileStdlibBootstrapArtifact(ctx context.Context,
 			return stdlibBootstrapArtifact{}, fmt.Errorf("stdlib bootstrap macro expand: %w", err)
 		}
 		comp := compiler.NewCompiler("<stdlib-bootstrap>")
+		comp.SetEvalMeter(core.EvalMeterFrom(ctx))
 		if err := comp.Compile(expanded); err != nil {
 			return stdlibBootstrapArtifact{}, fmt.Errorf("stdlib bootstrap compile: %w", err)
 		}
 		comp.Chunk().Emit(vm.OpReturn, 0)
+		if err := chargeCompiledChunk(ctx, comp.Chunk()); err != nil {
+			return stdlibBootstrapArtifact{}, fmt.Errorf("stdlib bootstrap charge: %w", err)
+		}
 		comp.MarkCaptures()
 		chunk := comp.Chunk()
 		if err := chunk.Validate(); err != nil {

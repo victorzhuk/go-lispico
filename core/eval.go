@@ -47,6 +47,7 @@ type engine struct {
 	// dialect is the Dialect this engine was constructed with. It is zero for
 	// NewEvaluator (identity dialect), set by NewEvaluatorWithDialect.
 	dialect Dialect
+	meter   sessionMeter
 }
 
 const defaultMaxStructuralDepth = 1024
@@ -77,15 +78,18 @@ func copyKernel() map[string]formFn {
 // carried in the context so concurrent evaluations on one engine never share
 // depth, reduction, or allocation state.
 type evalState struct {
-	callDepth     atomic.Int64
-	loopDepth     atomic.Int64
-	macroDepth    atomic.Int64
-	structDepth   atomic.Int64
-	reductions    atomic.Int64
-	allocBytes    atomic.Int64
-	evalDepth     atomic.Int64
-	maxReductions int64
-	maxAllocBytes int64
+	callDepth        atomic.Int64
+	loopDepth        atomic.Int64
+	macroDepth       atomic.Int64
+	structDepth      atomic.Int64
+	reductions       atomic.Int64
+	allocBytes       atomic.Int64
+	evalDepth        atomic.Int64
+	maxReductions    int64
+	maxAllocBytes    int64
+	meter            sessionMeter
+	leasedReductions int64
+	leasedAllocBytes int64
 	// shared lets lazy states alias the wrapper-owned counter without a second allocation per evalState.
 	shared *atomic.Int64
 	// deadline is the engine-owned evaluation deadline enforced by pollCancel.
@@ -133,6 +137,7 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 		st.shared = &c.counter
 		st.reductions.Store(c.reductions)
 		st.allocBytes.Store(c.allocBytes)
+		st.attachMeter(sessionMeterFromContext(c.Context))
 		if c.state.CompareAndSwap(nil, st) {
 			return st
 		}
@@ -182,17 +187,23 @@ type evalStateKey struct{}
 // ensureEvalState attaches a fresh evalState to ctx on the first (top-level)
 // call and returns the existing one on nested calls.
 func ensureEvalState(ctx context.Context) context.Context {
-	if _, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		st.attachMeter(sessionMeterFromContext(ctx))
 		return ctx
 	}
-	return context.WithValue(ctx, evalStateKey{}, newEvalState())
+	st := newEvalState()
+	st.attachMeter(sessionMeterFromContext(ctx))
+	return context.WithValue(ctx, evalStateKey{}, st)
 }
 
 func evalStateFrom(ctx context.Context) *evalState {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		st.attachMeter(sessionMeterFromContext(ctx))
 		return st
 	}
-	return newEvalState()
+	st := newEvalState()
+	st.attachMeter(sessionMeterFromContext(ctx))
+	return st
 }
 
 // DetachEvalState returns a copy of ctx with a fresh evalState attached,
@@ -200,7 +211,9 @@ func evalStateFrom(ctx context.Context) *evalState {
 // goroutine should evaluate with its own depth counters so it cannot race or
 // trip MaxDepth against another evaluation that shares the same ancestor ctx.
 func DetachEvalState(ctx context.Context) context.Context {
-	return context.WithValue(ctx, evalStateKey{}, newEvalState())
+	st := newEvalState()
+	st.attachMeter(sessionMeterFromContext(ctx))
+	return context.WithValue(ctx, evalStateKey{}, st)
 }
 
 // EnsureEvalState returns a context with a fresh evalState attached if one
@@ -279,6 +292,17 @@ func HasEvalState(ctx context.Context) bool {
 	return ok
 }
 
+func (e *engine) SetFallbackEvalMeter(m any) {
+	e.meter, _ = m.(sessionMeter)
+}
+
+func (e *engine) evalContext(ctx context.Context) context.Context {
+	if sessionMeterFromContext(ctx) == nil && e.meter != nil {
+		ctx = WithEvalMeter(ctx, e.meter)
+	}
+	return ensureEvalState(ctx)
+}
+
 func evalErrorf(format string, args ...any) *LispicoError {
 	return &LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
 }
@@ -289,26 +313,37 @@ func resourceLimitErrorf(format string, args ...any) *LispicoError {
 
 // Apply is the public entry point for calling a Lisp value as a function.
 // Used by the runtime API and plugins that invoke Lambdas from Go.
-func (e *engine) Apply(ctx context.Context, fn Value, args []Value, env *Env) (Value, error) {
-	ctx = ensureEvalState(ctx)
+func (e *engine) Apply(ctx context.Context, fn Value, args []Value, env *Env) (result Value, err error) {
+	ctx = e.evalContext(ctx)
+	top, err := StartEval(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if ferr := FinishEval(ctx, top); ferr != nil && (err == nil || IsTerminalEvalError(ferr)) {
+			result = nil
+			err = ferr
+		}
+	}()
 	return e.apply(ctx, fn, args, env)
 }
 
 // Eval evaluates form in env, returning the result.
 func (e *engine) Eval(ctx context.Context, v Value, env *Env) (result Value, err error) {
-	ctx = ensureEvalState(ctx)
+	ctx = e.evalContext(ctx)
 
-	st := evalStateFrom(ctx)
-	top := st.evalDepth.Add(1) == 1
+	top, err := StartEval(ctx)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
-		st.evalDepth.Add(-1)
-		if top {
-			if ferr := st.flushReductions(); ferr != nil {
-				result = nil
-				err = ferr
-			}
+		if ferr := FinishEval(ctx, top); ferr != nil && (err == nil || IsTerminalEvalError(ferr)) {
+			result = nil
+			err = ferr
 		}
 	}()
+
+	st := evalStateFrom(ctx)
 
 	if err := st.pollCancel(ctx, false); err != nil {
 		return nil, err
@@ -506,7 +541,7 @@ func (e *engine) evalBody(ctx context.Context, body []Value, env *Env) (Value, e
 // MacroExpand fully expands all macros in form without evaluating the result.
 // Used by tooling and the bytecode compiler (ch008).
 func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, error) {
-	ctx = ensureEvalState(ctx)
+	ctx = e.evalContext(ctx)
 
 	list, ok := form.(List)
 	if !ok || len(list.Items) == 0 {

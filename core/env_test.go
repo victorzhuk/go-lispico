@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 )
 
 func requireRetainedLimitError(t *testing.T, err error) {
@@ -16,6 +17,13 @@ func requireRetainedLimitError(t *testing.T, err error) {
 	}
 	if lerr.Message != "retained state capacity limit exceeded" {
 		t.Fatalf("message = %q, want retained state capacity limit exceeded", lerr.Message)
+	}
+}
+
+func TestEnv_Size(t *testing.T) {
+	t.Parallel()
+	if got := unsafe.Sizeof(Env{}); got != 160 {
+		t.Fatalf("Env size = %d, want 160", got)
 	}
 }
 

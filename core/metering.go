@@ -23,6 +23,50 @@ const (
 	MeterReaderNodeBytes       int64 = 32
 )
 
+const (
+	maxEvalReductionLease = 1024
+	maxEvalAllocLease     = 64 << 10
+)
+
+type sessionMeter interface {
+	LeaseEval(reductions, allocBytes int64) (grantedRed, grantedAlloc int64, err error)
+	ReturnEval(reductions, allocBytes int64)
+	ChargeRetained(bytes, slots int64) error
+	ReleaseRetained(bytes, slots int64)
+}
+
+type evalMeterContextKey struct{}
+
+func WithEvalMeter(ctx context.Context, m any) context.Context {
+	if m == nil {
+		return ctx
+	}
+	meter, ok := m.(sessionMeter)
+	if !ok || meter == nil {
+		return ctx
+	}
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		st.attachMeter(meter)
+	}
+	return context.WithValue(ctx, evalMeterContextKey{}, meter)
+}
+
+func EvalMeterContextValue(ctx context.Context) any {
+	return sessionMeterFromContext(ctx)
+}
+
+func HasEvalMeter(ctx context.Context) bool {
+	return sessionMeterFromContext(ctx) != nil
+}
+
+func sessionMeterFromContext(ctx context.Context) sessionMeter {
+	if ctx == nil {
+		return nil
+	}
+	meter, _ := ctx.Value(evalMeterContextKey{}).(sessionMeter)
+	return meter
+}
+
 type EvalMeter struct {
 	st *evalState
 }
@@ -55,6 +99,12 @@ func newEvalStateWithLimits(maxReductions, maxAllocBytes int64) *evalState {
 func (st *evalState) setResourceLimits(maxReductions, maxAllocBytes int64) {
 	st.maxReductions = normalizeEvalLimit(maxReductions, DefaultMaxReductions)
 	st.maxAllocBytes = normalizeEvalLimit(maxAllocBytes, DefaultMaxAllocationBytes)
+}
+
+func (st *evalState) attachMeter(m sessionMeter) {
+	if st.meter == nil && m != nil {
+		st.meter = m
+	}
 }
 
 func WithEvalResourceLimits(ctx context.Context, maxReductions, maxAllocBytes int) context.Context {
@@ -127,9 +177,58 @@ func FlushEvalState(ctx context.Context) error {
 	return evalStateFrom(ctx).flushReductions()
 }
 
+func StartEval(ctx context.Context) (bool, error) {
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok && st.evalDepth.Load() > 0 {
+		return false, nil
+	}
+	st := evalStateFrom(ctx)
+	top := st.evalDepth.Add(1) == 1
+	if top {
+		if err := st.drawInitialLease(); err != nil {
+			st.evalDepth.Add(-1)
+			return false, err
+		}
+	}
+	return top, nil
+}
+
+func FinishEval(ctx context.Context, top bool) error {
+	if !top {
+		return nil
+	}
+	return evalStateFrom(ctx).finishEval()
+}
+
+func BeginEval(ctx context.Context) (func() error, error) {
+	top, err := StartEval(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func() error {
+		return FinishEval(ctx, top)
+	}, nil
+}
+
+func (st *evalState) finishEval() error {
+	st.evalDepth.Add(-1)
+	flushErr := st.flushReductions()
+	st.returnEvalLease()
+	return flushErr
+}
+
+func (st *evalState) drawInitialLease() error {
+	if st.meter == nil {
+		return nil
+	}
+	return st.leaseEval(maxEvalReductionLease, maxEvalAllocLease)
+}
+
 func (st *evalState) chargeReductions(n int64) error {
 	if n <= 0 {
 		return nil
+	}
+	if st.meter != nil {
+		return st.consumeReductionLease(n)
 	}
 	max := st.maxReductions
 	if max <= 0 {
@@ -146,6 +245,9 @@ func (st *evalState) chargeAllocBytes(n int64) error {
 	if n <= 0 {
 		return nil
 	}
+	if st.meter != nil {
+		return st.consumeAllocLease(n)
+	}
 	max := st.maxAllocBytes
 	if max <= 0 {
 		max = DefaultMaxAllocationBytes
@@ -155,6 +257,73 @@ func (st *evalState) chargeAllocBytes(n int64) error {
 		return NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", max))
 	}
 	return nil
+}
+
+func (st *evalState) consumeReductionLease(n int64) error {
+	for n > 0 {
+		if st.leasedReductions == 0 {
+			req := min(n, maxEvalReductionLease)
+			if err := st.leaseEval(req, 0); err != nil {
+				return err
+			}
+		}
+		if st.leasedReductions <= 0 {
+			return NewResourceLimitError("evaluation reduction meter exhausted")
+		}
+		used := min(n, st.leasedReductions)
+		st.leasedReductions -= used
+		n -= used
+	}
+	return nil
+}
+
+func (st *evalState) consumeAllocLease(n int64) error {
+	for n > 0 {
+		if st.leasedAllocBytes == 0 {
+			req := min(n, maxEvalAllocLease)
+			if err := st.leaseEval(0, req); err != nil {
+				return err
+			}
+		}
+		if st.leasedAllocBytes <= 0 {
+			return NewResourceLimitError("evaluation allocation meter exhausted")
+		}
+		used := min(n, st.leasedAllocBytes)
+		st.leasedAllocBytes -= used
+		n -= used
+	}
+	return nil
+}
+
+func (st *evalState) leaseEval(reductions, allocBytes int64) error {
+	if st.meter == nil || (reductions <= 0 && allocBytes <= 0) {
+		return nil
+	}
+	grantedRed, grantedAlloc, err := st.meter.LeaseEval(reductions, allocBytes)
+	if err != nil {
+		if grantedRed > 0 || grantedAlloc > 0 {
+			st.meter.ReturnEval(grantedRed, grantedAlloc)
+		}
+		return NewResourceLimitError(fmt.Sprintf("evaluation meter exhausted: %v", err))
+	}
+	if reductions > 0 && grantedRed <= 0 {
+		return NewResourceLimitError("evaluation reduction meter exhausted")
+	}
+	if allocBytes > 0 && grantedAlloc <= 0 {
+		return NewResourceLimitError("evaluation allocation meter exhausted")
+	}
+	st.leasedReductions += grantedRed
+	st.leasedAllocBytes += grantedAlloc
+	return nil
+}
+
+func (st *evalState) returnEvalLease() {
+	if st.meter == nil {
+		return
+	}
+	red, alloc := st.leasedReductions, st.leasedAllocBytes
+	st.leasedReductions, st.leasedAllocBytes = 0, 0
+	st.meter.ReturnEval(red, alloc)
 }
 
 func (st *evalState) flushReductions() error {

@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -87,6 +88,7 @@ type engineConfig struct {
 	bytecode     bool
 	dialect      core.Dialect
 	limits       ResourceLimits
+	engineMeter  Meter
 }
 
 // EngineOption configures an Engine created by New.
@@ -223,6 +225,16 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	cfg.limits = resolveLimits(cfg.limits)
+	if cfg.engineMeter != nil {
+		grantedRed, grantedAlloc, err := cfg.engineMeter.LeaseEval(1, 0)
+		if err != nil {
+			if grantedRed > 0 || grantedAlloc > 0 {
+				cfg.engineMeter.ReturnEval(grantedRed, grantedAlloc)
+			}
+			return nil, core.NewResourceLimitError(fmt.Sprintf("engine setup meter: %v", err))
+		}
+		cfg.engineMeter.ReturnEval(grantedRed, grantedAlloc)
+	}
 
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -238,7 +250,6 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	treeWalker.MaxDepth = cfg.maxEvalDepth
 	treeWalker.MaxStructuralDepth = cfg.limits.MaxStructuralDepth
 	treeWalker.MaxCollectionLen = cfg.limits.MaxCollectionLen
-
 	var evaluator core.Evaluator
 	e := &engineImpl{
 		rootEnv:  rootEnv,
@@ -249,7 +260,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	if cfg.bytecode {
-		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect)
+		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect, cfg.engineMeter)
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be
@@ -259,8 +270,9 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 	e.evaluator = evaluator
 	e.treeWalker = treeWalker
-
-	// Deferrable stdlib bindings: install the per-engine lazy layer on the
+	if cfg.engineMeter != nil {
+		e.attachScopeMeter(rootEnv, cfg.engineMeter)
+	}
 	// root env. With no template registered its miss-path consult is a no-op.
 	installLazyLayer(e)
 

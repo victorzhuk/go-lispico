@@ -154,6 +154,11 @@ func retainedBindingBytes(name string, val Value) int64 {
 	return MeterEnvMapEntryBytes + MeterEnvCellBytes + StringShallowBytes(len(name)) + ValueShallowBytes(val)
 }
 
+// RetainedBindingBytes returns the shallow retained-size of a single env binding.
+func RetainedBindingBytes(name string, val Value) int64 {
+	return retainedBindingBytes(name, val)
+}
+
 func (e *Env) chargeRetainedBinding(name string, val Value) error {
 	return e.chargeRetainedBindings(retainedBindingBytes(name, val), 1)
 }
@@ -648,16 +653,27 @@ func (e *Env) RetainedUsage() (bytes, slots int64) {
 
 // Rebuild compacts this scope's local binding maps, dropping tombstoned cells
 // and recomputing retained backing usage from the remaining live bindings.
-func (e *Env) Rebuild() {
+func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	vars := make(map[string]*Cell, len(e.vars))
 	funcs := make(map[string]*Cell, len(e.funcs))
 	var bytes, slots int64
 
+	releaseByCell, _ := any(e.eval).(interface {
+		ReleaseCell(*Cell) (int64, int64, bool)
+	})
+	releaseByRetained, _ := any(e.eval).(interface{ ReleaseRetained(int64, int64) })
+	var releasedBytes, releasedSlots int64
+
 	for name, cell := range e.vars {
 		if cell.v == nil {
+			if releaseByCell != nil {
+				if b, s, ok := releaseByCell.ReleaseCell(cell); ok {
+					releasedBytes += b
+					releasedSlots += s
+				}
+			}
 			continue
 		}
 		vars[name] = cell
@@ -666,6 +682,12 @@ func (e *Env) Rebuild() {
 	}
 	for name, cell := range e.funcs {
 		if cell.v == nil {
+			if releaseByCell != nil {
+				if b, s, ok := releaseByCell.ReleaseCell(cell); ok {
+					releasedBytes += b
+					releasedSlots += s
+				}
+			}
 			continue
 		}
 		funcs[name] = cell
@@ -673,14 +695,43 @@ func (e *Env) Rebuild() {
 		slots++
 	}
 
+	freedBytes = max(e.retainedBytes-bytes, 0)
+	freedSlots = max(e.retainedSlots-slots, 0)
 	e.vars = vars
 	e.funcs = funcs
 	e.retainedBytes = bytes
 	e.retainedSlots = slots
 	e.newNameGen.Add(1)
+	e.mu.Unlock()
+
+	if releaseByRetained != nil {
+		fallbackBytes := freedBytes - releasedBytes
+		fallbackSlots := freedSlots - releasedSlots
+		if fallbackBytes > 0 || fallbackSlots > 0 {
+			releaseByRetained.ReleaseRetained(max(fallbackBytes, 0), max(fallbackSlots, 0))
+		}
+	}
+	return
 }
 
-// FuncNames returns a snapshot of the names bound in this scope's local
+func (e *Env) ForEachCell(fn func(name string, cell *Cell)) {
+	if e == nil || fn == nil {
+		return
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for name, cell := range e.vars {
+		if cell.v != nil {
+			fn(name, cell)
+		}
+	}
+	for name, cell := range e.funcs {
+		if cell.v != nil {
+			fn(name, cell)
+		}
+	}
+}
+
 // function cell (Lisp-2 only). The order is unspecified. Parent bindings
 // are not included. Like VarNames it forces deferred bindings first.
 func (e *Env) FuncNames() []string {

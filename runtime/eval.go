@@ -51,9 +51,10 @@ type bytecodeEvaluator struct {
 	maxCacheEntries    int
 	maxReductions      int
 	maxAllocBytes      int
+	engineMeter        Meter
 }
 
-func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect) *bytecodeEvaluator {
+func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect, meter Meter) *bytecodeEvaluator {
 	be := &bytecodeEvaluator{
 		globals:            globals,
 		maxDepth:           maxDepth,
@@ -63,6 +64,7 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 		maxCacheEntries:    limits.MaxCacheEntries,
 		maxReductions:      limits.MaxReductions,
 		maxAllocBytes:      limits.MaxAllocationBytes,
+		engineMeter:        meter,
 		macro:              treeWalker.(macroExpander),
 		tree:               treeWalker,
 		dialect:            dialect,
@@ -88,8 +90,20 @@ func (be *bytecodeEvaluator) treeFallbackCtx(ctx context.Context) context.Contex
 	return core.WithEvalDeadline(ctx, bound)
 }
 
-func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
-	ctx = core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
+func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (result core.Value, err error) {
+	ctx = be.evalResourceContext(ctx)
+	if core.HasEvalMeter(ctx) {
+		top, err := core.StartEval(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				result = nil
+				err = ferr
+			}
+		}()
+	}
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
@@ -121,8 +135,20 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	return be.runVM(ctx, chunk, env)
 }
 
-func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	ctx = core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
+func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (result core.Value, err error) {
+	ctx = be.evalResourceContext(ctx)
+	if core.HasEvalMeter(ctx) {
+		top, err := core.StartEval(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				result = nil
+				err = ferr
+			}
+		}()
+	}
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
@@ -139,7 +165,7 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 	v.SetDeadline(core.EvalDeadlineFrom(ctx))
 	v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
-	result, err := v.ApplyPooled(ctx, fn, args, env)
+	result, err = v.ApplyPooled(ctx, fn, args, env)
 	be.vmPool.Put(v)
 	return result, err
 }
@@ -168,7 +194,7 @@ func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen 
 // EvalCached evaluates form with caching: macro-expands, checks the chunk cache
 // runs via a pooled VM.
 func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash sourceHash, formIndex int) (core.Value, error) {
-	ctx = core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
+	ctx = be.evalResourceContext(ctx)
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
@@ -282,8 +308,157 @@ func (e *engineImpl) evalDeadline(ctx context.Context, start time.Time) time.Tim
 	return bound
 }
 
+func (be *bytecodeEvaluator) evalResourceContext(ctx context.Context) context.Context {
+	if !core.HasEvalMeter(ctx) && be.engineMeter != nil {
+		ctx = WithMeter(ctx, be.engineMeter)
+	}
+	return core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
+}
+
 func (e *engineImpl) evalResourceContext(ctx context.Context) context.Context {
+	if !core.HasEvalMeter(ctx) && e.config.engineMeter != nil {
+		ctx = WithMeter(ctx, e.config.engineMeter)
+	}
 	return core.WithEvalResourceLimits(ctx, e.config.limits.MaxReductions, e.config.limits.MaxAllocationBytes)
+}
+
+type retainedUsage struct {
+	bytes int64
+	slots int64
+}
+
+type retainedBindingCharge struct {
+	meter Meter
+	bytes int64
+	slots int64
+}
+
+type meterEvaluator struct {
+	core.Evaluator
+	mu    sync.RWMutex
+	meter Meter
+	cells map[*core.Cell]retainedBindingCharge
+}
+
+func (me *meterEvaluator) TrackBinding(cell *core.Cell, meter Meter, bytes, slots int64) {
+	if cell == nil || meter == nil || (bytes <= 0 && slots <= 0) {
+		return
+	}
+	me.mu.Lock()
+	defer me.mu.Unlock()
+	if me.cells == nil {
+		me.cells = make(map[*core.Cell]retainedBindingCharge)
+	}
+	me.cells[cell] = retainedBindingCharge{meter: meter, bytes: bytes, slots: slots}
+}
+
+func (me *meterEvaluator) ReleaseCell(cell *core.Cell) (int64, int64, bool) {
+	if cell == nil {
+		return 0, 0, false
+	}
+	me.mu.Lock()
+	charge, ok := me.cells[cell]
+	if ok {
+		delete(me.cells, cell)
+	}
+	me.mu.Unlock()
+
+	if !ok || charge.meter == nil {
+		return 0, 0, false
+	}
+	charge.meter.ReleaseRetained(charge.bytes, charge.slots)
+	return charge.bytes, charge.slots, true
+}
+
+func (me *meterEvaluator) ReleaseRetained(bytes, slots int64) {
+	if me.meter != nil {
+		me.meter.ReleaseRetained(bytes, slots)
+	}
+}
+
+func unwrapEvaluator(ev core.Evaluator) core.Evaluator {
+	if me, ok := ev.(*meterEvaluator); ok {
+		return me.Evaluator
+	}
+	return ev
+}
+
+func (e *engineImpl) attachScopeMeter(env *core.Env, meter Meter) *meterEvaluator {
+	if env == nil || meter == nil {
+		return nil
+	}
+	baseEval := env.Evaluator()
+	if me, ok := baseEval.(*meterEvaluator); ok {
+		return me
+	}
+	if baseEval == nil {
+		baseEval = e.evaluator
+	}
+	baseEval = unwrapEvaluator(baseEval)
+	me := &meterEvaluator{Evaluator: baseEval, meter: meter}
+	env.SetEvaluator(me)
+	return me
+}
+
+func retainedUsageOf(env *core.Env) retainedUsage {
+	if env == nil {
+		return retainedUsage{}
+	}
+	bytes, slots := env.RetainedUsage()
+	return retainedUsage{bytes: bytes, slots: slots}
+}
+
+func snapshotCellSet(env *core.Env) map[*core.Cell]struct{} {
+	if env == nil {
+		return nil
+	}
+	m := make(map[*core.Cell]struct{})
+	env.ForEachCell(func(name string, cell *core.Cell) {
+		m[cell] = struct{}{}
+	})
+	return m
+}
+
+func (e *engineImpl) settleRetained(ctx context.Context, beforeRoot retainedUsage, beforeRootCells map[*core.Cell]struct{}, scope *core.Env, beforeScope retainedUsage, beforeScopeCells map[*core.Cell]struct{}) error {
+	meter := MeterFromContext(ctx)
+	if meter == nil {
+		meter = e.config.engineMeter
+	}
+	if meter == nil {
+		return nil
+	}
+	rootAfter := retainedUsageOf(e.rootEnv)
+	scopeAfter := retainedUsageOf(scope)
+	bytes := max(rootAfter.bytes-beforeRoot.bytes, 0) + max(scopeAfter.bytes-beforeScope.bytes, 0)
+	slots := max(rootAfter.slots-beforeRoot.slots, 0) + max(scopeAfter.slots-beforeScope.slots, 0)
+	if bytes == 0 && slots == 0 {
+		return nil
+	}
+	if err := meter.ChargeRetained(bytes, slots); err != nil {
+		return core.NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
+	}
+
+	me := e.attachScopeMeter(e.rootEnv, meter)
+	if me != nil && e.rootEnv != nil {
+		e.rootEnv.ForEachCell(func(name string, cell *core.Cell) {
+			if _, existed := beforeRootCells[cell]; !existed {
+				val, _, _ := e.rootEnv.ReadCell(cell)
+				me.TrackBinding(cell, meter, core.RetainedBindingBytes(name, val), 1)
+			}
+		})
+	}
+	if scope != nil {
+		scopeMe := e.attachScopeMeter(scope, meter)
+		if scopeMe != nil {
+			scope.ForEachCell(func(name string, cell *core.Cell) {
+				if _, existed := beforeScopeCells[cell]; !existed {
+					val, _, _ := scope.ReadCell(cell)
+					scopeMe.TrackBinding(cell, meter, core.RetainedBindingBytes(name, val), 1)
+				}
+			})
+		}
+	}
+	return nil
 }
 
 func (e *engineImpl) readForms(ctx context.Context, input string) ([]core.Value, error) {
@@ -316,11 +491,29 @@ func compiledChunkBytes(chunk *vm.Chunk) int64 {
 	return bytes
 }
 
-func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value, error) {
+func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {
 	start := time.Now()
 
+	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
-
+	if metered {
+		beforeRoot := retainedUsageOf(e.rootEnv)
+		beforeRootCells := snapshotCellSet(e.rootEnv)
+		top, err := core.StartEval(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				result = nil
+				err = ferr
+			}
+			if rerr := e.settleRetained(ctx, beforeRoot, beforeRootCells, nil, retainedUsage{}, nil); rerr != nil {
+				result = nil
+				err = rerr
+			}
+		}()
+	}
 	forms, err := e.readForms(ctx, input)
 	if err != nil {
 		dur := time.Since(start)
@@ -334,7 +527,7 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 	e.mu.RUnlock()
 
 	if be := e.bytecodeEvaluator; be != nil {
-		var result core.Value = core.Nil{}
+		result = core.Nil{}
 		sourceHash := sha256Hash(input)
 		for i, form := range forms {
 			result, err = be.EvalCached(ctx, form, env, sourceHash, i)
@@ -363,7 +556,7 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (core.Value
 
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
 
-	var result core.Value = core.Nil{}
+	result = core.Nil{}
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, env)
 		if err != nil {
@@ -474,9 +667,20 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 // acquired VM for Engine.Call and Fn.Call, or a private handle-owned VM for
 // PinnedFn.Call — so the per-call VM lifecycle stays in the caller and a
 // single apply step is shared across every entry point.
-func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM) (core.Value, error) {
-	if core.HasEvalState(ctx) {
+func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM) (result core.Value, err error) {
+	needsEvalState := core.HasEvalState(ctx) || core.HasEvalMeter(ctx) || e.config.engineMeter != nil
+	if needsEvalState {
 		ctx = e.evalResourceContext(ctx)
+		top, beginErr := core.StartEval(ctx)
+		if beginErr != nil {
+			return nil, beginErr
+		}
+		defer func() {
+			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				result = nil
+				err = ferr
+			}
+		}()
 	}
 
 	active := e.callbacksActive.Load()
@@ -484,9 +688,6 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 	if active {
 		start = nowFunc()
 	}
-
-	var result core.Value
-	var err error
 	if be := e.bytecodeEvaluator; be != nil {
 		result, err = be.applyOnVM(v, ctx, fn, args, env, e.config.timeout)
 	} else {
@@ -542,11 +743,32 @@ func (e *engineImpl) LoadScope(ctx context.Context, source string, bindings map[
 	return e.evalWithBindingScope(ctx, source, bindings)
 }
 
-func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, *core.Env, error) {
+func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bindings map[string]core.Value) (result core.Value, childEnv *core.Env, err error) {
 	start := time.Now()
 
+	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+	var beforeScope retainedUsage
+	var beforeScopeCells map[*core.Cell]struct{}
+	if metered {
+		beforeRoot := retainedUsageOf(e.rootEnv)
+		beforeRootCells := snapshotCellSet(e.rootEnv)
+		top, err := core.StartEval(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer func() {
+			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				result = nil
+				err = ferr
+			}
+			if rerr := e.settleRetained(ctx, beforeRoot, beforeRootCells, childEnv, beforeScope, beforeScopeCells); rerr != nil {
+				result = nil
+				err = rerr
+			}
+		}()
+	}
 
 	forms, err := e.readForms(ctx, source)
 	if err != nil {
@@ -557,8 +779,10 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	}
 
 	e.mu.RLock()
-	childEnv := e.rootEnv.Child()
+	childEnv = e.rootEnv.Child()
 	e.mu.RUnlock()
+	beforeScope = retainedUsageOf(childEnv)
+	beforeScopeCells = snapshotCellSet(childEnv)
 
 	for name, val := range bindings {
 		if e.config.dialect.IsLisp2() {
@@ -571,8 +795,7 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 			return nil, childEnv, err
 		}
 	}
-
-	var result core.Value = core.Nil{}
+	result = core.Nil{}
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
