@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -96,8 +95,7 @@ type evalState struct {
 	evalDepth         atomic.Int64
 	maxReductions     int64
 	maxAllocBytes     int64
-	meterMu           sync.Mutex
-	meter             sessionMeter
+	meter             atomic.Pointer[sessionMeter]
 	leasedReductions  int64
 	leasedAllocBytes  int64
 	retainedBytes     int64

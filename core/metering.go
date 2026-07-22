@@ -102,24 +102,25 @@ func (st *evalState) setResourceLimits(maxReductions, maxAllocBytes int64) {
 }
 
 func (st *evalState) attachMeter(m sessionMeter) {
-	st.meterMu.Lock()
-	defer st.meterMu.Unlock()
-	if st.evalDepth.Load() > 0 && st.meter != nil {
+	if m == nil {
+		st.meter.Store(nil)
 		return
 	}
-	st.meter = m
+	if st.evalDepth.Load() > 0 && st.currentMeter() != nil {
+		return
+	}
+	st.setMeter(m)
 }
 
 func (st *evalState) setMeter(m sessionMeter) {
-	st.meterMu.Lock()
-	defer st.meterMu.Unlock()
-	st.meter = m
+	st.meter.Store(&m)
 }
 
 func (st *evalState) currentMeter() sessionMeter {
-	st.meterMu.Lock()
-	defer st.meterMu.Unlock()
-	return st.meter
+	if p := st.meter.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 func WithEvalResourceLimits(ctx context.Context, maxReductions, maxAllocBytes int) context.Context {
@@ -200,7 +201,11 @@ func StartEval(ctx context.Context) (bool, error) {
 	st := evalStateFrom(ctx)
 	top := st.evalDepth.Add(1) == 1
 	if top {
-		st.setMeter(activeMeter)
+		if activeMeter == nil {
+			st.meter.Store(nil)
+		} else {
+			st.setMeter(activeMeter)
+		}
 		if err := st.drawInitialLease(); err != nil {
 			st.evalDepth.Add(-1)
 			return false, err

@@ -647,7 +647,7 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 
 	for name, val := range bindings {
 		if e.config.dialect.IsLisp2() {
-			if err := childEnv.SetBoth(name, val); err != nil {
+			if err := childEnv.SetBothWithContext(ctx, name, val); err != nil {
 				return nil, childEnv, err
 			}
 			continue

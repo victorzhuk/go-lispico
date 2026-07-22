@@ -265,15 +265,25 @@ func retainedBindingCapacity(name string, val Value, slots int64) (int64, int64)
 
 // SetBoth binds name in both value and function cells.
 func (e *Env) SetBoth(name string, val Value) error {
-	return e.setBoth(name, val, false)
+	return e.SetBothWithContext(context.Background(), name, val)
 }
 
 // SetBothCanonical binds name in both value and function cells as canonical.
 func (e *Env) SetBothCanonical(name string, val Value) error {
-	return e.setBoth(name, val, true)
+	return e.SetBothCanonicalWithContext(context.Background(), name, val)
 }
 
-func (e *Env) setBoth(name string, val Value, canonical bool) error {
+// SetBothWithContext binds name in both value and function cells.
+func (e *Env) SetBothWithContext(ctx context.Context, name string, val Value) error {
+	return e.setBoth(ctx, name, val, false)
+}
+
+// SetBothCanonicalWithContext binds name in both value and function cells as canonical.
+func (e *Env) SetBothCanonicalWithContext(ctx context.Context, name string, val Value) error {
+	return e.setBoth(ctx, name, val, true)
+}
+
+func (e *Env) setBoth(ctx context.Context, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -287,7 +297,7 @@ func (e *Env) setBoth(name string, val Value, canonical bool) error {
 		newSlots++
 	}
 	b := retainedBindingBytes(name, val)
-	meter, st, pending, err := e.prepareFreshRetained(context.Background(), b*newSlots, newSlots)
+	meter, st, pending, err := e.prepareFreshRetained(ctx, b*newSlots, newSlots)
 	if err != nil {
 		return err
 	}
@@ -304,12 +314,9 @@ func (e *Env) setBoth(name string, val Value, canonical bool) error {
 	}
 	varCell.v = val
 	varCell.canonical = canonical
-	varVersion := varCell.version.Add(1)
+	varCell.version.Add(1)
 	if !varCellExists {
 		recordFreshRetained(st, pending, e, varCell, meter, b)
-		if !pending {
-			_ = varVersion
-		}
 	}
 
 	funcCell.v = val
@@ -381,9 +388,8 @@ func (e *Env) SetWithContext(ctx context.Context, name string, val Value) error 
 	}
 	cell.v = val
 	cell.canonical = false
-	version := cell.version.Add(1)
+	cell.version.Add(1)
 	if !ok {
-		_ = version
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
 	return nil
@@ -419,9 +425,8 @@ func (e *Env) SetCanonicalWithContext(ctx context.Context, name string, val Valu
 	}
 	cell.v = val
 	cell.canonical = true
-	version := cell.version.Add(1)
+	cell.version.Add(1)
 	if !ok {
-		_ = version
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
 	return nil
@@ -607,9 +612,8 @@ func (e *Env) SetFuncWithContext(ctx context.Context, name string, val Value) er
 	}
 	cell.v = val
 	cell.canonical = false
-	version := cell.version.Add(1)
+	cell.version.Add(1)
 	if !ok {
-		_ = version
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
 	return nil
@@ -643,9 +647,8 @@ func (e *Env) SetFuncCanonicalWithContext(ctx context.Context, name string, val 
 	}
 	cell.v = val
 	cell.canonical = true
-	version := cell.version.Add(1)
+	cell.version.Add(1)
 	if !ok {
-		_ = version
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
 	return nil
