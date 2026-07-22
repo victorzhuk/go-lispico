@@ -164,7 +164,7 @@ func (e *engineImpl) UnloadPlugin(name string) error {
 	return nil
 }
 
-func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
+func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -185,22 +185,39 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 
 	before := e.snapshotBindings()
 
-	e.loadingPlugin = name
-	if err := p.Init(e.rootEnv); err != nil {
-		e.loadingPlugin = ""
-		e.registry.Unregister(name)
+	ctx := e.evalResourceContext(context.Background())
+	top, startErr := core.StartEval(ctx)
+	if startErr != nil {
+		e.rollbackPluginUse(name, before)
 		if hadOld {
 			e.registry.RegisterNoCheck(oldPlugin)
 		}
-		return fmt.Errorf("init plugin %s: %w", name, err)
+		return startErr
+	}
+
+	finished := false
+	defer func() {
+		if !finished {
+			if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
+				err = finishErr
+			}
+		}
+		if err != nil {
+			e.rollbackPluginUse(name, before)
+			if hadOld {
+				e.registry.RegisterNoCheck(oldPlugin)
+			}
+		}
+	}()
+
+	e.loadingPlugin = name
+	if initErr := p.Init(e.rootEnv); initErr != nil {
+		e.loadingPlugin = ""
+		return fmt.Errorf("init plugin %s: %w", name, initErr)
 	}
 	e.loadingPlugin = ""
 
 	if err := e.applyVocabulary(); err != nil {
-		e.registry.Unregister(name)
-		if hadOld {
-			e.registry.RegisterNoCheck(oldPlugin)
-		}
 		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, err)
 	}
 
@@ -216,6 +233,11 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 
 	if !hadOld {
 		e.stats.incPlugins()
+	}
+
+	finished = true
+	if finishErr := core.FinishEval(ctx, top); finishErr != nil {
+		return finishErr
 	}
 
 	e.logger.Info("plugin reloaded", "name", name, "version", p.Metadata().Version)

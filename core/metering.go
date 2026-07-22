@@ -281,18 +281,13 @@ func (st *evalState) settleRetained() error {
 			charges = append(charges, retainedCharge{meter: pending.meter, bytes: pending.bytes, slots: pending.slots})
 		}
 	}
-	charged := make([]retainedCharge, 0, len(charges))
 	for _, charge := range charges {
 		if err := charge.meter.ChargeRetained(charge.bytes, charge.slots); err != nil {
-			for _, prev := range charged {
-				prev.meter.ReleaseRetained(prev.bytes, prev.slots)
-			}
 			st.pendingCellAllocs = nil
 			st.retainedBytes = 0
 			st.retainedSlots = 0
 			return NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
 		}
-		charged = append(charged, charge)
 	}
 
 	var releases []retainedRelease
