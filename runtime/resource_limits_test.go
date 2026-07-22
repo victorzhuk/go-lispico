@@ -290,9 +290,11 @@ func TestLimits_ReaderCeilingConfigured(t *testing.T) {
 }
 
 func TestLimits_RetainedDefaultsNormalize(t *testing.T) {
-	limits := resolveLimits(ResourceLimits{MaxRetainedBytesPerEnv: -1, MaxRetainedSlotsPerEnv: -1})
+	limits := resolveLimits(ResourceLimits{MaxRetainedBytesPerEnv: -1, MaxRetainedSlotsPerEnv: -1, MaxCacheBytes: -1, MaxCacheNodes: -1})
 	assert.Equal(t, 32*1024*1024, limits.MaxRetainedBytesPerEnv)
 	assert.Equal(t, 100_000, limits.MaxRetainedSlotsPerEnv)
+	assert.Equal(t, 64*1024*1024, limits.MaxCacheBytes)
+	assert.Equal(t, 1_000_000, limits.MaxCacheNodes)
 }
 
 func TestLimits_RetainedSlotCeilingFailsClosed(t *testing.T) {

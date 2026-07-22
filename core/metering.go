@@ -516,3 +516,93 @@ func ValueShallowBytes(v Value) int64 {
 		return MeterScalarBytes
 	}
 }
+
+func ValueDeepBytes(v Value) int64 {
+	switch val := v.(type) {
+	case nil:
+		return 0
+	case List:
+		bytes := ListShallowBytes(len(val.Items))
+		for _, item := range val.Items {
+			bytes += ValueDeepBytes(item)
+		}
+		return bytes
+	case Vector:
+		bytes := VectorShallowBytes(len(val.Items))
+		for _, item := range val.Items {
+			bytes += ValueDeepBytes(item)
+		}
+		return bytes
+	case *HashMap:
+		bytes := HashMapShallowBytes(val.Len())
+		val.Each(func(k, v Value) {
+			bytes += ValueDeepBytes(k) + ValueDeepBytes(v)
+		})
+		return bytes
+	case Lambda:
+		bytes := ClosureShallowBytes(len(val.Params)+len(val.Body)) + StringShallowBytes(len(val.Name))
+		for _, p := range val.Params {
+			bytes += ValueDeepBytes(p)
+		}
+		if val.Variadic.V != "" {
+			bytes += ValueDeepBytes(val.Variadic)
+		}
+		for _, body := range val.Body {
+			bytes += ValueDeepBytes(body)
+		}
+		return bytes
+	case Macro:
+		bytes := ClosureShallowBytes(len(val.Params)+len(val.Body)) + StringShallowBytes(len(val.Name))
+		for _, p := range val.Params {
+			bytes += ValueDeepBytes(p)
+		}
+		if val.Variadic.V != "" {
+			bytes += ValueDeepBytes(val.Variadic)
+		}
+		for _, body := range val.Body {
+			bytes += ValueDeepBytes(body)
+		}
+		return bytes
+	default:
+		return ValueShallowBytes(v)
+	}
+}
+
+func ValueNodeCount(v Value) int {
+	switch val := v.(type) {
+	case nil:
+		return 0
+	case List:
+		nodes := 1
+		for _, item := range val.Items {
+			nodes += ValueNodeCount(item)
+		}
+		return nodes
+	case Vector:
+		nodes := 1
+		for _, item := range val.Items {
+			nodes += ValueNodeCount(item)
+		}
+		return nodes
+	case *HashMap:
+		nodes := 1
+		val.Each(func(k, v Value) {
+			nodes += ValueNodeCount(k) + ValueNodeCount(v)
+		})
+		return nodes
+	case Lambda:
+		nodes := 1
+		for _, body := range val.Body {
+			nodes += ValueNodeCount(body)
+		}
+		return nodes
+	case Macro:
+		nodes := 1
+		for _, body := range val.Body {
+			nodes += ValueNodeCount(body)
+		}
+		return nodes
+	default:
+		return 1
+	}
+}

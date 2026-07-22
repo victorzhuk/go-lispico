@@ -176,7 +176,7 @@ Evaluator control:
 
 ## Resource limits
 
-`runtime.WithResourceLimits(runtime.ResourceLimits{…})` configures six
+`runtime.WithResourceLimits(runtime.ResourceLimits{…})` configures ten
 resource ceilings before construction:
 
 | Field | Default | Effect |
@@ -185,8 +185,12 @@ resource ceilings before construction:
 | `MaxStructuralDepth` | 1024 | Maximum structural depth of evaluated / compiled `Vector`, `HashMap`, and quasiquote `List` literals |
 | `MaxCollectionLen` | 10,000,000 | Maximum length of `range`-produced lists |
 | `MaxCacheEntries` | 4096 | Maximum bytecode chunk cache entries |
+| `MaxCacheBytes` | 64 MiB | Maximum retained deep bytes across bytecode chunk cache entries |
+| `MaxCacheNodes` | 1,000,000 | Maximum expanded AST nodes across bytecode chunk cache entries |
 | `MaxReductions` | 10,000,000 | Maximum reductions charged to one evaluation across reader bridge, macro expansion, compiler, evaluator, and `GoFunc` dispatch |
 | `MaxAllocationBytes` | 64 MiB | Maximum shallow allocation bytes charged to one evaluation |
+| `MaxRetainedBytesPerEnv` | 32 MiB | Maximum retained binding backing bytes per engine-owned `Env` |
+| `MaxRetainedSlotsPerEnv` | 100,000 | Maximum retained binding slots per engine-owned `Env` |
 
 A non-positive field selects the default. Ceilings are immutable after `New`.
 Exceeding one returns a `*core.LispicoError` with `Code: "ResourceLimitError"`.
@@ -195,7 +199,9 @@ a dead-branch over-limit literal (`(if false <deep> 1)`) is not rejected.
 Reductions piggyback the existing 128-step cancellation budget in both
 evaluators, and allocation charging uses the fixed deterministic size table in
 ADR 0011. Reader output is charged before the first form runs; VM/tree-walker
-work and `GoFunc` re-entry share one per-evaluation ledger.
+work and `GoFunc` re-entry share one per-evaluation ledger. The per-engine
+bytecode chunk cache obeys the entry, deep-byte, and expanded-node ceilings;
+the process-level stdlib bootstrap artifact cache is exempt.
 
 ## Status
 

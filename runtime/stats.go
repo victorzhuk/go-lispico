@@ -33,6 +33,13 @@ func newStats() *Stats {
 	}
 }
 
+type CacheStats struct {
+	Entries int
+	Bytes   int64
+	Nodes   int
+	Epoch   string
+}
+
 type EngineStats struct {
 	TotalEvals       int64
 	TotalErrors      int64
@@ -41,6 +48,7 @@ type EngineStats struct {
 	PluginCallCounts map[string]int64
 	ActivePlugins    int
 	Uptime           time.Duration
+	Cache            CacheStats
 }
 
 func (s *Stats) Snapshot() EngineStats {

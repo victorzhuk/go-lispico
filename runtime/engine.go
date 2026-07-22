@@ -146,6 +146,8 @@ type ResourceLimits struct {
 	MaxStructuralDepth     int
 	MaxCollectionLen       int
 	MaxCacheEntries        int
+	MaxCacheBytes          int
+	MaxCacheNodes          int
 	MaxReductions          int
 	MaxAllocationBytes     int
 	MaxRetainedBytesPerEnv int
@@ -157,6 +159,8 @@ const (
 	defaultMaxStructuralDepth     = 1024
 	defaultMaxCollectionLen       = 10_000_000
 	defaultMaxCacheEntries        = 4096
+	defaultMaxCacheBytes          = 64 * 1024 * 1024
+	defaultMaxCacheNodes          = 1_000_000
 	defaultMaxReductions          = 10_000_000
 	defaultMaxAllocationBytes     = 64 * 1024 * 1024
 	defaultMaxRetainedBytesPerEnv = 32 * 1024 * 1024
@@ -175,6 +179,12 @@ func resolveLimits(l ResourceLimits) ResourceLimits {
 	}
 	if l.MaxCacheEntries <= 0 {
 		l.MaxCacheEntries = defaultMaxCacheEntries
+	}
+	if l.MaxCacheBytes <= 0 {
+		l.MaxCacheBytes = defaultMaxCacheBytes
+	}
+	if l.MaxCacheNodes <= 0 {
+		l.MaxCacheNodes = defaultMaxCacheNodes
 	}
 	if l.MaxReductions <= 0 {
 		l.MaxReductions = defaultMaxReductions
@@ -283,6 +293,9 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 
 func (e *engineImpl) Close() error {
 	e.stopWatcher()
+	if e.bytecodeEvaluator != nil {
+		e.bytecodeEvaluator.flushCache()
+	}
 	e.logger.Debug("engine closed")
 	return nil
 }
@@ -314,7 +327,11 @@ func (e *engineImpl) Registry() *core.Registry {
 }
 
 func (e *engineImpl) Stats() EngineStats {
-	return e.stats.Snapshot()
+	stats := e.stats.Snapshot()
+	if e.bytecodeEvaluator != nil {
+		stats.Cache = e.bytecodeEvaluator.cacheStats()
+	}
+	return stats
 }
 
 func (e *engineImpl) OnEval(fn func(EvalEvent)) {

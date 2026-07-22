@@ -102,10 +102,10 @@ func (be *bytecodeEvaluator) compileStdlibBootstrapArtifact(ctx context.Context,
 			return stdlibBootstrapArtifact{}, fmt.Errorf("stdlib bootstrap compile: %w", err)
 		}
 		comp.Chunk().Emit(vm.OpReturn, 0)
+		comp.MarkCaptures()
 		if err := chargeCompiledChunk(ctx, comp.Chunk()); err != nil {
 			return stdlibBootstrapArtifact{}, fmt.Errorf("stdlib bootstrap charge: %w", err)
 		}
-		comp.MarkCaptures()
 		chunk := comp.Chunk()
 		if err := chunk.Validate(); err != nil {
 			return stdlibBootstrapArtifact{}, fmt.Errorf("stdlib bootstrap validate: %w", err)

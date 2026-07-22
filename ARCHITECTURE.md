@@ -222,8 +222,9 @@ defer scope.Rebuild() // compact dead backing when done
   `WithDialect(clojure.Dialect())`.
 - `WithResourceLimits(l)` — Set resource ceilings (`MaxReaderDepth`,
   `MaxStructuralDepth`, `MaxCollectionLen`, `MaxCacheEntries`,
-  `MaxReductions`, `MaxAllocationBytes`, `MaxRetainedBytesPerEnv`,
-  `MaxRetainedSlotsPerEnv`), applied once at `New` and immutable
+  `MaxCacheBytes`, `MaxCacheNodes`, `MaxReductions`, `MaxAllocationBytes`,
+  `MaxRetainedBytesPerEnv`, `MaxRetainedSlotsPerEnv`), applied once at
+  `New` and immutable
   afterward. A non-positive field selects a conservative default; there is no
   "unlimited". Exceeding a ceiling returns a `*core.LispicoError` with
   `Code: "ResourceLimitError"`.
@@ -315,8 +316,11 @@ evaluator callbacks (`map`/`filter`/`reduce` invoke `eval.Apply`, and VM
 structure that is actually evaluated/executed is counted, so a dead-branch
 over-limit literal is not rejected and the two evaluators agree. `range` caps
 its result length (`MaxCollectionLen`) and checks `ctx` cooperatively; the
-bytecode chunk cache is bounded (`MaxCacheEntries`) and reclaims entries
-orphaned by a macro-epoch bump. `MaxReductions` counts macro expansion,
+per-engine bytecode chunk cache is bounded by entry, deep-byte, and
+expanded-node ceilings (`MaxCacheEntries`, `MaxCacheBytes`, `MaxCacheNodes`) and
+reclaims entries orphaned by a macro-epoch bump. The process-level stdlib
+bootstrap artifact cache is exempt from these per-engine ceilings.
+`MaxReductions` counts macro expansion,
 compiler emission, evaluator work, and `GoFunc` dispatch via the existing
 128-step cancellation budget, while `MaxAllocationBytes` charges the fixed
 deterministic size table from ADR 0011 at reader, compiler, VM, tree-walker,

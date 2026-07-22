@@ -29,14 +29,16 @@ func compileErrf(format string, args ...any) error {
 // Compiler compiles core.Value forms into a single vm.Chunk, tracking local
 // variable scopes as it goes. It implements vm.FormCompiler.
 type Compiler struct {
-	chunk   *vm.Chunk
-	locals  []local
-	depth   int
-	parent  *Compiler
-	loops   []loopFrame
-	dialect *core.Dialect
-	meter   core.EvalMeter
-	err     error
+	chunk        *vm.Chunk
+	locals       []local
+	depth        int
+	parent       *Compiler
+	loops        []loopFrame
+	dialect      *core.Dialect
+	meter        core.EvalMeter
+	err          error
+	compileDepth int
+	nodeCount    int
 	// caps lists the free variables this chunk captures from its enclosing
 	// context, parallel to chunk.Caps.
 	caps []string
@@ -117,6 +119,11 @@ func (c *Compiler) Compile(form core.Value) error {
 	if c.err != nil {
 		return c.err
 	}
+	if c.compileDepth == 0 {
+		c.nodeCount += core.ValueNodeCount(form)
+	}
+	c.compileDepth++
+	defer func() { c.compileDepth-- }()
 	switch f := form.(type) {
 	case core.Nil:
 		c.emit(vm.OpNil, 0)
@@ -816,6 +823,26 @@ func (c *Compiler) finalize() {
 		}
 	}
 	chunk.MaxStack = computeMaxStack(chunk)
+	chunk.NodeCount = c.nodeCount
+	chunk.DeepBytes = chunkDeepBytes(chunk)
+}
+
+func chunkDeepBytes(chunk *vm.Chunk) int64 {
+	if chunk == nil {
+		return 0
+	}
+	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + core.ValueSlotsBytes(len(chunk.Constants))
+	for _, name := range chunk.LocalNames {
+		bytes += core.StringShallowBytes(len(name))
+	}
+	for _, constant := range chunk.Constants {
+		bytes += core.ValueDeepBytes(constant)
+	}
+	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
+	for _, sub := range chunk.SubChunks {
+		bytes += chunkDeepBytes(sub)
+	}
+	return bytes
 }
 
 func isElse(v core.Value) bool {

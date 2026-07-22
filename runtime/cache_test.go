@@ -215,3 +215,178 @@ func TestCache_StaleEpochEvictionBounded(t *testing.T) {
 	assert.True(t, core.Int{V: 30}.Equals(r), "(m 1) under (+ x 29) => 30")
 	assert.LessOrEqual(t, cacheCount(t, e), 5, "stale-epoch orphaned entries must be reclaimed")
 }
+
+func cacheStats(t *testing.T, e Engine) CacheStats {
+	t.Helper()
+	return e.Stats().Cache
+}
+
+func cacheContainsSource(t *testing.T, e Engine, src string) bool {
+	t.Helper()
+	ei, ok := e.(*engineImpl)
+	require.True(t, ok)
+	require.NotNil(t, ei.bytecodeEvaluator)
+	be := ei.bytecodeEvaluator
+	keyHash := sha256Hash(src)
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	for key := range be.cache {
+		if key.sourceHash == keyHash {
+			return true
+		}
+	}
+	return false
+}
+
+func newCacheLimitsEngine(t *testing.T, limits ResourceLimits) Engine {
+	t.Helper()
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithResourceLimits(limits))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+	return e
+}
+
+func cacheProfile(t *testing.T, src string) CacheStats {
+	t.Helper()
+	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 16, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30})
+	_, err := e.Eval(t.Context(), "profile", src)
+	require.NoError(t, err)
+	stats := cacheStats(t, e)
+	require.Equal(t, 1, stats.Entries)
+	require.Positive(t, stats.Bytes)
+	require.Positive(t, stats.Nodes)
+	return stats
+}
+
+func evalCacheSource(t *testing.T, e Engine, src string) core.Value {
+	t.Helper()
+	v, err := e.Eval(t.Context(), "cache", src)
+	require.NoError(t, err)
+	return v
+}
+
+func TestCache_ByteCeilingEvicts(t *testing.T) {
+	first := "(quote " + vectorLiteral("1", 64) + ")"
+	second := "(quote " + vectorLiteral("2", 64) + ")"
+	profile := cacheProfile(t, first)
+	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: int(profile.Bytes), MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30})
+
+	evalCacheSource(t, e, first)
+	evalCacheSource(t, e, second)
+
+	stats := cacheStats(t, e)
+	assert.Equal(t, 1, stats.Entries)
+	assert.LessOrEqual(t, stats.Bytes, profile.Bytes)
+	assert.False(t, cacheContainsSource(t, e, first))
+	assert.True(t, cacheContainsSource(t, e, second))
+}
+
+func TestCache_NodeCeilingEvicts(t *testing.T) {
+	profile := cacheProfile(t, "1")
+	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1 << 30, MaxCacheNodes: profile.Nodes, MaxCollectionLen: 1 << 30})
+
+	evalCacheSource(t, e, "1")
+	evalCacheSource(t, e, "2")
+
+	stats := cacheStats(t, e)
+	assert.Equal(t, 1, stats.Entries)
+	assert.LessOrEqual(t, stats.Nodes, profile.Nodes)
+	assert.False(t, cacheContainsSource(t, e, "1"))
+	assert.True(t, cacheContainsSource(t, e, "2"))
+}
+
+func TestCache_EvictionDeterminism(t *testing.T) {
+	run := func() map[string]bool {
+		e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 2, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30})
+		evalCacheSource(t, e, "1")
+		evalCacheSource(t, e, "2")
+		evalCacheSource(t, e, "1")
+		evalCacheSource(t, e, "3")
+		require.Equal(t, 2, cacheStats(t, e).Entries)
+		return map[string]bool{
+			"1": cacheContainsSource(t, e, "1"),
+			"2": cacheContainsSource(t, e, "2"),
+			"3": cacheContainsSource(t, e, "3"),
+		}
+	}
+
+	want := map[string]bool{"1": true, "2": false, "3": true}
+	assert.Equal(t, want, run())
+	assert.Equal(t, want, run())
+}
+
+func TestCache_UnfitChunkRunsUncached(t *testing.T) {
+	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1, MaxCacheNodes: 1, MaxCollectionLen: 1 << 30})
+
+	v := evalCacheSource(t, e, "[1 2]")
+	assert.True(t, core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}}.Equals(v))
+	evalCacheSource(t, e, "[1 2]")
+
+	assert.Equal(t, 0, cacheStats(t, e).Entries)
+}
+
+func TestCache_MeterChargeAndRelease(t *testing.T) {
+	m := &recordingMeter{}
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(m), WithResourceLimits(ResourceLimits{MaxCacheEntries: 1, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+	m.reset()
+
+	evalCacheSource(t, e, "1")
+	snap := m.snapshot()
+	assert.Equal(t, 1, snap.chargeCalls)
+	assert.Equal(t, int64(1), snap.chargedSlots)
+	assert.Equal(t, 0, snap.releaseCalls)
+
+	evalCacheSource(t, e, "2")
+	snap = m.snapshot()
+	assert.Equal(t, 2, snap.chargeCalls)
+	assert.Equal(t, int64(2), snap.chargedSlots)
+	assert.Equal(t, 1, snap.releaseCalls)
+	assert.Equal(t, int64(1), snap.releasedSlots)
+
+	require.NoError(t, e.Close())
+	snap = m.snapshot()
+	assert.Equal(t, 2, snap.releaseCalls)
+	assert.Equal(t, int64(2), snap.releasedSlots)
+
+	deny := &recordingMeter{chargeErr: fmt.Errorf("deny")}
+	uncached, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(deny), WithResourceLimits(ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = uncached.Close() })
+	deny.reset()
+	evalCacheSource(t, uncached, "1")
+	assert.Equal(t, 0, cacheStats(t, uncached).Entries)
+	assert.Equal(t, 1, deny.snapshot().chargeCalls)
+}
+
+func TestCache_StatsExposeEntriesBytesNodesEpoch(t *testing.T) {
+	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30})
+
+	evalCacheSource(t, e, "1")
+	stats := cacheStats(t, e)
+
+	assert.Equal(t, 1, stats.Entries)
+	assert.Positive(t, stats.Bytes)
+	assert.Equal(t, 1, stats.Nodes)
+	ei := e.(*engineImpl)
+	assert.Equal(t, fmt.Sprintf("%s:%d", ei.bytecodeEvaluator.dialectFP, e.RootEnv().MacroEpoch()), stats.Epoch)
+}
+
+func TestCache_MultiCeilingEvictionOneInsert(t *testing.T) {
+	bigSrc := vectorLiteral("1", 64)
+	bigProfile := cacheProfile(t, bigSrc)
+	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 2, MaxCacheBytes: int(bigProfile.Bytes), MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30})
+
+	evalCacheSource(t, e, "1")
+	evalCacheSource(t, e, "2")
+	require.Equal(t, 2, cacheStats(t, e).Entries)
+	evalCacheSource(t, e, bigSrc)
+
+	stats := cacheStats(t, e)
+	assert.Equal(t, 1, stats.Entries)
+	assert.LessOrEqual(t, stats.Bytes, bigProfile.Bytes)
+	assert.False(t, cacheContainsSource(t, e, "1"))
+	assert.False(t, cacheContainsSource(t, e, "2"))
+	assert.True(t, cacheContainsSource(t, e, bigSrc))
+}

@@ -43,15 +43,28 @@ type bytecodeEvaluator struct {
 	tree               core.Evaluator
 	dialect            core.Dialect
 	mu                 sync.Mutex
-	cache              map[cacheKey]*vm.Chunk
+	cache              map[cacheKey]*cacheEntry
+	cacheHead          *cacheEntry
+	cacheTail          *cacheEntry
+	cacheBytes         int64
+	cacheNodes         int
 	dialectFP          string
 	vmPool             sync.Pool
 	maxStructuralDepth int
 	maxCollectionLen   int
 	maxCacheEntries    int
+	maxCacheBytes      int
+	maxCacheNodes      int
 	maxReductions      int
 	maxAllocBytes      int
 	engineMeter        Meter
+}
+
+type cacheEntry struct {
+	key   cacheKey
+	chunk *vm.Chunk
+	prev  *cacheEntry
+	next  *cacheEntry
 }
 
 func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect, meter Meter) *bytecodeEvaluator {
@@ -62,6 +75,8 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 		maxStructuralDepth: limits.MaxStructuralDepth,
 		maxCollectionLen:   limits.MaxCollectionLen,
 		maxCacheEntries:    limits.MaxCacheEntries,
+		maxCacheBytes:      limits.MaxCacheBytes,
+		maxCacheNodes:      limits.MaxCacheNodes,
 		maxReductions:      limits.MaxReductions,
 		maxAllocBytes:      limits.MaxAllocationBytes,
 		engineMeter:        meter,
@@ -69,7 +84,7 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 		tree:               treeWalker,
 		dialect:            dialect,
 		dialectFP:          dialect.Fingerprint(),
-		cache:              make(map[cacheKey]*vm.Chunk),
+		cache:              make(map[cacheKey]*cacheEntry),
 	}
 	be.vmPool = sync.Pool{
 		New: func() any {
@@ -77,6 +92,134 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 		},
 	}
 	return be
+}
+
+func (be *bytecodeEvaluator) cacheGetLocked(key cacheKey) (*vm.Chunk, bool) {
+	entry, ok := be.cache[key]
+	if !ok {
+		return nil, false
+	}
+	be.moveCacheEntryToHeadLocked(entry)
+	return entry.chunk, true
+}
+
+func (be *bytecodeEvaluator) cacheAdmitLocked(key cacheKey, chunk *vm.Chunk) bool {
+	if !be.cacheFitsAlone(chunk) {
+		return false
+	}
+	if be.engineMeter != nil {
+		if err := be.engineMeter.ChargeRetained(chunk.DeepBytes, 1); err != nil {
+			return false
+		}
+	}
+	entry := &cacheEntry{key: key, chunk: chunk}
+	be.cache[key] = entry
+	be.insertCacheEntryHeadLocked(entry)
+	be.cacheBytes += chunk.DeepBytes
+	be.cacheNodes += chunk.NodeCount
+	for be.cacheOverLimitLocked() {
+		be.evictCacheEntryLocked(be.cacheTail)
+	}
+	return true
+}
+
+func (be *bytecodeEvaluator) cacheFitsAlone(chunk *vm.Chunk) bool {
+	if chunk == nil {
+		return false
+	}
+	if be.maxCacheEntries < 1 {
+		return false
+	}
+	if int64(be.maxCacheBytes) < chunk.DeepBytes {
+		return false
+	}
+	return be.maxCacheNodes >= chunk.NodeCount
+}
+
+func (be *bytecodeEvaluator) cacheOverLimitLocked() bool {
+	return len(be.cache) > be.maxCacheEntries || be.cacheBytes > int64(be.maxCacheBytes) || be.cacheNodes > be.maxCacheNodes
+}
+
+func (be *bytecodeEvaluator) insertCacheEntryHeadLocked(entry *cacheEntry) {
+	entry.prev = nil
+	entry.next = be.cacheHead
+	if be.cacheHead != nil {
+		be.cacheHead.prev = entry
+	} else {
+		be.cacheTail = entry
+	}
+	be.cacheHead = entry
+}
+
+func (be *bytecodeEvaluator) moveCacheEntryToHeadLocked(entry *cacheEntry) {
+	if entry == be.cacheHead {
+		return
+	}
+	be.unlinkCacheEntryLocked(entry)
+	be.insertCacheEntryHeadLocked(entry)
+}
+
+func (be *bytecodeEvaluator) unlinkCacheEntryLocked(entry *cacheEntry) {
+	if entry.prev != nil {
+		entry.prev.next = entry.next
+	} else {
+		be.cacheHead = entry.next
+	}
+	if entry.next != nil {
+		entry.next.prev = entry.prev
+	} else {
+		be.cacheTail = entry.prev
+	}
+	entry.prev = nil
+	entry.next = nil
+}
+
+func (be *bytecodeEvaluator) evictCacheEntryLocked(entry *cacheEntry) {
+	if entry == nil {
+		return
+	}
+	delete(be.cache, entry.key)
+	be.unlinkCacheEntryLocked(entry)
+	be.cacheBytes -= entry.chunk.DeepBytes
+	be.cacheNodes -= entry.chunk.NodeCount
+	if be.cacheBytes < 0 {
+		be.cacheBytes = 0
+	}
+	if be.cacheNodes < 0 {
+		be.cacheNodes = 0
+	}
+	if be.engineMeter != nil {
+		be.engineMeter.ReleaseRetained(entry.chunk.DeepBytes, 1)
+	}
+}
+
+func (be *bytecodeEvaluator) flushCacheEpochLocked(epoch int) {
+	for entry := be.cacheTail; entry != nil; {
+		prev := entry.prev
+		if entry.key.macroEpoch != epoch {
+			be.evictCacheEntryLocked(entry)
+		}
+		entry = prev
+	}
+}
+
+func (be *bytecodeEvaluator) flushCache() {
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	for be.cacheTail != nil {
+		be.evictCacheEntryLocked(be.cacheTail)
+	}
+}
+
+func (be *bytecodeEvaluator) cacheStats() CacheStats {
+	be.mu.Lock()
+	defer be.mu.Unlock()
+	return CacheStats{
+		Entries: len(be.cache),
+		Bytes:   be.cacheBytes,
+		Nodes:   be.cacheNodes,
+		Epoch:   fmt.Sprintf("%s:%d", be.dialectFP, be.globals.MacroEpoch()),
+	}
 }
 
 func (be *bytecodeEvaluator) treeFallbackCtx(ctx context.Context) context.Context {
@@ -213,17 +356,13 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 	}
 
 	be.mu.Lock()
-	chunk, hit := be.cache[key]
+	chunk, hit := be.cacheGetLocked(key)
 	be.mu.Unlock()
 
 	if !hit {
 		currentEpoch := be.globals.MacroEpoch()
 		be.mu.Lock()
-		for k := range be.cache {
-			if k.macroEpoch != currentEpoch {
-				delete(be.cache, k)
-			}
-		}
+		be.flushCacheEpochLocked(currentEpoch)
 		be.mu.Unlock()
 
 		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
@@ -247,16 +386,11 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		}
 
 		be.mu.Lock()
-		if cached, dup := be.cache[key]; dup {
+		if cached, dup := be.cacheGetLocked(key); dup {
 			chunk = cached
-		} else {
-			be.cache[key] = chunk
-			for len(be.cache) > be.maxCacheEntries {
-				for k := range be.cache {
-					delete(be.cache, k)
-					break
-				}
-			}
+			hit = true
+		} else if be.cacheAdmitLocked(key, chunk) {
+			hit = false
 		}
 		be.mu.Unlock()
 	}
@@ -351,9 +485,15 @@ func compiledChunkBytes(chunk *vm.Chunk) int64 {
 	if chunk == nil {
 		return 0
 	}
+	if chunk.DeepBytes > 0 {
+		return chunk.DeepBytes
+	}
 	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + core.ValueSlotsBytes(len(chunk.Constants))
+	for _, name := range chunk.LocalNames {
+		bytes += core.StringShallowBytes(len(name))
+	}
 	for _, c := range chunk.Constants {
-		bytes += core.ValueShallowBytes(c)
+		bytes += core.ValueDeepBytes(c)
 	}
 	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
 	for _, sub := range chunk.SubChunks {

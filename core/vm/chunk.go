@@ -55,6 +55,10 @@ type Chunk struct {
 	Caps []CapDesc
 	// Code is the compiled instruction sequence.
 	Code []Instruction
+	// DeepBytes is the retained size of this chunk tree for cache accounting.
+	DeepBytes int64
+	// NodeCount is the expanded AST node count this chunk was compiled from.
+	NodeCount int
 	// Constants is the chunk's constant pool, indexed by AddConstant.
 	Constants []core.Value
 	// SubChunks holds chunks for closures compiled within this one, indexed
@@ -140,6 +144,8 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 		Captured:   c.Captured,
 		Caps:       c.Caps,
 		Code:       c.Code,
+		DeepBytes:  c.DeepBytes,
+		NodeCount:  c.NodeCount,
 		Constants:  c.Constants,
 		Truthiness: c.Truthiness,
 	}

@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `(*Env).Rebuild()` compacts a scope in place — fresh maps, live cell
   pointers preserved, tombstoned cells dropped — the only path that
   releases dead backing (ADR 0012).
+- `runtime.ResourceLimits` now includes `MaxCacheBytes` (default 64 MiB)
+  and `MaxCacheNodes` (default 1,000,000), and `EngineStats.Cache` reports
+  chunk-cache entries, bytes, nodes, and epoch.
 - `Engine.LoadScope(ctx, source, bindings) (Value, *Env, error)` evaluates
   source with bindings and returns the child scope so the embedder owns
   its lifecycle: usage probe, rebuild, or retirement.
@@ -44,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiler emission, evaluator work, VM make-ops, and `GoFunc` dispatch/results
   all charge the same evaluation ledger, and limit breaches remain terminal
   `ResourceLimitError`s.
+- The per-engine bytecode chunk cache now evicts deterministically by LRU across
+  entry, deep-byte, and expanded-node ceilings. Chunks larger than any cache
+  ceiling run uncached without failing evaluation.
 
 ## [0.8.0] - 2026-07-19
 
