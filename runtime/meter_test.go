@@ -444,6 +444,77 @@ func TestMeter_MergeIntoDistinctMetersRebuildRelease(t *testing.T) {
 	}
 }
 
+func TestMeter_MergeIntoUpdatesTargetRetainedUsage(t *testing.T) {
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	_, scope, err := eng.LoadScope(t.Context(), "(def z [7 8 9])", nil)
+	if err != nil {
+		t.Fatalf("LoadScope: %v", err)
+	}
+	scopeBytes, scopeSlots := scope.RetainedUsage()
+	rootBytes, rootSlots := eng.RootEnv().RetainedUsage()
+
+	if err := scope.MergeInto(eng.RootEnv()); err != nil {
+		t.Fatalf("MergeInto: %v", err)
+	}
+
+	gotBytes, gotSlots := eng.RootEnv().RetainedUsage()
+	if gotBytes != rootBytes+scopeBytes || gotSlots != rootSlots+scopeSlots {
+		t.Fatalf("RootEnv RetainedUsage = (%d,%d), want (%d,%d)", gotBytes, gotSlots, rootBytes+scopeBytes, rootSlots+scopeSlots)
+	}
+}
+
+func TestMeter_MergeIntoOverwriteReleasesPreviousOwner(t *testing.T) {
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	meterA := &recordingMeter{}
+	meterB := &recordingMeter{}
+
+	if _, err := eng.Eval(WithMeter(t.Context(), meterA), "rootA", "(def x [1 2 3])"); err != nil {
+		t.Fatalf("Eval A: %v", err)
+	}
+	snapA := meterA.snapshot()
+
+	_, scope, err := eng.LoadScope(WithMeter(t.Context(), meterB), "(def x [4 5 6])", nil)
+	if err != nil {
+		t.Fatalf("LoadScope: %v", err)
+	}
+	snapB := meterB.snapshot()
+
+	rootBytes, rootSlots := eng.RootEnv().RetainedUsage()
+	if err := scope.MergeInto(eng.RootEnv()); err != nil {
+		t.Fatalf("MergeInto: %v", err)
+	}
+
+	if snap := meterA.snapshot(); snap.releaseCalls != 1 || snap.releasedBytes != snapA.chargedBytes || snap.releasedSlots != snapA.chargedSlots {
+		t.Fatalf("meterA ReleaseRetained = calls %d (%d,%d), want 1 (%d,%d)", snap.releaseCalls, snap.releasedBytes, snap.releasedSlots, snapA.chargedBytes, snapA.chargedSlots)
+	}
+	if snap := meterB.snapshot(); snap.releaseCalls != 0 {
+		t.Fatalf("meterB release calls = %d, want 0", snap.releaseCalls)
+	}
+	gotBytes, gotSlots := eng.RootEnv().RetainedUsage()
+	if gotBytes != rootBytes || gotSlots != rootSlots {
+		t.Fatalf("RootEnv RetainedUsage = (%d,%d), want unchanged (%d,%d)", gotBytes, gotSlots, rootBytes, rootSlots)
+	}
+
+	eng.RootEnv().Delete("x")
+	freedBytes, freedSlots := eng.RootEnv().Rebuild()
+	if freedBytes != snapB.chargedBytes || freedSlots != snapB.chargedSlots {
+		t.Fatalf("RootEnv.Rebuild x freed = (%d,%d), want meterB charge (%d,%d)", freedBytes, freedSlots, snapB.chargedBytes, snapB.chargedSlots)
+	}
+	if snap := meterB.snapshot(); snap.releaseCalls != 1 || snap.releasedBytes != snapB.chargedBytes || snap.releasedSlots != snapB.chargedSlots {
+		t.Fatalf("meterB ReleaseRetained = calls %d (%d,%d), want 1 (%d,%d)", snap.releaseCalls, snap.releasedBytes, snap.releasedSlots, snapB.chargedBytes, snapB.chargedSlots)
+	}
+}
+
 func TestMeter_ConcurrentEvaluations(t *testing.T) {
 	m := &recordingMeter{}
 	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))

@@ -910,6 +910,88 @@ func (e *Env) LocalNames() []string {
 	return names
 }
 
+type mergeCellCommit struct {
+	cell      *Cell
+	src       *Cell
+	canonical bool
+}
+
+func (m mergeCellCommit) commit() {
+	m.cell.v = m.src.v
+	m.cell.canonical = m.canonical
+	m.cell.retainedMeter = m.src.retainedMeter
+	m.cell.retainedBytes = m.src.retainedBytes
+	m.cell.rebuilt = m.src.rebuilt
+	m.cell.version.Add(1)
+}
+
+func (e *Env) mergeCell(name string, src *Cell, canonical bool) (mergeCellCommit, retainedRelease, error) {
+	cell, ok := e.vars[name]
+	if !ok {
+		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
+			return mergeCellCommit{}, retainedRelease{}, err
+		}
+		cell = e.localCell(name)
+		e.newNameGen.Add(1)
+		e.retainedBytes += src.retainedBytes
+		e.retainedSlots++
+		return mergeCellCommit{
+			cell:      cell,
+			src:       src,
+			canonical: canonical,
+		}, retainedRelease{}, nil
+	}
+
+	release := retainedRelease{}
+	if cell.retainedMeter != nil {
+		release = retainedRelease{
+			meter: cell.retainedMeter,
+			bytes: cell.retainedBytes,
+			slots: 1,
+		}
+	}
+	return mergeCellCommit{
+		cell:      cell,
+		src:       src,
+		canonical: canonical,
+	}, release, nil
+}
+
+func (e *Env) mergeFuncCell(name string, src *Cell, canonical bool) (mergeCellCommit, retainedRelease, error) {
+	cell, ok := e.funcs[name]
+	if e.funcs == nil {
+		ok = false
+	}
+	if !ok {
+		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
+			return mergeCellCommit{}, retainedRelease{}, err
+		}
+		cell = e.localFuncCell(name)
+		e.newNameGen.Add(1)
+		e.retainedBytes += src.retainedBytes
+		e.retainedSlots++
+		return mergeCellCommit{
+			cell:      cell,
+			src:       src,
+			canonical: canonical,
+		}, retainedRelease{}, nil
+	}
+
+	release := retainedRelease{}
+	if cell.retainedMeter != nil {
+		release = retainedRelease{
+			meter: cell.retainedMeter,
+			bytes: cell.retainedBytes,
+			slots: 1,
+		}
+	}
+	return mergeCellCommit{
+		cell:      cell,
+		src:       src,
+		canonical: canonical,
+	}, release, nil
+}
+
 // MergeInto copies all bindings from this env into target.
 // Does NOT copy parent bindings. Target is locked during merge.
 func (e *Env) MergeInto(target *Env) error {
@@ -917,83 +999,99 @@ func (e *Env) MergeInto(target *Env) error {
 	defer e.mu.RUnlock()
 
 	target.mu.Lock()
-	defer target.mu.Unlock()
+	var (
+		commits  []mergeCellCommit
+		releases []retainedRelease
+	)
 
 	for name, cell := range e.vars {
 		if cell.v != nil {
-			if err := target.mergeCell(name, cell, false); err != nil {
+			commit, release, err := target.mergeCell(name, cell, false)
+			if err != nil {
+				target.mu.Unlock()
 				return err
+			}
+			commits = append(commits, commit)
+			if release.meter != nil {
+				releases = append(releases, release)
 			}
 		}
 	}
 	for name, cell := range e.funcs {
 		if cell.v != nil {
-			if err := target.mergeFuncCell(name, cell, false); err != nil {
+			commit, release, err := target.mergeFuncCell(name, cell, false)
+			if err != nil {
+				target.mu.Unlock()
 				return err
+			}
+			commits = append(commits, commit)
+			if release.meter != nil {
+				releases = append(releases, release)
 			}
 		}
 	}
+	target.mu.Unlock()
+
+	for _, release := range releases {
+		release.meter.ReleaseRetained(release.bytes, release.slots)
+	}
+
+	target.mu.Lock()
+	for _, commit := range commits {
+		commit.commit()
+	}
+	target.mu.Unlock()
 	return nil
 }
 
+// MergeIntoCanonical copies all bindings from this env into target.
+// Canonical value-cell binds are preserved on merge.
 func (e *Env) MergeIntoCanonical(target *Env) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	target.mu.Lock()
-	defer target.mu.Unlock()
+	var (
+		commits  []mergeCellCommit
+		releases []retainedRelease
+	)
 
 	for name, cell := range e.vars {
 		if cell.v != nil {
-			if err := target.mergeCell(name, cell, true); err != nil {
+			commit, release, err := target.mergeCell(name, cell, true)
+			if err != nil {
+				target.mu.Unlock()
 				return err
+			}
+			commits = append(commits, commit)
+			if release.meter != nil {
+				releases = append(releases, release)
 			}
 		}
 	}
 	for name, cell := range e.funcs {
 		if cell.v != nil {
-			if err := target.mergeFuncCell(name, cell, true); err != nil {
+			commit, release, err := target.mergeFuncCell(name, cell, true)
+			if err != nil {
+				target.mu.Unlock()
 				return err
+			}
+			commits = append(commits, commit)
+			if release.meter != nil {
+				releases = append(releases, release)
 			}
 		}
 	}
-	return nil
-}
+	target.mu.Unlock()
 
-func (e *Env) mergeCell(name string, src *Cell, canonical bool) error {
-	cell, ok := e.vars[name]
-	if !ok {
-		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
-			return err
-		}
-		cell = e.localCell(name)
-		e.newNameGen.Add(1)
+	for _, release := range releases {
+		release.meter.ReleaseRetained(release.bytes, release.slots)
 	}
-	cell.v = src.v
-	cell.canonical = canonical
-	cell.retainedMeter = src.retainedMeter
-	cell.retainedBytes = src.retainedBytes
-	cell.rebuilt = src.rebuilt
-	cell.version.Add(1)
-	return nil
-}
 
-func (e *Env) mergeFuncCell(name string, src *Cell, canonical bool) error {
-	cell, ok := e.funcs[name]
-	if e.funcs == nil {
-		ok = false
+	target.mu.Lock()
+	for _, commit := range commits {
+		commit.commit()
 	}
-	if !ok {
-		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
-			return err
-		}
-		cell = e.localFuncCell(name)
-	}
-	cell.v = src.v
-	cell.canonical = canonical
-	cell.retainedMeter = src.retainedMeter
-	cell.retainedBytes = src.retainedBytes
-	cell.rebuilt = src.rebuilt
-	cell.version.Add(1)
+	target.mu.Unlock()
 	return nil
 }
