@@ -29,36 +29,18 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("llm/complete", core.GoFunc{
-		Name: "llm/complete",
-		Fn:   p.complete,
-	})
-
-	env.Set("llm/complete*", core.GoFunc{
-		Name: "llm/complete*",
-		Fn:   p.completeStar,
-	})
-
-	env.Set("llm/stream", core.GoFunc{
-		Name: "llm/stream",
-		Fn:   p.stream,
-	})
-
-	env.Set("llm/chat", core.GoFunc{
-		Name: "llm/chat",
-		Fn:   p.chat,
-	})
-
-	env.Set("llm/embed", core.GoFunc{
-		Name: "llm/embed",
-		Fn:   p.embed,
-	})
-
-	env.Set("llm/tool-call", core.GoFunc{
-		Name: "llm/tool-call",
-		Fn:   p.toolCall,
-	})
-
+	for _, fn := range []core.GoFunc{
+		{Name: "llm/complete", Fn: p.complete},
+		{Name: "llm/complete*", Fn: p.completeStar},
+		{Name: "llm/stream", Fn: p.stream},
+		{Name: "llm/chat", Fn: p.chat},
+		{Name: "llm/embed", Fn: p.embed},
+		{Name: "llm/tool-call", Fn: p.toolCall},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return p.loadBootstrap(env)
 }
 

@@ -92,6 +92,10 @@ func meteringLimits(t *testing.T, maxReductions, maxAllocationBytes int) Resourc
 	return limits
 }
 
+func retainedLimitBytes(name string, val core.Value) int64 {
+	return core.MeterEnvMapEntryBytes + core.MeterEnvCellBytes + core.StringShallowBytes(len(name)) + core.ValueShallowBytes(val)
+}
+
 func evalModeName(bytecode bool) string {
 	if bytecode {
 		return "bytecode"
@@ -283,6 +287,132 @@ func TestLimits_ReaderCeilingConfigured(t *testing.T) {
 		_, err := evalLimits(t, bc, lim, deepVector(100))
 		assert.True(t, isResourceLimit(t, err), "bytecode=%v: deep source must reject at configured MaxReaderDepth", bc)
 	}
+}
+
+func TestLimits_RetainedDefaultsNormalize(t *testing.T) {
+	limits := resolveLimits(ResourceLimits{MaxRetainedBytesPerEnv: -1, MaxRetainedSlotsPerEnv: -1})
+	assert.Equal(t, 32*1024*1024, limits.MaxRetainedBytesPerEnv)
+	assert.Equal(t, 100_000, limits.MaxRetainedSlotsPerEnv)
+}
+
+func TestLimits_RetainedSlotCeilingFailsClosed(t *testing.T) {
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	require.NoError(t, e.Bind("a", core.Int{V: 1}))
+	err = e.Bind("b", core.Int{V: 2})
+	assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+	if _, ok := e.RootEnv().Get("b"); ok {
+		t.Fatal("b should not be bound after failed retained slot charge")
+	}
+	if v, ok := e.RootEnv().Get("a"); !ok || !v.Equals(core.Int{V: 1}) {
+		t.Fatalf("a = %v, %v; want 1, true", v, ok)
+	}
+}
+
+func TestLimits_Lisp2BindRollbackOnFuncCellLimit(t *testing.T) {
+	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	err = e.Bind("a", core.Int{V: 1})
+	assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+	if _, ok := e.RootEnv().Get("a"); ok {
+		t.Fatal("a value cell should be unbound after dual-cell bind failure")
+	}
+	if _, ok := e.RootEnv().GetFunc("a"); ok {
+		t.Fatal("a function cell should be unbound after dual-cell bind failure")
+	}
+	bytes, slots := e.RootEnv().RetainedUsage()
+	assert.Equal(t, int64(0), bytes)
+	assert.Equal(t, int64(0), slots)
+}
+
+func TestLimits_Lisp2LoadScopeBindingRollbackOnFuncCellLimit(t *testing.T) {
+	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	_, scope, err := e.LoadScope(t.Context(), "x", map[string]core.Value{"x": core.Int{V: 1}})
+	assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+	require.NotNil(t, scope)
+	if _, ok := scope.Get("x"); ok {
+		t.Fatal("x value cell should be unbound after function-cell bind failure")
+	}
+	if _, ok := scope.GetFunc("x"); ok {
+		t.Fatal("x function cell should be unbound after function-cell bind failure")
+	}
+	bytes, slots := scope.RetainedUsage()
+	assert.Equal(t, int64(0), bytes)
+	assert.Equal(t, int64(0), slots)
+}
+
+func TestLimits_Lisp2LazyMaterializeRollbackOnFuncCellLimit(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+	require.NoError(t, e.Use(stdlib.New()))
+
+	_, err = e.Eval(t.Context(), "first-touch", "(+ 1 2)")
+	require.Error(t, err)
+	if _, ok := e.RootEnv().Get("+"); ok {
+		t.Fatal("+ value cell should be unbound after lazy function-cell bind failure")
+	}
+	if _, ok := e.RootEnv().GetFunc("+"); ok {
+		t.Fatal("+ function cell should be unbound after lazy function-cell bind failure")
+	}
+}
+
+func TestLimits_RetainedByteCeilingFailsClosed(t *testing.T) {
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithResourceLimits(ResourceLimits{MaxRetainedBytesPerEnv: 1}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	err = e.Bind("a", core.Int{V: 1})
+	assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+	if _, ok := e.RootEnv().Get("a"); ok {
+		t.Fatal("a should not be bound after failed retained byte charge")
+	}
+	bytes, slots := e.RootEnv().RetainedUsage()
+	assert.Equal(t, int64(0), bytes)
+	assert.Equal(t, int64(0), slots)
+}
+
+func TestLimits_RetainedRebindAndDeleteDoNotCharge(t *testing.T) {
+	initial := core.Int{V: 1}
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	require.NoError(t, e.Bind("x", initial))
+	wantBytes, wantSlots := e.RootEnv().RetainedUsage()
+	require.NoError(t, e.Bind("x", core.String{V: "larger"}))
+	gotBytes, gotSlots := e.RootEnv().RetainedUsage()
+	assert.Equal(t, wantBytes, gotBytes)
+	assert.Equal(t, wantSlots, gotSlots)
+
+	e.RootEnv().Delete("x")
+	gotBytes, gotSlots = e.RootEnv().RetainedUsage()
+	assert.Equal(t, wantBytes, gotBytes)
+	assert.Equal(t, wantSlots, gotSlots)
+	assert.True(t, isResourceLimit(t, e.Bind("y", core.Int{V: 2})))
+}
+
+func TestLimits_RetainedUsageExact(t *testing.T) {
+	val := core.String{V: "value"}
+	fn := core.GoFunc{Name: "fn"}
+	e, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	require.NoError(t, e.Bind("value", val))
+	require.NoError(t, e.Bind("fn", fn))
+
+	wantBytes := retainedLimitBytes("value", val) + retainedLimitBytes("fn", fn)
+	gotBytes, gotSlots := e.RootEnv().RetainedUsage()
+	assert.Equal(t, wantBytes, gotBytes)
+	assert.Equal(t, int64(2), gotSlots)
 }
 
 func TestLimits_DirectEvaluatorEvalFlushesResidualReductions(t *testing.T) {

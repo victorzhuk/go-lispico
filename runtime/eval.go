@@ -522,18 +522,27 @@ func (e *engineImpl) Bind(name string, v core.Value) error {
 		return fmt.Errorf("bind: name %q conflicts with registered plugin namespace", name)
 	}
 
-	e.rootEnv.Set(name, v)
-	// Under Lisp-2, head-position resolution goes through the function cell.
-	// Mirror the value-cell binding into the function cell so embedders can
-	// call bound names in head position regardless of the active dialect.
 	if e.config.dialect.IsLisp2() {
-		e.rootEnv.SetFunc(name, v)
+		if err := e.rootEnv.SetBoth(name, v); err != nil {
+			return err
+		}
+	} else if err := e.rootEnv.Set(name, v); err != nil {
+		return err
 	}
 	e.logger.Debug("bind", "name", name)
 	return nil
 }
 
 func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error) {
+	result, _, err := e.evalWithBindingScope(ctx, source, bindings)
+	return result, err
+}
+
+func (e *engineImpl) LoadScope(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, *core.Env, error) {
+	return e.evalWithBindingScope(ctx, source, bindings)
+}
+
+func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, *core.Env, error) {
 	start := time.Now()
 
 	ctx = e.evalResourceContext(ctx)
@@ -544,7 +553,7 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
 		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-		return nil, fmt.Errorf("read: %w", err)
+		return nil, nil, fmt.Errorf("read: %w", err)
 	}
 
 	e.mu.RLock()
@@ -552,9 +561,14 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 	e.mu.RUnlock()
 
 	for name, val := range bindings {
-		childEnv.Set(name, val)
 		if e.config.dialect.IsLisp2() {
-			childEnv.SetFunc(name, val)
+			if err := childEnv.SetBoth(name, val); err != nil {
+				return nil, childEnv, err
+			}
+			continue
+		}
+		if err := childEnv.Set(name, val); err != nil {
+			return nil, childEnv, err
 		}
 	}
 
@@ -568,18 +582,18 @@ func (e *engineImpl) EvalWithBindings(ctx context.Context, source string, bindin
 			dur := time.Since(start)
 			e.stats.recordEval(dur, err)
 			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-			return nil, fmt.Errorf("eval: %w", err)
+			return nil, childEnv, fmt.Errorf("eval: %w", err)
 		}
 	}
 	if err := core.FlushEvalState(ctx); err != nil {
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
 		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-		return nil, fmt.Errorf("eval: %w", err)
+		return nil, childEnv, fmt.Errorf("eval: %w", err)
 	}
 
 	dur := time.Since(start)
 	e.stats.recordEval(dur, nil)
 	e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
-	return result, nil
+	return result, childEnv, nil
 }

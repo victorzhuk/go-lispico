@@ -573,6 +573,30 @@ func TestEvalWithBindings_DoesNotAffectRoot(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestLoadScope_ReturnsResultScopeAndRetainedUsage(t *testing.T) {
+	e, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	defer e.Close()
+
+	x := core.Int{V: 100}
+	y := core.String{V: "local"}
+	result, scope, err := e.LoadScope(context.Background(), "x", map[string]core.Value{
+		"x": x,
+		"y": y,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, scope)
+	assert.True(t, x.Equals(result))
+
+	gotBytes, gotSlots := scope.RetainedUsage()
+	wantBytes := retainedLimitBytes("x", x) + retainedLimitBytes("y", y)
+	assert.Equal(t, wantBytes, gotBytes)
+	assert.Equal(t, int64(2), gotSlots)
+	if _, ok := e.RootEnv().Get("x"); ok {
+		t.Fatal("LoadScope binding leaked to root env")
+	}
+}
+
 type testPlugin struct {
 	name string
 }

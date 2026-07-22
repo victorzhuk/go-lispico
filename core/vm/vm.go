@@ -748,7 +748,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err != nil {
 				return nil, err
 			}
-			env.Set(sym.V, top)
+			if err := env.Set(sym.V, top); err != nil {
+				return nil, err
+			}
 
 		case OpSetLexical:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
@@ -760,7 +762,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
-			owner.Set(sym.V, top)
+			if err := owner.Set(sym.V, top); err != nil {
+				return nil, err
+			}
 
 		case OpGetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
@@ -793,7 +797,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err != nil {
 				return nil, err
 			}
-			env.SetFunc(sym.V, top)
+			if err := env.SetFunc(sym.V, top); err != nil {
+				return nil, err
+			}
 
 		case OpPop:
 			if _, err := vm.pop(); err != nil {

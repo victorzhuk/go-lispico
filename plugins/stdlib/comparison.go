@@ -7,8 +7,8 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-func (p *Plugin) registerComparison(env *core.Env) {
-	env.RegisterValue("=", core.GoFunc{
+func (p *Plugin) registerComparison(env *core.Env) error {
+	if err := env.RegisterValue("=", core.GoFunc{
 		Name: "=",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -21,12 +21,23 @@ func (p *Plugin) registerComparison(env *core.Env) {
 			}
 			return core.BoxBool(true), nil
 		},
-	}, true)
+	}, true); err != nil {
+		return err
+	}
 
-	env.RegisterValue("<", core.GoFunc{Name: "<", Fn: orderingFunc("<", func(c int) bool { return c < 0 })}, true)
-	env.RegisterValue(">", core.GoFunc{Name: ">", Fn: orderingFunc(">", func(c int) bool { return c > 0 })}, true)
-	env.RegisterValue("<=", core.GoFunc{Name: "<=", Fn: orderingFunc("<=", func(c int) bool { return c <= 0 })}, true)
-	env.RegisterValue(">=", core.GoFunc{Name: ">=", Fn: orderingFunc(">=", func(c int) bool { return c >= 0 })}, true)
+	if err := env.RegisterValue("<", core.GoFunc{Name: "<", Fn: orderingFunc("<", func(c int) bool { return c < 0 })}, true); err != nil {
+		return err
+	}
+	if err := env.RegisterValue(">", core.GoFunc{Name: ">", Fn: orderingFunc(">", func(c int) bool { return c > 0 })}, true); err != nil {
+		return err
+	}
+	if err := env.RegisterValue("<=", core.GoFunc{Name: "<=", Fn: orderingFunc("<=", func(c int) bool { return c <= 0 })}, true); err != nil {
+		return err
+	}
+	if err := env.RegisterValue(">=", core.GoFunc{Name: ">=", Fn: orderingFunc(">=", func(c int) bool { return c >= 0 })}, true); err != nil {
+		return err
+	}
+	return nil
 }
 
 // orderingFunc builds a variadic monotonic chain: every adjacent pair must

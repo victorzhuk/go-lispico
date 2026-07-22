@@ -37,51 +37,21 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("defagent", core.GoFunc{
-		Name: "defagent",
-		Fn:   p.defagent,
-	})
-
-	env.Set("agent/run", core.GoFunc{
-		Name: "agent/run",
-		Fn:   p.run,
-	})
-
-	env.Set("agent/run-parallel", core.GoFunc{
-		Name: "agent/run-parallel",
-		Fn:   p.runParallel,
-	})
-
-	env.Set("agent/run-with-ctx", core.GoFunc{
-		Name: "agent/run-with-ctx",
-		Fn:   p.runWithCtx,
-	})
-
-	env.Set("agent/run-timeout", core.GoFunc{
-		Name: "agent/run-timeout",
-		Fn:   p.runTimeout,
-	})
-
-	env.Set("agent/list", core.GoFunc{
-		Name: "agent/list",
-		Fn:   p.list,
-	})
-
-	env.Set("agent/info", core.GoFunc{
-		Name: "agent/info",
-		Fn:   p.info,
-	})
-
-	env.Set("agent/route", core.GoFunc{
-		Name: "agent/route",
-		Fn:   p.route,
-	})
-
-	env.Set("agent/delegate", core.GoFunc{
-		Name: "agent/delegate",
-		Fn:   p.delegate,
-	})
-
+	for _, fn := range []core.GoFunc{
+		{Name: "defagent", Fn: p.defagent},
+		{Name: "agent/run", Fn: p.run},
+		{Name: "agent/run-parallel", Fn: p.runParallel},
+		{Name: "agent/run-with-ctx", Fn: p.runWithCtx},
+		{Name: "agent/run-timeout", Fn: p.runTimeout},
+		{Name: "agent/list", Fn: p.list},
+		{Name: "agent/info", Fn: p.info},
+		{Name: "agent/route", Fn: p.route},
+		{Name: "agent/delegate", Fn: p.delegate},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return p.loadBootstrap(env)
 }
 

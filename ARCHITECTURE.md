@@ -202,6 +202,13 @@ if err := eng.Use(stdlib.New()); err != nil {
 
 // Eval(ctx, source, input): source labels the run for logs/stats, input is code.
 result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
+
+// LoadScope evaluates source with bindings and returns the child scope
+// so the embedder owns its lifecycle (ADR 0012).
+_, scope, err := eng.LoadScope(ctx, "rule.lisp", map[string]core.Value{
+    "x": core.Int{V: 42},
+})
+defer scope.Rebuild() // compact dead backing when done
 ```
 
 #### Options
@@ -215,7 +222,8 @@ result, err := eng.Eval(ctx, "main.lisp", "(+ 1 2)")
   `WithDialect(clojure.Dialect())`.
 - `WithResourceLimits(l)` — Set resource ceilings (`MaxReaderDepth`,
   `MaxStructuralDepth`, `MaxCollectionLen`, `MaxCacheEntries`,
-  `MaxReductions`, `MaxAllocationBytes`), applied once at `New` and immutable
+  `MaxReductions`, `MaxAllocationBytes`, `MaxRetainedBytesPerEnv`,
+  `MaxRetainedSlotsPerEnv`), applied once at `New` and immutable
   afterward. A non-positive field selects a conservative default; there is no
   "unlimited". Exceeding a ceiling returns a `*core.LispicoError` with
   `Code: "ResourceLimitError"`.
@@ -312,8 +320,16 @@ orphaned by a macro-epoch bump. `MaxReductions` counts macro expansion,
 compiler emission, evaluator work, and `GoFunc` dispatch via the existing
 128-step cancellation budget, while `MaxAllocationBytes` charges the fixed
 deterministic size table from ADR 0011 at reader, compiler, VM, tree-walker,
-and `GoFunc` result boundaries. Resource-limit breaches are a hard safety
-boundary and are not catchable by `try`/`catch`.
+and `GoFunc` result boundaries. `MaxRetainedBytesPerEnv` and
+`MaxRetainedSlotsPerEnv` cap per-environment retained binding capacity
+(ADR 0012): every `Env` on the engine path carries owned counters
+(bytes + slots), charged on new-slot binding writes using the same fixed
+size table. A breach does not occur; the write is rejected with a
+terminal `ResourceLimitError`. Dead backing is released only through
+`(*Env).Rebuild()`, which compacts in place with live cell pointers
+preserved. `(*Env).RetainedUsage()` probes the current counters.
+Resource-limit breaches are a hard safety boundary and are not catchable
+by `try`/`catch`.
 
 ### Plugin Loading Flow
 

@@ -126,7 +126,10 @@ func (w *fileWatcher) reloadFile(path string) {
 		return
 	}
 
-	childEnv.MergeInto(w.engine.rootEnv)
+	if err := childEnv.MergeInto(w.engine.rootEnv); err != nil {
+		w.engine.logger.Error("merge file env", "path", path, "error", err)
+		return
+	}
 
 	w.engine.logger.Info(
 		"reloaded file",

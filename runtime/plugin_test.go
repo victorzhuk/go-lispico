@@ -292,14 +292,18 @@ func (p *bindingPlugin) Name() string { return p.name }
 
 func (p *bindingPlugin) Init(env *core.Env) error {
 	for _, n := range p.names {
-		env.Set(n, core.GoFunc{Name: n, Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		if err := env.Set(n, core.GoFunc{Name: n, Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
 			return core.Nil{}, nil
-		}})
+		}}); err != nil {
+			return err
+		}
 	}
 	for _, n := range p.funcs {
-		env.SetFunc(n, core.GoFunc{Name: n, Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		if err := env.SetFunc(n, core.GoFunc{Name: n, Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
 			return core.Nil{}, nil
-		}})
+		}}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

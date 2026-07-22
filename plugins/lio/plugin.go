@@ -38,45 +38,19 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("io/read-file", core.GoFunc{
-		Name: "io/read-file",
-		Fn:   p.readFile,
-	})
-
-	env.Set("io/write-file", core.GoFunc{
-		Name: "io/write-file",
-		Fn:   p.writeFile,
-	})
-
-	env.Set("io/exists?", core.GoFunc{
-		Name: "io/exists?",
-		Fn:   p.exists,
-	})
-
-	env.Set("io/ls", core.GoFunc{
-		Name: "io/ls",
-		Fn:   p.ls,
-	})
-
-	env.Set("io/mkdir", core.GoFunc{
-		Name: "io/mkdir",
-		Fn:   p.mkdir,
-	})
-
-	env.Set("io/stat", core.GoFunc{
-		Name: "io/stat",
-		Fn:   p.stat,
-	})
-
-	env.Set("io/env-get", core.GoFunc{
-		Name: "io/env-get",
-		Fn:   p.envGet,
-	})
-
-	env.Set("io/env-set", core.GoFunc{
-		Name: "io/env-set",
-		Fn:   p.envSet,
-	})
-
+	for _, fn := range []core.GoFunc{
+		{Name: "io/read-file", Fn: p.readFile},
+		{Name: "io/write-file", Fn: p.writeFile},
+		{Name: "io/exists?", Fn: p.exists},
+		{Name: "io/ls", Fn: p.ls},
+		{Name: "io/mkdir", Fn: p.mkdir},
+		{Name: "io/stat", Fn: p.stat},
+		{Name: "io/env-get", Fn: p.envGet},
+		{Name: "io/env-set", Fn: p.envSet},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return nil
 }

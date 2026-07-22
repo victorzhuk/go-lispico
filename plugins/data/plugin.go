@@ -23,9 +23,15 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("json/encode", core.GoFunc{Name: "json/encode", Fn: p.encode})
-	env.Set("json/decode", core.GoFunc{Name: "json/decode", Fn: p.decode})
-	env.Set("json/pretty-encode", core.GoFunc{Name: "json/pretty-encode", Fn: p.prettyEncode})
+	for _, fn := range []core.GoFunc{
+		{Name: "json/encode", Fn: p.encode},
+		{Name: "json/decode", Fn: p.decode},
+		{Name: "json/pretty-encode", Fn: p.prettyEncode},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `runtime.Engine.Func(name)` returns a reusable `*runtime.Fn` handle for
   repeated calls to a resolved function binding.
+- `runtime.ResourceLimits` now includes `MaxRetainedBytesPerEnv` and
+  `MaxRetainedSlotsPerEnv`: per-`Env` retained-state capacity ceilings
+  (default 32 MiB / 100,000 slots), enforcing owned-capacity accounting
+  on every env created through the engine (ADR 0012).
+- `(*Env).RetainedUsage() (bytes, slots int64)` returns the env's current
+  retained backing usage for embedder ledger settlement.
+- `(*Env).Rebuild()` compacts a scope in place — fresh maps, live cell
+  pointers preserved, tombstoned cells dropped — the only path that
+  releases dead backing (ADR 0012).
+- `Engine.LoadScope(ctx, source, bindings) (Value, *Env, error)` evaluates
+  source with bindings and returns the child scope so the embedder owns
+  its lifecycle: usage probe, rebuild, or retirement.
 
 ### Changed
 

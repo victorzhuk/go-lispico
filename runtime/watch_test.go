@@ -30,7 +30,7 @@ func TestFileWatcher_DetectsNewFile(t *testing.T) {
 	assert.Empty(t, w.mtimes)
 
 	file := filepath.Join(dir, "test.lisp")
-	err = os.WriteFile(file, []byte("(def x 42)"), 0644)
+	err = os.WriteFile(file, []byte("(def x 42)"), 0o644)
 	require.NoError(t, err)
 
 	w.scan()
@@ -46,7 +46,7 @@ func TestFileWatcher_DetectsModifiedFile(t *testing.T) {
 	defer eng.Close()
 
 	file := filepath.Join(dir, "test.lisp")
-	err = os.WriteFile(file, []byte("(def x 1)"), 0644)
+	err = os.WriteFile(file, []byte("(def x 1)"), 0o644)
 	require.NoError(t, err)
 
 	impl := eng.(*engineImpl)
@@ -57,7 +57,7 @@ func TestFileWatcher_DetectsModifiedFile(t *testing.T) {
 	originalMtime := w.mtimes[file]
 
 	time.Sleep(10 * time.Millisecond)
-	err = os.WriteFile(file, []byte("(def x 2)"), 0644)
+	err = os.WriteFile(file, []byte("(def x 2)"), 0o644)
 	require.NoError(t, err)
 
 	w.scan()
@@ -77,11 +77,11 @@ func TestFileWatcher_IgnoresNonLispFiles(t *testing.T) {
 	w.ctx = context.Background()
 
 	txtFile := filepath.Join(dir, "test.txt")
-	err = os.WriteFile(txtFile, []byte("hello"), 0644)
+	err = os.WriteFile(txtFile, []byte("hello"), 0o644)
 	require.NoError(t, err)
 
 	goFile := filepath.Join(dir, "test.go")
-	err = os.WriteFile(goFile, []byte("package main"), 0644)
+	err = os.WriteFile(goFile, []byte("package main"), 0o644)
 	require.NoError(t, err)
 
 	w.scan()
@@ -99,7 +99,7 @@ func TestFileWatcher_IgnoresDirectories(t *testing.T) {
 	defer eng.Close()
 
 	subdir := filepath.Join(dir, "subdir")
-	err = os.Mkdir(subdir, 0755)
+	err = os.Mkdir(subdir, 0o755)
 	require.NoError(t, err)
 
 	impl := eng.(*engineImpl)
@@ -119,14 +119,14 @@ func TestReloadFile_SyntaxErrorKeepsOldDefinitions(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	eng.RootEnv().Set("existing", core.Int{V: 42})
+	require.NoError(t, eng.RootEnv().Set("existing", core.Int{V: 42}))
 
 	impl := eng.(*engineImpl)
 	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	file := filepath.Join(dir, "bad.lisp")
-	err = os.WriteFile(file, []byte("(def x "), 0644)
+	err = os.WriteFile(file, []byte("(def x "), 0o644)
 	require.NoError(t, err)
 
 	w.reloadFile(file)
@@ -147,14 +147,14 @@ func TestReloadFile_EvalErrorKeepsOldDefinitions(t *testing.T) {
 	require.NoError(t, err)
 	defer eng.Close()
 
-	eng.RootEnv().Set("existing", core.Int{V: 42})
+	require.NoError(t, eng.RootEnv().Set("existing", core.Int{V: 42}))
 
 	impl := eng.(*engineImpl)
 	w := newFileWatcher(impl, dir, 10*time.Millisecond)
 	w.ctx = context.Background()
 
 	file := filepath.Join(dir, "error.lisp")
-	err = os.WriteFile(file, []byte("(def x 1) (undefined-symbol)"), 0644)
+	err = os.WriteFile(file, []byte("(def x 1) (undefined-symbol)"), 0o644)
 	require.NoError(t, err)
 
 	w.reloadFile(file)
@@ -180,7 +180,7 @@ func TestReloadFile_Success(t *testing.T) {
 	w.ctx = context.Background()
 
 	file := filepath.Join(dir, "good.lisp")
-	err = os.WriteFile(file, []byte("(def x 123) (def y 456)"), 0644)
+	err = os.WriteFile(file, []byte("(def x 123) (def y 456)"), 0o644)
 	require.NoError(t, err)
 
 	w.reloadFile(file)
@@ -273,7 +273,7 @@ func TestWatch_FileIsNotDirectory(t *testing.T) {
 
 	dir := t.TempDir()
 	file := filepath.Join(dir, "file.txt")
-	err := os.WriteFile(file, []byte("test"), 0644)
+	err := os.WriteFile(file, []byte("test"), 0o644)
 	require.NoError(t, err)
 
 	eng, err := New(slog.Default())
@@ -338,7 +338,7 @@ func TestWatch_DetectsFileChanges(t *testing.T) {
 	defer eng.Stop()
 
 	file := filepath.Join(dir, "test.lisp")
-	err = os.WriteFile(file, []byte("(def value 1)"), 0644)
+	err = os.WriteFile(file, []byte("(def value 1)"), 0o644)
 	require.NoError(t, err)
 
 	err = eng.Watch(context.Background(), dir)
@@ -350,7 +350,7 @@ func TestWatch_DetectsFileChanges(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, int64(1), val.(core.Int).V)
 
-	err = os.WriteFile(file, []byte("(def value 2)"), 0644)
+	err = os.WriteFile(file, []byte("(def value 2)"), 0o644)
 	require.NoError(t, err)
 
 	time.Sleep(600 * time.Millisecond)
@@ -373,9 +373,9 @@ func TestWatch_MultipleFiles(t *testing.T) {
 	file1 := filepath.Join(dir, "a.lisp")
 	file2 := filepath.Join(dir, "b.lisp")
 
-	err = os.WriteFile(file1, []byte("(def from-a 10)"), 0644)
+	err = os.WriteFile(file1, []byte("(def from-a 10)"), 0o644)
 	require.NoError(t, err)
-	err = os.WriteFile(file2, []byte("(def from-b 20)"), 0644)
+	err = os.WriteFile(file2, []byte("(def from-b 20)"), 0o644)
 	require.NoError(t, err)
 
 	err = eng.Watch(context.Background(), dir)

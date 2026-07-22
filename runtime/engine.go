@@ -22,6 +22,8 @@ type Engine interface {
 	EvalFile(path string) (core.Value, error)
 	// EvalWithBindings evaluates source with additional bindings.
 	EvalWithBindings(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, error)
+	// LoadScope evaluates source with additional bindings and returns the child scope.
+	LoadScope(ctx context.Context, source string, bindings map[string]core.Value) (core.Value, *core.Env, error)
 	// LoadDir loads all .lisp files from a directory.
 	LoadDir(dir string) error
 	// Call invokes a named function with arguments.
@@ -138,21 +140,25 @@ func WithTreeWalker() EngineOption {
 // ResourceLimits configures resource ceilings for an Engine. All fields are
 // immutable after construction. A non-positive field is replaced with its default.
 type ResourceLimits struct {
-	MaxReaderDepth     int
-	MaxStructuralDepth int
-	MaxCollectionLen   int
-	MaxCacheEntries    int
-	MaxReductions      int
-	MaxAllocationBytes int
+	MaxReaderDepth         int
+	MaxStructuralDepth     int
+	MaxCollectionLen       int
+	MaxCacheEntries        int
+	MaxReductions          int
+	MaxAllocationBytes     int
+	MaxRetainedBytesPerEnv int
+	MaxRetainedSlotsPerEnv int
 }
 
 const (
-	defaultMaxReaderDepth     = 1024
-	defaultMaxStructuralDepth = 1024
-	defaultMaxCollectionLen   = 10_000_000
-	defaultMaxCacheEntries    = 4096
-	defaultMaxReductions      = 10_000_000
-	defaultMaxAllocationBytes = 64 * 1024 * 1024
+	defaultMaxReaderDepth         = 1024
+	defaultMaxStructuralDepth     = 1024
+	defaultMaxCollectionLen       = 10_000_000
+	defaultMaxCacheEntries        = 4096
+	defaultMaxReductions          = 10_000_000
+	defaultMaxAllocationBytes     = 64 * 1024 * 1024
+	defaultMaxRetainedBytesPerEnv = 32 * 1024 * 1024
+	defaultMaxRetainedSlotsPerEnv = 100_000
 )
 
 func resolveLimits(l ResourceLimits) ResourceLimits {
@@ -173,6 +179,12 @@ func resolveLimits(l ResourceLimits) ResourceLimits {
 	}
 	if l.MaxAllocationBytes <= 0 {
 		l.MaxAllocationBytes = defaultMaxAllocationBytes
+	}
+	if l.MaxRetainedBytesPerEnv <= 0 {
+		l.MaxRetainedBytesPerEnv = defaultMaxRetainedBytesPerEnv
+	}
+	if l.MaxRetainedSlotsPerEnv <= 0 {
+		l.MaxRetainedSlotsPerEnv = defaultMaxRetainedSlotsPerEnv
 	}
 	return l
 }
@@ -216,7 +228,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	rootEnv := core.NewEnv(nil)
+	rootEnv := core.NewEnvWithRetainedLimits(nil, int64(cfg.limits.MaxRetainedBytesPerEnv), int64(cfg.limits.MaxRetainedSlotsPerEnv))
 	registry := core.NewRegistry()
 
 	treeWalker, err := core.NewEvaluatorWithDialect(cfg.dialect)
@@ -350,10 +362,10 @@ func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
 // bootstrap macros survive the allowlist pass. A snapshot of every GoFunc is
 // taken before the strip so the apply phase can resolve renames whose
 // canonical name is absent from the allowlist and would otherwise be deleted.
-func (e *engineImpl) applyVocabulary() {
+func (e *engineImpl) applyVocabulary() error {
 	vocab := e.config.dialect.Vocab()
 	if vocab == nil {
-		return
+		return nil
 	}
 
 	goFuncs := make(map[string]core.Value)
@@ -377,11 +389,15 @@ func (e *engineImpl) applyVocabulary() {
 
 	for visibleName, entry := range vocab {
 		if entry.Adapter != nil {
-			e.rootEnv.Set(visibleName, entry.Adapter)
+			if err := e.rootEnv.Set(visibleName, entry.Adapter); err != nil {
+				return err
+			}
 			continue
 		}
 		if val, ok := goFuncs[entry.Canonical]; ok {
-			e.rootEnv.Set(visibleName, val)
+			if err := e.rootEnv.Set(visibleName, val); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -400,11 +416,16 @@ func (e *engineImpl) applyVocabulary() {
 			}
 			if _, isGoFunc := v.(core.GoFunc); isGoFunc {
 				if canon {
-					e.rootEnv.SetFuncCanonical(name, v)
+					if err := e.rootEnv.SetFuncCanonical(name, v); err != nil {
+						return err
+					}
 				} else {
-					e.rootEnv.SetFunc(name, v)
+					if err := e.rootEnv.SetFunc(name, v); err != nil {
+						return err
+					}
 				}
 			}
 		}
 	}
+	return nil
 }

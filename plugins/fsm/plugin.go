@@ -35,51 +35,21 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("fsm/create", core.GoFunc{
-		Name: "fsm/create",
-		Fn:   p.create,
-	})
-
-	env.Set("fsm/transition", core.GoFunc{
-		Name: "fsm/transition",
-		Fn:   p.transition,
-	})
-
-	env.Set("fsm/valid?", core.GoFunc{
-		Name: "fsm/valid?",
-		Fn:   p.valid,
-	})
-
-	env.Set("fsm/current-state", core.GoFunc{
-		Name: "fsm/current-state",
-		Fn:   p.currentState,
-	})
-
-	env.Set("fsm/reset", core.GoFunc{
-		Name: "fsm/reset",
-		Fn:   p.reset,
-	})
-
-	env.Set("fsm/on-transition", core.GoFunc{
-		Name: "fsm/on-transition",
-		Fn:   p.onTransition,
-	})
-
-	env.Set("fsm/reachable", core.GoFunc{
-		Name: "fsm/reachable",
-		Fn:   p.reachable,
-	})
-
-	env.Set("fsm/state-machine", core.GoFunc{
-		Name: "fsm/state-machine",
-		Fn:   p.stateMachine,
-	})
-
-	env.Set("fsm/list", core.GoFunc{
-		Name: "fsm/list",
-		Fn:   p.list,
-	})
-
+	for _, fn := range []core.GoFunc{
+		{Name: "fsm/create", Fn: p.create},
+		{Name: "fsm/transition", Fn: p.transition},
+		{Name: "fsm/valid?", Fn: p.valid},
+		{Name: "fsm/current-state", Fn: p.currentState},
+		{Name: "fsm/reset", Fn: p.reset},
+		{Name: "fsm/on-transition", Fn: p.onTransition},
+		{Name: "fsm/reachable", Fn: p.reachable},
+		{Name: "fsm/state-machine", Fn: p.stateMachine},
+		{Name: "fsm/list", Fn: p.list},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

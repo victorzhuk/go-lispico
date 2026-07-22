@@ -10,15 +10,17 @@ import (
 
 const defaultStdlibCollectionLen = 10_000_000
 
-func (p *Plugin) registerCollections(env *core.Env) {
-	env.RegisterValue("list", core.GoFunc{
+func (p *Plugin) registerCollections(env *core.Env) error {
+	if err := env.RegisterValue("list", core.GoFunc{
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			return core.List{Items: append([]core.Value(nil), args...)}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("concat", core.GoFunc{
+	if err := env.RegisterValue("concat", core.GoFunc{
 		Name: "concat",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			var result []core.Value
@@ -35,9 +37,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 			return core.List{Items: result}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("reverse", core.GoFunc{
+	if err := env.RegisterValue("reverse", core.GoFunc{
 		Name: "reverse",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -60,16 +64,20 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 			return core.List{Items: result}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("vector", core.GoFunc{
+	if err := env.RegisterValue("vector", core.GoFunc{
 		Name: "vector",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			return core.Vector{Items: append([]core.Value(nil), args...)}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("hash-map", core.GoFunc{
+	if err := env.RegisterValue("hash-map", core.GoFunc{
 		Name: "hash-map",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args)%2 != 0 {
@@ -84,9 +92,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 			return m, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("first", core.GoFunc{
+	if err := env.RegisterValue("first", core.GoFunc{
 		Name: "first",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -110,9 +120,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return nil, fmt.Errorf("first: expected collection, got %T", args[0])
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("rest", core.GoFunc{
+	if err := env.RegisterValue("rest", core.GoFunc{
 		Name: "rest",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -136,9 +148,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return nil, fmt.Errorf("rest: expected collection, got %T", args[0])
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("last", core.GoFunc{
+	if err := env.RegisterValue("last", core.GoFunc{
 		Name: "last",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -162,9 +176,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return nil, fmt.Errorf("last: expected collection, got %T", args[0])
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("nth", core.GoFunc{
+	if err := env.RegisterValue("nth", core.GoFunc{
 		Name: "nth",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 || len(args) > 3 {
@@ -195,9 +211,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 
 			return items[idx.V], nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("count", core.GoFunc{
+	if err := env.RegisterValue("count", core.GoFunc{
 		Name: "count",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -219,9 +237,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return nil, fmt.Errorf("count: expected collection, got %T", args[0])
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("cons", core.GoFunc{
+	if err := env.RegisterValue("cons", core.GoFunc{
 		Name: "cons",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -239,9 +259,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return nil, fmt.Errorf("cons: expected collection, got %T", args[1])
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("conj", core.GoFunc{
+	if err := env.RegisterValue("conj", core.GoFunc{
 		Name: "conj",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
@@ -268,9 +290,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return nil, fmt.Errorf("conj: expected collection, got %T", args[0])
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("empty?", core.GoFunc{
+	if err := env.RegisterValue("empty?", core.GoFunc{
 		Name: "empty?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -290,9 +314,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 				return core.Bool{V: false}, nil
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("get", core.GoFunc{
+	if err := env.RegisterValue("get", core.GoFunc{
 		Name: "get",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 || len(args) > 3 {
@@ -314,9 +340,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 
 			return core.Nil{}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("assoc", core.GoFunc{
+	if err := env.RegisterValue("assoc", core.GoFunc{
 		Name: "assoc",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 3 || len(args)%2 == 0 {
@@ -339,9 +367,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 
 			return result, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("keys", core.GoFunc{
+	if err := env.RegisterValue("keys", core.GoFunc{
 		Name: "keys",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -360,9 +390,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 
 			return core.List{Items: items}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("vals", core.GoFunc{
+	if err := env.RegisterValue("vals", core.GoFunc{
 		Name: "vals",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -381,9 +413,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 
 			return core.List{Items: items}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("contains?", core.GoFunc{
+	if err := env.RegisterValue("contains?", core.GoFunc{
 		Name: "contains?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -398,9 +432,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			_, found := m.Get(args[1])
 			return core.Bool{V: found}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("merge", core.GoFunc{
+	if err := env.RegisterValue("merge", core.GoFunc{
 		Name: "merge",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			result := core.NewHashMap()
@@ -423,9 +459,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 			return result, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("dissoc", core.GoFunc{
+	if err := env.RegisterValue("dissoc", core.GoFunc{
 		Name: "dissoc",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
@@ -447,9 +485,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 			return result, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("sort", core.GoFunc{
+	if err := env.RegisterValue("sort", core.GoFunc{
 		Name: "sort",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -489,9 +529,11 @@ func (p *Plugin) registerCollections(env *core.Env) {
 
 			return core.List{Items: sorted}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("range", core.GoFunc{
+	if err := env.RegisterValue("range", core.GoFunc{
 		Name: "range",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 || len(args) > 3 {
@@ -565,7 +607,10 @@ func (p *Plugin) registerCollections(env *core.Env) {
 			}
 			return core.List{Items: items}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // naturalCmp orders two values of the same kind: numbers by numCmp, strings

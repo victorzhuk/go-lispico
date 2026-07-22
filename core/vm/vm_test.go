@@ -2028,3 +2028,60 @@ func TestVM_NativeOp_FreezeStackLIFONested(t *testing.T) {
 	assert.Equal(t, 0, mulCalls, "* must take the native fast path")
 	assert.Equal(t, 0, addCalls, "+ must take the native fast path (LIFO preserved the outer + freeze)")
 }
+
+func TestVM_RebuildPreservesLiveSiteCacheAndInvalidatesDropped(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.Set("live", core.Int{V: 10})
+	env.Set("dropped", core.Int{V: 20})
+
+	makeChunk := func(sym string) *Chunk {
+		c := &Chunk{
+			Name:      "test-" + sym,
+			Constants: []core.Value{core.Symbol{V: sym}},
+			MaxStack:  1,
+			Code: []Instruction{
+				Encode(OpGetGlobal, 0),
+				Encode(OpReturn, 0),
+			},
+		}
+		c.EnsureSites()
+		return c
+	}
+
+	chunkLive := makeChunk("live")
+	chunkDropped := makeChunk("dropped")
+
+	ctx := context.Background()
+
+	v := New(env)
+	result, err := v.Run(ctx, chunkLive)
+	require.NoError(t, err)
+	require.Equal(t, core.Int{V: 10}, result)
+
+	v.Reset()
+	result, err = v.Run(ctx, chunkDropped)
+	require.NoError(t, err)
+	require.Equal(t, core.Int{V: 20}, result)
+
+	liveEntryBefore := chunkLive.site(0).entry.Load()
+	require.NotNil(t, liveEntryBefore, "live site must be populated after warm-up")
+	require.NotNil(t, chunkDropped.site(0).entry.Load(), "dropped site must be populated after warm-up")
+
+	env.Delete("dropped")
+	env.Rebuild()
+
+	v.Reset()
+	result, err = v.Run(ctx, chunkLive)
+	require.NoError(t, err, "live binding must succeed after Rebuild")
+	require.Equal(t, core.Int{V: 10}, result)
+
+	liveEntryAfter := chunkLive.site(0).entry.Load()
+	require.NotNil(t, liveEntryAfter)
+	require.NotSame(t, liveEntryBefore, liveEntryAfter, "live site must publish a fresh entry after Rebuild")
+
+	v.Reset()
+	_, err = v.Run(ctx, chunkDropped)
+	require.Error(t, err, "dropped binding must error after Rebuild")
+}

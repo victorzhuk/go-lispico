@@ -8,8 +8,8 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-func (p *Plugin) registerArithmetic(env *core.Env) {
-	env.RegisterValue("+", core.GoFunc{
+func (p *Plugin) registerArithmetic(env *core.Env) error {
+	if err := env.RegisterValue("+", core.GoFunc{
 		Name: "+",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			var intSum int64
@@ -40,9 +40,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			}
 			return core.BoxInt(intSum), nil
 		},
-	}, true)
+	}, true); err != nil {
+		return err
+	}
 
-	env.RegisterValue("-", core.GoFunc{
+	if err := env.RegisterValue("-", core.GoFunc{
 		Name: "-",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -94,9 +96,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			}
 			return core.BoxInt(intResult), nil
 		},
-	}, true)
+	}, true); err != nil {
+		return err
+	}
 
-	env.RegisterValue("*", core.GoFunc{
+	if err := env.RegisterValue("*", core.GoFunc{
 		Name: "*",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
@@ -131,9 +135,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 			}
 			return core.BoxInt(intProd), nil
 		},
-	}, true)
+	}, true); err != nil {
+		return err
+	}
 
-	env.RegisterValue("/", core.GoFunc{
+	if err := env.RegisterValue("/", core.GoFunc{
 		Name: "/",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
@@ -171,9 +177,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.Float{V: dividend}, nil
 		},
-	}, true)
+	}, true); err != nil {
+		return err
+	}
 
-	env.RegisterValue("mod", core.GoFunc{
+	if err := env.RegisterValue("mod", core.GoFunc{
 		Name: "mod",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -193,9 +201,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.BoxInt(a.V % b.V), nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("quot", core.GoFunc{
+	if err := env.RegisterValue("quot", core.GoFunc{
 		Name: "quot",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -215,9 +225,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.BoxInt(a.V / b.V), nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("pow", core.GoFunc{
+	if err := env.RegisterValue("pow", core.GoFunc{
 		Name: "pow",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -246,29 +258,39 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 
 			return core.Float{V: math.Pow(base, exp)}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("sqrt", core.GoFunc{
+	if err := env.RegisterValue("sqrt", core.GoFunc{
 		Name: "sqrt",
 		Fn:   unaryMathFunc(math.Sqrt),
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("abs", core.GoFunc{
+	if err := env.RegisterValue("abs", core.GoFunc{
 		Name: "abs",
 		Fn:   unaryMathFunc(math.Abs),
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("floor", core.GoFunc{
+	if err := env.RegisterValue("floor", core.GoFunc{
 		Name: "floor",
 		Fn:   unaryMathFunc(math.Floor),
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("ceil", core.GoFunc{
+	if err := env.RegisterValue("ceil", core.GoFunc{
 		Name: "ceil",
 		Fn:   unaryMathFunc(math.Ceil),
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("zero?", core.GoFunc{
+	if err := env.RegisterValue("zero?", core.GoFunc{
 		Name: "zero?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -284,9 +306,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return core.BoxBool(false), nil
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("pos?", core.GoFunc{
+	if err := env.RegisterValue("pos?", core.GoFunc{
 		Name: "pos?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -302,9 +326,11 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return core.BoxBool(false), nil
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("neg?", core.GoFunc{
+	if err := env.RegisterValue("neg?", core.GoFunc{
 		Name: "neg?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
@@ -320,17 +346,24 @@ func (p *Plugin) registerArithmetic(env *core.Env) {
 				return core.BoxBool(false), nil
 			}
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("max", core.GoFunc{
+	if err := env.RegisterValue("max", core.GoFunc{
 		Name: "max",
 		Fn:   minMaxFunc(true),
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("min", core.GoFunc{
+	if err := env.RegisterValue("min", core.GoFunc{
 		Name: "min",
 		Fn:   minMaxFunc(false),
-	}, false)
+	}, false); err != nil {
+		return err
+	}
+	return nil
 }
 
 func unaryMathFunc(fn func(float64) float64) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {

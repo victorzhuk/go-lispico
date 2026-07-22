@@ -40,21 +40,15 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("http/get", core.GoFunc{
-		Name: "http/get",
-		Fn:   p.get,
-	})
-
-	env.Set("http/post", core.GoFunc{
-		Name: "http/post",
-		Fn:   p.post,
-	})
-
-	env.Set("http/fetch", core.GoFunc{
-		Name: "http/fetch",
-		Fn:   p.fetch,
-	})
-
+	for _, fn := range []core.GoFunc{
+		{Name: "http/get", Fn: p.get},
+		{Name: "http/post", Fn: p.post},
+		{Name: "http/fetch", Fn: p.fetch},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

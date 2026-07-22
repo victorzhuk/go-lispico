@@ -25,10 +25,16 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	env.Set("exec/run", core.GoFunc{Name: "exec/run", Fn: p.run})
-	env.Set("exec/pipe", core.GoFunc{Name: "exec/pipe", Fn: p.pipe})
-	env.Set("exec/which", core.GoFunc{Name: "exec/which", Fn: p.which})
-	env.Set("crypto/sha256", core.GoFunc{Name: "crypto/sha256", Fn: p.sha256})
-	env.Set("crypto/uuid", core.GoFunc{Name: "crypto/uuid", Fn: p.uuid})
+	for _, fn := range []core.GoFunc{
+		{Name: "exec/run", Fn: p.run},
+		{Name: "exec/pipe", Fn: p.pipe},
+		{Name: "exec/which", Fn: p.which},
+		{Name: "crypto/sha256", Fn: p.sha256},
+		{Name: "crypto/uuid", Fn: p.uuid},
+	} {
+		if err := env.Set(fn.Name, fn); err != nil {
+			return err
+		}
+	}
 	return nil
 }

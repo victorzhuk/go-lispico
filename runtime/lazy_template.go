@@ -218,7 +218,10 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 
 	switch entry.kind {
 	case stdlibTemplateGoValue:
-		m.installValue(env, pluginName, entry)
+		if err := m.installValue(env, pluginName, entry); err != nil {
+			m.logMaterializeFailure(entry, err)
+			return nil, false, false
+		}
 		return entry.value, true, entry.canonical
 	case stdlibTemplateBootstrap:
 		return m.materializeBootstrap(env, pluginName, entry)
@@ -232,22 +235,50 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 // everything before user code runs, so a user def/defun always wins;
 // materialization must reproduce that order by filling only cells that are
 // still empty.
-func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, entry *stdlibTemplateEntry) {
-	if !env.HasLive(entry.name) {
+func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, entry *stdlibTemplateEntry) error {
+	valueMissing := !env.HasLive(entry.name)
+	funcMissing := m.engine.config.dialect.IsLisp2() && !env.HasLiveFunc(entry.name)
+
+	if valueMissing && funcMissing {
 		if entry.canonical {
-			env.SetCanonical(entry.name, entry.value)
+			if err := env.SetBothCanonical(entry.name, entry.value); err != nil {
+				return err
+			}
 		} else {
-			env.Set(entry.name, entry.value)
+			if err := env.SetBoth(entry.name, entry.value); err != nil {
+				return err
+			}
+		}
+		m.recordInstall(pluginName, entry.name)
+		return nil
+	}
+
+	if valueMissing {
+		if entry.canonical {
+			if err := env.SetCanonical(entry.name, entry.value); err != nil {
+				return err
+			}
+		} else {
+			if err := env.Set(entry.name, entry.value); err != nil {
+				return err
+			}
 		}
 	}
-	if m.engine.config.dialect.IsLisp2() && !env.HasLiveFunc(entry.name) {
+
+	if m.engine.config.dialect.IsLisp2() && funcMissing {
 		if entry.canonical {
-			env.SetFuncCanonical(entry.name, entry.value)
+			if err := env.SetFuncCanonical(entry.name, entry.value); err != nil {
+				return err
+			}
 		} else {
-			env.SetFunc(entry.name, entry.value)
+			if err := env.SetFunc(entry.name, entry.value); err != nil {
+				return err
+			}
 		}
 	}
+
 	m.recordInstall(pluginName, entry.name)
+	return nil
 }
 
 func (m *stdlibLazyMaterializer) recordInstall(pluginName, name string) {
@@ -309,7 +340,10 @@ func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, nam
 		return nil, false, false
 	}
 	if !env.HasLiveFunc(name) {
-		env.SetFunc(name, v)
+		if err := env.SetFunc(name, v); err != nil {
+			m.logMaterializeFailure(&stdlibTemplateEntry{name: name}, err)
+			return nil, false, false
+		}
 	}
 	m.recordInstall(pluginName, name)
 	return v, true, false
@@ -335,20 +369,18 @@ func (m *stdlibLazyMaterializer) TombstoneForDelete(env *core.Env, name string) 
 // exactly as before. With the layer disabled (tests) it likewise falls back
 // to an immediate value-cell bind; applyVocabulary's bridge then mirrors
 // the function cell exactly as on an engine without the layer.
-func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val core.Value, canonical bool) {
+func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val core.Value, canonical bool) error {
 	if m == nil {
-		return
+		return nil
 	}
 	stdlibLazyTemplateRegistry.mu.RLock()
 	disabled := stdlibLazyTemplateRegistry.disabled
 	stdlibLazyTemplateRegistry.mu.RUnlock()
 	if disabled || m.engine.loadingPlugin != "" {
 		if canonical {
-			env.SetCanonical(name, val)
-		} else {
-			env.Set(name, val)
+			return env.SetCanonical(name, val)
 		}
-		return
+		return env.Set(name, val)
 	}
 
 	dialect := m.engine.config.dialect
@@ -372,7 +404,7 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 
 	if vocab != nil && dialect.IsBaseEmpty() {
 		if _, allowed := vocab[name]; !allowed {
-			return
+			return nil
 		}
 	}
 
@@ -382,6 +414,7 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 		value:     val,
 		canonical: canonical,
 	})
+	return nil
 }
 
 // RegisterSource defers a pure-Lisp bootstrap definition (defmacro/defn).

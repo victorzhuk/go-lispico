@@ -82,7 +82,10 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	}
 	e.loadingPlugin = ""
 
-	e.applyVocabulary()
+	if err := e.applyVocabulary(); err != nil {
+		e.registry.Unregister(p.Name())
+		return fmt.Errorf("apply vocabulary for plugin %s: %w", p.Name(), err)
+	}
 
 	after := e.snapshotBindings()
 	added := diff(after, before)
@@ -154,7 +157,13 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	}
 	e.loadingPlugin = ""
 
-	e.applyVocabulary()
+	if err := e.applyVocabulary(); err != nil {
+		e.registry.Unregister(name)
+		if hadOld {
+			e.registry.RegisterNoCheck(oldPlugin)
+		}
+		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, err)
+	}
 
 	after := e.snapshotBindings()
 	added := diff(after, before)

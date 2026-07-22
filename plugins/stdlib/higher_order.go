@@ -7,8 +7,8 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-func (p *Plugin) registerHigherOrder(env *core.Env) {
-	env.RegisterValue("map", core.GoFunc{
+func (p *Plugin) registerHigherOrder(env *core.Env) error {
+	if err := env.RegisterValue("map", core.GoFunc{
 		Name: "map",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -36,9 +36,11 @@ func (p *Plugin) registerHigherOrder(env *core.Env) {
 
 			return core.List{Items: results}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("filter", core.GoFunc{
+	if err := env.RegisterValue("filter", core.GoFunc{
 		Name: "filter",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
@@ -68,9 +70,11 @@ func (p *Plugin) registerHigherOrder(env *core.Env) {
 
 			return core.List{Items: results}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("reduce", core.GoFunc{
+	if err := env.RegisterValue("reduce", core.GoFunc{
 		Name: "reduce",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 || len(args) > 3 {
@@ -113,9 +117,11 @@ func (p *Plugin) registerHigherOrder(env *core.Env) {
 
 			return acc, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
 
-	env.RegisterValue("apply", core.GoFunc{
+	if err := env.RegisterValue("apply", core.GoFunc{
 		Name: "apply",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
@@ -138,5 +144,8 @@ func (p *Plugin) registerHigherOrder(env *core.Env) {
 			callArgs := append(args[1:len(args)-1], tail...)
 			return eval.Apply(ctx, fn, callArgs, env)
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
+	return nil
 }

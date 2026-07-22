@@ -45,7 +45,7 @@ func (c *Cell) Version() uint64 { return c.version.Load() }
 type LazyLayer interface {
 	LookupAndMaterialize(env *Env, name string) (Value, bool, bool)
 	TombstoneForDelete(env *Env, name string)
-	RegisterValue(env *Env, name string, val Value, canonical bool)
+	RegisterValue(env *Env, name string, val Value, canonical bool) error
 	RegisterSource(env *Env, name, source string, reusable bool) bool
 	ForceAll(env *Env)
 }
@@ -53,16 +53,20 @@ type LazyLayer interface {
 // Env is a lexical scope: an immutable parent chain with a thread-safe local binding map.
 // Reads walk up the chain; writes are local-only.
 type Env struct {
-	mu         sync.RWMutex
-	parent     *Env
-	vars       map[string]*Cell
-	cell0      Cell // first binding's cell, inline to save a heap alloc per scope
-	cell0Used  bool
-	funcs      map[string]*Cell // function cell; nil until first SetFunc (Lisp-2 only)
-	eval       Evaluator
-	macroEpoch int           // bumped on each defmacro in this scope; used in bytecode cache key
-	newNameGen atomic.Uint64 // bumped whenever a name is newly bound (or revived from tombstone) in vars
-	lazyLayer  atomic.Pointer[LazyLayer]
+	mu               sync.RWMutex
+	parent           *Env
+	vars             map[string]*Cell
+	cell0            Cell // first binding's cell, inline to save a heap alloc per scope
+	cell0Used        bool
+	funcs            map[string]*Cell // function cell; nil until first SetFunc (Lisp-2 only)
+	eval             Evaluator
+	macroEpoch       int           // bumped on each defmacro in this scope; used in bytecode cache key
+	newNameGen       atomic.Uint64 // bumped whenever a name is newly bound (or revived from tombstone) in vars
+	lazyLayer        atomic.Pointer[LazyLayer]
+	retainedBytes    int64
+	retainedSlots    int64
+	maxRetainedBytes int64
+	maxRetainedSlots int64
 }
 
 // SetLazyLayer installs (or clears, on nil) the env's miss-path fallback.
@@ -85,16 +89,14 @@ func (e *Env) LazyLayer() LazyLayer {
 // RegisterValue binds name through the lazy layer when one is installed,
 // deferring the binding behind first touch; otherwise it binds the value
 // cell immediately (applyVocabulary's bridge mirrors the function cell).
-func (e *Env) RegisterValue(name string, val Value, canonical bool) {
+func (e *Env) RegisterValue(name string, val Value, canonical bool) error {
 	if layer := e.LazyLayer(); layer != nil {
-		layer.RegisterValue(e, name, val, canonical)
-		return
+		return layer.RegisterValue(e, name, val, canonical)
 	}
 	if canonical {
-		e.SetCanonical(name, val)
-	} else {
-		e.Set(name, val)
+		return e.SetCanonical(name, val)
 	}
+	return e.Set(name, val)
 }
 
 // RegisterSource asks the lazy layer to defer a pure-Lisp definition of
@@ -134,8 +136,94 @@ func NewEnv(parent *Env) *Env {
 	}
 	if parent != nil {
 		e.eval = parent.eval
+		e.maxRetainedBytes = parent.maxRetainedBytes
+		e.maxRetainedSlots = parent.maxRetainedSlots
 	}
 	return e
+}
+
+// NewEnvWithRetainedLimits creates an Env with retained-state capacity limits.
+func NewEnvWithRetainedLimits(parent *Env, maxRetainedBytes, maxRetainedSlots int64) *Env {
+	e := NewEnv(parent)
+	e.maxRetainedBytes = maxRetainedBytes
+	e.maxRetainedSlots = maxRetainedSlots
+	return e
+}
+
+func retainedBindingBytes(name string, val Value) int64 {
+	return MeterEnvMapEntryBytes + MeterEnvCellBytes + StringShallowBytes(len(name)) + ValueShallowBytes(val)
+}
+
+func (e *Env) chargeRetainedBinding(name string, val Value) error {
+	return e.chargeRetainedBindings(retainedBindingBytes(name, val), 1)
+}
+
+func (e *Env) chargeRetainedBindings(bytes, slots int64) error {
+	nextBytes := e.retainedBytes + bytes
+	nextSlots := e.retainedSlots + slots
+	if e.maxRetainedBytes > 0 && nextBytes > e.maxRetainedBytes {
+		return NewResourceLimitError("retained state capacity limit exceeded")
+	}
+	if e.maxRetainedSlots > 0 && nextSlots > e.maxRetainedSlots {
+		return NewResourceLimitError("retained state capacity limit exceeded")
+	}
+	e.retainedBytes = nextBytes
+	e.retainedSlots = nextSlots
+	return nil
+}
+
+func retainedBindingCapacity(name string, val Value, slots int64) (int64, int64) {
+	return retainedBindingBytes(name, val) * slots, slots
+}
+
+// SetBoth binds name in both value and function cells.
+func (e *Env) SetBoth(name string, val Value) error {
+	return e.setBoth(name, val, false)
+}
+
+// SetBothCanonical binds name in both value and function cells as canonical.
+func (e *Env) SetBothCanonical(name string, val Value) error {
+	return e.setBoth(name, val, true)
+}
+
+func (e *Env) setBoth(name string, val Value, canonical bool) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	varCell, varCellExists := e.vars[name]
+	funcCell, funcCellExists := e.funcs[name]
+	newSlots := int64(0)
+	if !varCellExists {
+		newSlots++
+	}
+	if !funcCellExists {
+		newSlots++
+	}
+	if bytes, slots := retainedBindingCapacity(name, val, newSlots); slots > 0 {
+		if err := e.chargeRetainedBindings(bytes, slots); err != nil {
+			return err
+		}
+	}
+
+	if !varCellExists {
+		varCell = e.localCell(name)
+	}
+	if !funcCellExists {
+		funcCell = e.localFuncCell(name)
+	}
+
+	if varCell.v == nil {
+		e.newNameGen.Add(1)
+	}
+	varCell.v = val
+	varCell.canonical = canonical
+	varCell.version.Add(1)
+
+	funcCell.v = val
+	funcCell.canonical = canonical
+	funcCell.version.Add(1)
+
+	return nil
 }
 
 // localCell returns the cell owning name in this scope, creating it if absent.
@@ -172,16 +260,23 @@ func (e *Env) localFuncCell(name string) *Cell {
 
 // Set binds name in this (local) scope. Overwriting a canonical binding
 // removes the canonical marker, so a root-env rebind is detected as non-canonical.
-func (e *Env) Set(name string, val Value) {
+func (e *Env) Set(name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cell := e.localCell(name)
+	cell, ok := e.vars[name]
+	if !ok {
+		if err := e.chargeRetainedBinding(name, val); err != nil {
+			return err
+		}
+		cell = e.localCell(name)
+	}
 	if cell.v == nil {
 		e.newNameGen.Add(1)
 	}
 	cell.v = val
 	cell.canonical = false
 	cell.version.Add(1)
+	return nil
 }
 
 // SetCanonical binds name as a canonical operator in this scope.
@@ -189,16 +284,23 @@ func (e *Env) Set(name string, val Value) {
 // engine initialization. Marking an arbitrary custom GoFunc as canonical will
 // cause the bytecode VM to execute native opcode semantics for name instead of
 // calling the provided function.
-func (e *Env) SetCanonical(name string, val Value) {
+func (e *Env) SetCanonical(name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cell := e.localCell(name)
+	cell, ok := e.vars[name]
+	if !ok {
+		if err := e.chargeRetainedBinding(name, val); err != nil {
+			return err
+		}
+		cell = e.localCell(name)
+	}
 	if cell.v == nil {
 		e.newNameGen.Add(1)
 	}
 	cell.v = val
 	cell.canonical = true
 	cell.version.Add(1)
+	return nil
 }
 
 // GetCanonical resolves name like Get but also returns whether it is a canonical
@@ -359,13 +461,20 @@ func (e *Env) Get(name string) (Value, bool) {
 // allocated on first use so Lisp-1 scopes never carry it. Overwriting a
 // canonical function binding removes the canonical marker, so a defun rebind
 // is detected as non-canonical.
-func (e *Env) SetFunc(name string, val Value) {
+func (e *Env) SetFunc(name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cell := e.localFuncCell(name)
+	cell, ok := e.funcs[name]
+	if !ok {
+		if err := e.chargeRetainedBinding(name, val); err != nil {
+			return err
+		}
+		cell = e.localFuncCell(name)
+	}
 	cell.v = val
 	cell.canonical = false
 	cell.version.Add(1)
+	return nil
 }
 
 // SetFuncCanonical binds name as a canonical operator in this scope's
@@ -374,13 +483,20 @@ func (e *Env) SetFunc(name string, val Value) {
 // into the function cell so Lisp-2 head resolution observes it too. Marking
 // an arbitrary custom GoFunc as canonical will cause the bytecode VM to
 // execute native opcode semantics for name instead of calling it.
-func (e *Env) SetFuncCanonical(name string, val Value) {
+func (e *Env) SetFuncCanonical(name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cell := e.localFuncCell(name)
+	cell, ok := e.funcs[name]
+	if !ok {
+		if err := e.chargeRetainedBinding(name, val); err != nil {
+			return err
+		}
+		cell = e.localFuncCell(name)
+	}
 	cell.v = val
 	cell.canonical = true
 	cell.version.Add(1)
+	return nil
 }
 
 // GetFunc walks the scope chain reading the function cell (Lisp-2 only).
@@ -466,15 +582,21 @@ func (e *Env) ChildVariadic(params []Symbol, args []Value, variadic Symbol) (*En
 			return nil, NewArityError(len(params), len(args))
 		}
 		for i, param := range params {
-			child.Set(param.V, args[i])
+			if err := child.Set(param.V, args[i]); err != nil {
+				return nil, err
+			}
 		}
-		child.Set(variadic.V, List{Items: args[len(params):]})
+		if err := child.Set(variadic.V, List{Items: args[len(params):]}); err != nil {
+			return nil, err
+		}
 	} else {
 		if len(args) != len(params) {
 			return nil, NewArityError(len(params), len(args))
 		}
 		for i, param := range params {
-			child.Set(param.V, args[i])
+			if err := child.Set(param.V, args[i]); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -515,6 +637,47 @@ func (e *Env) Delete(name string) {
 	if layer := e.LazyLayer(); layer != nil {
 		layer.TombstoneForDelete(e, name)
 	}
+}
+
+// RetainedUsage returns this env's retained backing usage.
+func (e *Env) RetainedUsage() (bytes, slots int64) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.retainedBytes, e.retainedSlots
+}
+
+// Rebuild compacts this scope's local binding maps, dropping tombstoned cells
+// and recomputing retained backing usage from the remaining live bindings.
+func (e *Env) Rebuild() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	vars := make(map[string]*Cell, len(e.vars))
+	funcs := make(map[string]*Cell, len(e.funcs))
+	var bytes, slots int64
+
+	for name, cell := range e.vars {
+		if cell.v == nil {
+			continue
+		}
+		vars[name] = cell
+		bytes += retainedBindingBytes(name, cell.v)
+		slots++
+	}
+	for name, cell := range e.funcs {
+		if cell.v == nil {
+			continue
+		}
+		funcs[name] = cell
+		bytes += retainedBindingBytes(name, cell.v)
+		slots++
+	}
+
+	e.vars = vars
+	e.funcs = funcs
+	e.retainedBytes = bytes
+	e.retainedSlots = slots
+	e.newNameGen.Add(1)
 }
 
 // FuncNames returns a snapshot of the names bound in this scope's local
@@ -572,18 +735,23 @@ func (e *Env) LocalNames() []string {
 
 // MergeInto copies all bindings from this env into target.
 // Does NOT copy parent bindings. Target is locked during merge.
-func (e *Env) MergeInto(target *Env) {
+func (e *Env) MergeInto(target *Env) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	for name, cell := range e.vars {
 		if cell.v != nil {
-			target.Set(name, cell.v)
+			if err := target.Set(name, cell.v); err != nil {
+				return err
+			}
 		}
 	}
 	for name, cell := range e.funcs {
 		if cell.v != nil {
-			target.SetFunc(name, cell.v)
+			if err := target.SetFunc(name, cell.v); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }

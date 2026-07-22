@@ -228,7 +228,7 @@ func TestStateMachine_TransitionWithEval_Allowed(t *testing.T) {
 
 func TestStateMachine_TransitionWithEval_GuardBlocks(t *testing.T) {
 	env := core.NewEnv(nil)
-	env.Set("allowed", core.Bool{V: false})
+	require.NoError(t, env.Set("allowed", core.Bool{V: false}))
 
 	guardLambda := core.Lambda{
 		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "event"}},
@@ -262,7 +262,7 @@ func TestStateMachine_TransitionWithEval_GuardBlocks(t *testing.T) {
 
 func TestStateMachine_TransitionWithEval_GuardAllows(t *testing.T) {
 	env := core.NewEnv(nil)
-	env.Set("allowed", core.Bool{V: true})
+	require.NoError(t, env.Set("allowed", core.Bool{V: true}))
 
 	guardLambda := core.Lambda{
 		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "event"}},
@@ -295,7 +295,7 @@ func TestStateMachine_TransitionWithEval_GuardAllows(t *testing.T) {
 
 func TestStateMachine_TransitionWithEval_ActionExecutes(t *testing.T) {
 	env := core.NewEnv(nil)
-	env.Set("action-ran", core.Bool{V: false})
+	require.NoError(t, env.Set("action-ran", core.Bool{V: false}))
 
 	actionLambda := core.Lambda{
 		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "event"}},
@@ -338,7 +338,7 @@ func TestStateMachine_TransitionWithEval_ActionExecutes(t *testing.T) {
 
 func TestStateMachine_CallbackInvoked(t *testing.T) {
 	env := core.NewEnv(nil)
-	env.Set("notified", core.Bool{V: false})
+	require.NoError(t, env.Set("notified", core.Bool{V: false}))
 
 	callbackLambda := core.Lambda{
 		Params: []core.Symbol{{V: "machine-id"}, {V: "from"}, {V: "to"}},

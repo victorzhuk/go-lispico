@@ -46,7 +46,7 @@ func stdlibBootstrapEntries() []bootstrapEntry {
 	}
 }
 
-func (p *Plugin) mirrorBootstrapBindings(env *core.Env, before map[string]struct{}) {
+func (p *Plugin) mirrorBootstrapBindings(env *core.Env, before map[string]struct{}) error {
 	for _, name := range env.LocalNames() {
 		if _, existed := before[name]; existed {
 			continue
@@ -55,9 +55,12 @@ func (p *Plugin) mirrorBootstrapBindings(env *core.Env, before map[string]struct
 			continue
 		}
 		if v, ok := env.Get(name); ok {
-			env.SetFunc(name, v)
+			if err := env.SetFunc(name, v); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 func (p *Plugin) loadBootstrap(env *core.Env) error {
@@ -108,7 +111,9 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 		}
 	}
 
-	p.mirrorBootstrapBindings(env, before)
+	if err := p.mirrorBootstrapBindings(env, before); err != nil {
+		return err
+	}
 
 	return nil
 }

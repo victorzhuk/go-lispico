@@ -23,14 +23,19 @@ func (p *Plugin) Metadata() core.PluginMeta {
 }
 
 func (p *Plugin) Init(env *core.Env) error {
-	p.registerArithmetic(env)
-	p.registerComparison(env)
-
-	p.registerStrings(env)
-	p.registerCollections(env)
-	p.registerHigherOrder(env)
-	p.registerControl(env)
-	p.registerTypes(env)
+	for _, register := range []func(*core.Env) error{
+		p.registerArithmetic,
+		p.registerComparison,
+		p.registerStrings,
+		p.registerCollections,
+		p.registerHigherOrder,
+		p.registerControl,
+		p.registerTypes,
+	} {
+		if err := register(env); err != nil {
+			return err
+		}
+	}
 
 	return p.loadBootstrap(env)
 }

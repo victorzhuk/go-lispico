@@ -15,6 +15,8 @@ const (
 	MeterCollectionHeaderBytes int64 = 24
 	MeterHashMapHeaderBytes    int64 = 32
 	MeterHashMapEntryBytes     int64 = 64
+	MeterEnvMapEntryBytes      int64 = 64
+	MeterEnvCellBytes          int64 = 32
 	MeterClosureHeaderBytes    int64 = 64
 	MeterClosureCaptureBytes   int64 = 8
 	MeterInstructionBytes      int64 = 4

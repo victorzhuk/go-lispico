@@ -7,8 +7,8 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-func (p *Plugin) registerControl(env *core.Env) {
-	env.RegisterValue("assert", core.GoFunc{
+func (p *Plugin) registerControl(env *core.Env) error {
+	if err := env.RegisterValue("assert", core.GoFunc{
 		Name: "assert",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
@@ -36,5 +36,8 @@ func (p *Plugin) registerControl(env *core.Env) {
 
 			return core.Nil{}, nil
 		},
-	}, false)
+	}, false); err != nil {
+		return err
+	}
+	return nil
 }

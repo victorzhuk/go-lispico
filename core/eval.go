@@ -680,12 +680,11 @@ func (e *engine) CollectionLimit() int { return e.MaxCollectionLen }
 // bindOperator binds a function-defining form's result. Under Lisp-2 it lands in
 // the function cell so head position can find it; under Lisp-1 it shares the
 // single value namespace, exactly as before.
-func (e *engine) bindOperator(env *Env, name string, val Value) {
+func (e *engine) bindOperator(env *Env, name string, val Value) error {
 	if e.lisp2 {
-		env.SetFunc(name, val)
-		return
+		return env.SetFunc(name, val)
 	}
-	env.Set(name, val)
+	return env.Set(name, val)
 }
 
 func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
@@ -700,7 +699,9 @@ func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	env.Set(name.V, val)
+	if err := env.Set(name.V, val); err != nil {
+		return nil, err
+	}
 	return val, nil
 }
 
@@ -743,7 +744,9 @@ func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		Body:     args[2:],
 		Env:      env,
 	}
-	e.bindOperator(env, name.V, lambda)
+	if err := e.bindOperator(env, name.V, lambda); err != nil {
+		return nil, err
+	}
 	return lambda, nil
 }
 
@@ -770,7 +773,9 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 		Body:     args[2:],
 		Env:      env,
 	}
-	e.bindOperator(env, name.V, macro)
+	if err := e.bindOperator(env, name.V, macro); err != nil {
+		return nil, err
+	}
 	env.BumpMacroEpoch()
 	return macro, nil
 }
@@ -890,7 +895,9 @@ func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 		if err != nil {
 			return nil, err
 		}
-		child.Set(name.V, val)
+		if err := child.Set(name.V, val); err != nil {
+			return nil, err
+		}
 	}
 	return e.evalBody(ctx, args[1:], child)
 }
@@ -913,7 +920,9 @@ func evalLetStar(ctx context.Context, e *engine, args []Value, env *Env) (Value,
 		if err != nil {
 			return nil, err
 		}
-		child.Set(name.V, val)
+		if err := child.Set(name.V, val); err != nil {
+			return nil, err
+		}
 	}
 	return e.evalBody(ctx, args[1:], child)
 }
@@ -952,7 +961,9 @@ func evalSet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	defEnv.Set(name.V, val)
+	if err := defEnv.Set(name.V, val); err != nil {
+		return nil, err
+	}
 	return val, nil
 }
 
@@ -977,7 +988,9 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		if err != nil {
 			return nil, err
 		}
-		loopEnv.Set(name.V, val)
+		if err := loopEnv.Set(name.V, val); err != nil {
+			return nil, err
+		}
 		loopVars = append(loopVars, name)
 	}
 
@@ -998,7 +1011,9 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 			return nil, evalErrorf("recur: expected %d args, got %d", len(loopVars), len(rv.args))
 		}
 		for i, v := range loopVars {
-			loopEnv.Set(v.V, rv.args[i])
+			if err := loopEnv.Set(v.V, rv.args[i]); err != nil {
+				return nil, err
+			}
 		}
 	}
 }
@@ -1050,7 +1065,9 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 			return nil, err
 		}
 		catchEnv := env.Child()
-		catchEnv.Set(errSym.V, String{V: err.Error()})
+		if err := catchEnv.Set(errSym.V, String{V: err.Error()}); err != nil {
+			return nil, err
+		}
 		return e.evalBody(ctx, catchClause.Items[bodyStart:], catchEnv)
 	}
 	return result, nil
