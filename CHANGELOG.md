@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** Removed `core.Dialect.NilOnlyFalsy()`. All dialects now treat
+  `nil` and `false` as falsy, including the Common Lisp dialect.
+
 - `runtime.New()` now defaults to bytecode VM execution, with form-by-form fallback to
   the tree-walking evaluator for unsupported forms (for example `defmacro` nested in a
   body, `unquote-splicing`).

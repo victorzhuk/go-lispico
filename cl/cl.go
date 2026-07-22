@@ -2,7 +2,6 @@
 //
 // The Common Lisp dialect is composed from the full kernel with:
 //   - Lisp-2 namespace axis (separate function and value cells)
-//   - nil-only truthiness (false is a true value)
 //   - CL reader flags (#' and #(...) enabled, [..]/{..} disabled)
 //   - Delta renames for special forms (defun→defn, setq→set!, progn→do)
 //   - CL vocabulary renaming core GoFuncs (car→first, cdr→rest, etc.)
@@ -26,7 +25,6 @@ import "github.com/victorzhuk/go-lispico/core"
 func Dialect() core.Dialect {
 	return core.FullDialect().
 		Lisp2().
-		NilOnlyFalsy().
 		WithoutBracketLiterals().
 		WithFunctionRef().
 		WithReaderVector().

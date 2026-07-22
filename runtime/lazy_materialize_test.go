@@ -411,8 +411,8 @@ func TestLazyMaterialize_ConcurrentDependentNames(t *testing.T) {
 }
 
 // TestLazyMaterialize_EquivalenceOnVsOff_CL runs the on/off equivalence
-// under the CL dialect (Lisp-2, vocabulary renames, nil-only truthiness) so
-// the func-cell mirroring and vocab alias paths are defended in both modes.
+// under the CL dialect (Lisp-2, vocabulary renames, reader flags) so the
+// func-cell mirroring and vocab alias paths are defended in both modes.
 // List-only syntax: the CL reader disables bracket literals.
 func TestLazyMaterialize_EquivalenceOnVsOff_CL(t *testing.T) {
 	// Serial: process-global disabled toggle.

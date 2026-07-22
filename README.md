@@ -78,12 +78,12 @@ Build an engine with a specific dialect via `runtime.WithDialect(d)`. Two
 dialects ship with the interpreter:
 
 - `cl.Dialect()` — Common Lisp / Lisp-2 (default). Separates function and
-  value cells, uses nil-only falsiness, disables bracket literals (`[...]`)
-  in source, and renames many special forms and builtins for CL familiarity
-  (`defun`→`defn`, `setq`→`set!`, `progn`→`do`, `car`→`first`, etc.).
+  value cells, treats `nil` and `false` as falsy, disables bracket literals
+  (`[...]`) in source, and renames many special forms and builtins for CL
+  familiarity (`defun`→`defn`, `setq`→`set!`, `progn`→`do`,
+  `car`→`first`, etc.).
 - `clojure.Dialect()` — Clojure / Lisp-1 identity dialect. Single namespace,
-  `nil`+`false` falsiness, bracket literals enabled. Compatible with the
-  bytecode VM.
+  bracket literals enabled. Compatible with the bytecode VM.
 
 The default engine uses `cl.Dialect()`. Pass `WithDialect(clojure.Dialect())`
 to opt in to the Clojure surface.

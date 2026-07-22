@@ -40,17 +40,16 @@ func TestDialect_Bytecode_RemoveRejected(t *testing.T) {
 }
 
 // TestDialect_Bytecode_CL_Default verifies that the default CL dialect works
-// under WithBytecode(): CL truthiness (nil-only), defun/Lisp-2 function cell,
-// and basic evaluation all succeed through the bytecode path.
+// under WithBytecode(): uniform truthiness, defun/Lisp-2 function cell, and
+// basic evaluation all succeed through the bytecode path.
 func TestDialect_Bytecode_CL_Default(t *testing.T) {
 	e, err := New(nil, WithBytecode())
 	require.NoError(t, err, "default CL + bytecode must construct")
 	defer e.Close()
 
-	// CL truthiness: only nil is falsy, false is true.
 	got, err := e.Eval(context.Background(), "cl-truthy", "(if false :y :n)")
 	require.NoError(t, err)
-	assert.True(t, core.Keyword{V: "y"}.Equals(got), "CL truthiness: (if false :y :n) => :y")
+	assert.True(t, core.Keyword{V: "n"}.Equals(got), "CL truthiness: (if false :y :n) => :n")
 
 	// defun (Lisp-2) defines a function callable from head position.
 	// Note: under bytecode, defun returns a vm.Closure, not core.Lambda.
@@ -107,25 +106,19 @@ func TestDialect_Bytecode_Lisp2_Funcall(t *testing.T) {
 	assert.True(t, core.Int{V: 42}.Equals(got), "funcall #'f: got %v", got)
 }
 
-// TestDialect_Bytecode_NilOnlyTruthiness verifies that the nil-only truthiness
-// axis works through the bytecode path.
-func TestDialect_Bytecode_NilOnlyTruthiness(t *testing.T) {
-	nilOnly := core.FullDialect().NilOnlyFalsy()
-	e, err := New(nil, WithBytecode(), WithDialect(nilOnly))
+func TestDialect_Bytecode_UniformTruthiness(t *testing.T) {
+	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect()))
 	require.NoError(t, err)
 	defer e.Close()
 
-	// nil is falsy.
 	got, err := e.Eval(context.Background(), "nil-falsy", "(if nil :y :n)")
 	require.NoError(t, err)
 	assert.True(t, core.Keyword{V: "n"}.Equals(got), "nil must be falsy: (if nil :y :n) => :n")
 
-	// false is truthy under nil-only.
-	got, err = e.Eval(context.Background(), "false-truthy", "(if false :y :n)")
+	got, err = e.Eval(context.Background(), "false-falsy", "(if false :y :n)")
 	require.NoError(t, err)
-	assert.True(t, core.Keyword{V: "y"}.Equals(got), "false must be truthy: (if false :y :n) => :y")
+	assert.True(t, core.Keyword{V: "n"}.Equals(got), "false must be falsy: (if false :y :n) => :n")
 
-	// non-nil, non-false values are truthy.
 	got, err = e.Eval(context.Background(), "int-truthy", "(if 0 :y :n)")
 	require.NoError(t, err)
 	assert.True(t, core.Keyword{V: "y"}.Equals(got), "0 must be truthy: (if 0 :y :n) => :y")

@@ -12,7 +12,7 @@ import (
 // TestRuntime_DefaultIsCL (1.1) — runtime.New() with no dialect option
 // resolves to the Common Lisp dialect. Asserts the spec scenarios:
 //   - defun defines a function with List-style params (CL vocab over defn kernel form).
-//   - (if false :y :n) evaluates to :y (nil-only truthiness).
+//   - (if false :y :n) evaluates to :n.
 //   - funcall and function (#') are available.
 //   - [1 2] is a parse error (no bracket literals under CL).
 //   - #'f and #(1 2) parse.
@@ -22,11 +22,10 @@ func TestRuntime_DefaultIsCL(t *testing.T) {
 	t.Cleanup(func() { _ = eng.Close() })
 	ctx := context.Background()
 
-	// (if false :y :n) is :y under CL (nil-only).
 	got, err := eng.Eval(ctx, "if-false", "(if false :y :n)")
 	require.NoError(t, err)
-	require.True(t, core.Keyword{V: "y"}.Equals(got),
-		"CL truthiness: only nil is falsy; (if false :y :n) must be :y")
+	require.True(t, core.Keyword{V: "n"}.Equals(got),
+		"(if false :y :n) must be :n")
 
 	// defun defines a function with CL-style List params.
 	got, err = eng.Eval(ctx, "defun", "(defun f (x) x)")

@@ -52,15 +52,6 @@ const (
 	baseEmpty
 )
 
-// truthiness is the Dialect's falsy rule. The zero value keeps both nil and
-// false falsy, so a Dialect built without touching the axis behaves as before.
-type truthiness int
-
-const (
-	truthNilFalse truthiness = iota // nil and false are falsy (Clojure-style)
-	truthNilOnly                    // only nil is falsy (Common Lisp-style)
-)
-
 // namespace is the Dialect's symbol-namespace rule. The zero value is Lisp-1: a
 // symbol names one binding, and a Dialect built without touching the axis
 // behaves as before.
@@ -139,7 +130,6 @@ type VocabEntry struct {
 type Dialect struct {
 	base      dialectBase
 	ops       []deltaOp
-	truth     truthiness
 	ns        namespace
 	brackets  bracketSyntax
 	funcRef   funcRefSyntax
@@ -288,15 +278,8 @@ func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok 
 	return "", false, false
 }
 
-// TruthyFunc returns the Dialect's truthiness predicate for conditional forms.
-// Returns nil for the default (nil+false falsy) meaning the caller can use core.IsTruthy.
+// TruthyFunc returns nil because all dialects use core.IsTruthy for conditional forms.
 func (d Dialect) TruthyFunc() func(Value) bool {
-	if d.truth == truthNilOnly {
-		return func(v Value) bool {
-			_, isNil := v.(Nil)
-			return !isNil
-		}
-	}
 	return nil
 }
 
@@ -305,20 +288,9 @@ func (d Dialect) IsBaseEmpty() bool {
 	return d.base == baseEmpty
 }
 
-// NilOnlyFalsy sets the truthiness axis so only nil is falsy; false becomes a
-// true value. The default axis keeps both nil and false falsy.
-func (d Dialect) NilOnlyFalsy() Dialect {
-	d.truth = truthNilOnly
-	return d
-}
-
-// isTruthy reports whether v is a true value under the Dialect's truthiness
-// axis. It is the single hook the conditional special forms consult.
+// isTruthy reports whether v is a true value. All dialects treat nil and false
+// as falsy, and every other value as truthy.
 func (d Dialect) isTruthy(v Value) bool {
-	if d.truth == truthNilOnly {
-		_, isNil := v.(Nil)
-		return !isNil
-	}
 	return IsTruthy(v)
 }
 
@@ -412,8 +384,8 @@ func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, Reade
 // names directly, so only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
 	return d.base == baseFull && len(d.ops) == 0 &&
-		d.truth == truthNilFalse && d.ns == nsLisp1 &&
-		d.brackets == bracketsOn && d.funcRef == funcRefOff && d.readerVec == readerVecOff &&
+		d.ns == nsLisp1 && d.brackets == bracketsOn &&
+		d.funcRef == funcRefOff && d.readerVec == readerVecOff &&
 		d.vocab == nil
 }
 
@@ -465,8 +437,8 @@ func (d Dialect) resolve() (map[string]formFn, error) {
 // semantic configuration changes. Used as part of the bytecode chunk cache key.
 func (d Dialect) Fingerprint() string {
 	h := sha256.New()
-	fmt.Fprintf(h, "base=%d|truth=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
-		d.base, d.truth, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
+	fmt.Fprintf(h, "base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
+		d.base, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
 	for _, op := range d.ops {
 		fmt.Fprintf(h, "|%d:%s:%s", op.kind, op.name, op.canonical)
 	}

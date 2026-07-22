@@ -122,10 +122,9 @@ func TestCache_Isolation(t *testing.T) {
 	assert.False(t, r1.Equals(r2), "different sources must produce different results")
 }
 
-// TestCache_DialectSensitivity verifies that different dialects get different
-// cache keys (truthiness change affects compiled conditional behavior).
+// TestCache_DialectSensitivity verifies that dialect identity still participates
+// in cache keys even though truthiness is uniform.
 func TestCache_DialectSensitivity(t *testing.T) {
-	// CL dialect: only nil is falsy.
 	cl, err := New(nil, WithBytecode())
 	require.NoError(t, err)
 	defer cl.Close()
@@ -135,10 +134,7 @@ func TestCache_DialectSensitivity(t *testing.T) {
 	r1, err := cl.Eval(context.Background(), "cl", "(if false :y :n)")
 	require.NoError(t, err)
 
-	// Both CL and default produce :y under the "nil-only falsy" rule,
-	// but the dialect differs internally — the cache key includes the
-	// dialect fingerprint so these evaluations never share a key.
-	assert.True(t, core.Keyword{V: "y"}.Equals(r1), "CL: (if false :y :n) => :y")
+	assert.True(t, core.Keyword{V: "n"}.Equals(r1), "CL: (if false :y :n) => :n")
 }
 
 // TestCache_ConcurrentSafety verifies that concurrent Eval calls on a
