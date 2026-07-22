@@ -307,9 +307,15 @@ func (st *evalState) leaseEval(reductions, allocBytes int64) error {
 		return NewResourceLimitError(fmt.Sprintf("evaluation meter exhausted: %v", err))
 	}
 	if reductions > 0 && grantedRed <= 0 {
+		if grantedRed > 0 || grantedAlloc > 0 {
+			st.meter.ReturnEval(grantedRed, grantedAlloc)
+		}
 		return NewResourceLimitError("evaluation reduction meter exhausted")
 	}
 	if allocBytes > 0 && grantedAlloc <= 0 {
+		if grantedRed > 0 || grantedAlloc > 0 {
+			st.meter.ReturnEval(grantedRed, grantedAlloc)
+		}
 		return NewResourceLimitError("evaluation allocation meter exhausted")
 	}
 	st.leasedReductions += grantedRed

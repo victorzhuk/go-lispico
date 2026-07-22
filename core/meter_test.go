@@ -14,6 +14,61 @@ type testEvalMeter struct {
 	deny        bool
 }
 
+type partialGrantEvalMeter struct {
+	leaseRed   int64
+	leaseAlloc int64
+	leaseErr   error
+
+	leaseCalls  int
+	returnCalls int
+	returnedRed int64
+	returnedMem int64
+}
+
+func (m *partialGrantEvalMeter) LeaseEval(reductions, allocBytes int64) (int64, int64, error) {
+	m.leaseCalls++
+	return m.leaseRed, m.leaseAlloc, m.leaseErr
+}
+
+func (m *partialGrantEvalMeter) ReturnEval(reductions, allocBytes int64) {
+	m.returnCalls++
+	m.returnedRed += reductions
+	m.returnedMem += allocBytes
+}
+
+func (m *partialGrantEvalMeter) ChargeRetained(_, _ int64) error { return nil }
+
+func (m *partialGrantEvalMeter) ReleaseRetained(_, _ int64) {}
+
+func TestEvalState_LeaseEvalReturnsPartialGrantOnErrNil(t *testing.T) {
+	t.Parallel()
+
+	m := &partialGrantEvalMeter{
+		leaseRed:   4,
+		leaseAlloc: 0,
+	}
+	st := newEvalState()
+	st.attachMeter(m)
+
+	err := st.leaseEval(4, 4)
+	if err == nil {
+		t.Fatal("leaseEval succeeded, want resource limit")
+	}
+	var lerr *LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != CodeResourceLimit {
+		t.Fatalf("leaseEval error = %v, want %s", err, CodeResourceLimit)
+	}
+	if lerr.Message != "evaluation allocation meter exhausted" {
+		t.Fatalf("message = %q, want evaluation allocation meter exhausted", lerr.Message)
+	}
+	if m.returnCalls != 1 {
+		t.Fatalf("ReturnEval calls = %d, want 1", m.returnCalls)
+	}
+	if m.returnedRed != 4 || m.returnedMem != 0 {
+		t.Fatalf("ReturnEval returned (%d, %d), want (4, 0)", m.returnedRed, m.returnedMem)
+	}
+}
+
 func (m *testEvalMeter) LeaseEval(reductions, allocBytes int64) (int64, int64, error) {
 	m.leaseCalls++
 	if m.deny {
