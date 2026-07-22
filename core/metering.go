@@ -102,11 +102,15 @@ func (st *evalState) setResourceLimits(maxReductions, maxAllocBytes int64) {
 }
 
 func (st *evalState) attachMeter(m sessionMeter) {
+	current := st.currentMeter()
 	if m == nil {
 		st.meter.Store(nil)
 		return
 	}
-	if st.evalDepth.Load() > 0 && st.currentMeter() != nil {
+	if current == m {
+		return
+	}
+	if st.evalDepth.Load() > 0 && current != nil {
 		return
 	}
 	st.setMeter(m)
@@ -254,16 +258,6 @@ type retainedRelease struct {
 	slots int64
 }
 
-func (st *evalState) pendingBytesFor(cell *Cell) int64 {
-	var bytes int64
-	for _, pending := range st.pendingCellAllocs {
-		if pending.cell == cell {
-			bytes += pending.bytes
-		}
-	}
-	return bytes
-}
-
 func (st *evalState) settleRetained() error {
 	if len(st.pendingCellAllocs) == 0 {
 		return nil
@@ -273,23 +267,22 @@ func (st *evalState) settleRetained() error {
 			pending.env.SetRetainedMeter(pending.meter)
 		}
 	}
-	charges := make([]retainedCharge, 0, 1)
+	charges := make(map[sessionMeter]*retainedCharge, len(st.pendingCellAllocs))
 	for _, pending := range st.pendingCellAllocs {
 		if pending.meter == nil || (pending.bytes == 0 && pending.slots == 0) {
 			continue
 		}
-		found := false
-		for i := range charges {
-			if charges[i].meter == pending.meter {
-				charges[i].bytes += pending.bytes
-				charges[i].slots += pending.slots
-				found = true
-				break
+		charge, ok := charges[pending.meter]
+		if !ok {
+			charges[pending.meter] = &retainedCharge{
+				meter: pending.meter,
+				bytes: pending.bytes,
+				slots: pending.slots,
 			}
+			continue
 		}
-		if !found {
-			charges = append(charges, retainedCharge{meter: pending.meter, bytes: pending.bytes, slots: pending.slots})
-		}
+		charge.bytes += pending.bytes
+		charge.slots += pending.slots
 	}
 	for _, charge := range charges {
 		if err := charge.meter.ChargeRetained(charge.bytes, charge.slots); err != nil {
