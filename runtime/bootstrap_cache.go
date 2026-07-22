@@ -47,7 +47,8 @@ var stdlibBootstrapArtifacts = &stdlibBootstrapArtifactCache{
 func (be *bytecodeEvaluator) EvalStdlibBootstrap(ctx context.Context, source string, env *core.Env) (result core.Value, err error) {
 	ctx = be.evalResourceContext(ctx)
 	if core.HasEvalMeter(ctx) {
-		top, err := core.StartEval(ctx)
+		var top bool
+		top, err = core.StartEval(ctx)
 		if err != nil {
 			return nil, err
 		}

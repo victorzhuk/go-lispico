@@ -162,6 +162,31 @@ func TestMeter_DirectEvaluatorApplyUsesContextMeter(t *testing.T) {
 	}
 }
 
+func TestMeter_DirectEvaluatorWithMeterOverridesReusedEvalState(t *testing.T) {
+	meterA := &testEvalMeter{}
+	meterB := &testEvalMeter{}
+	eval := NewEvaluator()
+	env := NewEnv(nil)
+	ctx := EnsureEvalState(WithEvalMeter(t.Context(), meterA))
+
+	if _, err := eval.Eval(ctx, Int{V: 1}, env); err != nil {
+		t.Fatalf("Eval meter A: %v", err)
+	}
+	if meterA.leaseCalls == 0 || meterA.returnCalls != 1 {
+		t.Fatalf("meterA lease/return calls = %d/%d, want lease > 0 and return 1", meterA.leaseCalls, meterA.returnCalls)
+	}
+
+	if _, err := eval.Eval(WithEvalMeter(ctx, meterB), Int{V: 2}, env); err != nil {
+		t.Fatalf("Eval meter B: %v", err)
+	}
+	if meterB.leaseCalls == 0 || meterB.returnCalls != 1 {
+		t.Fatalf("meterB lease/return calls = %d/%d, want lease > 0 and return 1", meterB.leaseCalls, meterB.returnCalls)
+	}
+	if meterA.leaseCalls != 1 || meterA.returnCalls != 1 {
+		t.Fatalf("meterA calls after override = lease %d return %d, want unchanged 1/1", meterA.leaseCalls, meterA.returnCalls)
+	}
+}
+
 func TestMeter_DirectEvaluatorEvalDeniedLeaseIsTerminalResourceLimit(t *testing.T) {
 	m := &testEvalMeter{deny: true}
 	_, err := NewEvaluator().Eval(WithEvalMeter(t.Context(), m), Int{V: 1}, NewEnv(nil))

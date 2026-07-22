@@ -69,34 +69,38 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	name := p.Name()
 	if err := e.registry.Register(p); err != nil {
-		return fmt.Errorf("register plugin %s: %w", p.Name(), err)
+		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
 
 	before := e.snapshotBindings()
 	ctx := e.evalResourceContext(context.Background())
 	top, startErr := core.StartEval(ctx)
 	if startErr != nil {
-		e.registry.Unregister(p.Name())
+		e.registry.Unregister(name)
 		return startErr
 	}
+	finished := false
 	defer func() {
-		if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
-			err = finishErr
+		if !finished {
+			if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
+				err = finishErr
+			}
+		}
+		if err != nil {
+			e.rollbackPluginUse(name, before)
 		}
 	}()
 
-	e.loadingPlugin = p.Name()
+	e.loadingPlugin = name
 	if initErr := p.Init(e.rootEnv); initErr != nil {
-		e.loadingPlugin = ""
-		e.registry.Unregister(p.Name())
-		return fmt.Errorf("init plugin %s: %w", p.Name(), initErr)
+		return fmt.Errorf("init plugin %s: %w", name, initErr)
 	}
 	e.loadingPlugin = ""
 
 	if vocabErr := e.applyVocabulary(); vocabErr != nil {
-		e.registry.Unregister(p.Name())
-		return fmt.Errorf("apply vocabulary for plugin %s: %w", p.Name(), vocabErr)
+		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
 	}
 
 	after := e.snapshotBindings()
@@ -105,14 +109,37 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 		if e.bindings == nil {
 			e.bindings = make(map[string]map[string]struct{})
 		}
-		e.bindings[p.Name()] = added
+		e.bindings[name] = added
 	}
-	e.populateTemplateBindings(p.Name())
+	e.populateTemplateBindings(name)
+
+	finished = true
+	if finishErr := core.FinishEval(ctx, top); finishErr != nil {
+		return finishErr
+	}
 
 	e.stats.incPlugins()
-	e.logger.Info("plugin loaded", "name", p.Name(), "version", p.Metadata().Version)
+	e.logger.Info("plugin loaded", "name", name, "version", p.Metadata().Version)
 
 	return nil
+}
+
+func (e *engineImpl) rollbackPluginUse(name string, before []string) {
+	e.loadingPlugin = ""
+	e.registry.Unregister(name)
+	after := e.snapshotBindings()
+	added := diff(after, before)
+	for n := range added {
+		e.rootEnv.Delete(n)
+	}
+	if len(added) > 0 {
+		e.rootEnv.Rebuild()
+		e.rootEnv.BumpMacroEpoch()
+	}
+	delete(e.bindings, name)
+	if e.lazyMaterializer != nil {
+		e.lazyMaterializer.deactivate(name)
+	}
 }
 
 func (e *engineImpl) UnloadPlugin(name string) error {

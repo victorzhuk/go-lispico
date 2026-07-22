@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -168,6 +169,37 @@ func TestMeter_ContextOverridesEngineMeter(t *testing.T) {
 	}
 	if engineMeter.snapshot().leaseCalls != 0 {
 		t.Fatalf("engine meter lease calls = %d, want 0", engineMeter.snapshot().leaseCalls)
+	}
+}
+
+func TestMeter_WithMeterOverridesReusedEvalState(t *testing.T) {
+	meterA := &recordingMeter{}
+	meterB := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	ctx := core.EnsureEvalState(WithMeter(t.Context(), meterA))
+
+	if _, err := eng.Eval(ctx, "meter-a", "(def from-a [1])"); err != nil {
+		t.Fatalf("Eval meter A: %v", err)
+	}
+	snapA := meterA.snapshot()
+	if snapA.leaseCalls == 0 || snapA.chargeCalls != 1 {
+		t.Fatalf("meterA lease/charge calls = %d/%d, want lease > 0 and charge 1", snapA.leaseCalls, snapA.chargeCalls)
+	}
+
+	if _, err := eng.Eval(WithMeter(ctx, meterB), "meter-b", "(def from-b [2])"); err != nil {
+		t.Fatalf("Eval meter B: %v", err)
+	}
+	snapB := meterB.snapshot()
+	if snapB.leaseCalls == 0 || snapB.chargeCalls != 1 {
+		t.Fatalf("meterB lease/charge calls = %d/%d, want lease > 0 and charge 1", snapB.leaseCalls, snapB.chargeCalls)
+	}
+	snapA = meterA.snapshot()
+	if snapA.leaseCalls != 1 || snapA.chargeCalls != 1 {
+		t.Fatalf("meterA calls after override = lease %d charge %d, want unchanged 1/1", snapA.leaseCalls, snapA.chargeCalls)
 	}
 }
 
@@ -487,6 +519,31 @@ func TestMeter_EngineMeterPreservesNativeEvaluator(t *testing.T) {
 	}
 }
 
+func TestMeter_EvalRetainedChargeErrorIsTerminal(t *testing.T) {
+	m := &recordingMeter{chargeErr: errors.New("retained denied")}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	_, err = eng.Eval(t.Context(), "retained-denied", "(def denied [1 2 3])")
+	if err == nil {
+		t.Fatal("Eval succeeded, want retained charge error")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Eval error = %v, want %s", err, core.CodeResourceLimit)
+	}
+	if !core.IsTerminalEvalError(err) {
+		t.Fatalf("Eval error is not terminal: %v", err)
+	}
+	if _, ok := eng.RootEnv().Get("denied"); !ok {
+		t.Fatal("denied binding missing; Eval retained charge is charge-after-write")
+	}
+}
+
 func TestMeter_UseRollsBackPluginOnRetainedChargeError(t *testing.T) {
 	m := &recordingMeter{chargeErr: errors.New("retained denied")}
 	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
@@ -515,6 +572,48 @@ func TestMeter_UseRollsBackPluginOnRetainedChargeError(t *testing.T) {
 	m.reset()
 	if err := eng.Use(setupPlugin{}); err != nil {
 		t.Fatalf("Use after rollback: %v", err)
+	}
+}
+
+type evaluatorSetupPlugin struct {
+	ctx context.Context
+}
+
+func (evaluatorSetupPlugin) Name() string { return "setup-evaluator" }
+
+func (evaluatorSetupPlugin) Metadata() core.PluginMeta { return core.PluginMeta{Version: "test"} }
+
+func (p evaluatorSetupPlugin) Init(env *core.Env) error {
+	_, err := env.Evaluator().Eval(p.ctx, core.List{Items: []core.Value{
+		core.Symbol{V: "def"},
+		core.Symbol{V: "setup/evaluator-value"},
+		core.Int{V: 42},
+	}}, env)
+	return err
+}
+
+func TestMeter_UseRollsBackNestedEvaluatorRetainedChargeError(t *testing.T) {
+	m := &recordingMeter{chargeErr: errors.New("retained denied")}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	err = eng.Use(evaluatorSetupPlugin{ctx: t.Context()})
+	if err == nil {
+		t.Fatal("Use succeeded, want retained charge error")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Use error = %v, want %s", err, core.CodeResourceLimit)
+	}
+	if _, ok := eng.Registry().Get("setup-evaluator"); ok {
+		t.Fatal("plugin remained registered after nested retained charge failure")
+	}
+	if _, ok := eng.RootEnv().Get("setup/evaluator-value"); ok {
+		t.Fatal("nested evaluator binding remained after retained charge failure")
 	}
 }
 

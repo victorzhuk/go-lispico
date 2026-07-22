@@ -93,7 +93,8 @@ func (be *bytecodeEvaluator) treeFallbackCtx(ctx context.Context) context.Contex
 func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (result core.Value, err error) {
 	ctx = be.evalResourceContext(ctx)
 	if core.HasEvalMeter(ctx) {
-		top, err := core.StartEval(ctx)
+		var top bool
+		top, err = core.StartEval(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +139,8 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (result core.Value, err error) {
 	ctx = be.evalResourceContext(ctx)
 	if core.HasEvalMeter(ctx) {
-		top, err := core.StartEval(ctx)
+		var top bool
+		top, err = core.StartEval(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +368,8 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
 	if metered {
-		top, err := core.StartEval(ctx)
+		var top bool
+		top, err = core.StartEval(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -534,9 +537,10 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 	needsEvalState := core.HasEvalState(ctx) || core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	if needsEvalState {
 		ctx = e.evalResourceContext(ctx)
-		top, beginErr := core.StartEval(ctx)
-		if beginErr != nil {
-			return nil, beginErr
+		var top bool
+		top, err = core.StartEval(ctx)
+		if err != nil {
+			return nil, err
 		}
 		defer func() {
 			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
@@ -613,7 +617,8 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	ctx = e.evalResourceContext(ctx)
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
 	if metered {
-		top, err := core.StartEval(ctx)
+		var top bool
+		top, err = core.StartEval(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
