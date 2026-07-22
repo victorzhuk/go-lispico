@@ -296,7 +296,12 @@ func (st *evalState) consumeAllocLease(n int64) error {
 }
 
 func (st *evalState) leaseEval(reductions, allocBytes int64) error {
-	if st.meter == nil || (reductions <= 0 && allocBytes <= 0) {
+	if st.meter == nil {
+		return nil
+	}
+	reductions = min(max(reductions, 0), maxEvalReductionLease)
+	allocBytes = min(max(allocBytes, 0), maxEvalAllocLease)
+	if reductions == 0 && allocBytes == 0 {
 		return nil
 	}
 	grantedRed, grantedAlloc, err := st.meter.LeaseEval(reductions, allocBytes)

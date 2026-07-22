@@ -278,7 +278,7 @@ func TestMeter_ContextMeteredLoadScopeRebuildRelease(t *testing.T) {
 	}
 }
 
-func TestMeter_TwoContextRootDefRebuildRelease(t *testing.T) {
+func TestMeter_ContextRootDefsChargeDistinctMeters(t *testing.T) {
 	engineMeter := &recordingMeter{}
 	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(engineMeter))
 	if err != nil {
@@ -313,12 +313,11 @@ func TestMeter_TwoContextRootDefRebuildRelease(t *testing.T) {
 	if freedBytes != snapA.chargedBytes || freedSlots != snapA.chargedSlots {
 		t.Fatalf("rootEnv.Rebuild x freed = (%d, %d), want meterA charge (%d, %d)", freedBytes, freedSlots, snapA.chargedBytes, snapA.chargedSlots)
 	}
-	snapA = meterA.snapshot()
-	if snapA.releaseCalls != 1 || snapA.releasedBytes != snapA.chargedBytes || snapA.releasedSlots != snapA.chargedSlots {
-		t.Fatalf("meterA ReleaseRetained = calls %d (%d,%d), want 1 (%d,%d)", snapA.releaseCalls, snapA.releasedBytes, snapA.releasedSlots, snapA.chargedBytes, snapA.chargedSlots)
+	if meterA.snapshot().releaseCalls != 0 || meterB.snapshot().releaseCalls != 0 {
+		t.Fatalf("context meter saw root release")
 	}
-	if engineMeter.snapshot().releaseCalls != 0 || meterB.snapshot().releaseCalls != 0 {
-		t.Fatalf("non-owning meters saw release after x delete")
+	if engineMeter.snapshot().releaseCalls != 1 {
+		t.Fatalf("engine meter release calls = %d, want 1", engineMeter.snapshot().releaseCalls)
 	}
 
 	rootEnv.Delete("y")
@@ -326,9 +325,8 @@ func TestMeter_TwoContextRootDefRebuildRelease(t *testing.T) {
 	if freedBytes != snapB.chargedBytes || freedSlots != snapB.chargedSlots {
 		t.Fatalf("rootEnv.Rebuild y freed = (%d, %d), want meterB charge (%d, %d)", freedBytes, freedSlots, snapB.chargedBytes, snapB.chargedSlots)
 	}
-	snapB = meterB.snapshot()
-	if snapB.releaseCalls != 1 || snapB.releasedBytes != snapB.chargedBytes || snapB.releasedSlots != snapB.chargedSlots {
-		t.Fatalf("meterB ReleaseRetained = calls %d (%d,%d), want 1 (%d,%d)", snapB.releaseCalls, snapB.releasedBytes, snapB.releasedSlots, snapB.chargedBytes, snapB.chargedSlots)
+	if engineMeter.snapshot().releaseCalls != 2 {
+		t.Fatalf("engine meter release calls = %d, want 2", engineMeter.snapshot().releaseCalls)
 	}
 }
 
@@ -375,6 +373,51 @@ func TestMeter_ConcurrentEvaluations(t *testing.T) {
 	}
 }
 
+func TestMeter_ConcurrentRootDefsWithDistinctMeters(t *testing.T) {
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	const n = 16
+	meters := make([]*recordingMeter, n)
+	errCh := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		meters[i] = &recordingMeter{}
+		name := fmt.Sprintf("root%d", i)
+		source := fmt.Sprintf("(def %s [%d])", name, i)
+		meter := meters[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := eng.Eval(WithMeter(t.Context(), meter), name, source); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent root def: %v", err)
+	}
+
+	var chargedSlots int64
+	for i, meter := range meters {
+		name := fmt.Sprintf("root%d", i)
+		snap := meter.snapshot()
+		wantBytes := core.RetainedBindingBytes(name, core.Vector{Items: []core.Value{core.Int{V: int64(i)}}})
+		if snap.chargeCalls != 1 || snap.chargedBytes != wantBytes || snap.chargedSlots != 1 {
+			t.Fatalf("meter %d ChargeRetained = calls %d (%d,%d), want 1 (%d,1)", i, snap.chargeCalls, snap.chargedBytes, snap.chargedSlots, wantBytes)
+		}
+		chargedSlots += snap.chargedSlots
+	}
+	if chargedSlots != n {
+		t.Fatalf("charged slots = %d, want %d", chargedSlots, n)
+	}
+}
+
 type setupPlugin struct{}
 
 func (setupPlugin) Name() string              { return "setup" }
@@ -399,6 +442,73 @@ func TestMeter_EngineSetupUseIsMetered(t *testing.T) {
 	}
 	if snap.chargeCalls != 1 || snap.chargedSlots == 0 || snap.chargedBytes == 0 {
 		t.Fatalf("Use retained charge = calls %d (%d,%d), want positive", snap.chargeCalls, snap.chargedBytes, snap.chargedSlots)
+	}
+}
+
+func TestMeter_EngineMeterPreservesNativeEvaluator(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(
+		nil,
+		WithDialect(clojure.Dialect()),
+		WithResourceLimits(ResourceLimits{MaxReaderDepth: 200, MaxCollectionLen: 5}),
+		WithEngineMeter(m),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	if _, ok := eng.RootEnv().Evaluator().(*bytecodeEvaluator); !ok {
+		t.Fatalf("RootEnv evaluator = %T, want *bytecodeEvaluator", eng.RootEnv().Evaluator())
+	}
+	limiter, ok := eng.RootEnv().Evaluator().(core.CollectionLimiter)
+	if !ok {
+		t.Fatalf("RootEnv evaluator = %T, want CollectionLimiter", eng.RootEnv().Evaluator())
+	}
+	if got := limiter.CollectionLimit(); got != 5 {
+		t.Fatalf("CollectionLimit = %d, want 5", got)
+	}
+	if err := eng.Use(stdlib.New()); err != nil {
+		t.Fatalf("Use stdlib: %v", err)
+	}
+	_, err = eng.Eval(t.Context(), "range-limit", "(range 0 6)")
+	if err == nil {
+		t.Fatal("Eval range succeeded, want collection limit")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Eval range error = %v, want %s", err, core.CodeResourceLimit)
+	}
+}
+
+func TestMeter_UseRollsBackPluginOnRetainedChargeError(t *testing.T) {
+	m := &recordingMeter{chargeErr: errors.New("retained denied")}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	err = eng.Use(setupPlugin{})
+	if err == nil {
+		t.Fatal("Use succeeded, want retained charge error")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Use error = %v, want %s", err, core.CodeResourceLimit)
+	}
+	if _, ok := eng.Registry().Get("setup"); ok {
+		t.Fatal("plugin remained registered after retained charge failure")
+	}
+	if _, ok := eng.RootEnv().Get("setup/value"); ok {
+		t.Fatal("plugin binding remained after retained charge failure")
+	}
+
+	m.chargeErr = nil
+	m.reset()
+	if err := eng.Use(setupPlugin{}); err != nil {
+		t.Fatalf("Use after rollback: %v", err)
 	}
 }
 

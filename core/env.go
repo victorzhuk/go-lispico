@@ -60,6 +60,7 @@ type Env struct {
 	cell0Used        bool
 	funcs            map[string]*Cell // function cell; nil until first SetFunc (Lisp-2 only)
 	eval             Evaluator
+	retainedMeter    sessionMeter
 	macroEpoch       int           // bumped on each defmacro in this scope; used in bytecode cache key
 	newNameGen       atomic.Uint64 // bumped whenever a name is newly bound (or revived from tombstone) in vars
 	lazyLayer        atomic.Pointer[LazyLayer]
@@ -84,6 +85,13 @@ func (e *Env) LazyLayer() LazyLayer {
 		return *p
 	}
 	return nil
+}
+
+// SetRetainedMeter binds the meter that owns this scope's retained capacity.
+func (e *Env) SetRetainedMeter(m any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.retainedMeter, _ = m.(sessionMeter)
 }
 
 // RegisterValue binds name through the lazy layer when one is installed,
@@ -136,6 +144,7 @@ func NewEnv(parent *Env) *Env {
 	}
 	if parent != nil {
 		e.eval = parent.eval
+		e.retainedMeter = parent.retainedMeter
 		e.maxRetainedBytes = parent.maxRetainedBytes
 		e.maxRetainedSlots = parent.maxRetainedSlots
 	}
@@ -660,20 +669,8 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	funcs := make(map[string]*Cell, len(e.funcs))
 	var bytes, slots int64
 
-	releaseByCell, _ := any(e.eval).(interface {
-		ReleaseCell(*Cell) (int64, int64, bool)
-	})
-	releaseByRetained, _ := any(e.eval).(interface{ ReleaseRetained(int64, int64) })
-	var releasedBytes, releasedSlots int64
-
 	for name, cell := range e.vars {
 		if cell.v == nil {
-			if releaseByCell != nil {
-				if b, s, ok := releaseByCell.ReleaseCell(cell); ok {
-					releasedBytes += b
-					releasedSlots += s
-				}
-			}
 			continue
 		}
 		vars[name] = cell
@@ -682,12 +679,6 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	}
 	for name, cell := range e.funcs {
 		if cell.v == nil {
-			if releaseByCell != nil {
-				if b, s, ok := releaseByCell.ReleaseCell(cell); ok {
-					releasedBytes += b
-					releasedSlots += s
-				}
-			}
 			continue
 		}
 		funcs[name] = cell
@@ -697,6 +688,7 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 
 	freedBytes = max(e.retainedBytes-bytes, 0)
 	freedSlots = max(e.retainedSlots-slots, 0)
+	meter := e.retainedMeter
 	e.vars = vars
 	e.funcs = funcs
 	e.retainedBytes = bytes
@@ -704,32 +696,10 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	e.newNameGen.Add(1)
 	e.mu.Unlock()
 
-	if releaseByRetained != nil {
-		fallbackBytes := freedBytes - releasedBytes
-		fallbackSlots := freedSlots - releasedSlots
-		if fallbackBytes > 0 || fallbackSlots > 0 {
-			releaseByRetained.ReleaseRetained(max(fallbackBytes, 0), max(fallbackSlots, 0))
-		}
+	if meter != nil && (freedBytes > 0 || freedSlots > 0) {
+		meter.ReleaseRetained(freedBytes, freedSlots)
 	}
 	return
-}
-
-func (e *Env) ForEachCell(fn func(name string, cell *Cell)) {
-	if e == nil || fn == nil {
-		return
-	}
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	for name, cell := range e.vars {
-		if cell.v != nil {
-			fn(name, cell)
-		}
-	}
-	for name, cell := range e.funcs {
-		if cell.v != nil {
-			fn(name, cell)
-		}
-	}
 }
 
 // function cell (Lisp-2 only). The order is unspecified. Parent bindings

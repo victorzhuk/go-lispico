@@ -63,6 +63,7 @@ type Engine interface {
 
 type engineImpl struct {
 	mu                sync.RWMutex
+	rootRetainedMu    sync.Mutex
 	rootEnv           *core.Env
 	registry          *core.Registry
 	evaluator         core.Evaluator
@@ -271,7 +272,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	e.evaluator = evaluator
 	e.treeWalker = treeWalker
 	if cfg.engineMeter != nil {
-		e.attachScopeMeter(rootEnv, cfg.engineMeter)
+		rootEnv.SetRetainedMeter(cfg.engineMeter)
 	}
 	// root env. With no template registered its miss-path consult is a no-op.
 	installLazyLayer(e)

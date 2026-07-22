@@ -327,77 +327,12 @@ type retainedUsage struct {
 	slots int64
 }
 
-type retainedBindingCharge struct {
-	meter Meter
-	bytes int64
-	slots int64
-}
-
-type meterEvaluator struct {
-	core.Evaluator
-	mu    sync.RWMutex
-	meter Meter
-	cells map[*core.Cell]retainedBindingCharge
-}
-
-func (me *meterEvaluator) TrackBinding(cell *core.Cell, meter Meter, bytes, slots int64) {
-	if cell == nil || meter == nil || (bytes <= 0 && slots <= 0) {
-		return
+func (e *engineImpl) retainedMeter(ctx context.Context) Meter {
+	meter := MeterFromContext(ctx)
+	if meter == nil {
+		meter = e.config.engineMeter
 	}
-	me.mu.Lock()
-	defer me.mu.Unlock()
-	if me.cells == nil {
-		me.cells = make(map[*core.Cell]retainedBindingCharge)
-	}
-	me.cells[cell] = retainedBindingCharge{meter: meter, bytes: bytes, slots: slots}
-}
-
-func (me *meterEvaluator) ReleaseCell(cell *core.Cell) (int64, int64, bool) {
-	if cell == nil {
-		return 0, 0, false
-	}
-	me.mu.Lock()
-	charge, ok := me.cells[cell]
-	if ok {
-		delete(me.cells, cell)
-	}
-	me.mu.Unlock()
-
-	if !ok || charge.meter == nil {
-		return 0, 0, false
-	}
-	charge.meter.ReleaseRetained(charge.bytes, charge.slots)
-	return charge.bytes, charge.slots, true
-}
-
-func (me *meterEvaluator) ReleaseRetained(bytes, slots int64) {
-	if me.meter != nil {
-		me.meter.ReleaseRetained(bytes, slots)
-	}
-}
-
-func unwrapEvaluator(ev core.Evaluator) core.Evaluator {
-	if me, ok := ev.(*meterEvaluator); ok {
-		return me.Evaluator
-	}
-	return ev
-}
-
-func (e *engineImpl) attachScopeMeter(env *core.Env, meter Meter) *meterEvaluator {
-	if env == nil || meter == nil {
-		return nil
-	}
-	baseEval := env.Evaluator()
-	if me, ok := baseEval.(*meterEvaluator); ok {
-		return me
-	}
-	if baseEval == nil {
-		baseEval = e.evaluator
-	}
-	baseEval = unwrapEvaluator(baseEval)
-	me := &meterEvaluator{Evaluator: baseEval, meter: meter}
-	env.SetEvaluator(me)
-	return me
+	return meter
 }
 
 func retainedUsageOf(env *core.Env) retainedUsage {
@@ -408,22 +343,8 @@ func retainedUsageOf(env *core.Env) retainedUsage {
 	return retainedUsage{bytes: bytes, slots: slots}
 }
 
-func snapshotCellSet(env *core.Env) map[*core.Cell]struct{} {
-	if env == nil {
-		return nil
-	}
-	m := make(map[*core.Cell]struct{})
-	env.ForEachCell(func(name string, cell *core.Cell) {
-		m[cell] = struct{}{}
-	})
-	return m
-}
-
-func (e *engineImpl) settleRetained(ctx context.Context, beforeRoot retainedUsage, beforeRootCells map[*core.Cell]struct{}, scope *core.Env, beforeScope retainedUsage, beforeScopeCells map[*core.Cell]struct{}) error {
-	meter := MeterFromContext(ctx)
-	if meter == nil {
-		meter = e.config.engineMeter
-	}
+func (e *engineImpl) settleRetained(ctx context.Context, beforeRoot retainedUsage, scope *core.Env, beforeScope retainedUsage) error {
+	meter := e.retainedMeter(ctx)
 	if meter == nil {
 		return nil
 	}
@@ -436,27 +357,6 @@ func (e *engineImpl) settleRetained(ctx context.Context, beforeRoot retainedUsag
 	}
 	if err := meter.ChargeRetained(bytes, slots); err != nil {
 		return core.NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
-	}
-
-	me := e.attachScopeMeter(e.rootEnv, meter)
-	if me != nil && e.rootEnv != nil {
-		e.rootEnv.ForEachCell(func(name string, cell *core.Cell) {
-			if _, existed := beforeRootCells[cell]; !existed {
-				val, _, _ := e.rootEnv.ReadCell(cell)
-				me.TrackBinding(cell, meter, core.RetainedBindingBytes(name, val), 1)
-			}
-		})
-	}
-	if scope != nil {
-		scopeMe := e.attachScopeMeter(scope, meter)
-		if scopeMe != nil {
-			scope.ForEachCell(func(name string, cell *core.Cell) {
-				if _, existed := beforeScopeCells[cell]; !existed {
-					val, _, _ := scope.ReadCell(cell)
-					scopeMe.TrackBinding(cell, meter, core.RetainedBindingBytes(name, val), 1)
-				}
-			})
-		}
 	}
 	return nil
 }
@@ -496,11 +396,14 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
+	var beforeRoot retainedUsage
+	var top bool
 	if metered {
-		beforeRoot := retainedUsageOf(e.rootEnv)
-		beforeRootCells := snapshotCellSet(e.rootEnv)
-		top, err := core.StartEval(ctx)
+		e.rootRetainedMu.Lock()
+		beforeRoot = retainedUsageOf(e.rootEnv)
+		top, err = core.StartEval(ctx)
 		if err != nil {
+			e.rootRetainedMu.Unlock()
 			return nil, err
 		}
 		defer func() {
@@ -508,10 +411,11 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 				result = nil
 				err = ferr
 			}
-			if rerr := e.settleRetained(ctx, beforeRoot, beforeRootCells, nil, retainedUsage{}, nil); rerr != nil {
+			if rerr := e.settleRetained(ctx, beforeRoot, nil, retainedUsage{}); rerr != nil {
 				result = nil
 				err = rerr
 			}
+			e.rootRetainedMu.Unlock()
 		}()
 	}
 	forms, err := e.readForms(ctx, input)
@@ -749,13 +653,15 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+	var beforeRoot retainedUsage
 	var beforeScope retainedUsage
-	var beforeScopeCells map[*core.Cell]struct{}
+	var top bool
 	if metered {
-		beforeRoot := retainedUsageOf(e.rootEnv)
-		beforeRootCells := snapshotCellSet(e.rootEnv)
-		top, err := core.StartEval(ctx)
+		e.rootRetainedMu.Lock()
+		beforeRoot = retainedUsageOf(e.rootEnv)
+		top, err = core.StartEval(ctx)
 		if err != nil {
+			e.rootRetainedMu.Unlock()
 			return nil, nil, err
 		}
 		defer func() {
@@ -763,10 +669,11 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 				result = nil
 				err = ferr
 			}
-			if rerr := e.settleRetained(ctx, beforeRoot, beforeRootCells, childEnv, beforeScope, beforeScopeCells); rerr != nil {
+			if rerr := e.settleRetained(ctx, beforeRoot, childEnv, beforeScope); rerr != nil {
 				result = nil
 				err = rerr
 			}
+			e.rootRetainedMu.Unlock()
 		}()
 	}
 
@@ -781,8 +688,10 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	e.mu.RLock()
 	childEnv = e.rootEnv.Child()
 	e.mu.RUnlock()
+	if meter := e.retainedMeter(ctx); meter != nil {
+		childEnv.SetRetainedMeter(meter)
+	}
 	beforeScope = retainedUsageOf(childEnv)
-	beforeScopeCells = snapshotCellSet(childEnv)
 
 	for name, val := range bindings {
 		if e.config.dialect.IsLisp2() {

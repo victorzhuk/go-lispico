@@ -19,14 +19,18 @@ type partialGrantEvalMeter struct {
 	leaseAlloc int64
 	leaseErr   error
 
-	leaseCalls  int
-	returnCalls int
-	returnedRed int64
-	returnedMem int64
+	leaseCalls     int
+	returnCalls    int
+	returnedRed    int64
+	returnedMem    int64
+	requestedRed   int64
+	requestedAlloc int64
 }
 
 func (m *partialGrantEvalMeter) LeaseEval(reductions, allocBytes int64) (int64, int64, error) {
 	m.leaseCalls++
+	m.requestedRed = reductions
+	m.requestedAlloc = allocBytes
 	return m.leaseRed, m.leaseAlloc, m.leaseErr
 }
 
@@ -66,6 +70,24 @@ func TestEvalState_LeaseEvalReturnsPartialGrantOnErrNil(t *testing.T) {
 	}
 	if m.returnedRed != 4 || m.returnedMem != 0 {
 		t.Fatalf("ReturnEval returned (%d, %d), want (4, 0)", m.returnedRed, m.returnedMem)
+	}
+}
+
+func TestEvalState_LeaseEvalClampsOversizedRequests(t *testing.T) {
+	t.Parallel()
+
+	m := &partialGrantEvalMeter{
+		leaseRed:   maxEvalReductionLease,
+		leaseAlloc: maxEvalAllocLease,
+	}
+	st := newEvalState()
+	st.attachMeter(m)
+
+	if err := st.leaseEval(maxEvalReductionLease*8, maxEvalAllocLease*8); err != nil {
+		t.Fatalf("leaseEval: %v", err)
+	}
+	if m.requestedRed != maxEvalReductionLease || m.requestedAlloc != maxEvalAllocLease {
+		t.Fatalf("LeaseEval request = (%d, %d), want (%d, %d)", m.requestedRed, m.requestedAlloc, maxEvalReductionLease, maxEvalAllocLease)
 	}
 }
 
