@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -13,9 +15,12 @@ import (
 // inline keeps a rebind allocation-free — the VM caches the cell pointer, not
 // the value, so it still avoids the map walk without boxing every write.
 type Cell struct {
-	v         Value // nil == tombstoned/unbound; guarded by the owning Env's lock
-	canonical bool  // guarded by the owning Env's lock
-	version   atomic.Uint64
+	v             Value // nil == tombstoned/unbound; guarded by the owning Env's lock
+	canonical     bool  // guarded by the owning Env's lock
+	version       atomic.Uint64
+	retainedMeter sessionMeter
+	retainedBytes int64
+	rebuilt       bool
 }
 
 // Version returns the cell mutation version.
@@ -98,13 +103,17 @@ func (e *Env) SetRetainedMeter(m any) {
 // deferring the binding behind first touch; otherwise it binds the value
 // cell immediately (applyVocabulary's bridge mirrors the function cell).
 func (e *Env) RegisterValue(name string, val Value, canonical bool) error {
+	return e.RegisterValueWithContext(context.Background(), name, val, canonical)
+}
+
+func (e *Env) RegisterValueWithContext(ctx context.Context, name string, val Value, canonical bool) error {
 	if layer := e.LazyLayer(); layer != nil {
 		return layer.RegisterValue(e, name, val, canonical)
 	}
 	if canonical {
-		return e.SetCanonical(name, val)
+		return e.SetCanonicalWithContext(ctx, name, val)
 	}
-	return e.Set(name, val)
+	return e.SetWithContext(ctx, name, val)
 }
 
 // RegisterSource asks the lazy layer to defer a pure-Lisp definition of
@@ -144,7 +153,6 @@ func NewEnv(parent *Env) *Env {
 	}
 	if parent != nil {
 		e.eval = parent.eval
-		e.retainedMeter = parent.retainedMeter
 		e.maxRetainedBytes = parent.maxRetainedBytes
 		e.maxRetainedSlots = parent.maxRetainedSlots
 	}
@@ -169,10 +177,12 @@ func RetainedBindingBytes(name string, val Value) int64 {
 }
 
 func (e *Env) chargeRetainedBinding(name string, val Value) error {
-	return e.chargeRetainedBindings(retainedBindingBytes(name, val), 1)
+	bytes := retainedBindingBytes(name, val)
+	_, _, _, err := e.prepareFreshRetained(context.Background(), bytes, 1)
+	return err
 }
 
-func (e *Env) chargeRetainedBindings(bytes, slots int64) error {
+func (e *Env) reserveRetainedBindings(bytes, slots int64) error {
 	nextBytes := e.retainedBytes + bytes
 	nextSlots := e.retainedSlots + slots
 	if e.maxRetainedBytes > 0 && nextBytes > e.maxRetainedBytes {
@@ -181,9 +191,65 @@ func (e *Env) chargeRetainedBindings(bytes, slots int64) error {
 	if e.maxRetainedSlots > 0 && nextSlots > e.maxRetainedSlots {
 		return NewResourceLimitError("retained state capacity limit exceeded")
 	}
-	e.retainedBytes = nextBytes
-	e.retainedSlots = nextSlots
 	return nil
+}
+
+func (e *Env) chargeRetainedMeter(meter sessionMeter, bytes, slots int64) error {
+	if meter == nil || (bytes <= 0 && slots <= 0) {
+		return nil
+	}
+	if err := meter.ChargeRetained(bytes, slots); err != nil {
+		return NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
+	}
+	return nil
+}
+
+func (e *Env) activeRetainedMeter(ctx context.Context) sessionMeter {
+	if meter := sessionMeterFromContext(ctx); meter != nil {
+		return meter
+	}
+	return e.retainedMeter
+}
+
+func (e *Env) prepareFreshRetained(ctx context.Context, bytes, slots int64) (sessionMeter, *evalState, bool, error) {
+	if bytes == 0 && slots == 0 {
+		return nil, nil, false, nil
+	}
+	if err := e.reserveRetainedBindings(bytes, slots); err != nil {
+		return nil, nil, false, err
+	}
+	meter := e.activeRetainedMeter(ctx)
+	st, hasState := ctx.Value(evalStateKey{}).(*evalState)
+	pending := hasState && meter != nil
+	if !pending {
+		if err := e.chargeRetainedMeter(meter, bytes, slots); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	e.retainedBytes += bytes
+	e.retainedSlots += slots
+	return meter, st, pending, nil
+}
+
+func recordFreshRetained(st *evalState, pending bool, env *Env, cell *Cell, meter sessionMeter, bytes int64) {
+	if bytes == 0 {
+		return
+	}
+	cell.rebuilt = false
+	if pending {
+		st.pendingCellAllocs = append(st.pendingCellAllocs, pendingCellAlloc{
+			env:   env,
+			cell:  cell,
+			meter: meter,
+			bytes: bytes,
+			slots: 1,
+		})
+		st.retainedBytes += bytes
+		st.retainedSlots++
+		return
+	}
+	cell.retainedMeter = meter
+	cell.retainedBytes = bytes
 }
 
 func retainedBindingCapacity(name string, val Value, slots int64) (int64, int64) {
@@ -213,10 +279,10 @@ func (e *Env) setBoth(name string, val Value, canonical bool) error {
 	if !funcCellExists {
 		newSlots++
 	}
-	if bytes, slots := retainedBindingCapacity(name, val, newSlots); slots > 0 {
-		if err := e.chargeRetainedBindings(bytes, slots); err != nil {
-			return err
-		}
+	b := retainedBindingBytes(name, val)
+	meter, st, pending, err := e.prepareFreshRetained(context.Background(), b*newSlots, newSlots)
+	if err != nil {
+		return err
 	}
 
 	if !varCellExists {
@@ -231,11 +297,20 @@ func (e *Env) setBoth(name string, val Value, canonical bool) error {
 	}
 	varCell.v = val
 	varCell.canonical = canonical
-	varCell.version.Add(1)
+	varVersion := varCell.version.Add(1)
+	if !varCellExists {
+		recordFreshRetained(st, pending, e, varCell, meter, b)
+		if !pending {
+			_ = varVersion
+		}
+	}
 
 	funcCell.v = val
 	funcCell.canonical = canonical
 	funcCell.version.Add(1)
+	if !funcCellExists {
+		recordFreshRetained(st, pending, e, funcCell, meter, b)
+	}
 
 	return nil
 }
@@ -275,11 +350,21 @@ func (e *Env) localFuncCell(name string) *Cell {
 // Set binds name in this (local) scope. Overwriting a canonical binding
 // removes the canonical marker, so a root-env rebind is detected as non-canonical.
 func (e *Env) Set(name string, val Value) error {
+	return e.SetWithContext(context.Background(), name, val)
+}
+
+func (e *Env) SetWithContext(ctx context.Context, name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cell, ok := e.vars[name]
+	b := retainedBindingBytes(name, val)
+	var meter sessionMeter
+	var st *evalState
+	var pending bool
 	if !ok {
-		if err := e.chargeRetainedBinding(name, val); err != nil {
+		var err error
+		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		if err != nil {
 			return err
 		}
 		cell = e.localCell(name)
@@ -289,7 +374,11 @@ func (e *Env) Set(name string, val Value) error {
 	}
 	cell.v = val
 	cell.canonical = false
-	cell.version.Add(1)
+	version := cell.version.Add(1)
+	if !ok {
+		_ = version
+		recordFreshRetained(st, pending, e, cell, meter, b)
+	}
 	return nil
 }
 
@@ -299,11 +388,21 @@ func (e *Env) Set(name string, val Value) error {
 // cause the bytecode VM to execute native opcode semantics for name instead of
 // calling the provided function.
 func (e *Env) SetCanonical(name string, val Value) error {
+	return e.SetCanonicalWithContext(context.Background(), name, val)
+}
+
+func (e *Env) SetCanonicalWithContext(ctx context.Context, name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cell, ok := e.vars[name]
+	b := retainedBindingBytes(name, val)
+	var meter sessionMeter
+	var st *evalState
+	var pending bool
 	if !ok {
-		if err := e.chargeRetainedBinding(name, val); err != nil {
+		var err error
+		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		if err != nil {
 			return err
 		}
 		cell = e.localCell(name)
@@ -313,7 +412,11 @@ func (e *Env) SetCanonical(name string, val Value) error {
 	}
 	cell.v = val
 	cell.canonical = true
-	cell.version.Add(1)
+	version := cell.version.Add(1)
+	if !ok {
+		_ = version
+		recordFreshRetained(st, pending, e, cell, meter, b)
+	}
 	return nil
 }
 
@@ -476,18 +579,32 @@ func (e *Env) Get(name string) (Value, bool) {
 // canonical function binding removes the canonical marker, so a defun rebind
 // is detected as non-canonical.
 func (e *Env) SetFunc(name string, val Value) error {
+	return e.SetFuncWithContext(context.Background(), name, val)
+}
+
+func (e *Env) SetFuncWithContext(ctx context.Context, name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cell, ok := e.funcs[name]
+	b := retainedBindingBytes(name, val)
+	var meter sessionMeter
+	var st *evalState
+	var pending bool
 	if !ok {
-		if err := e.chargeRetainedBinding(name, val); err != nil {
+		var err error
+		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		if err != nil {
 			return err
 		}
 		cell = e.localFuncCell(name)
 	}
 	cell.v = val
 	cell.canonical = false
-	cell.version.Add(1)
+	version := cell.version.Add(1)
+	if !ok {
+		_ = version
+		recordFreshRetained(st, pending, e, cell, meter, b)
+	}
 	return nil
 }
 
@@ -498,18 +615,32 @@ func (e *Env) SetFunc(name string, val Value) error {
 // an arbitrary custom GoFunc as canonical will cause the bytecode VM to
 // execute native opcode semantics for name instead of calling it.
 func (e *Env) SetFuncCanonical(name string, val Value) error {
+	return e.SetFuncCanonicalWithContext(context.Background(), name, val)
+}
+
+func (e *Env) SetFuncCanonicalWithContext(ctx context.Context, name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	cell, ok := e.funcs[name]
+	b := retainedBindingBytes(name, val)
+	var meter sessionMeter
+	var st *evalState
+	var pending bool
 	if !ok {
-		if err := e.chargeRetainedBinding(name, val); err != nil {
+		var err error
+		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		if err != nil {
 			return err
 		}
 		cell = e.localFuncCell(name)
 	}
 	cell.v = val
 	cell.canonical = true
-	cell.version.Add(1)
+	version := cell.version.Add(1)
+	if !ok {
+		_ = version
+		recordFreshRetained(st, pending, e, cell, meter, b)
+	}
 	return nil
 }
 
@@ -665,30 +796,48 @@ func (e *Env) RetainedUsage() (bytes, slots int64) {
 func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	e.mu.Lock()
 
+	var releases []retainedRelease
 	vars := make(map[string]*Cell, len(e.vars))
 	funcs := make(map[string]*Cell, len(e.funcs))
 	var bytes, slots int64
 
 	for name, cell := range e.vars {
 		if cell.v == nil {
+			cell.rebuilt = true
+			if cell.retainedMeter != nil {
+				releases = append(releases, retainedRelease{meter: cell.retainedMeter, bytes: cell.retainedBytes, slots: 1})
+			}
+			freedBytes += cell.retainedBytes
+			freedSlots++
 			continue
 		}
 		vars[name] = cell
-		bytes += retainedBindingBytes(name, cell.v)
+		if cell.retainedBytes > 0 {
+			bytes += cell.retainedBytes
+		} else {
+			bytes += retainedBindingBytes(name, cell.v)
+		}
 		slots++
 	}
 	for name, cell := range e.funcs {
 		if cell.v == nil {
+			cell.rebuilt = true
+			if cell.retainedMeter != nil {
+				releases = append(releases, retainedRelease{meter: cell.retainedMeter, bytes: cell.retainedBytes, slots: 1})
+			}
+			freedBytes += cell.retainedBytes
+			freedSlots++
 			continue
 		}
 		funcs[name] = cell
-		bytes += retainedBindingBytes(name, cell.v)
+		if cell.retainedBytes > 0 {
+			bytes += cell.retainedBytes
+		} else {
+			bytes += retainedBindingBytes(name, cell.v)
+		}
 		slots++
 	}
 
-	freedBytes = max(e.retainedBytes-bytes, 0)
-	freedSlots = max(e.retainedSlots-slots, 0)
-	meter := e.retainedMeter
 	e.vars = vars
 	e.funcs = funcs
 	e.retainedBytes = bytes
@@ -696,8 +845,8 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	e.newNameGen.Add(1)
 	e.mu.Unlock()
 
-	if meter != nil && (freedBytes > 0 || freedSlots > 0) {
-		meter.ReleaseRetained(freedBytes, freedSlots)
+	for _, release := range releases {
+		release.meter.ReleaseRetained(release.bytes, release.slots)
 	}
 	return
 }

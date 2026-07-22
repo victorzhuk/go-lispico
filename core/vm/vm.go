@@ -748,7 +748,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := env.Set(sym.V, top); err != nil {
+			if err := env.SetWithContext(ctx, sym.V, top); err != nil {
 				return nil, err
 			}
 
@@ -762,7 +762,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if !ok {
 				return nil, core.NewUndefinedError(sym.V)
 			}
-			if err := owner.Set(sym.V, top); err != nil {
+			if err := owner.SetWithContext(ctx, sym.V, top); err != nil {
 				return nil, err
 			}
 
@@ -797,7 +797,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := env.SetFunc(sym.V, top); err != nil {
+			if err := env.SetFuncWithContext(ctx, sym.V, top); err != nil {
 				return nil, err
 			}
 

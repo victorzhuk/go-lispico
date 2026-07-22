@@ -22,8 +22,8 @@ func requireRetainedLimitError(t *testing.T, err error) {
 
 func TestEnv_Size(t *testing.T) {
 	t.Parallel()
-	if got := unsafe.Sizeof(Env{}); got != 176 {
-		t.Fatalf("Env size = %d, want 176", got)
+	if got := unsafe.Sizeof(Env{}); got != 208 {
+		t.Fatalf("Env size = %d, want 208", got)
 	}
 }
 

@@ -74,22 +74,33 @@ func copyKernel() map[string]formFn {
 	return forms
 }
 
+type pendingCellAlloc struct {
+	env   *Env
+	cell  *Cell
+	meter sessionMeter
+	bytes int64
+	slots int64
+}
+
 // evalState holds the counters for a single top-level evaluation. It is
 // carried in the context so concurrent evaluations on one engine never share
 // depth, reduction, or allocation state.
 type evalState struct {
-	callDepth        atomic.Int64
-	loopDepth        atomic.Int64
-	macroDepth       atomic.Int64
-	structDepth      atomic.Int64
-	reductions       atomic.Int64
-	allocBytes       atomic.Int64
-	evalDepth        atomic.Int64
-	maxReductions    int64
-	maxAllocBytes    int64
-	meter            sessionMeter
-	leasedReductions int64
-	leasedAllocBytes int64
+	callDepth         atomic.Int64
+	loopDepth         atomic.Int64
+	macroDepth        atomic.Int64
+	structDepth       atomic.Int64
+	reductions        atomic.Int64
+	allocBytes        atomic.Int64
+	evalDepth         atomic.Int64
+	maxReductions     int64
+	maxAllocBytes     int64
+	meter             sessionMeter
+	leasedReductions  int64
+	leasedAllocBytes  int64
+	retainedBytes     int64
+	retainedSlots     int64
+	pendingCellAllocs []pendingCellAlloc
 	// shared lets lazy states alias the wrapper-owned counter without a second allocation per evalState.
 	shared *atomic.Int64
 	// deadline is the engine-owned evaluation deadline enforced by pollCancel.
@@ -715,11 +726,11 @@ func (e *engine) CollectionLimit() int { return e.MaxCollectionLen }
 // bindOperator binds a function-defining form's result. Under Lisp-2 it lands in
 // the function cell so head position can find it; under Lisp-1 it shares the
 // single value namespace, exactly as before.
-func (e *engine) bindOperator(env *Env, name string, val Value) error {
+func (e *engine) bindOperator(ctx context.Context, env *Env, name string, val Value) error {
 	if e.lisp2 {
-		return env.SetFunc(name, val)
+		return env.SetFuncWithContext(ctx, name, val)
 	}
-	return env.Set(name, val)
+	return env.SetWithContext(ctx, name, val)
 }
 
 func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
@@ -734,7 +745,7 @@ func evalDef(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	if err := env.Set(name.V, val); err != nil {
+	if err := env.SetWithContext(ctx, name.V, val); err != nil {
 		return nil, err
 	}
 	return val, nil
@@ -779,7 +790,7 @@ func evalDefn(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		Body:     args[2:],
 		Env:      env,
 	}
-	if err := e.bindOperator(env, name.V, lambda); err != nil {
+	if err := e.bindOperator(ctx, env, name.V, lambda); err != nil {
 		return nil, err
 	}
 	return lambda, nil
@@ -808,7 +819,7 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 		Body:     args[2:],
 		Env:      env,
 	}
-	if err := e.bindOperator(env, name.V, macro); err != nil {
+	if err := e.bindOperator(ctx, env, name.V, macro); err != nil {
 		return nil, err
 	}
 	env.BumpMacroEpoch()
@@ -996,7 +1007,7 @@ func evalSet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	if err := defEnv.Set(name.V, val); err != nil {
+	if err := defEnv.SetWithContext(ctx, name.V, val); err != nil {
 		return nil, err
 	}
 	return val, nil

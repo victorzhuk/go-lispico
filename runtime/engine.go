@@ -63,7 +63,6 @@ type Engine interface {
 
 type engineImpl struct {
 	mu                sync.RWMutex
-	rootRetainedMu    sync.Mutex
 	rootEnv           *core.Env
 	registry          *core.Registry
 	evaluator         core.Evaluator

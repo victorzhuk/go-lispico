@@ -73,6 +73,32 @@ func TestEvalState_LeaseEvalReturnsPartialGrantOnErrNil(t *testing.T) {
 	}
 }
 
+func TestEvalState_LeaseEvalClampsNegativeGrant(t *testing.T) {
+	t.Parallel()
+
+	m := &partialGrantEvalMeter{
+		leaseRed:   -4,
+		leaseAlloc: -8,
+	}
+	st := newEvalState()
+	st.attachMeter(m)
+
+	err := st.leaseEval(1, 1)
+	if err == nil {
+		t.Fatal("leaseEval succeeded, want resource limit")
+	}
+	var lerr *LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != CodeResourceLimit {
+		t.Fatalf("leaseEval error = %v, want %s", err, CodeResourceLimit)
+	}
+	if st.leasedReductions != 0 || st.leasedAllocBytes != 0 {
+		t.Fatalf("leased balances = (%d, %d), want (0, 0)", st.leasedReductions, st.leasedAllocBytes)
+	}
+	if m.returnCalls != 0 || m.returnedRed != 0 || m.returnedMem != 0 {
+		t.Fatalf("ReturnEval = calls %d (%d, %d), want no return", m.returnCalls, m.returnedRed, m.returnedMem)
+	}
+}
+
 func TestEvalState_LeaseEvalClampsOversizedRequests(t *testing.T) {
 	t.Parallel()
 

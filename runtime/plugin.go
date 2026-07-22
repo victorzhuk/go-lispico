@@ -66,9 +66,6 @@ func (e *engineImpl) removePluginBindings(name string) {
 }
 
 func (e *engineImpl) Use(p core.Plugin) (err error) {
-	e.rootRetainedMu.Lock()
-	defer e.rootRetainedMu.Unlock()
-
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -77,7 +74,6 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 	}
 
 	before := e.snapshotBindings()
-	beforeUsage := retainedUsageOf(e.rootEnv)
 	ctx := e.evalResourceContext(context.Background())
 	top, startErr := core.StartEval(ctx)
 	if startErr != nil {
@@ -113,15 +109,6 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 	}
 	e.populateTemplateBindings(p.Name())
 
-	if settleErr := e.settleRetained(ctx, beforeUsage, nil, retainedUsage{}); settleErr != nil {
-		e.registry.Unregister(p.Name())
-		e.removePluginBindings(p.Name())
-		if e.lazyMaterializer != nil {
-			e.lazyMaterializer.deactivate(p.Name())
-		}
-		e.rootEnv.Rebuild()
-		return settleErr
-	}
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", p.Name(), "version", p.Metadata().Version)
 

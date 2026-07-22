@@ -313,11 +313,14 @@ func TestMeter_ContextRootDefsChargeDistinctMeters(t *testing.T) {
 	if freedBytes != snapA.chargedBytes || freedSlots != snapA.chargedSlots {
 		t.Fatalf("rootEnv.Rebuild x freed = (%d, %d), want meterA charge (%d, %d)", freedBytes, freedSlots, snapA.chargedBytes, snapA.chargedSlots)
 	}
-	if meterA.snapshot().releaseCalls != 0 || meterB.snapshot().releaseCalls != 0 {
-		t.Fatalf("context meter saw root release")
+	if meterA.snapshot().releaseCalls != 1 {
+		t.Fatalf("meterA release calls = %d, want 1", meterA.snapshot().releaseCalls)
 	}
-	if engineMeter.snapshot().releaseCalls != 1 {
-		t.Fatalf("engine meter release calls = %d, want 1", engineMeter.snapshot().releaseCalls)
+	if meterB.snapshot().releaseCalls != 0 {
+		t.Fatalf("meterB release calls = %d, want 0 before y rebuild", meterB.snapshot().releaseCalls)
+	}
+	if engineMeter.snapshot().releaseCalls != 0 {
+		t.Fatalf("engine meter release calls = %d, want 0", engineMeter.snapshot().releaseCalls)
 	}
 
 	rootEnv.Delete("y")
@@ -325,8 +328,11 @@ func TestMeter_ContextRootDefsChargeDistinctMeters(t *testing.T) {
 	if freedBytes != snapB.chargedBytes || freedSlots != snapB.chargedSlots {
 		t.Fatalf("rootEnv.Rebuild y freed = (%d, %d), want meterB charge (%d, %d)", freedBytes, freedSlots, snapB.chargedBytes, snapB.chargedSlots)
 	}
-	if engineMeter.snapshot().releaseCalls != 2 {
-		t.Fatalf("engine meter release calls = %d, want 2", engineMeter.snapshot().releaseCalls)
+	if meterB.snapshot().releaseCalls != 1 {
+		t.Fatalf("meterB release calls = %d, want 1", meterB.snapshot().releaseCalls)
+	}
+	if engineMeter.snapshot().releaseCalls != 0 {
+		t.Fatalf("engine meter release calls = %d, want 0", engineMeter.snapshot().releaseCalls)
 	}
 }
 
@@ -509,6 +515,76 @@ func TestMeter_UseRollsBackPluginOnRetainedChargeError(t *testing.T) {
 	m.reset()
 	if err := eng.Use(setupPlugin{}); err != nil {
 		t.Fatalf("Use after rollback: %v", err)
+	}
+}
+
+type rebuildDuringChargeMeter struct {
+	recordingMeter
+	env *core.Env
+}
+
+func (m *rebuildDuringChargeMeter) ChargeRetained(bytes, slots int64) error {
+	if err := m.recordingMeter.ChargeRetained(bytes, slots); err != nil {
+		return err
+	}
+	if m.env != nil {
+		m.env.Delete("x")
+		m.env.Rebuild()
+	}
+	return nil
+}
+
+func TestMeter_RebuildRacesPendingAllocation(t *testing.T) {
+	m := &rebuildDuringChargeMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.env = eng.RootEnv()
+	m.reset()
+
+	_, err = eng.Eval(t.Context(), "pending-rebuild", "(def x [1 2 3])")
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	snap := m.snapshot()
+	if snap.chargeCalls != 1 || snap.releaseCalls != 1 {
+		t.Fatalf("Charge/Release calls = %d/%d, want 1/1", snap.chargeCalls, snap.releaseCalls)
+	}
+	if snap.releasedBytes != snap.chargedBytes || snap.releasedSlots != snap.chargedSlots {
+		t.Fatalf("ReleaseRetained = (%d,%d), want charged (%d,%d)", snap.releasedBytes, snap.releasedSlots, snap.chargedBytes, snap.chargedSlots)
+	}
+}
+
+type reentrantReleaseMeter struct {
+	recordingMeter
+	env *core.Env
+}
+
+func (m *reentrantReleaseMeter) ReleaseRetained(bytes, slots int64) {
+	m.recordingMeter.ReleaseRetained(bytes, slots)
+	_, _ = m.env.Get("x")
+	_ = m.env.Set("after-release", core.Int{V: 1})
+}
+
+func TestMeter_ReentrantMeterDuringRebuild(t *testing.T) {
+	m := &reentrantReleaseMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.env = eng.RootEnv()
+	m.reset()
+
+	if _, err := eng.Eval(t.Context(), "bind", "(def x [1])"); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	eng.RootEnv().Delete("x")
+	eng.RootEnv().Rebuild()
+	if _, ok := eng.RootEnv().Get("after-release"); !ok {
+		t.Fatal("after-release was not rebound by reentrant release")
 	}
 }
 

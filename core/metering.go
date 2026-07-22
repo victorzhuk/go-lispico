@@ -212,8 +212,92 @@ func BeginEval(ctx context.Context) (func() error, error) {
 func (st *evalState) finishEval() error {
 	st.evalDepth.Add(-1)
 	flushErr := st.flushReductions()
+	retainedErr := st.settleRetained()
 	st.returnEvalLease()
-	return flushErr
+	if flushErr != nil {
+		return flushErr
+	}
+	return retainedErr
+}
+
+type retainedCharge struct {
+	meter sessionMeter
+	bytes int64
+	slots int64
+}
+
+type retainedRelease struct {
+	meter sessionMeter
+	bytes int64
+	slots int64
+}
+
+func (st *evalState) pendingBytesFor(cell *Cell) int64 {
+	var bytes int64
+	for _, pending := range st.pendingCellAllocs {
+		if pending.cell == cell {
+			bytes += pending.bytes
+		}
+	}
+	return bytes
+}
+
+func (st *evalState) settleRetained() error {
+	if len(st.pendingCellAllocs) == 0 {
+		return nil
+	}
+	charges := make([]retainedCharge, 0, 1)
+	for _, pending := range st.pendingCellAllocs {
+		if pending.meter == nil || (pending.bytes == 0 && pending.slots == 0) {
+			continue
+		}
+		found := false
+		for i := range charges {
+			if charges[i].meter == pending.meter {
+				charges[i].bytes += pending.bytes
+				charges[i].slots += pending.slots
+				found = true
+				break
+			}
+		}
+		if !found {
+			charges = append(charges, retainedCharge{meter: pending.meter, bytes: pending.bytes, slots: pending.slots})
+		}
+	}
+	charged := make([]retainedCharge, 0, len(charges))
+	for _, charge := range charges {
+		if err := charge.meter.ChargeRetained(charge.bytes, charge.slots); err != nil {
+			for _, prev := range charged {
+				prev.meter.ReleaseRetained(prev.bytes, prev.slots)
+			}
+			st.pendingCellAllocs = nil
+			st.retainedBytes = 0
+			st.retainedSlots = 0
+			return NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
+		}
+		charged = append(charged, charge)
+	}
+
+	var releases []retainedRelease
+	for _, pending := range st.pendingCellAllocs {
+		pending.env.mu.Lock()
+		if pending.cell.rebuilt {
+			if pending.meter != nil && (pending.bytes > 0 || pending.slots > 0) {
+				releases = append(releases, retainedRelease{meter: pending.meter, bytes: pending.bytes, slots: pending.slots})
+			}
+		} else {
+			pending.cell.retainedMeter = pending.meter
+			pending.cell.retainedBytes = pending.bytes
+		}
+		pending.env.mu.Unlock()
+	}
+	for _, release := range releases {
+		release.meter.ReleaseRetained(release.bytes, release.slots)
+	}
+	st.pendingCellAllocs = nil
+	st.retainedBytes = 0
+	st.retainedSlots = 0
+	return nil
 }
 
 func (st *evalState) drawInitialLease() error {
@@ -305,6 +389,8 @@ func (st *evalState) leaseEval(reductions, allocBytes int64) error {
 		return nil
 	}
 	grantedRed, grantedAlloc, err := st.meter.LeaseEval(reductions, allocBytes)
+	grantedRed = max(grantedRed, 0)
+	grantedAlloc = max(grantedAlloc, 0)
 	if err != nil {
 		if grantedRed > 0 || grantedAlloc > 0 {
 			st.meter.ReturnEval(grantedRed, grantedAlloc)

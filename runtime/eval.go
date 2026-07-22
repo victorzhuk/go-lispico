@@ -322,43 +322,12 @@ func (e *engineImpl) evalResourceContext(ctx context.Context) context.Context {
 	return core.WithEvalResourceLimits(ctx, e.config.limits.MaxReductions, e.config.limits.MaxAllocationBytes)
 }
 
-type retainedUsage struct {
-	bytes int64
-	slots int64
-}
-
 func (e *engineImpl) retainedMeter(ctx context.Context) Meter {
 	meter := MeterFromContext(ctx)
 	if meter == nil {
 		meter = e.config.engineMeter
 	}
 	return meter
-}
-
-func retainedUsageOf(env *core.Env) retainedUsage {
-	if env == nil {
-		return retainedUsage{}
-	}
-	bytes, slots := env.RetainedUsage()
-	return retainedUsage{bytes: bytes, slots: slots}
-}
-
-func (e *engineImpl) settleRetained(ctx context.Context, beforeRoot retainedUsage, scope *core.Env, beforeScope retainedUsage) error {
-	meter := e.retainedMeter(ctx)
-	if meter == nil {
-		return nil
-	}
-	rootAfter := retainedUsageOf(e.rootEnv)
-	scopeAfter := retainedUsageOf(scope)
-	bytes := max(rootAfter.bytes-beforeRoot.bytes, 0) + max(scopeAfter.bytes-beforeScope.bytes, 0)
-	slots := max(rootAfter.slots-beforeRoot.slots, 0) + max(scopeAfter.slots-beforeScope.slots, 0)
-	if bytes == 0 && slots == 0 {
-		return nil
-	}
-	if err := meter.ChargeRetained(bytes, slots); err != nil {
-		return core.NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
-	}
-	return nil
 }
 
 func (e *engineImpl) readForms(ctx context.Context, input string) ([]core.Value, error) {
@@ -396,14 +365,9 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
-	var beforeRoot retainedUsage
-	var top bool
 	if metered {
-		e.rootRetainedMu.Lock()
-		beforeRoot = retainedUsageOf(e.rootEnv)
-		top, err = core.StartEval(ctx)
+		top, err := core.StartEval(ctx)
 		if err != nil {
-			e.rootRetainedMu.Unlock()
 			return nil, err
 		}
 		defer func() {
@@ -411,11 +375,6 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 				result = nil
 				err = ferr
 			}
-			if rerr := e.settleRetained(ctx, beforeRoot, nil, retainedUsage{}); rerr != nil {
-				result = nil
-				err = rerr
-			}
-			e.rootRetainedMu.Unlock()
 		}()
 	}
 	forms, err := e.readForms(ctx, input)
@@ -653,15 +612,9 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
 	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
-	var beforeRoot retainedUsage
-	var beforeScope retainedUsage
-	var top bool
 	if metered {
-		e.rootRetainedMu.Lock()
-		beforeRoot = retainedUsageOf(e.rootEnv)
-		top, err = core.StartEval(ctx)
+		top, err := core.StartEval(ctx)
 		if err != nil {
-			e.rootRetainedMu.Unlock()
 			return nil, nil, err
 		}
 		defer func() {
@@ -669,11 +622,6 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 				result = nil
 				err = ferr
 			}
-			if rerr := e.settleRetained(ctx, beforeRoot, childEnv, beforeScope); rerr != nil {
-				result = nil
-				err = rerr
-			}
-			e.rootRetainedMu.Unlock()
 		}()
 	}
 
@@ -691,7 +639,6 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	if meter := e.retainedMeter(ctx); meter != nil {
 		childEnv.SetRetainedMeter(meter)
 	}
-	beforeScope = retainedUsageOf(childEnv)
 
 	for name, val := range bindings {
 		if e.config.dialect.IsLisp2() {
