@@ -326,38 +326,58 @@ func TestCache_UnfitChunkRunsUncached(t *testing.T) {
 }
 
 func TestCache_MeterChargeAndRelease(t *testing.T) {
-	m := &recordingMeter{}
-	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(m), WithResourceLimits(ResourceLimits{MaxCacheEntries: 1, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = e.Close() })
-	m.reset()
+	t.Run("MacroEpochFlushAndClose", func(t *testing.T) {
+		m := &recordingMeter{}
+		e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(m), WithResourceLimits(ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
+		require.NoError(t, err)
 
-	evalCacheSource(t, e, "1")
-	snap := m.snapshot()
-	assert.Equal(t, 1, snap.chargeCalls)
-	assert.Equal(t, int64(1), snap.chargedSlots)
-	assert.Equal(t, 0, snap.releaseCalls)
+		evalCacheSource(t, e, "1")
+		snap := m.snapshot()
+		assert.Equal(t, 1, snap.chargeCalls)
+		assert.Equal(t, int64(1), snap.chargedSlots)
+		assert.Equal(t, 0, snap.releaseCalls)
 
-	evalCacheSource(t, e, "2")
-	snap = m.snapshot()
-	assert.Equal(t, 2, snap.chargeCalls)
-	assert.Equal(t, int64(2), snap.chargedSlots)
-	assert.Equal(t, 1, snap.releaseCalls)
-	assert.Equal(t, int64(1), snap.releasedSlots)
+		e.RootEnv().BumpMacroEpoch()
+		evalCacheSource(t, e, "2")
+		snap = m.snapshot()
+		assert.Equal(t, 2, snap.chargeCalls)
+		assert.Equal(t, int64(2), snap.chargedSlots)
+		assert.Equal(t, 1, snap.releaseCalls)
+		assert.Equal(t, int64(1), snap.releasedSlots)
 
-	require.NoError(t, e.Close())
-	snap = m.snapshot()
-	assert.Equal(t, 2, snap.releaseCalls)
-	assert.Equal(t, int64(2), snap.releasedSlots)
+		require.NoError(t, e.Close())
+		snap = m.snapshot()
+		assert.Equal(t, 2, snap.releaseCalls)
+		assert.Equal(t, int64(2), snap.releasedSlots)
+	})
 
-	deny := &recordingMeter{chargeErr: fmt.Errorf("deny")}
-	uncached, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(deny), WithResourceLimits(ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = uncached.Close() })
-	deny.reset()
-	evalCacheSource(t, uncached, "1")
-	assert.Equal(t, 0, cacheStats(t, uncached).Entries)
-	assert.Equal(t, 1, deny.snapshot().chargeCalls)
+	t.Run("CapacityEviction", func(t *testing.T) {
+		m := &recordingMeter{}
+		e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(m), WithResourceLimits(ResourceLimits{MaxCacheEntries: 1, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
+		require.NoError(t, err)
+
+		evalCacheSource(t, e, "1")
+		evalCacheSource(t, e, "2")
+		snap := m.snapshot()
+		assert.Equal(t, 2, snap.chargeCalls)
+		assert.Equal(t, 1, snap.releaseCalls)
+
+		require.NoError(t, e.Close())
+		snap = m.snapshot()
+		assert.Equal(t, 2, snap.releaseCalls)
+		assert.Equal(t, int64(2), snap.releasedSlots)
+	})
+
+	t.Run("ChargeDenial", func(t *testing.T) {
+		deny := &recordingMeter{chargeErr: fmt.Errorf("deny")}
+		uncached, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(deny), WithResourceLimits(ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1 << 30, MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = uncached.Close() })
+		deny.reset()
+		evalCacheSource(t, uncached, "1")
+		assert.Equal(t, 0, cacheStats(t, uncached).Entries)
+		assert.Equal(t, 1, deny.snapshot().chargeCalls)
+	})
 }
 
 func TestCache_StatsExposeEntriesBytesNodesEpoch(t *testing.T) {

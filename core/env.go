@@ -183,12 +183,6 @@ func RetainedBindingBytes(name string, val Value) int64 {
 	return retainedBindingBytes(name, val)
 }
 
-func (e *Env) chargeRetainedBinding(name string, val Value) error {
-	bytes := retainedBindingBytes(name, val)
-	_, _, _, err := e.prepareFreshRetained(context.Background(), bytes, 1)
-	return err
-}
-
 func (e *Env) reserveRetainedBindings(bytes, slots int64) error {
 	nextBytes := e.retainedBytes + bytes
 	nextSlots := e.retainedSlots + slots
@@ -257,10 +251,6 @@ func recordFreshRetained(st *evalState, pending bool, env *Env, cell *Cell, mete
 	}
 	cell.retainedMeter = meter
 	cell.retainedBytes = bytes
-}
-
-func retainedBindingCapacity(name string, val Value, slots int64) (int64, int64) {
-	return retainedBindingBytes(name, val) * slots, slots
 }
 
 // SetBoth binds name in both value and function cells.
