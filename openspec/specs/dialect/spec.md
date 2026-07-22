@@ -47,28 +47,6 @@ An Engine created without a Dialect option SHALL evaluate the identity Dialect, 
 - **WHEN** an Engine is created with no Dialect option
 - **THEN** the special forms `if`, `def`, `defn`, `let`, `quote`, `cond`, `loop`, and `recur` SHALL behave as they did before this change
 
-### Requirement: Truthiness is a Dialect axis
-A Dialect SHALL set the truthiness axis to one of two values: only `nil` is falsy, or both `nil` and `false` are falsy. All conditional special forms — `if`, `when`, `unless`, `cond`, `and`, `or`, `not` — SHALL determine truthiness from the running Dialect's setting.
-
-#### Scenario: nil-only truthiness treats false as true
-- **WHEN** an Engine runs a Dialect with `nil`-only truthiness
-- **THEN** `(if false :yes :no)` SHALL evaluate to `:yes`
-
-#### Scenario: nil-plus-false truthiness treats false as falsy
-- **WHEN** an Engine runs a Dialect with `nil`+`false` truthiness
-- **THEN** `(if false :yes :no)` SHALL evaluate to `:no`
-
-#### Scenario: Axis applies across all conditional forms
-- **WHEN** an Engine runs a Dialect with `nil`-only truthiness
-- **THEN** `when`, `unless`, `cond`, `and`, `or`, and `not` SHALL each treat `false` as a true value consistently with `if`
-
-### Requirement: Identity Dialect truthiness is unchanged
-The identity Dialect SHALL keep `nil`+`false` truthiness, so an Engine created without selecting the axis behaves as before this change.
-
-#### Scenario: Default Engine keeps prior truthiness
-- **WHEN** an Engine is created without changing the truthiness axis
-- **THEN** `(if false :yes :no)` SHALL evaluate to `:no`
-
 ### Requirement: Symbol namespaces are a Dialect axis
 A Dialect SHALL set the namespace axis to Lisp-1 (a single binding namespace) or Lisp-2 (a separate function cell). Under Lisp-2 a symbol MAY name a function and a value simultaneously; under Lisp-1 a symbol names one binding.
 
@@ -149,13 +127,15 @@ The identity Dialect SHALL map today's builtin names onto today's implementation
 - **THEN** the builtins registered by loaded plugins SHALL be callable under their current names
 
 ### Requirement: Common Lisp dialect
-The system SHALL provide a Common Lisp dialect composed of: a CL vocabulary over the shared builtin core (`defun`, `setq`, `progn`, `car`, `cdr`, `funcall`, and related), `nil`-only truthiness, the Lisp-2 namespace axis, and CL reader flags (`#'` and `#(...)` enabled, `[..]`/`{..}` literals disabled).
+The system SHALL provide a Common Lisp dialect composed of: a CL vocabulary over the shared builtin core (`defun`, `setq`, `progn`, `car`, `cdr`, `funcall`, and related), the Lisp-2 namespace axis, and CL reader flags (`#'` and `#(...)` enabled, `[..]`/`{..}` literals disabled). Its truthiness is the uniform truthiness (`nil` and `false` falsy), like every other dialect.
 
 #### Scenario: CL surface forms evaluate
+
 - **WHEN** an Engine runs the Common Lisp dialect
-- **THEN** `defun` SHALL define a function, `(if false :y :n)` SHALL evaluate to `:y`, and `(funcall #'f args...)` SHALL apply `f`
+- **THEN** `defun` SHALL define a function, `(if false :y :n)` SHALL evaluate to `:n`, and `(funcall #'f args...)` SHALL apply `f`
 
 #### Scenario: CL reader affordances parse
+
 - **WHEN** an Engine runs the Common Lisp dialect
 - **THEN** `#'f` and `#(...)` SHALL parse, and `[1 2]` SHALL NOT read as a vector literal
 
@@ -219,4 +199,29 @@ its dialect's shape SHALL produce a typed error, never a panic.
 
 - **WHEN** a `cond` form violates its dialect's clause shape (odd flat pair, non-list nested clause)
 - **THEN** evaluation SHALL return a typed error under both execution paths, never a panic
+
+### Requirement: Truthiness is uniform: nil and false are falsy
+
+Truthiness SHALL be uniform across all dialects: `nil` and the concrete boolean
+`false` SHALL be falsy, and every other value SHALL be truthy. A concrete
+`Bool{false}` — whether written as the `false` literal or returned by a
+comparison or predicate builtin — SHALL be falsy under every dialect. All
+conditional special forms — `if`, `when`, `unless`, `cond`, `and`, `or`, `not`
+— SHALL determine truthiness this way on both the tree-walker and the bytecode
+VM. Dialects SHALL NOT vary truthiness; there is no truthiness axis.
+
+#### Scenario: Predicate-driven conditional takes the correct branch
+
+- **WHEN** any dialect evaluates `(if (= 1 2) :then :else)`
+- **THEN** it SHALL evaluate to `:else`
+
+#### Scenario: Literal false is falsy
+
+- **WHEN** any dialect evaluates `(if false :then :else)`
+- **THEN** it SHALL evaluate to `:else`
+
+#### Scenario: Axis applies across all conditional forms
+
+- **WHEN** any dialect evaluates `when`, `unless`, `cond`, `and`, `or`, and `not` against a `false` value
+- **THEN** each SHALL treat `false` as falsy, consistently with `if`, on both evaluators
 
