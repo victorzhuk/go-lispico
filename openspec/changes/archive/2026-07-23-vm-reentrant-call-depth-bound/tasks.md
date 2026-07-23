@@ -39,3 +39,9 @@
 - [x] 4.1 `openspec validate --strict vm-reentrant-call-depth-bound`.
 - [x] 4.2 CHANGELOG `[Unreleased]` note: VM now bounds recursion through
   higher-order builtins, matching the tree-walker.
+
+## 5. Security & Boundary Review Fixes
+
+- [x] 5.1 `core/vm/vm.go`: `VM.Apply` uses `WithCallDepthCounter(core.EvalCallCounter(ctx))` so fresh VMs do not share receiver instance counter across independent concurrent calls without context evalState.
+- [x] 5.2 `core/eval.go`: `AdoptEvalStateWithMeter` syncs `callSeed` when `ctx` already carries `evalState`.
+- [x] 5.3 Parity & tests: add concurrent `VM.Apply` isolation test and exact boundary parity tests for higher-order recursion.
