@@ -17,10 +17,13 @@ import (
 )
 
 const (
-	reentrantCallDepthMapSource           = `(defn deep [n] (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
-	reentrantCallDepthMixedSource         = `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 6)) (list 1))) (+ 0 (outer (- n 1)))))`
-	reentrantCallDepthMixedReviewerSource = reentrantCallDepthMixedSource + ` (outer 6)`
-	reentrantCallDepthMixedWarmupSource   = reentrantCallDepthMixedSource + ` (do (first (map (fn [x] (inner 1)) (list 1))) (outer 6))`
+	reentrantCallDepthMapSource                 = `(defn deep [n] (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
+	reentrantCallDepthMixedSource               = `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 6)) (list 1))) (+ 0 (outer (- n 1)))))`
+	reentrantCallDepthMixedReviewerSource       = reentrantCallDepthMixedSource + ` (outer 6)`
+	reentrantCallDepthMixedWarmupSource         = reentrantCallDepthMixedSource + ` (do (first (map (fn [x] (inner 1)) (list 1))) (outer 6))`
+	reentrantCallDepthBoundaryMatrixMixedInner2 = `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 2)) (list 1))) (+ 0 (outer (- n 1)))))`
+	reentrantCallDepthBoundaryMatrixMixedInner4 = `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 4)) (list 1))) (+ 0 (outer (- n 1)))))`
+	reentrantCallDepthBoundaryMatrixDeepSource  = `(defn deep [n] (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
 )
 
 func newReentrantCallDepthEngine(t testing.TB, opts ...EngineOption) Engine {
@@ -73,6 +76,53 @@ func TestVM_ReentrantCallDepth_MixedDirectHigherOrder_ReviewerRepro(t *testing.T
 	assertCallDepthExceeded(t, err)
 }
 
+func TestVM_ReentrantCallDepth_BoundaryMatrix(t *testing.T) {
+	t.Parallel()
+
+	maxDepth := 10
+	tests := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		{name: "outer-0-inner-2", src: reentrantCallDepthBoundaryMatrixMixedInner2 + " (outer 0)"},
+		{name: "outer-1-inner-2", src: reentrantCallDepthBoundaryMatrixMixedInner2 + " (outer 1)"},
+		{name: "outer-2-inner-2", src: reentrantCallDepthBoundaryMatrixMixedInner2 + " (outer 2)"},
+		{name: "outer-3-inner-4", src: reentrantCallDepthBoundaryMatrixMixedInner4 + " (outer 3)", wantErr: true},
+		{name: "outer-4-inner-4", src: reentrantCallDepthBoundaryMatrixMixedInner4 + " (outer 4)", wantErr: true},
+		{name: "outer-5-inner-4", src: reentrantCallDepthBoundaryMatrixMixedInner4 + " (outer 5)", wantErr: true},
+		{name: "outer-6-inner-4", src: reentrantCallDepthBoundaryMatrixMixedInner4 + " (outer 6)", wantErr: true},
+		{name: "deep-2", src: reentrantCallDepthBoundaryMatrixDeepSource + " (deep 2)"},
+		{name: "deep-10", src: reentrantCallDepthBoundaryMatrixDeepSource + " (deep 10)", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmEng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(maxDepth))
+			vmGot, vmErr := vmEng.Eval(t.Context(), tt.name+"-vm", tt.src)
+
+			treeEng := newReentrantCallDepthEngine(t, WithTreeWalker(), WithMaxEvalDepth(maxDepth))
+			treeGot, treeErr := treeEng.Eval(t.Context(), tt.name+"-tree", tt.src)
+
+			if (vmErr == nil) != (treeErr == nil) {
+				t.Fatalf("parity mismatch: vmErr=%v treeErr=%v", vmErr, treeErr)
+			}
+
+			if tt.wantErr {
+				assertCallDepthExceeded(t, vmErr)
+				assertCallDepthExceeded(t, treeErr)
+				return
+			}
+
+			require.NoError(t, vmErr, "vm")
+			require.NoError(t, treeErr, "tree")
+			assert.True(t, vmGot.Equals(treeGot), "VM result %v != tree-walker result %v", vmGot, treeGot)
+		})
+	}
+}
+
 func TestVM_ReentrantCallDepth_MixedDirectHigherOrder_FirstGoFuncShallowThenDeep(t *testing.T) {
 	t.Parallel()
 
@@ -114,10 +164,9 @@ func TestVM_ReentrantCallDepth_HigherOrderBuiltins(t *testing.T) {
 func TestVM_ReentrantCallDepth_UnderLimit(t *testing.T) {
 	t.Parallel()
 
-	eng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(10))
+	eng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(100))
 	ctx := t.Context()
-	src := reentrantCallDepthMapSource + ` (deep 1)`
-
+	src := `(defn deep [n] (if (= n 0) 0 (+ 0 (deep (- n 1))))) (deep 50)`
 	for i := range 3 {
 		got, err := eng.Eval(ctx, "under-limit", src)
 		require.NoError(t, err, "run %d", i)
@@ -298,7 +347,7 @@ func TestVM_ReentrantCallDepth_ConcurrentApplyIsolationNoEvalState(t *testing.T)
 func TestVM_ReentrantCallDepth_DecrementOnPanic(t *testing.T) {
 	t.Parallel()
 
-	eng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(10))
+	eng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(100))
 	ctx := core.EnsureEvalState(t.Context())
 	require.NoError(t, eng.Bind("boom", core.GoFunc{
 		Name: "boom",
@@ -314,7 +363,7 @@ func TestVM_ReentrantCallDepth_DecrementOnPanic(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, strings.Contains(err.Error(), "boom"), "got %v", err)
 
-	got, err := eng.Eval(ctx, "after-panic", reentrantCallDepthMapSource+` (deep 1)`)
+	got, err := eng.Eval(ctx, "after-panic", `(defn deep [n] (if (= n 0) 0 (+ 0 (deep (- n 1))))) (deep 50)`)
 	require.NoError(t, err)
 	assert.True(t, (core.Int{V: 0}).Equals(got), "got %v", got)
 }

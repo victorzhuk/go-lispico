@@ -906,6 +906,70 @@ func TestVMVsTreeWalker_ReentrantCallDepthBound_MixedDirectHigherOrder_ReviewerR
 	assertReentrantCallDepthParityError(t, treeErr, vmErr)
 }
 
+func TestVMVsTreeWalker_ReentrantCallDepthBound_BoundaryMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		src      string
+		maxDepth int
+		wantErr  bool
+	}{
+		{name: "outer 0 inner 2", src: reentrantCallDepthBoundaryMatrixMixedSource(2) + " (outer 0)", maxDepth: 10},
+		{name: "outer 1 inner 2", src: reentrantCallDepthBoundaryMatrixMixedSource(2) + " (outer 1)", maxDepth: 10},
+		{name: "outer 2 inner 2", src: reentrantCallDepthBoundaryMatrixMixedSource(2) + " (outer 2)", maxDepth: 10},
+		{name: "outer 3 inner 4", src: reentrantCallDepthBoundaryMatrixMixedSource(4) + " (outer 3)", maxDepth: 10, wantErr: true},
+		{name: "outer 4 inner 4", src: reentrantCallDepthBoundaryMatrixMixedSource(4) + " (outer 4)", maxDepth: 10, wantErr: true},
+		{name: "outer 5 inner 4", src: reentrantCallDepthBoundaryMatrixMixedSource(4) + " (outer 5)", maxDepth: 10, wantErr: true},
+		{name: "outer 6 inner 4", src: reentrantCallDepthBoundaryMatrixMixedSource(4) + " (outer 6)", maxDepth: 10, wantErr: true},
+		{name: "deep 2", src: reentrantCallDepthBoundaryMatrixDeepSource() + " (deep 2)", maxDepth: 10},
+		{name: "deep 10", src: reentrantCallDepthBoundaryMatrixDeepSource() + " (deep 10)", maxDepth: 10, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			forms, err := clojure.Dialect().ReadWithMaxDepth(tt.src, 2000)
+			require.NoError(t, err, "read source")
+
+			treeResult, treeErr := runTreeReentrantCallDepth(t, forms, tt.maxDepth)
+			vmResult, vmErr := runVMReentrantCallDepth(t, forms, tt.maxDepth)
+			if tt.wantErr {
+				assertReentrantCallDepthParityError(t, treeErr, vmErr)
+				return
+			}
+			require.NoError(t, treeErr, "tree-walker")
+			require.NoError(t, vmErr, "vm")
+			assert.True(t, vmResult.Equals(treeResult), "VM result %v != tree-walker result %v", vmResult, treeResult)
+		})
+	}
+}
+
+func reentrantCallDepthBoundaryMatrixMixedSource(innerDepth int) string {
+	return fmt.Sprintf(`(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner %d)) (list 1))) (+ 0 (outer (- n 1)))))`, innerDepth)
+}
+
+func reentrantCallDepthBoundaryMatrixDeepSource() string {
+	return `(defn deep [n] (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
+}
+
+func TestVMVsTreeWalker_ReentrantCallDepthBound_MixedDirectHigherOrder_MaxDepth1000(t *testing.T) {
+	t.Parallel()
+
+	src := reentrantCallDepthMixedDirectMapSourceForCrossVal()
+	forms, err := clojure.Dialect().ReadWithMaxDepth(src, 2000)
+	require.NoError(t, err, "read source")
+
+	_, treeErr := runTreeReentrantCallDepth(t, forms, 1000)
+	_, vmErr := runVMReentrantCallDepth(t, forms, 1000)
+	assertReentrantCallDepthParityError(t, treeErr, vmErr)
+}
+
+func reentrantCallDepthMixedDirectMapSourceForCrossVal() string {
+	return reentrantCallDepthMapSourceForCrossVal() + ` (defn outer [n] (if (= n 0) (first (map (fn [x] (deep 501)) (list 1))) (+ 0 (outer (- n 1))))) (outer 499)`
+}
+
 func reentrantCallDepthMixedWarmupSourceForCrossVal() string {
 	return `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 6)) (list 1))) (+ 0 (outer (- n 1))))) (do (first (map (fn [x] (inner 1)) (list 1))) (outer 6))`
 }

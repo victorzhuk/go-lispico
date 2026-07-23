@@ -507,7 +507,7 @@ func (v *VM) ApplyPooled(ctx context.Context, fn core.Value, args []core.Value, 
 	}
 	sharedDepth := counter.Add(1)
 	defer counter.Add(-1)
-	if v.maxDepth > 0 && (int64(v.depth) >= int64(v.maxDepth) || sharedDepth+int64(v.depth) > int64(v.maxDepth)) {
+	if v.maxDepth > 0 && (int64(v.depth) >= int64(v.maxDepth) || sharedDepth > int64(v.maxDepth)) {
 		return nil, &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 	}
 	return v.apply(ctx, fn, args, env)
@@ -1552,7 +1552,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if vm.callDepth != nil {
 			sharedDepth = vm.callDepth.Load()
 		}
-		if vm.maxDepth > 0 && (vm.depth >= vm.maxDepth || (sharedDepth > 0 && sharedDepth+int64(vm.depth) >= int64(vm.maxDepth))) {
+		if vm.maxDepth > 0 && (int64(vm.depth) >= int64(vm.maxDepth) || (sharedDepth > 0 && sharedDepth+int64(vm.depth) >= int64(vm.maxDepth))) {
 			return &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 		}
 		vm.depth++
