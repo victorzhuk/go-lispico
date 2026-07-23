@@ -296,9 +296,7 @@ func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, structSeed
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
 		if len(callSeed) > 0 && callSeed[0] > 0 {
 			counter := st.callCounter()
-			if counter.Load() == 0 {
-				counter.Add(callSeed[0])
-			}
+			counter.CompareAndSwap(0, callSeed[0])
 		}
 		return ctx, st.counter(), EvalMeter{st: st}
 	}

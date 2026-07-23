@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,6 +114,37 @@ func TestVM_ReentrantCallDepth_ConcurrentBounded(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestVM_ReentrantCallDepth_ConcurrentAdoptEvalStateCallSeed(t *testing.T) {
+	t.Parallel()
+
+	const workers = 32
+	const callSeed = int64(7)
+	const attempts = 200
+
+	deadline := time.Now().Add(time.Minute)
+
+	for attempt := range attempts {
+		ctx := core.EnsureEvalState(context.Background())
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				adopted, _, _ := core.AdoptEvalStateWithMeter(ctx, deadline, 0, core.EvalMeterSnapshot{}, callSeed)
+				require.Same(t, core.EvalCallCounter(ctx), core.EvalCallCounter(adopted))
+			}()
+		}
+
+		close(start)
+		wg.Wait()
+
+		got := core.EvalCallCounter(ctx).Load()
+		require.Equalf(t, callSeed, got, "attempt %d: expected seed %d, got %d", attempt, callSeed, got)
+	}
 }
 
 func TestVM_ReentrantCallDepth_ConcurrentIsolatedBounds(t *testing.T) {
