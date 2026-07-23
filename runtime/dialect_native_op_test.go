@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/data"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
@@ -113,4 +114,167 @@ func TestDialectNativeOp_CL_NoGoFuncDispatch(t *testing.T) {
 		_, _ = eng.Call(ctx, "add", core.Int{V: 1}, core.Int{V: 2})
 	})
 	assert.LessOrEqual(t, allocs, float64(2), "CL native op dispatch alloc ceiling, got %v", allocs)
+}
+
+func TestOperatorRedefinitionSurvivesPluginUse(t *testing.T) {
+	t.Parallel()
+
+	tw, err := New(nil, WithTreeWalker(), WithDialect(cl.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tw.Close() })
+	require.NoError(t, tw.Use(stdlib.New()))
+
+	vmEng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vmEng.Close() })
+	require.NoError(t, vmEng.Use(stdlib.New()))
+
+	ctx := context.Background()
+
+	_, err = tw.Eval(ctx, "redef", "(defun + (a b) 999)")
+	require.NoError(t, err)
+	_, err = vmEng.Eval(ctx, "redef", "(defun + (a b) 999)")
+	require.NoError(t, err)
+
+	twGot, err := tw.Eval(ctx, "call-before", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, twGot.Equals(core.Int{V: 999}))
+
+	vmGot, err := vmEng.Eval(ctx, "call-before", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, vmGot.Equals(core.Int{V: 999}))
+
+	require.NoError(t, tw.Use(data.New()))
+	require.NoError(t, vmEng.Use(data.New()))
+
+	twGot, err = tw.Eval(ctx, "call-after", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, twGot.Equals(core.Int{V: 999}), "tree-walker call should use redefined +, got %v", twGot)
+
+	vmGot, err = vmEng.Eval(ctx, "call-after", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, vmGot.Equals(core.Int{V: 999}), "VM call should use redefined +, got %v", vmGot)
+}
+
+func TestNonOperatorBuiltinRedefinitionSurvivesPluginUse(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		redef string
+		call  string
+		want  core.Value
+	}{
+		{"map", "(defun map (fn lst) 12345)", "(map nil nil)", core.Int{V: 12345}},
+		{"first", "(defun first (lst) 12345)", "(first nil)", core.Int{V: 12345}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tw, err := New(nil, WithTreeWalker(), WithDialect(cl.Dialect()))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tw.Close() })
+			require.NoError(t, tw.Use(stdlib.New()))
+
+			vmEng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = vmEng.Close() })
+			require.NoError(t, vmEng.Use(stdlib.New()))
+
+			ctx := context.Background()
+
+			_, err = tw.Eval(ctx, "redef", tc.redef)
+			require.NoError(t, err)
+			_, err = vmEng.Eval(ctx, "redef", tc.redef)
+			require.NoError(t, err)
+
+			twGot, err := tw.Eval(ctx, "call-before", tc.call)
+			require.NoError(t, err)
+			assert.True(t, twGot.Equals(tc.want))
+
+			vmGot, err := vmEng.Eval(ctx, "call-before", tc.call)
+			require.NoError(t, err)
+			assert.True(t, vmGot.Equals(tc.want))
+
+			require.NoError(t, tw.Use(data.New()))
+			require.NoError(t, vmEng.Use(data.New()))
+
+			twGot, err = tw.Eval(ctx, "call-after", tc.call)
+			require.NoError(t, err)
+			assert.True(t, twGot.Equals(tc.want), "tree-walker builtin redefinition must survive plugin load, got %v", twGot)
+
+			vmGot, err = vmEng.Eval(ctx, "call-after", tc.call)
+			require.NoError(t, err)
+			assert.True(t, vmGot.Equals(tc.want), "VM builtin redefinition must survive plugin load, got %v", vmGot)
+		})
+	}
+}
+
+func TestPluginGoFuncsCallableAndCanonicalFastPath(t *testing.T) {
+	if raceEnabled {
+		t.Skip("alloc counts are unreliable under the race detector")
+	}
+
+	tw, err := New(nil, WithTreeWalker(), WithDialect(cl.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tw.Close() })
+	require.NoError(t, tw.Use(stdlib.New()))
+
+	vmEng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vmEng.Close() })
+	require.NoError(t, vmEng.Use(stdlib.New()))
+
+	require.NoError(t, tw.Use(data.New()))
+	require.NoError(t, vmEng.Use(data.New()))
+
+	ctx := context.Background()
+
+	got, err := tw.Eval(ctx, "plugin", `(json/encode "x")`)
+	require.NoError(t, err)
+	assert.Equal(t, core.String{V: "\"x\""}, got)
+
+	got, err = vmEng.Eval(ctx, "plugin", `(json/encode "x")`)
+	require.NoError(t, err)
+	assert.Equal(t, core.String{V: "\"x\""}, got)
+
+	_, err = vmEng.Eval(ctx, "setup", "(defun add (a b) (+ a b))")
+	require.NoError(t, err)
+	got, err = vmEng.Eval(ctx, "add-works", "(add 1 2)")
+	require.NoError(t, err)
+	assert.True(t, got.Equals(core.Int{V: 3}), "add body uses native canonical +, got %v", got)
+
+	got, err = vmEng.Call(ctx, "+", core.Int{V: 1}, core.Int{V: 2})
+	require.NoError(t, err)
+	assert.True(t, got.Equals(core.Int{V: 3}), "canonical + call got %v", got)
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		_, _ = vmEng.Call(ctx, "+", core.Int{V: 1}, core.Int{V: 2})
+	})
+	assert.LessOrEqual(t, allocs, float64(2), "CL canonical operator Call alloc ceiling, got %v", allocs)
+}
+
+func TestReloadPluginRestoresCanonical(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	require.NoError(t, eng.Use(stdlib.New()))
+
+	ctx := context.Background()
+	_, err = eng.Eval(ctx, "redef", "(defun + (a b) 999)")
+	require.NoError(t, err)
+
+	got, err := eng.Eval(ctx, "before", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, got.Equals(core.Int{V: 999}), "before reload, redefined + should win, got %v", got)
+
+	require.NoError(t, eng.ReloadPlugin(stdlib.New()))
+
+	got, err = eng.Eval(ctx, "after", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, got.Equals(core.Int{V: 3}), "after reload, canonical + should be restored, got %v", got)
 }

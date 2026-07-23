@@ -437,6 +437,8 @@ func (e *engineImpl) applyVocabulary() error {
 	// binding (stdlib's native operators) bridges canonically too, so the VM's
 	// native-op fast path — which under Lisp-2 freezes off the function cell —
 	// still fires; a defun rebind lands through SetFunc and loses it again.
+	// Iterate LocalNames() so all visible and helper bindings are bridged; this is
+	// intentionally wider than just the dialect vocabulary map.
 	if e.config.dialect.IsLisp2() {
 		for _, name := range e.rootEnv.LocalNames() {
 			v, ok, canon := e.rootEnv.GetCanonical(name)
@@ -444,6 +446,9 @@ func (e *engineImpl) applyVocabulary() error {
 				continue
 			}
 			if _, isGoFunc := v.(core.GoFunc); isGoFunc {
+				if existing, hasFunc := e.rootEnv.GetFunc(name); hasFunc && !existing.Equals(v) {
+					continue
+				}
 				if canon {
 					if err := e.rootEnv.SetFuncCanonical(name, v); err != nil {
 						return err
