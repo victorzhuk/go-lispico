@@ -423,6 +423,16 @@ func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	return adopted, nil
 }
 
+func (vm *VM) pushReentrantDepth(reCtx context.Context) (*atomic.Int64, int64) {
+	if vm.depth == 0 {
+		return nil, 0
+	}
+	d := int64(vm.depth)
+	c := core.EvalCallCounter(reCtx)
+	c.Add(d)
+	return c, d
+}
+
 func (vm *VM) push(v core.Value) {
 	vm.stack = append(vm.stack, v)
 }
@@ -545,11 +555,10 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		if err != nil {
 			return nil, err
 		}
-		if vm.depth > 0 {
-			counter := core.EvalCallCounter(reCtx)
-			counter.Add(int64(vm.depth))
-			defer counter.Add(-int64(vm.depth))
+		if c, d := vm.pushReentrantDepth(reCtx); c != nil {
+			defer c.Add(-d)
 		}
+
 		result, err := eval.Apply(reCtx, f, args, env)
 		vm.syncMeterFromReentry()
 		return result, err
@@ -563,11 +572,10 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		if err != nil {
 			return nil, err
 		}
-		if vm.depth > 0 {
-			counter := core.EvalCallCounter(reCtx)
-			counter.Add(int64(vm.depth))
-			defer counter.Add(-int64(vm.depth))
+		if c, d := vm.pushReentrantDepth(reCtx); c != nil {
+			defer c.Add(-d)
 		}
+
 		if err := vm.chargeReductions(1); err != nil {
 			return nil, err
 		}
@@ -1475,11 +1483,10 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if err != nil {
 			return err
 		}
-		if vm.depth > 0 {
-			counter := core.EvalCallCounter(reCtx)
-			counter.Add(int64(vm.depth))
-			defer counter.Add(-int64(vm.depth))
+		if c, d := vm.pushReentrantDepth(reCtx); c != nil {
+			defer c.Add(-d)
 		}
+
 		if err := vm.chargeReductions(1); err != nil {
 			return err
 		}
@@ -1507,10 +1514,8 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if err != nil {
 			return err
 		}
-		if vm.depth > 0 {
-			counter := core.EvalCallCounter(reCtx)
-			counter.Add(int64(vm.depth))
-			defer counter.Add(-int64(vm.depth))
+		if c, d := vm.pushReentrantDepth(reCtx); c != nil {
+			defer c.Add(-d)
 		}
 		result, err := eval.Apply(reCtx, f, args, frameEnv)
 		vm.syncMeterFromReentry()
