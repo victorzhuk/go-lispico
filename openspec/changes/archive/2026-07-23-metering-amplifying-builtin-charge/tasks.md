@@ -1,42 +1,42 @@
 ## 1. Behavior contracts
 
-- [ ] 1.1 Red test: `json/decode` of a compact payload whose decoded structure
+- [x] 1.1 Red test: `json/decode` of a compact payload whose decoded structure
   exceeds a low `MaxAllocationBytes` fails with a `ResourceLimitError`; a
   payload under the limit decodes and is charged proportionally to
   `ValueDeepBytes` of the result (assert the ledger moved by ~the deep size, not
   the shallow size).
-- [ ] 1.2 Red test: `format` with many wide verbs whose estimated output
+- [x] 1.2 Red test: `format` with many wide verbs whose estimated output
   exceeds a low `MaxAllocationBytes` fails closed BEFORE `fmt.Sprintf` builds
   the string (assert no multi-hundred-MB transient — e.g. the call returns the
   limit error quickly and total allocation stays bounded).
-- [ ] 1.3 Characterization: an ordinary `format`/`json/decode` under budget
+- [x] 1.3 Characterization: an ordinary `format`/`json/decode` under budget
   still returns the correct value; round-trip and integer-detection guarantees
   for `json/decode` are unchanged.
-- [ ] 1.4 Audit tests: `repeat`/`make-string`-style and count-driven builders
+- [x] 1.4 Audit tests: `repeat`/`make-string`-style and count-driven builders
   identified in the design either charge their output eagerly or are shown
   already bounded.
 
 ## 2. Implementation
 
-- [ ] 2.1 `json/decode`: `core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(result))`
+- [x] 2.1 `json/decode`: `core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(result))`
   after `fromJSONValue`, before return.
-- [ ] 2.2 `format`: parse width/precision specifiers to an upper-bound output
+- [x] 2.2 `format`: parse width/precision specifiers to an upper-bound output
   estimate; `ChargeEvalAllocBytes` the estimate before `fmt.Sprintf`; return the
   ledger error without building on overflow.
-- [ ] 2.3 Apply the same eager-charge to the amplifying builders found in the
+- [x] 2.3 Apply the same eager-charge to the amplifying builders found in the
   audit; leave non-amplifying builtins on the shallow generic charge.
 
 ## 3. Integration
 
-- [ ] 3.1 `go test ./... -race` green.
-- [ ] 3.2 `GOLDSET_MODE=vm` goldset gate non-increasing — the added charges are
+- [x] 3.1 `go test ./... -race` green.
+- [x] 3.2 `GOLDSET_MODE=vm` goldset gate non-increasing — the added charges are
   size computations (no Go allocation) on the amplifying builtins only; the
   scalar-returning hot path is untouched. Verify allocs/op unchanged.
-- [ ] 3.3 Confirm charges are deterministic (fixed size table) across a second
+- [x] 3.3 Confirm charges are deterministic (fixed size table) across a second
   run.
 
 ## 4. Verification
 
-- [ ] 4.1 `openspec validate --strict metering-amplifying-builtin-charge`.
-- [ ] 4.2 CHANGELOG `[Unreleased]` note under Fixed/Changed: amplifying builtins
+- [x] 4.1 `openspec validate --strict metering-amplifying-builtin-charge`.
+- [x] 4.2 CHANGELOG `[Unreleased]` note under Fixed/Changed: amplifying builtins
   now charge the allocation ledger for their constructed output.
