@@ -24,7 +24,9 @@ Reuse the structural-depth-counter pattern for call depth.
   same `evalState.callDepth` the tree-walker already bumps.
 - The VM increments/decrements the shared counter across each re-entrant
   `ApplyPooled` entry and checks it against `maxDepth`, alongside its existing
-  per-instance `vm.depth` check.
+  per-instance `vm.depth` check. The shared counter uses `sharedDepth > maxDepth`
+  to match the tree-walker's boundary semantics (since the shared counter starts
+  at 1 on re-entry).
 
 `vm.depth` stays for intra-chunk `OpCall`/`OpTailCall` recursion (cheap,
 per-instance, no atomics on the hottest path). The shared counter is consulted
@@ -39,9 +41,9 @@ the same place the structural counter already sits.
   `Apply` to write `vm.depth` before `Run` and couples the reset path to the
   counter. More invasive than mirroring the proven structural pattern.
 - **Check both counters independently** (chosen): the VM trips on
-  `max(vm.depth, sharedCallDepth) >= maxDepth`. Smallest diff, mirrors the
-  structural-counter code already in `Run`, and keeps the per-instance fast
-  path untouched.
+  `vm.depth >= maxDepth` or `sharedCallDepth > maxDepth`. Smallest diff, mirrors the
+  structural-counter code already in `Run`, keeps the per-instance fast
+  path untouched, and preserves tree-walker boundary parity (`>`).
 
 ## Verification shape
 
