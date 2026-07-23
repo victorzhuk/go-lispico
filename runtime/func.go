@@ -127,7 +127,7 @@ func (f *Fn) Pin() *PinnedFn {
 // goroutines. The cell read happens under the engine's read lock so a
 // concurrent Bind that swaps the binding is observed atomically with the
 // undefined-function path below.
-func (f *Fn) Call(ctx context.Context, args ...core.Value) (core.Value, error) {
+func (f *Fn) Call(ctx context.Context, args ...core.Value) (result core.Value, err error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -149,7 +149,16 @@ func (f *Fn) Call(ctx context.Context, args ...core.Value) (core.Value, error) {
 	if be := f.engine.bytecodeEvaluator; be != nil {
 		v := be.vmPool.Get().(*vm.VM)
 		v.Reset()
-		defer be.vmPool.Put(v)
+		defer func() {
+			if r := recover(); r != nil {
+				result = nil
+				err = core.NewPanicError(f.name, r)
+			}
+			if err != nil {
+				v.Reset()
+			}
+			be.vmPool.Put(v)
+		}()
 		return f.engine.callBoundary(ctx, f.name, fn, env, f.counter, args, v)
 	}
 	return f.engine.callBoundary(ctx, f.name, fn, env, f.counter, args, nil)

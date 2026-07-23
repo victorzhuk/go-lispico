@@ -102,15 +102,18 @@ func NewConcurrentUseError(name string) *LispicoError {
 }
 
 // CodePanic classifies a *LispicoError reporting that a user-supplied GoFunc
-// panicked inside a runtime entry point (currently PinnedFn.Call). The panic
-// is recovered, the handle's VM is reset fully, and the panic value is
-// wrapped so the caller observes a typed error rather than a propagated panic.
+// panicked inside a runtime entry point. The panic is recovered, boundary state
+// is reset, and the panic value is wrapped so the caller observes a typed error
+// rather than a propagated panic.
 const CodePanic = "PanicError"
 
-// NewPanicError builds a LispicoError reporting that a user GoFunc panicked
-// inside handle name's runtime path.
+// NewPanicError builds a LispicoError reporting that panicValue was recovered
+// at runtime boundary name.
 func NewPanicError(name string, panicValue any) *LispicoError {
-	return &LispicoError{Code: CodePanic, Message: fmt.Sprintf("recovered panic in pinned call %q: %v", name, panicValue)}
+	if name != "" {
+		return &LispicoError{Code: CodePanic, Message: fmt.Sprintf("recovered panic in %q: %v", name, panicValue)}
+	}
+	return &LispicoError{Code: CodePanic, Message: fmt.Sprintf("recovered panic: %v", panicValue)}
 }
 
 // CodeVMState classifies a *LispicoError reporting that a handle's private VM

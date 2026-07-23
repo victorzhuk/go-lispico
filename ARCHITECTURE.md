@@ -475,6 +475,13 @@ if err != nil {
 
 Failures are reported as `*core.LispicoError` with a `Code` identifying the
 error class — `ReadError`, `EvalError`, `TypeError`, `ArityError`,
-`UndefinedError` — plus source location (`Source`, `Line`, `Col`) when the
-error can be tied to a position in the input. `Unwrap` exposes the cause for
-`errors.Is`/`errors.As`.
+`UndefinedError`, `PanicError` — plus source location (`Source`, `Line`,
+`Col`) when the error can be tied to a position in the input. `Unwrap` exposes
+the cause for `errors.Is`/`errors.As`.
+
+The runtime boundary recovers panics from embedded `GoFunc` values at
+`Engine.Eval`, `Engine.Call`, `Fn.Call`, and `PinnedFn.Call`. Recovered panics
+return `PanicError`, are recorded as failed eval/plugin calls, and cannot leave
+a pooled or pinned VM in a dirty reusable state: shared bytecode VMs are reset
+before returning to the pool or discarded when the panic escaped a low-level
+apply.

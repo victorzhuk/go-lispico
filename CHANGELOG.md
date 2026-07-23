@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry, deep-byte, and expanded-node ceilings. Chunks larger than any cache
   ceiling run uncached without failing evaluation.
 
+### Fixed
+
+- `GoFunc` panics crossing `Engine.Eval`, `Engine.Call`, and `Fn.Call`
+  now return `PanicError` without aborting the host process; recovered
+  bytecode VM state is reset or discarded before reuse.
+
 ## [0.8.0] - 2026-07-19
 
 ### Changed

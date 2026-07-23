@@ -504,6 +504,16 @@ func compiledChunkBytes(chunk *vm.Chunk) int64 {
 
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {
 	start := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			panicErr := core.NewPanicError(source, r)
+			result = nil
+			dur := time.Since(start)
+			e.stats.recordEval(dur, panicErr)
+			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: panicErr})
+			err = fmt.Errorf("eval: %w", panicErr)
+		}
+	}()
 
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
@@ -638,7 +648,7 @@ func (e *engineImpl) LoadDir(dir string) error {
 	return nil
 }
 
-func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) (core.Value, error) {
+func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) (result core.Value, err error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -661,7 +671,16 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 	if be := e.bytecodeEvaluator; be != nil {
 		v := be.vmPool.Get().(*vm.VM)
 		v.Reset()
-		defer be.vmPool.Put(v)
+		defer func() {
+			if r := recover(); r != nil {
+				result = nil
+				err = core.NewPanicError(name, r)
+			}
+			if err != nil {
+				v.Reset()
+			}
+			be.vmPool.Put(v)
+		}()
 		return e.callBoundary(ctx, name, fn, env, counter, args, v)
 	}
 	return e.callBoundary(ctx, name, fn, env, counter, args, nil)
@@ -695,6 +714,16 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 	if active {
 		start = nowFunc()
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = core.NewPanicError(name, r)
+		}
+		counter.Add(1)
+		if active {
+			e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: nowFunc().Sub(start)})
+		}
+	}()
 	if be := e.bytecodeEvaluator; be != nil {
 		result, err = be.applyOnVM(v, ctx, fn, args, env, e.config.timeout)
 	} else {
@@ -714,10 +743,6 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 		if err == nil {
 			err = core.FlushEvalState(ctx)
 		}
-	}
-	counter.Add(1)
-	if active {
-		e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: nowFunc().Sub(start)})
 	}
 	return result, err
 }
