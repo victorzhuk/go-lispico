@@ -627,7 +627,7 @@ func TestEval_MaxDepth(t *testing.T) {
 	if err == nil {
 		t.Error("expected max depth error")
 	}
-	if !strings.Contains(err.Error(), "max call depth") {
+	if !strings.Contains(err.Error(), "maximum call depth exceeded") {
 		t.Errorf("error should mention max call depth, got: %v", err)
 	}
 }

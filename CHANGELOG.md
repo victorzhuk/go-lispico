@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restored tree-walker parity for exact `MaxDepth` boundaries by keeping
+  tree-walker depth checks at `> MaxDepth` and routing public `VM.Apply`
+  through `ApplyPooled` so shared call-depth counters are enforced on the
+  public path.
+- Higher-order recursion through bytecode VM `map`, `filter`, `reduce`, and
+  `apply` now shares the evaluation call-depth counter and returns `EvalError`
+  at the same limit as the tree-walker.
 - `GoFunc` panics crossing `Engine.Eval`, `Engine.Call`, and `Fn.Call`
   now return `PanicError` without aborting the host process; recovered
   bytecode VM state is reset or discarded before reuse.

@@ -3,12 +3,15 @@ package vm_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
@@ -791,6 +794,130 @@ func stdlibEnv() *core.Env {
 	p := stdlib.New()
 	p.Init(env)
 	return env
+}
+
+type crossValBytecodeEvaluator struct {
+	maxDepth int
+}
+
+func (e crossValBytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *core.Env) (core.Value, error) {
+	ctx = core.EnsureEvalState(ctx)
+	chunks, err := compiler.CompileAll([]core.Value{form})
+	if err != nil {
+		return nil, err
+	}
+	v := vm.New(
+		env,
+		vm.WithMaxDepth(e.maxDepth),
+		vm.WithEvaluator(e),
+		vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx)),
+		vm.WithCallDepthCounter(core.EvalCallCounter(ctx)),
+	)
+	return v.Run(ctx, chunks[0])
+}
+
+func (e crossValBytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
+	ctx = core.EnsureEvalState(ctx)
+	v := vm.New(
+		env,
+		vm.WithMaxDepth(e.maxDepth),
+		vm.WithEvaluator(e),
+		vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx)),
+		vm.WithCallDepthCounter(core.EvalCallCounter(ctx)),
+	)
+	return v.ApplyPooled(ctx, fn, args, env)
+}
+
+func runTreeReentrantCallDepth(t *testing.T, forms []core.Value, maxDepth int) (core.Value, error) {
+	t.Helper()
+	env := stdlibEnv()
+	eval, err := core.NewEvaluatorWithDialect(clojure.Dialect())
+	require.NoError(t, err)
+	eval.MaxDepth = maxDepth
+	var result core.Value = core.Nil{}
+	for _, form := range forms {
+		result, err = eval.Eval(t.Context(), form, env)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func runVMReentrantCallDepth(t *testing.T, forms []core.Value, maxDepth int) (core.Value, error) {
+	t.Helper()
+	ctx := core.EnsureEvalState(t.Context())
+	env := stdlibEnv()
+	eval := crossValBytecodeEvaluator{maxDepth: maxDepth}
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err, "compile")
+	var result core.Value = core.Nil{}
+	for _, chunk := range chunks {
+		v := vm.New(
+			env,
+			vm.WithMaxDepth(maxDepth),
+			vm.WithEvaluator(eval),
+			vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx)),
+			vm.WithCallDepthCounter(core.EvalCallCounter(ctx)),
+		)
+		result, err = v.Run(ctx, chunk)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func assertReentrantCallDepthParityError(t *testing.T, treeErr, vmErr error) {
+	t.Helper()
+	require.Error(t, treeErr, "tree-walker")
+	require.Error(t, vmErr, "vm")
+	var treeLerr *core.LispicoError
+	var vmLerr *core.LispicoError
+	require.True(t, errors.As(treeErr, &treeLerr), "tree-walker error %T: %v", treeErr, treeErr)
+	require.True(t, errors.As(vmErr, &vmLerr), "vm error %T: %v", vmErr, vmErr)
+	assert.Equal(t, treeLerr.Code, vmLerr.Code)
+	assert.Equal(t, "EvalError", vmLerr.Code)
+	assert.True(t, strings.Contains(treeErr.Error(), "maximum call depth exceeded"), "tree-walker error: %v", treeErr)
+	assert.True(t, strings.Contains(vmErr.Error(), "maximum call depth exceeded"), "vm error: %v", vmErr)
+}
+
+func TestVMVsTreeWalker_ReentrantCallDepthBound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		depth    int
+		maxDepth int
+		wantErr  bool
+	}{
+		{name: "over limit", depth: 50, maxDepth: 10, wantErr: true},
+		{name: "under limit", depth: 50, maxDepth: 1000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			src := reentrantCallDepthMapSourceForCrossVal() + fmt.Sprintf(" (deep %d)", tt.depth)
+			forms, err := clojure.Dialect().ReadWithMaxDepth(src, 2000)
+			require.NoError(t, err, "read source")
+
+			treeResult, treeErr := runTreeReentrantCallDepth(t, forms, tt.maxDepth)
+			vmResult, vmErr := runVMReentrantCallDepth(t, forms, tt.maxDepth)
+			if tt.wantErr {
+				assertReentrantCallDepthParityError(t, treeErr, vmErr)
+				return
+			}
+			require.NoError(t, treeErr, "tree-walker")
+			require.NoError(t, vmErr, "vm")
+			assert.True(t, vmResult.Equals(treeResult), "VM result %v != tree-walker result %v", vmResult, treeResult)
+			assert.True(t, vmResult.Equals(core.Int{V: 0}), "result should be 0, got %v", vmResult)
+		})
+	}
+}
+
+func reentrantCallDepthMapSourceForCrossVal() string {
+	return `(defn deep [n] (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
 }
 
 func TestVMVsTreeWalker_Promotion(t *testing.T) {

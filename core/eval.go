@@ -101,8 +101,9 @@ type evalState struct {
 	retainedBytes     int64
 	retainedSlots     int64
 	pendingCellAllocs []pendingCellAlloc
-	// shared lets lazy states alias the wrapper-owned counter without a second allocation per evalState.
-	shared *atomic.Int64
+	// shared lets lazy states alias wrapper-owned counters without a second allocation per evalState.
+	shared          *atomic.Int64
+	sharedCallDepth *atomic.Int64
 	// deadline is the engine-owned evaluation deadline enforced by pollCancel.
 	// Zero means no engine deadline is set.
 	deadline time.Time
@@ -119,6 +120,13 @@ func (st *evalState) counter() *atomic.Int64 {
 	return &st.structDepth
 }
 
+func (st *evalState) callCounter() *atomic.Int64 {
+	if st.sharedCallDepth != nil {
+		return st.sharedCallDepth
+	}
+	return &st.callDepth
+}
+
 // lazyEvalStateCtx wraps a parent context and materializes an evalState on demand
 // only when the state key is read. This avoids allocations on non-re-entrant GoFunc
 // dispatch while preserving shared state across re-entrant evaluator calls.
@@ -126,6 +134,7 @@ type lazyEvalStateCtx struct {
 	context.Context
 	deadline      time.Time
 	counter       atomic.Int64
+	callCounter   atomic.Int64
 	state         atomic.Pointer[evalState]
 	maxReductions int64
 	maxAllocBytes int64
@@ -146,6 +155,7 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 		st := newEvalStateWithLimits(c.maxReductions, c.maxAllocBytes)
 		st.deadline = c.deadline
 		st.shared = &c.counter
+		st.sharedCallDepth = &c.callCounter
 		st.reductions.Store(c.reductions)
 		st.allocBytes.Store(c.allocBytes)
 		st.attachMeter(sessionMeterFromContext(c.Context))
@@ -246,6 +256,15 @@ func EvalStructCounter(ctx context.Context) *atomic.Int64 {
 	return evalStateFrom(ctx).counter()
 }
 
+// EvalCallCounter returns the shared call-depth atomic from the eval state in
+// ctx. Returns a private zero-valued atomic when ctx has no eval state.
+func EvalCallCounter(ctx context.Context) *atomic.Int64 {
+	if w, ok := ctx.(*lazyEvalStateCtx); ok {
+		return &w.callCounter
+	}
+	return evalStateFrom(ctx).callCounter()
+}
+
 // WithEvalDeadline attaches an engine-owned evaluation deadline instant to
 // ctx's eval state (creating it if absent), enforced by the evaluators' batched
 // cancellation checks instead of a per-call timer context. A zero deadline
@@ -273,7 +292,7 @@ func AdoptEvalState(ctx context.Context, deadline time.Time, seed int64) (contex
 	return adopted, counter
 }
 
-func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, seed int64, snap EvalMeterSnapshot) (context.Context, *atomic.Int64, EvalMeter) {
+func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, structSeed int64, snap EvalMeterSnapshot, callSeed ...int64) (context.Context, *atomic.Int64, EvalMeter) {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
 		return ctx, st.counter(), EvalMeter{st: st}
 	}
@@ -286,8 +305,13 @@ func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, seed int64
 	if maxAllocBytes <= 0 {
 		maxAllocBytes = DefaultMaxAllocationBytes
 	}
+	callDepth := int64(0)
+	if len(callSeed) > 0 {
+		callDepth = callSeed[0]
+	}
 	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline, maxReductions: maxReductions, maxAllocBytes: maxAllocBytes, reductions: snap.Reductions, allocBytes: snap.AllocationBytes}
-	w.counter.Store(seed)
+	w.counter.Store(structSeed)
+	w.callCounter.Store(callDepth)
 	return w, &w.counter, EvalMeter{}
 }
 
@@ -475,11 +499,12 @@ func (e *engine) evalList(ctx context.Context, items []Value, env *Env) (Value, 
 // Lambda tail-call returns a tailCall value which loops back without recursing.
 func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (Value, error) {
 	st := evalStateFrom(ctx)
-	st.callDepth.Add(1)
-	defer func() { st.callDepth.Add(-1) }()
+	counter := st.callCounter()
+	counter.Add(1)
+	defer func() { counter.Add(-1) }()
 
-	if e.MaxDepth > 0 && int(st.callDepth.Load()) > e.MaxDepth {
-		return nil, evalErrorf("max call depth %d exceeded", e.MaxDepth)
+	if e.MaxDepth > 0 && int(counter.Load()) > e.MaxDepth {
+		return nil, evalErrorf("maximum call depth exceeded")
 	}
 
 	for {

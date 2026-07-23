@@ -85,6 +85,7 @@ type VM struct {
 	depth              int
 	eval               core.Evaluator
 	structDepth        *atomic.Int64
+	callDepth          *atomic.Int64
 	maxStructuralDepth int
 	// freezeStack is a LIFO of pending native-op head resolutions: each
 	// OpFreezeNative/OpFreezeNativeFunc pushes a record at head-resolution
@@ -109,6 +110,7 @@ type VM struct {
 	// points here until a re-entrant GoFunc dispatch adopts a shared counter
 	// (see reentrantCtx); Reset restores the pointer and zeroes this back out.
 	ownStructDepth atomic.Int64
+	ownCallDepth   atomic.Int64
 	// reentryCtx is per-invocation scratch (like budget), reset each run: the
 	// ctx adopted for re-entrant GoFunc calls once one occurs, so repeated
 	// callbacks within the same run share one evalState instead of adopting
@@ -147,6 +149,16 @@ func WithStructuralDepthCounter(c *atomic.Int64) VMOption {
 	}
 }
 
+// WithCallDepthCounter sets the shared call-depth counter. When nil the VM
+// uses its own private counter.
+func WithCallDepthCounter(c *atomic.Int64) VMOption {
+	return func(v *VM) {
+		if c != nil {
+			v.callDepth = c
+		}
+	}
+}
+
 // New creates a VM using globals as the root environment.
 func New(globals *core.Env, opts ...VMOption) *VM {
 	v := &VM{
@@ -156,6 +168,7 @@ func New(globals *core.Env, opts ...VMOption) *VM {
 		eval:    core.NewEvaluator(),
 	}
 	v.structDepth = &v.ownStructDepth
+	v.callDepth = &v.ownCallDepth
 	for _, opt := range opts {
 		opt(v)
 	}
@@ -171,6 +184,8 @@ func (vm *VM) reset() {
 	vm.depth = 0
 	vm.structDepth = &vm.ownStructDepth
 	vm.ownStructDepth.Store(0)
+	vm.callDepth = &vm.ownCallDepth
+	vm.ownCallDepth.Store(0)
 	vm.reentryCtx = nil
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
@@ -195,6 +210,8 @@ func (vm *VM) Reset() {
 	vm.depth = 0
 	vm.structDepth = &vm.ownStructDepth
 	vm.ownStructDepth.Store(0)
+	vm.callDepth = &vm.ownCallDepth
+	vm.ownCallDepth.Store(0)
 	vm.reentryCtx = nil
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
@@ -234,6 +251,8 @@ func (vm *VM) ResetIncremental() error {
 	}
 	vm.ownStructDepth.Store(0)
 	vm.structDepth = &vm.ownStructDepth
+	vm.ownCallDepth.Store(0)
+	vm.callDepth = &vm.ownCallDepth
 	vm.reentryCtx = nil
 	vm.deadline = time.Time{}
 	vm.timeout = 0
@@ -394,8 +413,9 @@ func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 		return vm.reentryCtx, nil
 	}
 	vm.armDeadline(ctx)
-	adopted, counter, meter := core.AdoptEvalStateWithMeter(ctx, vm.deadline, vm.structDepth.Load(), vm.meterSnapshot())
-	vm.structDepth = counter
+	adopted, structCounter, meter := core.AdoptEvalStateWithMeter(ctx, vm.deadline, vm.structDepth.Load(), vm.meterSnapshot(), vm.callDepth.Load())
+	vm.structDepth = structCounter
+	vm.callDepth = core.EvalCallCounter(adopted)
 	if meter.Valid() {
 		vm.meter = meter
 	}
@@ -455,15 +475,14 @@ func (vm *VM) peek() (core.Value, error) {
 // Apply calls fn with args in a fresh isolated VM and returns the result.
 // The receiver is used only for configuration (globals, max depth, evaluator).
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth))
-	fresh.structDepth = v.structDepth
+	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth), WithStructuralDepthCounter(v.structDepth), WithCallDepthCounter(v.callDepth))
 	fresh.deadline = v.deadline
 	fresh.timeout = v.timeout
 	fresh.deadlineArmed = v.deadlineArmed
 	fresh.meter = v.meter
 	fresh.maxReductions = v.maxReductions
 	fresh.maxAllocBytes = v.maxAllocBytes
-	return fresh.apply(ctx, fn, args, env)
+	return fresh.ApplyPooled(ctx, fn, args, env)
 }
 
 // ApplyPooled calls fn with args on this VM instance (no fresh VM allocation).
@@ -471,6 +490,16 @@ func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *c
 // resets) before calling ApplyPooled, and MUST NOT reuse this VM concurrently.
 // For fresh-isolation semantics use Apply instead.
 func (v *VM) ApplyPooled(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
+	counter := v.callDepth
+	if counter == nil {
+		counter = &v.ownCallDepth
+		v.callDepth = counter
+	}
+	sharedDepth := counter.Add(1)
+	defer counter.Add(-1)
+	if v.maxDepth > 0 && (int64(v.depth) >= int64(v.maxDepth) || sharedDepth > int64(v.maxDepth)) {
+		return nil, &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
+	}
 	return v.apply(ctx, fn, args, env)
 }
 
@@ -1495,7 +1524,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			}
 		}
 		if vm.maxDepth > 0 && vm.depth >= vm.maxDepth {
-			return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("maximum call depth %d exceeded", vm.maxDepth)}
+			return &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 		}
 		vm.depth++
 

@@ -310,6 +310,7 @@ func (be *bytecodeEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 	v.SetDeadline(core.EvalDeadlineFrom(ctx))
 	v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
+	vm.WithCallDepthCounter(core.EvalCallCounter(ctx))(v)
 	result, err = v.ApplyPooled(ctx, fn, args, env)
 	be.vmPool.Put(v)
 	return result, err
@@ -325,6 +326,7 @@ func (be *bytecodeEvaluator) applyOnVM(v *vm.VM, ctx context.Context, fn core.Va
 	v.SetGlobals(env)
 	if core.HasEvalState(ctx) {
 		vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
+		vm.WithCallDepthCounter(core.EvalCallCounter(ctx))(v)
 		v.SetDeadline(core.EvalDeadlineFrom(ctx))
 		v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	} else {
@@ -416,6 +418,7 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 	}
 	v.SetEvalMeter(core.EvalMeterFrom(ctx))
 	vm.WithStructuralDepthCounter(core.EvalStructCounter(ctx))(v)
+	vm.WithCallDepthCounter(core.EvalCallCounter(ctx))(v)
 	result, err := v.Run(ctx, chunk)
 	be.vmPool.Put(v)
 	return result, err
