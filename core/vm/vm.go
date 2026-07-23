@@ -497,7 +497,7 @@ func (v *VM) ApplyPooled(ctx context.Context, fn core.Value, args []core.Value, 
 	}
 	sharedDepth := counter.Add(1)
 	defer counter.Add(-1)
-	if v.maxDepth > 0 && (int64(v.depth) >= int64(v.maxDepth) || sharedDepth > int64(v.maxDepth)) {
+	if v.maxDepth > 0 && (int64(v.depth) >= int64(v.maxDepth) || sharedDepth+int64(v.depth) > int64(v.maxDepth)) {
 		return nil, &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 	}
 	return v.apply(ctx, fn, args, env)
@@ -545,6 +545,11 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		if err != nil {
 			return nil, err
 		}
+		if vm.depth > 0 {
+			counter := core.EvalCallCounter(reCtx)
+			counter.Add(int64(vm.depth))
+			defer counter.Add(-int64(vm.depth))
+		}
 		result, err := eval.Apply(reCtx, f, args, env)
 		vm.syncMeterFromReentry()
 		return result, err
@@ -557,6 +562,11 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		reCtx, err := vm.reentrantCtx(ctx)
 		if err != nil {
 			return nil, err
+		}
+		if vm.depth > 0 {
+			counter := core.EvalCallCounter(reCtx)
+			counter.Add(int64(vm.depth))
+			defer counter.Add(-int64(vm.depth))
 		}
 		if err := vm.chargeReductions(1); err != nil {
 			return nil, err
@@ -1465,6 +1475,11 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if err != nil {
 			return err
 		}
+		if vm.depth > 0 {
+			counter := core.EvalCallCounter(reCtx)
+			counter.Add(int64(vm.depth))
+			defer counter.Add(-int64(vm.depth))
+		}
 		if err := vm.chargeReductions(1); err != nil {
 			return err
 		}
@@ -1491,6 +1506,11 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		reCtx, err := vm.reentrantCtx(ctx)
 		if err != nil {
 			return err
+		}
+		if vm.depth > 0 {
+			counter := core.EvalCallCounter(reCtx)
+			counter.Add(int64(vm.depth))
+			defer counter.Add(-int64(vm.depth))
 		}
 		result, err := eval.Apply(reCtx, f, args, frameEnv)
 		vm.syncMeterFromReentry()
@@ -1523,7 +1543,11 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				return core.NewArityError(f.Chunk.Arity, argc)
 			}
 		}
-		if vm.maxDepth > 0 && vm.depth >= vm.maxDepth {
+		sharedDepth := int64(0)
+		if vm.callDepth != nil {
+			sharedDepth = vm.callDepth.Load()
+		}
+		if vm.maxDepth > 0 && (vm.depth >= vm.maxDepth || (sharedDepth > 0 && sharedDepth+int64(vm.depth) >= int64(vm.maxDepth))) {
 			return &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 		}
 		vm.depth++

@@ -882,6 +882,38 @@ func assertReentrantCallDepthParityError(t *testing.T, treeErr, vmErr error) {
 	assert.True(t, strings.Contains(vmErr.Error(), "maximum call depth exceeded"), "vm error: %v", vmErr)
 }
 
+func TestVMVsTreeWalker_ReentrantCallDepthBound_MixedDirectHigherOrder_FirstGoFuncShallowThenDeep(t *testing.T) {
+	t.Parallel()
+
+	src := reentrantCallDepthMixedWarmupSourceForCrossVal()
+	forms, err := clojure.Dialect().ReadWithMaxDepth(src, 2000)
+	require.NoError(t, err, "read source")
+
+	_, treeErr := runTreeReentrantCallDepth(t, forms, 10)
+	_, vmErr := runVMReentrantCallDepth(t, forms, 10)
+	assertReentrantCallDepthParityError(t, treeErr, vmErr)
+}
+
+func TestVMVsTreeWalker_ReentrantCallDepthBound_MixedDirectHigherOrder_ReviewerRepro(t *testing.T) {
+	t.Parallel()
+
+	src := reentrantCallDepthMixedSourceForCrossVal() + ` (outer 6)`
+	forms, err := clojure.Dialect().ReadWithMaxDepth(src, 2000)
+	require.NoError(t, err, "read source")
+
+	_, treeErr := runTreeReentrantCallDepth(t, forms, 10)
+	_, vmErr := runVMReentrantCallDepth(t, forms, 10)
+	assertReentrantCallDepthParityError(t, treeErr, vmErr)
+}
+
+func reentrantCallDepthMixedWarmupSourceForCrossVal() string {
+	return `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 6)) (list 1))) (+ 0 (outer (- n 1))))) (do (first (map (fn [x] (inner 1)) (list 1))) (outer 6))`
+}
+
+func reentrantCallDepthMixedSourceForCrossVal() string {
+	return `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 6)) (list 1))) (+ 0 (outer (- n 1)))))`
+}
+
 func TestVMVsTreeWalker_ReentrantCallDepthBound(t *testing.T) {
 	t.Parallel()
 

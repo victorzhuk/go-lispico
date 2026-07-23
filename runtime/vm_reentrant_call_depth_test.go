@@ -16,7 +16,12 @@ import (
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
-const reentrantCallDepthMapSource = `(defn deep (n) (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
+const (
+	reentrantCallDepthMapSource           = `(defn deep [n] (if (= n 0) 0 (first (map (fn [x] (deep (- n 1))) (list 1)))))`
+	reentrantCallDepthMixedSource         = `(defn inner [n] (if (= n 0) 0 (+ 0 (inner (- n 1))))) (defn outer [n] (if (= n 0) (first (map (fn [x] (inner 6)) (list 1))) (+ 0 (outer (- n 1)))))`
+	reentrantCallDepthMixedReviewerSource = reentrantCallDepthMixedSource + ` (outer 6)`
+	reentrantCallDepthMixedWarmupSource   = reentrantCallDepthMixedSource + ` (do (first (map (fn [x] (inner 1)) (list 1))) (outer 6))`
+)
 
 func newReentrantCallDepthEngine(t testing.TB, opts ...EngineOption) Engine {
 	t.Helper()
@@ -53,6 +58,35 @@ func TestVM_ReentrantCallDepth_Map(t *testing.T) {
 	assertCallDepthExceeded(t, err)
 }
 
+func TestVM_ReentrantCallDepth_MixedDirectHigherOrder_ReviewerRepro(t *testing.T) {
+	t.Parallel()
+
+	src := reentrantCallDepthMixedReviewerSource
+	ctx := t.Context()
+
+	vmEng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(10))
+	_, err := vmEng.Eval(ctx, "vm-mixed-direct-higher-order", src)
+	assertCallDepthExceeded(t, err)
+
+	treeEng := newReentrantCallDepthEngine(t, WithTreeWalker(), WithMaxEvalDepth(10))
+	_, err = treeEng.Eval(ctx, "tree-mixed-direct-higher-order", src)
+	assertCallDepthExceeded(t, err)
+}
+
+func TestVM_ReentrantCallDepth_MixedDirectHigherOrder_FirstGoFuncShallowThenDeep(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	vmEng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(10))
+	_, err := vmEng.Eval(ctx, "vm-mixed-direct-higher-order-shallow", reentrantCallDepthMixedWarmupSource)
+	assertCallDepthExceeded(t, err)
+
+	treeEng := newReentrantCallDepthEngine(t, WithTreeWalker(), WithMaxEvalDepth(10))
+	_, err = treeEng.Eval(ctx, "tree-mixed-direct-higher-order-shallow", reentrantCallDepthMixedWarmupSource)
+	assertCallDepthExceeded(t, err)
+}
+
 func TestVM_ReentrantCallDepth_HigherOrderBuiltins(t *testing.T) {
 	t.Parallel()
 
@@ -82,7 +116,7 @@ func TestVM_ReentrantCallDepth_UnderLimit(t *testing.T) {
 
 	eng := newReentrantCallDepthEngine(t, WithBytecode(), WithMaxEvalDepth(10))
 	ctx := t.Context()
-	src := reentrantCallDepthMapSource + ` (deep 10)`
+	src := reentrantCallDepthMapSource + ` (deep 1)`
 
 	for i := range 3 {
 		got, err := eng.Eval(ctx, "under-limit", src)
@@ -280,7 +314,7 @@ func TestVM_ReentrantCallDepth_DecrementOnPanic(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, strings.Contains(err.Error(), "boom"), "got %v", err)
 
-	got, err := eng.Eval(ctx, "after-panic", reentrantCallDepthMapSource+` (deep 10)`)
+	got, err := eng.Eval(ctx, "after-panic", reentrantCallDepthMapSource+` (deep 1)`)
 	require.NoError(t, err)
 	assert.True(t, (core.Int{V: 0}).Equals(got), "got %v", got)
 }
