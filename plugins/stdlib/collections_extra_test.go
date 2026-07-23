@@ -217,6 +217,84 @@ func TestRange_StandaloneDefaultCap(t *testing.T) {
 	require.Len(t, list.Items, 5)
 }
 
+func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
+	env := setupEnv(t)
+	for _, name := range []string{"repeat", "make-string"} {
+		if _, ok := env.Get(name); ok {
+			t.Fatalf("%s registered without audit coverage", name)
+		}
+	}
+
+	err := evalErr(t, env, "(range 0 99999999)")
+	requireResourceLimit(t, err)
+
+	got := eval(t, env, "(concat [1 2] [3 4])")
+	require.Equal(t, "(1 2 3 4)", got.String())
+
+	limitEnv := setupEnv(t)
+	limitEnv.SetEvaluator(collectionLimitEvaluator{limit: 3})
+	err = evalErr(t, limitEnv, "(concat [1 2] [3 4])")
+	requireResourceLimit(t, err)
+
+	hugeList := core.List{Items: make([]core.Value, 256)}
+	hugeVector := core.Vector{Items: make([]core.Value, 256)}
+	for i := range hugeList.Items {
+		v := core.String{V: strings.Repeat("x", 128)}
+		hugeList.Items[i] = v
+		hugeVector.Items[i] = v
+	}
+	hugeMap := core.NewHashMap()
+	for i := range 256 {
+		require.NoError(t, hugeMap.Set(core.Int{V: int64(i)}, core.String{V: strings.Repeat("x", 128)}))
+	}
+
+	tests := []struct {
+		name    string
+		builtin string
+		args    []core.Value
+	}{
+		{"concat", "concat", []core.Value{hugeList, hugeList}},
+		{"cons", "cons", []core.Value{core.Int{V: 0}, hugeList}},
+		{"conj list", "conj", []core.Value{hugeList, core.Int{V: 0}}},
+		{"conj vector", "conj", []core.Value{hugeVector, core.Int{V: 0}}},
+		{"conj map", "conj", []core.Value{hugeMap, core.Keyword{V: "extra"}, core.String{V: strings.Repeat("x", 128)}}},
+		{"merge", "merge", []core.Value{hugeMap, hugeMap}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fn := collectionGoFunc(t, env, tt.builtin)
+			ctx := core.WithEvalResourceLimits(t.Context(), 1<<20, 4096)
+			_, err := fn.Fn(ctx, nil, tt.args, env)
+			requireResourceLimit(t, err)
+		})
+	}
+}
+
+type collectionLimitEvaluator struct {
+	limit int
+}
+
+func (e collectionLimitEvaluator) Eval(context.Context, core.Value, *core.Env) (core.Value, error) {
+	return core.Nil{}, errors.New("test evaluator only implements collection limit")
+}
+
+func (e collectionLimitEvaluator) Apply(context.Context, core.Value, []core.Value, *core.Env) (core.Value, error) {
+	return core.Nil{}, errors.New("test evaluator only implements collection limit")
+}
+
+func (e collectionLimitEvaluator) CollectionLimit() int {
+	return e.limit
+}
+
+func collectionGoFunc(t *testing.T, env *core.Env, name string) core.GoFunc {
+	t.Helper()
+	v, ok := env.Get(name)
+	require.True(t, ok)
+	fn, ok := v.(core.GoFunc)
+	require.True(t, ok)
+	return fn
+}
+
 // TestRange_ExtremeBoundsNoOverflow: a 2-element span just below MaxInt64 must
 // compute its cardinality via uint64 magnitudes (no int64 overflow) and return
 // the two correct elements.

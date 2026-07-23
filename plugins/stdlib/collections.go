@@ -35,7 +35,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					return nil, fmt.Errorf("concat: expected collection, got %T", arg)
 				}
 			}
-			return core.List{Items: result}, nil
+			res := core.List{Items: result}
+			if err := chargeCollectionResult(ctx, env, "concat", res); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	}, false); err != nil {
 		return err
@@ -250,11 +254,17 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[1].(type) {
 			case core.List:
-				items := append([]core.Value{args[0]}, c.Items...)
-				return core.List{Items: items}, nil
+				res := core.List{Items: append([]core.Value{args[0]}, c.Items...)}
+				if err := chargeCollectionResult(ctx, env, "cons", res); err != nil {
+					return nil, err
+				}
+				return res, nil
 			case core.Vector:
-				items := append([]core.Value{args[0]}, c.Items...)
-				return core.List{Items: items}, nil
+				res := core.List{Items: append([]core.Value{args[0]}, c.Items...)}
+				if err := chargeCollectionResult(ctx, env, "cons", res); err != nil {
+					return nil, err
+				}
+				return res, nil
 			default:
 				return nil, fmt.Errorf("cons: expected collection, got %T", args[1])
 			}
@@ -275,17 +285,32 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				items := make([]core.Value, len(args)-1)
 				copy(items, args[1:])
 				items = append(items, c.Items...)
-				return core.List{Items: items}, nil
+				res := core.List{Items: items}
+				if err := chargeCollectionResult(ctx, env, "conj", res); err != nil {
+					return nil, err
+				}
+				return res, nil
 			case core.Vector:
 				items := make([]core.Value, len(c.Items)+len(args)-1)
 				copy(items, c.Items)
 				copy(items[len(c.Items):], args[1:])
-				return core.Vector{Items: items}, nil
+				res := core.Vector{Items: items}
+				if err := chargeCollectionResult(ctx, env, "conj", res); err != nil {
+					return nil, err
+				}
+				return res, nil
 			case *core.HashMap:
 				if len(args) != 3 {
 					return nil, fmt.Errorf("conj on map requires key and value")
 				}
-				return c.Assoc(args[1], args[2])
+				res, err := c.Assoc(args[1], args[2])
+				if err != nil {
+					return nil, err
+				}
+				if err := chargeCollectionResult(ctx, env, "conj", res); err != nil {
+					return nil, err
+				}
+				return res, nil
 			default:
 				return nil, fmt.Errorf("conj: expected collection, got %T", args[0])
 			}
@@ -457,6 +482,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					return nil, fmt.Errorf("merge: expected map, got %T", arg)
 				}
 			}
+			if err := chargeCollectionResult(ctx, env, "merge", result); err != nil {
+				return nil, err
+			}
 			return result, nil
 		},
 	}, false); err != nil {
@@ -578,16 +606,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			if span%stepMag != 0 {
 				count++
 			}
-			// Resolved per call: the template-shared GoFunc must not capture
-			// one engine's limits at registration time.
-			maxLen := defaultStdlibCollectionLen
-			if ev := env.Evaluator(); ev != nil {
-				if cl, ok := ev.(core.CollectionLimiter); ok {
-					if n := cl.CollectionLimit(); n > 0 {
-						maxLen = n
-					}
-				}
-			}
+			maxLen := collectionLimit(env)
 			if count > uint64(maxLen) {
 				return nil, core.NewResourceLimitError(fmt.Sprintf("range length %d exceeds collection limit %d", count, maxLen))
 			}
@@ -611,6 +630,43 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		return err
 	}
 	return nil
+}
+
+func chargeCollectionResult(ctx context.Context, env *core.Env, name string, res core.Value) error {
+	if n, ok := collectionLen(res); ok {
+		maxLen := collectionLimit(env)
+		if n > maxLen {
+			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
+		}
+	}
+	return core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(res))
+}
+
+func collectionLen(v core.Value) (int, bool) {
+	switch c := v.(type) {
+	case core.List:
+		return len(c.Items), true
+	case core.Vector:
+		return len(c.Items), true
+	case *core.HashMap:
+		return c.Len(), true
+	default:
+		return 0, false
+	}
+}
+
+func collectionLimit(env *core.Env) int {
+	if env == nil {
+		return defaultStdlibCollectionLen
+	}
+	if ev := env.Evaluator(); ev != nil {
+		if cl, ok := ev.(core.CollectionLimiter); ok {
+			if n := cl.CollectionLimit(); n > 0 {
+				return n
+			}
+		}
+	}
+	return defaultStdlibCollectionLen
 }
 
 // naturalCmp orders two values of the same kind: numbers by numCmp, strings

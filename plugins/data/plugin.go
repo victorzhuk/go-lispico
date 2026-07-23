@@ -68,7 +68,14 @@ func (p *Plugin) decode(ctx context.Context, eval core.Evaluator, args []core.Va
 	if err := json.Unmarshal([]byte(s.V), &raw); err != nil {
 		return nil, fmt.Errorf("json/decode: %w", err)
 	}
-	return fromJSONValue(raw)
+	res, err := fromJSONValue(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(res)); err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 func (p *Plugin) prettyEncode(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {

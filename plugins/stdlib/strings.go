@@ -35,14 +35,18 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, fmt.Errorf("format: first argument must be string")
 			}
 
+			if fmtStr.V == "" {
+				return core.String{V: ""}, nil
+			}
+			if err := core.ChargeEvalAllocBytes(ctx, estimateFormatAllocBytes(fmtStr.V, args[1:])); err != nil {
+				return nil, err
+			}
+
 			fmtArgs := make([]any, len(args)-1)
 			for i, arg := range args[1:] {
 				fmtArgs[i] = toAny(arg)
 			}
 
-			if fmtStr.V == "" {
-				return core.String{V: ""}, nil
-			}
 			return core.String{V: fmt.Sprintf(fmtStr.V, fmtArgs...)}, nil
 		},
 	}, false); err != nil {
@@ -298,6 +302,311 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		return err
 	}
 	return nil
+}
+
+const (
+	maxFormatEstimate          = int64(^uint64(0) >> 1)
+	minFormatValueStringScalar = 24
+	maxDefaultFloatFormatBytes = 512
+)
+
+func estimateFormatAllocBytes(format string, args []core.Value) int64 {
+	var out int64
+	arg := 0
+
+	for i := 0; i < len(format); {
+		if format[i] != '%' {
+			out = addFormatEstimate(out, 1)
+			i++
+			continue
+		}
+
+		i++
+		if i >= len(format) {
+			out = addFormatEstimate(out, 1)
+			break
+		}
+		if format[i] == '%' {
+			out = addFormatEstimate(out, 1)
+			i++
+			continue
+		}
+
+		estimateOne := func(i, arg int) (int64, int, int) {
+			hasSpace, hasAlt := false, false
+			for i < len(format) {
+				switch format[i] {
+				case '#', '0', '+', '-', ' ':
+					switch format[i] {
+					case ' ':
+						hasSpace = true
+					case '#':
+						hasAlt = true
+					}
+					i++
+				default:
+					goto flagsDone
+				}
+			}
+		flagsDone:
+
+			arg, i, afterIndex := formatArgIndex(format, arg, i, len(args))
+			valueArgIndexed := afterIndex
+
+			width, hasWidth := int64(0), false
+			indexedDynamicWidth := false
+			if i < len(format) && format[i] == '*' {
+				width = absFormatInt(formatDynamicInt(args, arg))
+				hasWidth = true
+				indexedDynamicWidth = afterIndex
+				valueArgIndexed = false
+				if arg < len(args) {
+					arg++
+				}
+				afterIndex = false
+				i++
+			} else {
+				start := i
+				width, i = parseFormatInt(format, i)
+				hasWidth = i > start
+			}
+
+			goodArgNum := !afterIndex || !hasWidth
+
+			precision, hasPrecision := int64(0), false
+			if i < len(format) && format[i] == '.' {
+				hasPrecision = true
+				i++
+
+				if afterIndex {
+					goodArgNum = false
+				}
+				arg, i, afterIndex = formatArgIndex(format, arg, i, len(args))
+				if i < len(format) && format[i] == '*' {
+					precision = formatDynamicInt(args, arg)
+					if precision < 0 {
+						hasPrecision = false
+						precision = 0
+					}
+					if arg < len(args) {
+						arg++
+					}
+					afterIndex = false
+					i++
+				} else {
+					start := i
+					precision, i = parseFormatInt(format, i)
+					if i == start {
+						precision = 0
+					}
+				}
+			}
+
+			if !afterIndex {
+				arg, i, afterIndex = formatArgIndex(format, arg, i, len(args))
+				valueArgIndexed = afterIndex
+			}
+
+			if i >= len(format) {
+				return 1, i, arg
+			}
+
+			verb := format[i]
+			i++
+			chargeValue := verb != '%' && (goodArgNum || valueArgIndexed)
+			if !chargeValue && verb != '%' && indexedDynamicWidth && !afterIndex {
+				chargeValue = true
+			}
+
+			field := int64(1)
+			if chargeValue && arg < len(args) {
+				field = estimateFormatValueBytes(args[arg], verb, precision, hasPrecision, hasSpace, hasAlt)
+			}
+			if hasWidth && width > field {
+				field = width
+			}
+
+			nextArg := arg
+			if chargeValue && arg < len(args) {
+				nextArg++
+			}
+			return field, i, nextArg
+		}
+
+		var field int64
+		field, i, arg = estimateOne(i, arg)
+		out = addFormatEstimate(out, field)
+	}
+
+	return addFormatEstimate(core.MeterStringHeaderBytes, out)
+}
+
+func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPrecision bool, hasSpace bool, hasAlt bool) int64 {
+	switch verb {
+	case 's':
+		n := formatStringBytes(v)
+		if _, ok := v.(core.String); !ok && n < minFormatValueStringScalar {
+			n = minFormatValueStringScalar
+		}
+		if hasPrecision && precision < n {
+			return precision
+		}
+		return n
+	case 'q':
+		return addFormatEstimate(2, formatStringBytes(v)*4)
+	case 'x', 'X':
+		if _, ok := v.(core.String); ok {
+			n := formatStringBytes(v)
+			if hasPrecision && precision < n {
+				n = precision
+			}
+			field := addFormatEstimate(0, n)
+			if n > 0 {
+				field = addFormatEstimate(field, n)
+				if hasSpace {
+					field = addFormatEstimate(field, n-1)
+				}
+				if hasAlt {
+					if hasSpace {
+						field = addFormatEstimate(field, 2*n)
+					} else {
+						field = addFormatEstimate(field, 2)
+					}
+				}
+				return field
+			}
+			if hasAlt {
+				field = addFormatEstimate(field, 2)
+				if hasSpace {
+					field = addFormatEstimate(field, 1)
+				}
+			}
+			return field
+		}
+		n := int64(64)
+		if hasPrecision && precision > n {
+			return precision
+		}
+		return n
+	case 'd', 'b', 'o', 'O', 'U':
+		n := int64(64)
+		if hasPrecision && precision > n {
+			return precision
+		}
+		return n
+	case 'f', 'F', 'g':
+		n := int64(64)
+		if hasPrecision {
+			n = addFormatEstimate(n, precision)
+		} else {
+			n = maxDefaultFloatFormatBytes
+		}
+		return n
+	case 'e', 'E':
+		n := int64(64)
+		if hasPrecision {
+			n = addFormatEstimate(n, precision)
+		}
+		return n
+	case 't':
+		return 5
+	case 'c':
+		return 4
+	case 'T':
+		return 128
+	default:
+		return core.ValueDeepBytes(v)
+	}
+}
+
+func formatArgIndex(format string, arg int, i int, numArgs int) (int, int, bool) {
+	index, consumed, ok := parseFormatArgIndex(format[i:])
+	if !ok {
+		return arg, i + consumed, false
+	}
+	if index < 0 || index >= int64(numArgs) {
+		return arg, i + consumed, true
+	}
+	return int(index), i + consumed, true
+}
+
+func parseFormatArgIndex(format string) (int64, int, bool) {
+	if len(format) == 0 || format[0] != '[' {
+		return 0, 0, false
+	}
+	if len(format) < 3 {
+		return 0, 1, false
+	}
+
+	var index int64
+	i := 1
+	for i < len(format) && isFormatDigit(format[i]) {
+		index = index*10 + int64(format[i]-'0')
+		i++
+	}
+	if i == 1 || i >= len(format) || format[i] != ']' {
+		return 0, 1, false
+	}
+
+	if index == 0 {
+		return -1, i + 1, true
+	}
+	return index - 1, i + 1, true
+}
+
+func parseFormatInt(format string, i int) (int64, int) {
+	var n int64
+	for i < len(format) && isFormatDigit(format[i]) {
+		d := int64(format[i] - '0')
+		if n > (maxFormatEstimate-d)/10 {
+			n = maxFormatEstimate
+		} else {
+			n = n*10 + d
+		}
+		i++
+	}
+	return n, i
+}
+
+func isFormatDigit(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
+func formatDynamicInt(args []core.Value, i int) int64 {
+	if i >= len(args) {
+		return 0
+	}
+	if v, ok := args[i].(core.Int); ok {
+		return v.V
+	}
+	return 0
+}
+
+func absFormatInt(n int64) int64 {
+	if n >= 0 {
+		return n
+	}
+	if n == -maxFormatEstimate-1 {
+		return maxFormatEstimate
+	}
+	return -n
+}
+
+func formatStringBytes(v core.Value) int64 {
+	if s, ok := v.(core.String); ok {
+		return int64(len(s.V))
+	}
+	return core.ValueDeepBytes(v)
+}
+
+func addFormatEstimate(a, b int64) int64 {
+	if b <= 0 {
+		return a
+	}
+	if a > maxFormatEstimate-b {
+		return maxFormatEstimate
+	}
+	return a + b
 }
 
 func unaryStringFunc(fn func(string) string) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {

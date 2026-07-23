@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -53,6 +54,40 @@ func evalErr(t *testing.T, env *core.Env, code string) error {
 	evaluator := core.NewEvaluator()
 	_, err = evaluator.Eval(context.Background(), forms[0], env)
 	return err
+}
+
+func decodeGoFunc(t *testing.T, env *core.Env) core.GoFunc {
+	t.Helper()
+	v, ok := env.Get("json/decode")
+	require.True(t, ok)
+	fn, ok := v.(core.GoFunc)
+	require.True(t, ok)
+	return fn
+}
+
+func TestDecodeChargesDeepResultBytes(t *testing.T) {
+	env := setupEnv(t)
+	fn := decodeGoFunc(t, env)
+	payload := `{"a":{"b":{"c":[1,2,3,{"d":"payload"}]}}}`
+
+	ctx := core.WithEvalResourceLimits(t.Context(), 1<<20, 1<<20)
+	got, err := fn.Fn(ctx, nil, []core.Value{core.String{V: payload}}, env)
+	require.NoError(t, err)
+	wantBytes := core.ValueDeepBytes(got)
+	require.Equal(t, wantBytes, core.EvalMeterFrom(ctx).Snapshot().AllocationBytes)
+
+	m, ok := got.(*core.HashMap)
+	require.True(t, ok)
+	a, found := m.Get(core.Keyword{V: "a"})
+	require.True(t, found)
+	require.IsType(t, &core.HashMap{}, a)
+
+	limited := core.WithEvalResourceLimits(t.Context(), 1<<20, int(wantBytes-1))
+	_, err = fn.Fn(limited, nil, []core.Value{core.String{V: payload}}, env)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.True(t, errors.As(err, &lerr))
+	require.Equal(t, core.CodeResourceLimit, lerr.Code)
 }
 
 func TestEncode(t *testing.T) {
