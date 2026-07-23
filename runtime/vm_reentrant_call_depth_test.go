@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/core/vm"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
@@ -137,6 +138,95 @@ func TestVM_ReentrantCallDepth_ConcurrentIsolatedBounds(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+func TestVM_ReentrantCallDepth_ConcurrentApplyIsolationNoEvalState(t *testing.T) {
+	t.Parallel()
+
+	const maxDepth = 10
+	env := core.NewEnv(nil)
+	v := vm.New(env, vm.WithMaxDepth(maxDepth), vm.WithEvaluator(core.NewEvaluator()))
+
+	type levelBarrier struct {
+		mu          sync.Mutex
+		arrivals    map[int]int
+		syncAtDepth map[int]chan struct{}
+		stop        chan struct{}
+		stopOnce    sync.Once
+	}
+
+	waitForPeer := &levelBarrier{
+		arrivals:    make(map[int]int),
+		syncAtDepth: make(map[int]chan struct{}),
+		stop:        make(chan struct{}),
+	}
+
+	var recur core.Value
+	recur = core.GoFunc{
+		Name: "deep",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			if len(args) != 1 {
+				return nil, errors.New("expected one argument")
+			}
+
+			n, ok := args[0].(core.Int)
+			if !ok {
+				return nil, errors.New("expected integer depth")
+			}
+			if n.V <= 0 {
+				return core.Int{V: 0}, nil
+			}
+
+			waitForPeer.mu.Lock()
+			done := waitForPeer.syncAtDepth[int(n.V)]
+			if done == nil {
+				done = make(chan struct{})
+				waitForPeer.syncAtDepth[int(n.V)] = done
+			}
+			waitForPeer.arrivals[int(n.V)]++
+			if waitForPeer.arrivals[int(n.V)] == 2 {
+				close(done)
+				waitForPeer.mu.Unlock()
+				return v.Apply(context.Background(), recur, []core.Value{core.Int{V: n.V - 1}}, env)
+			}
+			waitForPeer.mu.Unlock()
+
+			select {
+			case <-done:
+			case <-waitForPeer.stop:
+			}
+
+			return v.Apply(context.Background(), recur, []core.Value{core.Int{V: n.V - 1}}, env)
+		},
+	}
+
+	type applyResult struct {
+		result core.Value
+		err    error
+	}
+
+	results := make(chan applyResult, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			got, err := v.Apply(context.Background(), recur, []core.Value{core.Int{V: maxDepth}}, env)
+			if err != nil {
+				waitForPeer.stopOnce.Do(func() {
+					close(waitForPeer.stop)
+				})
+			}
+			results <- applyResult{result: got, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	for r := range results {
+		require.NoError(t, r.err)
+		assert.True(t, (core.Int{V: 0}).Equals(r.result), "got %v", r.result)
+	}
 }
 
 func TestVM_ReentrantCallDepth_DecrementOnPanic(t *testing.T) {

@@ -294,6 +294,12 @@ func AdoptEvalState(ctx context.Context, deadline time.Time, seed int64) (contex
 
 func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, structSeed int64, snap EvalMeterSnapshot, callSeed ...int64) (context.Context, *atomic.Int64, EvalMeter) {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		if len(callSeed) > 0 && callSeed[0] > 0 {
+			counter := st.callCounter()
+			if counter.Load() == 0 {
+				counter.Add(callSeed[0])
+			}
+		}
 		return ctx, st.counter(), EvalMeter{st: st}
 	}
 

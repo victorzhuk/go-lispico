@@ -475,7 +475,7 @@ func (vm *VM) peek() (core.Value, error) {
 // Apply calls fn with args in a fresh isolated VM and returns the result.
 // The receiver is used only for configuration (globals, max depth, evaluator).
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth), WithStructuralDepthCounter(v.structDepth), WithCallDepthCounter(v.callDepth))
+	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth), WithStructuralDepthCounter(v.structDepth), WithCallDepthCounter(core.EvalCallCounter(ctx)))
 	fresh.deadline = v.deadline
 	fresh.timeout = v.timeout
 	fresh.deadlineArmed = v.deadlineArmed
