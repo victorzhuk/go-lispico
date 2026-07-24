@@ -19,6 +19,13 @@ import (
 
 func newLimitsEngine(t testing.TB, bytecode bool, limits ResourceLimits) Engine {
 	t.Helper()
+	e := newMeteringStdlibEngine(t, bytecode, limits)
+	bindBuiltin(t, e, "+")
+	return e
+}
+
+func newMeteringStdlibEngine(t testing.TB, bytecode bool, limits ResourceLimits) Engine {
+	t.Helper()
 	opts := []EngineOption{WithResourceLimits(limits), WithDialect(clojure.Dialect())}
 	if bytecode {
 		opts = append(opts, WithBytecode())
@@ -29,7 +36,6 @@ func newLimitsEngine(t testing.TB, bytecode bool, limits ResourceLimits) Engine 
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 	require.NoError(t, e.Use(stdlib.New()))
-	bindBuiltin(t, e, "+")
 	return e
 }
 
@@ -529,6 +535,104 @@ func TestLimits_MeteringAdversariesTripTightLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMetering_AssocChargesDeepBytes(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const width = 1024
+	payload := core.Vector{Items: make([]core.Value, width)}
+	for i := range payload.Items {
+		payload.Items[i] = core.Int{V: int64(i)}
+	}
+
+	src := "(assoc (assoc {} :a (payload)) :b (payload))"
+	newEngine := func(t testing.TB, bytecode bool, limits ResourceLimits) Engine {
+		t.Helper()
+		eng := newMeteringStdlibEngine(t, bytecode, limits)
+		require.NoError(t, eng.Bind("payload", core.GoFunc{
+			Name: "payload",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return payload, nil
+			},
+		}))
+		return eng
+	}
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode)+"/tight", func(t *testing.T) {
+			eng := newEngine(t, bytecode, meteringLimits(t, 1_000_000, 64<<10))
+			_, err := eng.Eval(t.Context(), "assoc-deep-tight", src)
+			assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+		})
+	}
+
+	want := core.NewHashMap()
+	require.NoError(t, want.Set(core.Keyword{V: "a"}, payload))
+	require.NoError(t, want.Set(core.Keyword{V: "b"}, payload))
+	deep := core.ValueDeepBytes(want)
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode)+"/under-budget", func(t *testing.T) {
+			const maxAlloc = 256 << 10
+			ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, maxAlloc)
+			eng := newEngine(t, bytecode, meteringLimits(t, 1_000_000, maxAlloc))
+			got, err := eng.Eval(ctx, "assoc-deep-under-budget", src)
+			require.NoError(t, err)
+			assert.True(t, want.Equals(got), "got %v, want %v", got, want)
+
+			used := core.EvalMeterFrom(ctx).Snapshot().AllocationBytes
+			assert.GreaterOrEqual(t, used, deep, "assoc must charge deep result bytes")
+			assert.Greater(t, used, core.HashMapShallowBytes(2), "assoc charge must not stop at shallow map entries")
+		})
+	}
+}
+
+func TestMetering_FusedArithmeticChargesLedger(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const iterations = 1024
+	src := "(loop [i 0 x 1024] (if (= i " + strconv.Itoa(iterations) + ") x (recur (+ i 1) (+ x 1))))"
+
+	t.Run("tight", func(t *testing.T) {
+		eng := newMeteringStdlibEngine(t, true, meteringLimits(t, 1_000_000, 24<<10))
+		_, err := eng.Eval(t.Context(), "fused-arith-tight", src)
+		assert.True(t, isResourceLimit(t, err), "expected ResourceLimitError, got %v", err)
+	})
+
+	t.Run("under-budget", func(t *testing.T) {
+		const maxAlloc = 128 << 10
+		ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, maxAlloc)
+		eng := newMeteringStdlibEngine(t, true, meteringLimits(t, 1_000_000, maxAlloc))
+		got, err := eng.Eval(ctx, "fused-arith-under-budget", src)
+		require.NoError(t, err)
+		assert.True(t, core.Int{V: 1024 + iterations}.Equals(got), "got %v", got)
+
+		used := core.EvalMeterFrom(ctx).Snapshot().AllocationBytes
+		assert.GreaterOrEqual(t, used, int64(iterations)*core.MeterScalarBytes, "fused native ops must charge scalar results")
+	})
+}
+
+func TestMetering_AssocAndFusedArith_BaselineParity(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	assocSrc := "(assoc {:a 1} :b [2 3])"
+	var assocWant core.Value
+	for _, bytecode := range []bool{false, true} {
+		t.Run("assoc/"+evalModeName(bytecode), func(t *testing.T) {
+			got, err := evalLimits(t, bytecode, meteringLimits(t, 1_000_000, 1<<20), assocSrc)
+			require.NoError(t, err)
+			if assocWant == nil {
+				assocWant = got
+			}
+			assert.True(t, assocWant.Equals(got), "got %v, want %v", got, assocWant)
+		})
+	}
+
+	fusedSrc := "(loop [i 0 x 1024] (if (= i 5) x (recur (+ i 1) (+ x 1))))"
+	got, err := newMeteringStdlibEngine(t, true, meteringLimits(t, 1_000_000, 1<<20)).Eval(t.Context(), "fused-arith-baseline", fusedSrc)
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 1029}.Equals(got), "got %v", got)
 }
 
 func TestLimits_MeteringAdversariesErrorClassParity(t *testing.T) {

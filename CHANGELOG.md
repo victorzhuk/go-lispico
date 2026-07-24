@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `assoc` and fused native-op results now charge the evaluation allocation
+  ledger: deep result bytes for `assoc`, fixed scalar bytes for fused ops.
+
 - Deeply nested value construction (VM `OpMakeList`/`OpMakeVector`/`OpMakeMap`,
   stdlib `list`/`cons`/`vector`/`conj`/`assoc`/`merge`, `json/decode`),
   value-tree walks (`String`/`Equals`/`ValueDeepBytes`/`ValueNodeCount`), and

@@ -1112,6 +1112,9 @@ func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
 	if err != nil {
 		return err
 	}
+	if err := vm.chargeAllocBytes(core.MeterScalarBytes); err != nil {
+		return err
+	}
 	vm.stack = vm.stack[:d]
 	vm.push(result)
 	return nil
