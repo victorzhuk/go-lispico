@@ -175,6 +175,16 @@ func New(globals *core.Env, opts ...VMOption) *VM {
 	return v
 }
 
+func (vm *VM) checkConstructionDepth(v core.Value) error {
+	if vm.maxStructuralDepth <= 0 {
+		return nil
+	}
+	if core.ValueDepthExceeds(v, vm.maxStructuralDepth) {
+		return core.NewResourceLimitError(fmt.Sprintf("structural depth limit %d exceeded", vm.maxStructuralDepth))
+	}
+	return nil
+}
+
 func (vm *VM) stackSize() int  { return len(vm.stack) }
 func (vm *VM) frameCount() int { return len(vm.frames) }
 func (vm *VM) reset() {
@@ -920,26 +930,33 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if n < 0 || n > len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-list: %d items exceeds stack", n)}
 			}
+			items := make([]core.Value, n)
+			copy(items, vm.stack[len(vm.stack)-n:])
+			res := core.List{Items: items}
+			if err := vm.checkConstructionDepth(res); err != nil {
+				return nil, err
+			}
 			if err := vm.chargeAllocBytes(core.ListShallowBytes(n)); err != nil {
 				return nil, err
 			}
-			items := make([]core.Value, n)
-			copy(items, vm.stack[len(vm.stack)-n:])
 			vm.stack = vm.stack[:len(vm.stack)-n]
-			vm.push(core.List{Items: items})
-
+			vm.push(res)
 		case OpMakeVector:
 			n := instr.A()
 			if n < 0 || n > len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-vector: %d items exceeds stack", n)}
 			}
+			items := make([]core.Value, n)
+			copy(items, vm.stack[len(vm.stack)-n:])
+			res := core.Vector{Items: items}
+			if err := vm.checkConstructionDepth(res); err != nil {
+				return nil, err
+			}
 			if err := vm.chargeAllocBytes(core.VectorShallowBytes(n)); err != nil {
 				return nil, err
 			}
-			items := make([]core.Value, n)
-			copy(items, vm.stack[len(vm.stack)-n:])
 			vm.stack = vm.stack[:len(vm.stack)-n]
-			vm.push(core.Vector{Items: items})
+			vm.push(res)
 
 		case OpMakeMap:
 			pairCount := instr.A()
@@ -947,15 +964,18 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if n < 0 || n > len(vm.stack) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("make-map: %d items exceeds stack", n)}
 			}
-			if err := vm.chargeAllocBytes(core.HashMapShallowBytes(pairCount)); err != nil {
-				return nil, err
-			}
 			pairs := vm.stack[len(vm.stack)-n:]
 			hm := core.NewHashMap()
 			for i := 0; i < len(pairs); i += 2 {
 				if err := hm.Set(pairs[i], pairs[i+1]); err != nil {
 					return nil, err
 				}
+			}
+			if err := vm.checkConstructionDepth(hm); err != nil {
+				return nil, err
+			}
+			if err := vm.chargeAllocBytes(core.HashMapShallowBytes(pairCount)); err != nil {
+				return nil, err
 			}
 			vm.stack = vm.stack[:len(vm.stack)-n]
 			vm.push(hm)

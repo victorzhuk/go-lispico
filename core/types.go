@@ -7,7 +7,6 @@ import (
 	"math"
 	"sort"
 	"strconv"
-	"strings"
 )
 
 // Value is the universal Lisp value interface.
@@ -173,52 +172,18 @@ func (k Keyword) Equals(o Value) bool {
 // List — immutable sequence (slice implementation).
 type List struct{ Items []Value }
 
-func (l List) Type() Keyword { return Keyword{V: "list"} }
-func (l List) String() string {
-	parts := make([]string, len(l.Items))
-	for i, item := range l.Items {
-		parts[i] = item.String()
-	}
-	return "(" + strings.Join(parts, " ") + ")"
-}
+func (l List) Type() Keyword  { return Keyword{V: "list"} }
+func (l List) String() string { return boundedString(l, 0) }
 
-func (l List) Equals(o Value) bool {
-	v, ok := o.(List)
-	if !ok || len(l.Items) != len(v.Items) {
-		return false
-	}
-	for i := range l.Items {
-		if !l.Items[i].Equals(v.Items[i]) {
-			return false
-		}
-	}
-	return true
-}
+func (l List) Equals(o Value) bool { return boundedEquals(l, o, 0) }
 
 // Vector — random-access sequence.
 type Vector struct{ Items []Value }
 
-func (v Vector) Type() Keyword { return Keyword{V: "vector"} }
-func (v Vector) String() string {
-	parts := make([]string, len(v.Items))
-	for i, item := range v.Items {
-		parts[i] = item.String()
-	}
-	return "[" + strings.Join(parts, " ") + "]"
-}
+func (v Vector) Type() Keyword  { return Keyword{V: "vector"} }
+func (v Vector) String() string { return boundedString(v, 0) }
 
-func (v Vector) Equals(o Value) bool {
-	other, ok := o.(Vector)
-	if !ok || len(v.Items) != len(other.Items) {
-		return false
-	}
-	for i := range v.Items {
-		if !v.Items[i].Equals(other.Items[i]) {
-			return false
-		}
-	}
-	return true
-}
+func (v Vector) Equals(o Value) bool { return boundedEquals(v, o, 0) }
 
 // hashKey is the internal map key — disambiguates equal string representations
 // across types (e.g. symbol "true" vs bool true). Numeric and bool keys are
@@ -383,32 +348,9 @@ func (h *HashMap) sortedEntries() []entry {
 	return entries
 }
 
-func (h *HashMap) String() string {
-	entries := h.sortedEntries()
-	parts := make([]string, 0, len(entries)*2)
-	for _, e := range entries {
-		parts = append(parts, e.k.String()+" "+e.v.String())
-	}
-	return "{" + strings.Join(parts, " ") + "}"
-}
+func (h *HashMap) String() string { return boundedString(h, 0) }
 
-func (h *HashMap) Equals(o Value) bool {
-	v, ok := o.(*HashMap)
-	if !ok || h.Len() != v.Len() {
-		return false
-	}
-	equal := true
-	h.eachRaw(func(e entry) {
-		if !equal {
-			return
-		}
-		other, found := v.getByHashKey(e.hk)
-		if !found || !e.v.Equals(other) {
-			equal = false
-		}
-	})
-	return equal
-}
+func (h *HashMap) Equals(o Value) bool { return boundedEquals(h, o, 0) }
 
 // newMapFromEntries builds map-form storage from small-form entries plus one
 // more, used when Assoc/Set crosses hashMapSmallLimit.
@@ -565,13 +507,8 @@ type Lambda struct {
 	Name     string // optional, enables self-recursion by name
 }
 
-func (l Lambda) Type() Keyword { return Keyword{V: "fn"} }
-func (l Lambda) String() string {
-	if l.Name != "" {
-		return "#<fn:" + l.Name + ">"
-	}
-	return "#<fn>"
-}
+func (l Lambda) Type() Keyword       { return Keyword{V: "fn"} }
+func (l Lambda) String() string      { return boundedString(l, 0) }
 func (l Lambda) Equals(o Value) bool { return false }
 
 // Macro — syntax transformer; body receives unevaluated forms.
@@ -583,13 +520,8 @@ type Macro struct {
 	Name     string
 }
 
-func (m Macro) Type() Keyword { return Keyword{V: "macro"} }
-func (m Macro) String() string {
-	if m.Name != "" {
-		return "#<macro:" + m.Name + ">"
-	}
-	return "#<macro>"
-}
+func (m Macro) Type() Keyword       { return Keyword{V: "macro"} }
+func (m Macro) String() string      { return boundedString(m, 0) }
 func (m Macro) Equals(o Value) bool { return false }
 
 // IsTruthy returns true for all values except Nil and false.

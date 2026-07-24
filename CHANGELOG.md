@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deeply nested value construction (VM `OpMakeList`/`OpMakeVector`/`OpMakeMap`,
+  stdlib `list`/`cons`/`vector`/`conj`/`assoc`/`merge`, `json/decode`),
+  value-tree walks (`String`/`Equals`/`ValueDeepBytes`/`ValueNodeCount`), and
+  macro-expanded bytecode compilation are now depth-bounded and return a
+  terminal `ResourceLimitError` instead of crashing the process with
+  `fatal error: stack overflow`.
 - `let`, `let*`, and `loop` now accept Common Lisp `(name value)` list
   bindings under the default dialect in both the tree-walker and bytecode VM.
 - Closures created in a `loop` body now capture per-iteration loop-variable

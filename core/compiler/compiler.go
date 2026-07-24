@@ -29,16 +29,17 @@ func compileErrf(format string, args ...any) error {
 // Compiler compiles core.Value forms into a single vm.Chunk, tracking local
 // variable scopes as it goes. It implements vm.FormCompiler.
 type Compiler struct {
-	chunk        *vm.Chunk
-	locals       []local
-	depth        int
-	parent       *Compiler
-	loops        []loopFrame
-	dialect      *core.Dialect
-	meter        core.EvalMeter
-	err          error
-	compileDepth int
-	nodeCount    int
+	chunk           *vm.Chunk
+	locals          []local
+	depth           int
+	parent          *Compiler
+	loops           []loopFrame
+	dialect         *core.Dialect
+	meter           core.EvalMeter
+	err             error
+	compileDepth    int
+	maxCompileDepth int
+	nodeCount       int
 	// caps lists the free variables this chunk captures from its enclosing
 	// context, parallel to chunk.Caps.
 	caps []string
@@ -59,13 +60,13 @@ type local struct {
 
 // NewCompiler creates a Compiler that emits into a new chunk named name.
 func NewCompiler(name string) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name}}
+	return &Compiler{chunk: &vm.Chunk{Name: name}, maxCompileDepth: core.MaxCompileDepth}
 }
 
 // NewCompilerWithDialect creates a Compiler that emits into a new chunk named name
 // with access to the dialect for dialect-dependent compilation.
 func NewCompilerWithDialect(name string, dialect *core.Dialect) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name, Truthiness: dialect.TruthyFunc()}, dialect: dialect}
+	return &Compiler{chunk: &vm.Chunk{Name: name, Truthiness: dialect.TruthyFunc()}, dialect: dialect, maxCompileDepth: core.MaxCompileDepth}
 }
 
 // Chunk returns the chunk the compiler is emitting into.
@@ -124,6 +125,9 @@ func (c *Compiler) Compile(form core.Value) error {
 	}
 	c.compileDepth++
 	defer func() { c.compileDepth-- }()
+	if c.maxCompileDepth > 0 && c.compileDepth > c.maxCompileDepth {
+		return core.NewResourceLimitError("compile depth limit exceeded")
+	}
 	switch f := form.(type) {
 	case core.Nil:
 		c.emit(vm.OpNil, 0)
@@ -1051,6 +1055,9 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 				}
 			}
 		}
+		if d := literalDepth(val, 0); d < 0 {
+			return core.NewResourceLimitError("compile depth limit exceeded")
+		}
 		c.emit(vm.OpStructEnter, 1)
 		for _, item := range val.Items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
@@ -1060,6 +1067,9 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 		c.emit(vm.OpMakeList, len(val.Items))
 		c.emit(vm.OpStructLeave, 1)
 	case core.Vector:
+		if d := literalDepth(val, 0); d < 0 {
+			return core.NewResourceLimitError("compile depth limit exceeded")
+		}
 		c.emit(vm.OpStructEnter, 1)
 		for _, item := range val.Items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
@@ -1069,7 +1079,10 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 		c.emit(vm.OpMakeVector, len(val.Items))
 		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
-		d := literalDepth(val)
+		d := literalDepth(val, 0)
+		if d < 0 {
+			return core.NewResourceLimitError("compile depth limit exceeded")
+		}
 		c.emit(vm.OpStructEnter, d)
 		c.emit(vm.OpConst, c.chunk.AddConstant(val))
 		c.emit(vm.OpStructLeave, d)
@@ -1079,12 +1092,19 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 	return nil
 }
 
-func literalDepth(v core.Value) int {
+func literalDepth(v core.Value, depth int) int {
+	if depth > core.MaxCompileDepth {
+		return -1
+	}
 	switch val := v.(type) {
 	case core.List:
 		max := 0
 		for _, item := range val.Items {
-			if d := literalDepth(item); d > max {
+			d := literalDepth(item, depth+1)
+			if d < 0 {
+				return -1
+			}
+			if d > max {
 				max = d
 			}
 		}
@@ -1092,7 +1112,11 @@ func literalDepth(v core.Value) int {
 	case core.Vector:
 		max := 0
 		for _, item := range val.Items {
-			if d := literalDepth(item); d > max {
+			d := literalDepth(item, depth+1)
+			if d < 0 {
+				return -1
+			}
+			if d > max {
 				max = d
 			}
 		}
@@ -1100,10 +1124,18 @@ func literalDepth(v core.Value) int {
 	case *core.HashMap:
 		max := 0
 		for _, pair := range val.Pairs() {
-			if d := literalDepth(pair[0]); d > max {
+			d := literalDepth(pair[0], depth+1)
+			if d < 0 {
+				return -1
+			}
+			if d > max {
 				max = d
 			}
-			if d := literalDepth(pair[1]); d > max {
+			d = literalDepth(pair[1], depth+1)
+			if d < 0 {
+				return -1
+			}
+			if d > max {
 				max = d
 			}
 		}

@@ -90,6 +90,18 @@ func TestDecodeChargesDeepResultBytes(t *testing.T) {
 	require.Equal(t, core.CodeResourceLimit, lerr.Code)
 }
 
+func TestDecodeRejectsOverDeepJSON(t *testing.T) {
+	env := setupEnv(t)
+	fn := decodeGoFunc(t, env)
+	payload := strings.Repeat("[", core.DefaultMaxStructuralDepth+500) + "1" + strings.Repeat("]", core.DefaultMaxStructuralDepth+500)
+
+	_, err := fn.Fn(t.Context(), nil, []core.Value{core.String{V: payload}}, env)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	require.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
 func TestEncode(t *testing.T) {
 	env := setupEnv(t)
 

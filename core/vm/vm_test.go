@@ -461,6 +461,90 @@ func TestVM_OpMakeMap(t *testing.T) {
 	}
 }
 
+func vmNestedList(depth int) core.Value {
+	var v core.Value = core.Int{V: 1}
+	for range depth {
+		v = core.List{Items: []core.Value{v}}
+	}
+	return v
+}
+
+func TestVM_OpMakeListRejectsOverDeepResult(t *testing.T) {
+	vm := New(core.NewEnv(nil), WithMaxStructuralDepth(2))
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{vmNestedList(2)},
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpMakeList, 1),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(t.Context(), chunk)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
+// TestVM_OpMakeList_HonorsVMLimitOverEvaluatorLimit proves the construction
+// gate compares against vm.maxStructuralDepth, not the evaluator's limit: a
+// 750-deep value sits between the VM's 500 ceiling and the evaluator's default
+// 1024, so only the VM's own limit can reject it.
+func TestVM_OpMakeList_HonorsVMLimitOverEvaluatorLimit(t *testing.T) {
+	vm := New(core.NewEnv(nil), WithMaxStructuralDepth(500), WithEvaluator(core.NewEvaluator()))
+
+	err := vm.checkConstructionDepth(vmNestedList(750))
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+	assert.Contains(t, lerr.Message, "500")
+}
+
+func TestVM_OpMakeVectorRejectsOverDeepResult(t *testing.T) {
+	vm := New(core.NewEnv(nil), WithMaxStructuralDepth(2))
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{vmNestedList(2)},
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpMakeVector, 1),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(t.Context(), chunk)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
+func TestVM_OpMakeMapRejectsOverDeepResult(t *testing.T) {
+	vm := New(core.NewEnv(nil), WithMaxStructuralDepth(2))
+	chunk := &Chunk{
+		Name: "test",
+		Constants: []core.Value{
+			core.Keyword{V: "x"},
+			vmNestedList(2),
+		},
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpConst, 1),
+			Encode(OpMakeMap, 1),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	_, err := vm.Run(t.Context(), chunk)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
 func TestVM_OpClosure(t *testing.T) {
 	vm := New(core.NewEnv(nil))
 	subChunk := &Chunk{

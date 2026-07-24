@@ -50,11 +50,9 @@ type engine struct {
 	meter   sessionMeter
 }
 
-const defaultMaxStructuralDepth = 1024
-
 // NewEvaluator constructs a tree-walking evaluator running the identity
 func NewEvaluator() *engine {
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: defaultMaxStructuralDepth, forms: copyKernel(), truthy: IsTruthy}
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: copyKernel(), truthy: IsTruthy}
 }
 
 // NewEvaluatorWithDialect constructs a tree-walking evaluator whose special
@@ -65,7 +63,7 @@ func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: defaultMaxStructuralDepth, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2(), dialect: d}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2(), dialect: d}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -748,7 +746,8 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 	}
 }
 
-func (e *engine) CollectionLimit() int { return e.MaxCollectionLen }
+func (e *engine) CollectionLimit() int        { return e.MaxCollectionLen }
+func (e *engine) ConstructionDepthLimit() int { return e.MaxStructuralDepth }
 
 // ── Special Form Implementations ─────────────────────────────────────────────
 

@@ -3,6 +3,7 @@ package stdlib
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -215,6 +216,19 @@ func TestRange_StandaloneDefaultCap(t *testing.T) {
 	list, ok := v.(core.List)
 	require.True(t, ok)
 	require.Len(t, list.Items, 5)
+}
+
+func TestCollections_ConstructionDepthLimitNotCatchable(t *testing.T) {
+	env := setupEnv(t)
+	src := fmt.Sprintf(`(try
+  (loop [i 0 acc nil]
+    (if (< i %d)
+      (recur (+ i 1) (list acc))
+      acc))
+  (catch e 'caught))`, core.DefaultMaxStructuralDepth+2)
+
+	err := evalErr(t, env, src)
+	requireResourceLimit(t, err)
 }
 
 func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {

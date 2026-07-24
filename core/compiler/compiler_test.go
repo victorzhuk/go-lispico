@@ -1392,6 +1392,40 @@ func TestCompiler_DeepEmitStopsAtReductionLimit(t *testing.T) {
 	require.Len(t, c.Chunk().Code, 1)
 }
 
+func nestedCallForm(depth int) core.Value {
+	var v core.Value = core.Symbol{V: "x"}
+	for range depth {
+		v = core.List{Items: []core.Value{core.Symbol{V: "f"}, v}}
+	}
+	return v
+}
+
+func TestCompiler_MacroExpandedFormDepthLimit(t *testing.T) {
+	c := NewCompiler("test")
+	err := c.Compile(nestedCallForm(core.MaxCompileDepth + 1))
+	require.Error(t, err)
+
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
+func TestCompiler_LiteralDepthLimit(t *testing.T) {
+	var v core.Value = core.Int{V: 1}
+	for range core.MaxCompileDepth + 1 {
+		v = core.Vector{Items: []core.Value{v}}
+	}
+	m := core.NewHashMap()
+	require.NoError(t, m.Set(core.Keyword{V: "x"}, v))
+	c := NewCompiler("test")
+	err := c.Compile(core.List{Items: []core.Value{core.Symbol{V: "quasiquote"}, m}})
+	require.Error(t, err)
+
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
 type unknownValue struct{}
 
 func (unknownValue) Type() core.Keyword     { return core.Keyword{V: "unknown"} }

@@ -14,7 +14,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("list", core.GoFunc{
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			return core.List{Items: append([]core.Value(nil), args...)}, nil
+			res := core.List{Items: append([]core.Value(nil), args...)}
+			if err := core.CheckConstructionDepth(res, env); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	}, false); err != nil {
 		return err
@@ -75,7 +79,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("vector", core.GoFunc{
 		Name: "vector",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			return core.Vector{Items: append([]core.Value(nil), args...)}, nil
+			res := core.Vector{Items: append([]core.Value(nil), args...)}
+			if err := core.CheckConstructionDepth(res, env); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	}, false); err != nil {
 		return err
@@ -93,6 +101,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				if err := m.Set(args[i], args[i+1]); err != nil {
 					return nil, fmt.Errorf("hash-map: %w", err)
 				}
+			}
+			if err := core.CheckConstructionDepth(m, env); err != nil {
+				return nil, err
 			}
 			return m, nil
 		},
@@ -390,6 +401,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				}
 			}
 
+			if err := core.CheckConstructionDepth(result, env); err != nil {
+				return nil, err
+			}
 			return result, nil
 		},
 	}, false); err != nil {
@@ -638,6 +652,9 @@ func chargeCollectionResult(ctx context.Context, env *core.Env, name string, res
 		if n > maxLen {
 			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
 		}
+	}
+	if err := core.CheckConstructionDepth(res, env); err != nil {
+		return err
 	}
 	return core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(res))
 }

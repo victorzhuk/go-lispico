@@ -572,6 +572,24 @@ func TestVMVsTreeWalker_TerminalErrorNotCaught(t *testing.T) {
 		runTerminalErrorNotCaught(t, `(try (limit) (catch e e))`, newRun)
 	})
 
+	t.Run("construction depth limit", func(t *testing.T) {
+		t.Parallel()
+
+		newRun := func() (context.Context, *core.Env, func()) {
+			env := newCrossValEnv()
+			require.NoError(t, stdlib.New().Init(env))
+			return context.Background(), env, func() {}
+		}
+		src := fmt.Sprintf(`(try
+  (loop [i 0 acc nil]
+    (if (< i %d)
+      (recur (+ i 1) (list acc))
+      acc))
+  (catch e 'caught))`, core.DefaultMaxStructuralDepth+2)
+
+		runTerminalErrorNotCaught(t, src, newRun, vm.WithMaxStructuralDepth(core.DefaultMaxStructuralDepth))
+	})
+
 	t.Run("deadline exceeded in loop", func(t *testing.T) {
 		t.Parallel()
 

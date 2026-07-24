@@ -336,7 +336,8 @@ func (be *bytecodeEvaluator) applyOnVM(v *vm.VM, ctx context.Context, fn core.Va
 	return v.ApplyPooled(ctx, fn, args, env)
 }
 
-func (be *bytecodeEvaluator) CollectionLimit() int { return be.maxCollectionLen }
+func (be *bytecodeEvaluator) CollectionLimit() int        { return be.maxCollectionLen }
+func (be *bytecodeEvaluator) ConstructionDepthLimit() int { return be.maxStructuralDepth }
 
 // EvalCached evaluates form with caching: macro-expands, checks the chunk cache
 // runs via a pooled VM.
