@@ -797,6 +797,16 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 			}
 		}()
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			childEnv = nil
+			err = core.NewPanicError(source, r)
+			dur := time.Since(start)
+			e.stats.recordEval(dur, err)
+			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		}
+	}()
 
 	forms, err := e.readForms(ctx, source)
 	if err != nil {

@@ -47,6 +47,76 @@ func TestPanicBoundary_EvalRecoversGoFuncPanics(t *testing.T) {
 	}
 }
 
+func TestPanicBoundary_EvalWithBindingsRecoversGoFuncPanics(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []EngineOption
+	}{
+		{name: "bytecode", opts: []EngineOption{WithBytecode(), WithDialect(clojure.Dialect())}},
+		{name: "treewalker", opts: []EngineOption{WithTreeWalker(), WithDialect(clojure.Dialect())}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			eng, err := New(nil, tt.opts...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = eng.Close() })
+
+			panicValue := fmt.Sprintf("%s panic", tt.name)
+			bindings := map[string]core.Value{
+				"boom": core.GoFunc{
+					Name: "boom",
+					Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+						panic(panicValue)
+					},
+				},
+			}
+
+			var got core.Value
+			var evalErr error
+			require.NotPanics(t, func() {
+				got, evalErr = eng.EvalWithBindings(t.Context(), "(boom)", bindings)
+			})
+			require.Nil(t, got)
+			assertPanicError(t, evalErr, panicValue)
+		})
+	}
+}
+
+func TestPanicBoundary_LoadScopeRecoversGoFuncPanics(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []EngineOption
+	}{
+		{name: "bytecode", opts: []EngineOption{WithBytecode(), WithDialect(clojure.Dialect())}},
+		{name: "treewalker", opts: []EngineOption{WithTreeWalker(), WithDialect(clojure.Dialect())}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			eng, err := New(nil, tt.opts...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = eng.Close() })
+
+			panicValue := fmt.Sprintf("%s panic", tt.name)
+			bindings := map[string]core.Value{
+				"boom": core.GoFunc{
+					Name: "boom",
+					Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+						panic(panicValue)
+					},
+				},
+			}
+
+			var got core.Value
+			var scope *core.Env
+			var loadErr error
+			require.NotPanics(t, func() {
+				got, scope, loadErr = eng.LoadScope(t.Context(), "(boom)", bindings)
+			})
+			require.Nil(t, got)
+			assert.Nil(t, scope)
+			assertPanicError(t, loadErr, panicValue)
+		})
+	}
+}
+
 func TestPanicBoundary_CallAndFnCallRecoverGoFuncPanics(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -139,6 +209,41 @@ func TestPanicBoundary_HandlesRemainUsableAfterRecoveredPanic(t *testing.T) {
 	}
 }
 
+func TestPanicBoundary_BindingScopeNonPanicUnchanged(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts []EngineOption
+	}{
+		{name: "bytecode", opts: []EngineOption{WithBytecode(), WithDialect(clojure.Dialect())}},
+		{name: "treewalker", opts: []EngineOption{WithTreeWalker(), WithDialect(clojure.Dialect())}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			eng, err := New(nil, tt.opts...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = eng.Close() })
+
+			bindings := map[string]core.Value{
+				"local": core.Int{V: 77},
+			}
+			got, err := eng.EvalWithBindings(t.Context(), "local", bindings)
+			require.NoError(t, err)
+			assert.True(t, core.Int{V: 77}.Equals(got), "got %v", got)
+
+			scopeResult, scope, err := eng.LoadScope(t.Context(), "local", map[string]core.Value{
+				"local": core.Int{V: 99},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, scope)
+			assert.True(t, core.Int{V: 99}.Equals(scopeResult), "got %v", scopeResult)
+			scopedValue, ok := scope.Get("local")
+			require.True(t, ok)
+			assert.True(t, core.Int{V: 99}.Equals(scopedValue), "got %v", scopedValue)
+			_, ok = eng.RootEnv().Get("local")
+			assert.False(t, ok)
+		})
+	}
+}
+
 func TestPanicBoundary_EvalPanicRecordsStatsAndCallbacksLikeReturnedError(t *testing.T) {
 	eng, err := New(nil, WithBytecode())
 	require.NoError(t, err)
@@ -226,6 +331,46 @@ func TestPanicBoundary_BytecodeEvaluatorApplyDropsPanickedVM(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 99}.Equals(got), "got %v", got)
 	assert.Equal(t, int64(2), created.Load(), "panicked Apply VM must not return to the pool")
+}
+
+func TestRunVM_PanicDropsPooledVM(t *testing.T) {
+	eng, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	impl := eng.(*engineImpl)
+	be := impl.bytecodeEvaluator
+	require.NotNil(t, be)
+
+	var created atomic.Int64
+	be.vmPool = sync.Pool{
+		New: func() any {
+			created.Add(1)
+			return vm.New(be.globals, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be), vm.WithMaxStructuralDepth(be.maxStructuralDepth))
+		},
+	}
+
+	require.NoError(t, eng.Bind("boom", core.GoFunc{
+		Name: "boom",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			panic("eval panic")
+		},
+	}))
+	panicForms, err := impl.readForms(t.Context(), "(boom)")
+	require.NoError(t, err)
+	require.Len(t, panicForms, 1)
+	require.Panics(t, func() {
+		_, _ = be.Eval(t.Context(), panicForms[0], impl.rootEnv)
+	})
+	assert.Equal(t, int64(1), created.Load())
+
+	safeForms, err := impl.readForms(t.Context(), "99")
+	require.NoError(t, err)
+	require.Len(t, safeForms, 1)
+	got, err := be.Eval(t.Context(), safeForms[0], impl.rootEnv)
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 99}.Equals(got), "got %v", got)
+	assert.Equal(t, int64(2), created.Load(), "panicked Eval VM must not return to the pool")
 }
 
 func assertPanicError(t *testing.T, err error, wantPanic any) {
