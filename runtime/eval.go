@@ -780,6 +780,16 @@ func (e *engineImpl) LoadScope(ctx context.Context, source string, bindings map[
 
 func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bindings map[string]core.Value) (result core.Value, childEnv *core.Env, err error) {
 	start := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			childEnv = nil
+			err = core.NewPanicError(source, r)
+			dur := time.Since(start)
+			e.stats.recordEval(dur, err)
+			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		}
+	}()
 
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
@@ -797,16 +807,6 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 			}
 		}()
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			result = nil
-			childEnv = nil
-			err = core.NewPanicError(source, r)
-			dur := time.Since(start)
-			e.stats.recordEval(dur, err)
-			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-		}
-	}()
 
 	forms, err := e.readForms(ctx, source)
 	if err != nil {
