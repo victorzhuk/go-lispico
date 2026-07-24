@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -165,6 +166,47 @@ func TestReloadFile_EvalErrorKeepsOldDefinitions(t *testing.T) {
 
 	_, hasX := eng.RootEnv().Get("x")
 	assert.False(t, hasX)
+}
+
+func TestReloadFile_PanicSurfacesErrorAndKeepsOldDefinitions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	require.NoError(t, eng.RootEnv().Set("existing", core.Int{V: 42}))
+
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
+	w.ctx = context.Background()
+
+	require.NoError(t, eng.Bind("boom", core.GoFunc{
+		Name: "boom",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			panic("watcher boom")
+		},
+	}))
+
+	file := filepath.Join(dir, "bad.lisp")
+	err = os.WriteFile(file, []byte("(boom)"), 0o644)
+	require.NoError(t, err)
+
+	require.NotPanics(t, func() {
+		w.reloadFile(file)
+	})
+
+	val, ok := eng.RootEnv().Get("existing")
+	assert.True(t, ok)
+	assert.Equal(t, int64(42), val.(core.Int).V)
+
+	assert.NotContains(t, buf.String(), "reloaded file")
+	assert.Contains(t, buf.String(), "recovered panic")
+	assert.Contains(t, buf.String(), "watcher boom")
 }
 
 func TestReloadFile_Success(t *testing.T) {
@@ -358,6 +400,51 @@ func TestWatch_DetectsFileChanges(t *testing.T) {
 	val, ok = eng.RootEnv().Get("value")
 	require.True(t, ok)
 	assert.Equal(t, int64(2), val.(core.Int).V)
+}
+
+func TestWatch_ReloadPanicKeepsLoopRunning(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := New(slog.Default())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	require.NoError(t, eng.Bind("boom", core.GoFunc{
+		Name: "boom",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			panic("watcher boom")
+		},
+	}))
+
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
+	w.Start(context.Background())
+	t.Cleanup(w.Stop)
+
+	badFile := filepath.Join(dir, "bad.lisp")
+	require.NoError(t, os.WriteFile(badFile, []byte("(boom)"), 0o644))
+
+	stopped := make(chan struct{})
+	go func() {
+		w.wg.Wait()
+		close(stopped)
+	}()
+
+	time.Sleep(60 * time.Millisecond)
+	select {
+	case <-stopped:
+		t.Fatal("watch loop stopped after panic during reload")
+	default:
+	}
+
+	goodFile := filepath.Join(dir, "good.lisp")
+	require.NoError(t, os.WriteFile(goodFile, []byte("(def recovered 1)"), 0o644))
+
+	time.Sleep(60 * time.Millisecond)
+	w.Stop()
+
+	val, ok := eng.RootEnv().Get("recovered")
+	assert.True(t, ok)
+	assert.Equal(t, int64(1), val.(core.Int).V)
 }
 
 func TestWatch_MultipleFiles(t *testing.T) {

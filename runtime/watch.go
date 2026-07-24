@@ -114,6 +114,16 @@ func (w *fileWatcher) reloadFile(path string) {
 
 	childEnv := w.engine.rootEnv.Child()
 
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			w.engine.logger.Error(
+				"eval form in file",
+				"path", path,
+				"error", core.NewPanicError(path, recovered),
+			)
+		}
+	}()
+
 	for _, form := range forms {
 		_, err := w.engine.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
