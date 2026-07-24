@@ -294,16 +294,72 @@ func TestCompiler_Let(t *testing.T) {
 	assert.Equal(t, vm.OpGetLocal, chunk.Code[4].Op())
 }
 
+func TestCompiler_Let_ListBindings(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "let"},
+		core.List{Items: []core.Value{
+			core.List{Items: []core.Value{core.Symbol{V: "x"}, core.Int{V: 1}}},
+			core.List{Items: []core.Value{core.Symbol{V: "y"}, core.Int{V: 2}}},
+		}},
+		core.Symbol{V: "x"},
+	}}
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	assert.Equal(t, 2, chunk.Locals)
+	require.Len(t, chunk.Code, 5)
+	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[3].Op())
+	assert.Equal(t, vm.OpGetLocal, chunk.Code[4].Op())
+}
+
+func TestCompiler_LetStar_ListBindings(t *testing.T) {
+	c := NewCompiler("test")
+	form := core.List{Items: []core.Value{
+		core.Symbol{V: "let*"},
+		core.List{Items: []core.Value{
+			core.List{Items: []core.Value{core.Symbol{V: "x"}, core.Int{V: 1}}},
+			core.List{Items: []core.Value{core.Symbol{V: "y"}, core.Symbol{V: "x"}}},
+		}},
+		core.Symbol{V: "y"},
+	}}
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	assert.Equal(t, 2, chunk.Locals)
+	require.Len(t, chunk.Code, 5)
+	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpGetLocal, chunk.Code[2].Op())
+	assert.Equal(t, vm.OpSetLocal, chunk.Code[3].Op())
+	assert.Equal(t, vm.OpGetLocal, chunk.Code[4].Op())
+}
+
 func TestCompiler_Let_Error(t *testing.T) {
-	t.Run("bindings not vector", func(t *testing.T) {
+	t.Run("empty list bindings", func(t *testing.T) {
 		c := NewCompiler("test")
 		form := core.List{Items: []core.Value{
 			core.Symbol{V: "let"},
 			core.List{},
+			core.Int{V: 1},
+		}}
+		require.NoError(t, c.Compile(form))
+	})
+
+	t.Run("bindings not vector or pair list", func(t *testing.T) {
+		c := NewCompiler("test")
+		form := core.List{Items: []core.Value{
+			core.Symbol{V: "let"},
+			core.Int{V: 42},
+			core.Int{V: 1},
 		}}
 		err := c.Compile(form)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "bindings must be vector")
+		assert.Contains(t, err.Error(), "vector")
+		assert.Contains(t, err.Error(), "pair")
 	})
 
 	t.Run("odd bindings count", func(t *testing.T) {
@@ -315,10 +371,40 @@ func TestCompiler_Let_Error(t *testing.T) {
 				core.Int{V: 1},
 				core.Symbol{V: "y"},
 			}},
+			core.Int{V: 1},
 		}}
 		err := c.Compile(form)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "even count")
+		assert.Contains(t, err.Error(), "even number")
+	})
+
+	t.Run("list element not pair", func(t *testing.T) {
+		c := NewCompiler("test")
+		form := core.List{Items: []core.Value{
+			core.Symbol{V: "let"},
+			core.List{Items: []core.Value{core.Symbol{V: "x"}}},
+			core.Int{V: 1},
+		}}
+		err := c.Compile(form)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "vector")
+		assert.Contains(t, err.Error(), "pair")
+	})
+
+	t.Run("list pair head not symbol", func(t *testing.T) {
+		c := NewCompiler("test")
+		form := core.List{Items: []core.Value{
+			core.Symbol{V: "let"},
+			core.List{Items: []core.Value{
+				core.List{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}},
+			}},
+			core.Int{V: 1},
+		}}
+		err := c.Compile(form)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "vector")
+		assert.Contains(t, err.Error(), "pair")
+		assert.Contains(t, err.Error(), "must be a symbol")
 	})
 }
 
@@ -566,9 +652,8 @@ func TestCompiler_Loop(t *testing.T) {
 	c := NewCompiler("test")
 	form := core.List{Items: []core.Value{
 		core.Symbol{V: "loop"},
-		core.Vector{Items: []core.Value{
-			core.Symbol{V: "x"},
-			core.Int{V: 0},
+		core.List{Items: []core.Value{
+			core.List{Items: []core.Value{core.Symbol{V: "x"}, core.Int{V: 0}}},
 		}},
 		core.Symbol{V: "x"},
 	}}
@@ -1295,7 +1380,9 @@ func TestCompiler_LetNonSymbolBinding(t *testing.T) {
 	}}
 	err := c.Compile(form)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "expected symbol")
+	assert.Contains(t, err.Error(), "vector")
+	assert.Contains(t, err.Error(), "pair")
+	assert.Contains(t, err.Error(), "must be a symbol")
 }
 
 func TestCompiler_FnNonSymbolRestParam(t *testing.T) {

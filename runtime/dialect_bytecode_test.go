@@ -59,6 +59,10 @@ func TestDialect_Bytecode_CL_Default(t *testing.T) {
 	got, err = e.Eval(context.Background(), "cl-call", "(id 42)")
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 42}.Equals(got), "(id 42) => 42")
+
+	got, err = e.Eval(context.Background(), "cl-let", "(let ((a 1) (b 2)) b)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 2}.Equals(got), "CL list-form let => %v", got)
 }
 
 // TestDialect_Bytecode_Clojure_DefaultTruthiness verifies that the Clojure
@@ -72,6 +76,10 @@ func TestDialect_Bytecode_Clojure_DefaultTruthiness(t *testing.T) {
 	got, err := e.Eval(context.Background(), "clj-truthy", "(if false :y :n)")
 	require.NoError(t, err)
 	assert.True(t, core.Keyword{V: "n"}.Equals(got), "Clojure truthiness: (if false :y :n) => :n")
+
+	got, err = e.Eval(context.Background(), "clj-let-list", "(let ((a 1)) a)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 1}.Equals(got), "Clojure list-form let => %v", got)
 }
 
 // TestDialect_Bytecode_RemoveThenEvalOtherForms verifies that a restricted

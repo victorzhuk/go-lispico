@@ -956,21 +956,17 @@ func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if len(args) < 2 {
 		return nil, evalErrorf("let requires at least 2 arguments")
 	}
-	bindings, ok := args[0].(Vector)
-	if !ok || len(bindings.Items)%2 != 0 {
-		return nil, evalErrorf("let: first argument must be an even-length binding vector")
+	bindings, err := NormalizeBindings("let", args[0])
+	if err != nil {
+		return nil, evalErrorf("%s", err)
 	}
 	child := env.Child()
-	for i := 0; i < len(bindings.Items); i += 2 {
-		name, ok := bindings.Items[i].(Symbol)
-		if !ok {
-			return nil, evalErrorf("let: binding names must be symbols")
-		}
-		val, err := e.Eval(ctx, bindings.Items[i+1], env)
+	for _, binding := range bindings {
+		val, err := e.Eval(ctx, binding.Value, env)
 		if err != nil {
 			return nil, err
 		}
-		if err := child.Set(name.V, val); err != nil {
+		if err := child.Set(binding.Name.V, val); err != nil {
 			return nil, err
 		}
 	}
@@ -981,21 +977,17 @@ func evalLetStar(ctx context.Context, e *engine, args []Value, env *Env) (Value,
 	if len(args) < 2 {
 		return nil, evalErrorf("let* requires at least 2 arguments")
 	}
-	bindings, ok := args[0].(Vector)
-	if !ok || len(bindings.Items)%2 != 0 {
-		return nil, evalErrorf("let*: first argument must be an even-length binding vector")
+	bindings, err := NormalizeBindings("let*", args[0])
+	if err != nil {
+		return nil, evalErrorf("%s", err)
 	}
 	child := env.Child()
-	for i := 0; i < len(bindings.Items); i += 2 {
-		name, ok := bindings.Items[i].(Symbol)
-		if !ok {
-			return nil, evalErrorf("let*: binding names must be symbols")
-		}
-		val, err := e.Eval(ctx, bindings.Items[i+1], child) // evaluate in child env (sees previous)
+	for _, binding := range bindings {
+		val, err := e.Eval(ctx, binding.Value, child)
 		if err != nil {
 			return nil, err
 		}
-		if err := child.Set(name.V, val); err != nil {
+		if err := child.Set(binding.Name.V, val); err != nil {
 			return nil, err
 		}
 	}
@@ -1046,27 +1038,23 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	if len(args) < 2 {
 		return nil, evalErrorf("loop requires at least 2 arguments")
 	}
-	bindings, ok := args[0].(Vector)
-	if !ok || len(bindings.Items)%2 != 0 {
-		return nil, evalErrorf("loop: first argument must be an even-length binding vector")
+	bindings, err := NormalizeBindings("loop", args[0])
+	if err != nil {
+		return nil, evalErrorf("%s", err)
 	}
 
 	loopEnv := env.Child()
-	loopVars := make([]Symbol, 0, len(bindings.Items)/2)
+	loopVars := make([]Symbol, 0, len(bindings))
 
-	for i := 0; i < len(bindings.Items); i += 2 {
-		name, ok := bindings.Items[i].(Symbol)
-		if !ok {
-			return nil, evalErrorf("loop: binding names must be symbols")
-		}
-		val, err := e.Eval(ctx, bindings.Items[i+1], env)
+	for _, binding := range bindings {
+		val, err := e.Eval(ctx, binding.Value, env)
 		if err != nil {
 			return nil, err
 		}
-		if err := loopEnv.Set(name.V, val); err != nil {
+		if err := loopEnv.Set(binding.Name.V, val); err != nil {
 			return nil, err
 		}
-		loopVars = append(loopVars, name)
+		loopVars = append(loopVars, binding.Name)
 	}
 
 	st := evalStateFrom(ctx)

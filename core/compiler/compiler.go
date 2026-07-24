@@ -407,31 +407,25 @@ func (c *Compiler) compileLet(args []core.Value) error {
 	if c.err != nil {
 		return c.err
 	}
-	if len(args) == 0 {
-		return compileErrf("compile let: missing bindings vector")
+	if len(args) < 2 {
+		return compileErrf("compile let: expected bindings and body")
 	}
-	bindings, ok := args[0].(core.Vector)
-	if !ok {
-		return compileErrf("compile let: bindings must be vector")
-	}
-	if len(bindings.Items)%2 != 0 {
-		return compileErrf("compile let: bindings must have even count")
+	bindings, err := core.NormalizeBindings("let", args[0])
+	if err != nil {
+		return compileErrf("%s", err)
 	}
 	c.depth++
 	base := len(c.locals)
 	// Parallel binding: compile every init before registering any local, so an
 	// init resolves names in the enclosing scope, not in a sibling binding.
-	for i := 0; i < len(bindings.Items); i += 2 {
-		if err := c.Compile(bindings.Items[i+1]); err != nil {
+	for i, binding := range bindings {
+		if err := c.Compile(binding.Value); err != nil {
 			return err
 		}
-		if _, ok := bindings.Items[i].(core.Symbol); !ok {
-			return core.NewTypeError("symbol", bindings.Items[i])
-		}
-		c.emitBind(base + i/2)
+		c.emitBind(base + i)
 	}
-	for i := 0; i < len(bindings.Items); i += 2 {
-		c.addLocal(bindings.Items[i].(core.Symbol).V)
+	for _, binding := range bindings {
+		c.addLocal(binding.Name.V)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -448,24 +442,17 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 	if len(args) < 2 {
 		return compileErrf("let*: expected bindings and body")
 	}
-	bindings, ok := args[0].(core.Vector)
-	if !ok {
-		return compileErrf("compile let*: bindings must be vector")
-	}
-	if len(bindings.Items)%2 != 0 {
-		return compileErrf("compile let*: bindings must have even count")
+	bindings, err := core.NormalizeBindings("let*", args[0])
+	if err != nil {
+		return compileErrf("%s", err)
 	}
 	c.depth++
 	base := len(c.locals)
-	for i := 0; i < len(bindings.Items); i += 2 {
-		if err := c.Compile(bindings.Items[i+1]); err != nil {
+	for _, binding := range bindings {
+		if err := c.Compile(binding.Value); err != nil {
 			return err
 		}
-		sym, ok := bindings.Items[i].(core.Symbol)
-		if !ok {
-			return core.NewTypeError("symbol", bindings.Items[i])
-		}
-		c.addLocal(sym.V)
+		c.addLocal(binding.Name.V)
 		c.emitBind(len(c.locals) - 1)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
@@ -547,23 +534,19 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 		return c.err
 	}
 	if len(args) < 2 {
-		return compileErrf("loop: expected binding vector and body")
+		return compileErrf("loop: expected bindings and body")
 	}
-	bindings, ok := args[0].(core.Vector)
-	if !ok || len(bindings.Items)%2 != 0 {
-		return compileErrf("loop: first argument must be an even-length binding vector")
+	bindings, err := core.NormalizeBindings("loop", args[0])
+	if err != nil {
+		return compileErrf("%s", err)
 	}
 	var slots []int
-	for i := 0; i < len(bindings.Items); i += 2 {
-		name, ok := bindings.Items[i].(core.Symbol)
-		if !ok {
-			return compileErrf("loop: binding names must be symbols")
-		}
-		if err := c.Compile(bindings.Items[i+1]); err != nil {
+	for _, binding := range bindings {
+		if err := c.Compile(binding.Value); err != nil {
 			return err
 		}
 		slots = append(slots, len(c.locals))
-		c.addLocal(name.V)
+		c.addLocal(binding.Name.V)
 		c.emitBind(len(c.locals) - 1)
 	}
 	startIP := len(c.chunk.Code)

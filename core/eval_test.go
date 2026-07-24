@@ -246,6 +246,26 @@ func TestEval_Let(t *testing.T) {
 		t.Errorf("(let [x 1 y 2] y) = %v, want 2", got)
 	}
 
+	got = evalStr(t, env, "(let ((x 1) (y 2)) y)")
+	if !got.Equals(Int{V: 2}) {
+		t.Errorf("(let ((x 1) (y 2)) y) = %v, want 2", got)
+	}
+
+	got = evalStr(t, env, "(let () 1)")
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("(let () 1) = %v, want 1", got)
+	}
+
+	got = evalStr(t, env, "(let [] 1)")
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("(let [] 1) = %v, want 1", got)
+	}
+
+	got = evalStr(t, env, "(let ((x (let ((y 1)) y)) (z 2)) x)")
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("nested list-form let = %v, want 1", got)
+	}
+
 	// let bindings are evaluated in parent env — parallel, not sequential
 	env.Set("a", Int{V: 10})
 	got = evalStr(t, env, "(let [a 1 b a] b)") // b should see parent a=10
@@ -260,6 +280,16 @@ func TestEval_LetStar(t *testing.T) {
 	got := evalStr(t, env, "(let* [x 1 y x] y)")
 	if !got.Equals(Int{V: 1}) {
 		t.Errorf("(let* [x 1 y x] y) = %v, want 1", got)
+	}
+
+	got = evalStr(t, env, "(let* ((x 1) (y x)) y)")
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("(let* ((x 1) (y x)) y) = %v, want 1", got)
+	}
+
+	got = evalStr(t, env, "(let* ((x 1) (x x)) x)")
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("(let* ((x 1) (x x)) x) = %v, want 1", got)
 	}
 }
 
@@ -821,11 +851,40 @@ func TestEval_LetErrors(t *testing.T) {
 	if err := evalStrErr(env, "(let)"); err == nil {
 		t.Error("let with no args should error")
 	}
-	if err := evalStrErr(env, "(let 42 1)"); err == nil {
-		t.Error("let with non-vector bindings should error")
+	err := evalStrErr(env, "(let 42 1)")
+	if err == nil {
+		t.Fatal("let with non-binding-list bindings should error")
 	}
-	if err := evalStrErr(env, "(let [x] 1)"); err == nil {
-		t.Error("let with odd binding count should error")
+	if !strings.Contains(err.Error(), "vector") || !strings.Contains(err.Error(), "pair") {
+		t.Fatalf("let binding-shape error = %q, want vector and pair", err.Error())
+	}
+	err = evalStrErr(env, "(let [x] 1)")
+	if err == nil {
+		t.Fatal("let with odd binding count should error")
+	}
+	if !strings.Contains(err.Error(), "vector") || !strings.Contains(err.Error(), "pair") {
+		t.Fatalf("let odd-count error = %q, want vector and pair", err.Error())
+	}
+	err = evalStrErr(env, "(let (x) 1)")
+	if err == nil {
+		t.Fatal("let with non-pair list element should error")
+	}
+	if !strings.Contains(err.Error(), "vector") || !strings.Contains(err.Error(), "pair") {
+		t.Fatalf("let non-pair error = %q, want vector and pair", err.Error())
+	}
+	err = evalStrErr(env, "(let ((1 2)) 1)")
+	if err == nil {
+		t.Fatal("let with non-symbol pair head should error")
+	}
+	if !strings.Contains(err.Error(), "vector") || !strings.Contains(err.Error(), "pair") || !strings.Contains(err.Error(), "must be a symbol") {
+		t.Fatalf("let non-symbol pair head error = %q, want both shapes and symbol detail", err.Error())
+	}
+	err = evalStrErr(env, "(let [(x 1) 2] 1)")
+	if err == nil {
+		t.Fatal("let vector containing list binding element should error")
+	}
+	if !strings.Contains(err.Error(), "vector") || !strings.Contains(err.Error(), "pair") || !strings.Contains(err.Error(), "must be a symbol") {
+		t.Fatalf("let vector list element error = %q, want both shapes and symbol detail", err.Error())
 	}
 }
 
@@ -835,8 +894,12 @@ func TestEval_LetStarErrors(t *testing.T) {
 	if err := evalStrErr(env, "(let*)"); err == nil {
 		t.Error("let* with no args should error")
 	}
-	if err := evalStrErr(env, "(let* 42 1)"); err == nil {
-		t.Error("let* with non-vector bindings should error")
+	err := evalStrErr(env, "(let* 42 1)")
+	if err == nil {
+		t.Fatal("let* with non-binding-list bindings should error")
+	}
+	if !strings.Contains(err.Error(), "vector") || !strings.Contains(err.Error(), "pair") {
+		t.Fatalf("let* binding-shape error = %q, want vector and pair", err.Error())
 	}
 }
 

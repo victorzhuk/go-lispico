@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `let`, `let*`, and `loop` now accept Common Lisp `(name value)` list
+  bindings under the default dialect in both the tree-walker and bytecode VM.
+
 - Restored tree-walker parity for exact `MaxDepth` boundaries by keeping
   tree-walker depth checks at `> MaxDepth` and routing public `VM.Apply`
   through `ApplyPooled` so shared call-depth counters are enforced on the

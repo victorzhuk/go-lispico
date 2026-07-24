@@ -77,6 +77,39 @@ func TestCL_Vocab_DrivesDialect(t *testing.T) {
 	})
 }
 
+func TestCL_ListBindingForms(t *testing.T) {
+	modes := []struct {
+		name string
+		opts []runtime.EngineOption
+	}{
+		{name: "tree-walker", opts: []runtime.EngineOption{runtime.WithTreeWalker()}},
+		{name: "vm", opts: []runtime.EngineOption{runtime.WithBytecode()}},
+	}
+	tests := []struct {
+		name string
+		src  string
+		want core.Value
+	}{
+		{name: "let", src: "(let ((a 1) (b 2)) (+ a b))", want: core.Int{V: 3}},
+		{name: "let*", src: "(let* ((a 1) (b (+ a 2))) b)", want: core.Int{V: 3}},
+		{name: "loop recur", src: "(loop ((i 0)) (if (< i 3) (recur (+ i 1)) i))", want: core.Int{V: 3}},
+		{name: "nested let", src: "(let ((a (let ((b 1)) b)) (c 2)) (+ a c))", want: core.Int{V: 3}},
+		{name: "let* shadowing", src: "(let* ((x 1) (x (+ x 1))) x)", want: core.Int{V: 2}},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			e := newEngine(t, mode.opts...)
+			for _, tc := range tests {
+				t.Run(tc.name, func(t *testing.T) {
+					got, err := e.Eval(context.Background(), "cl-bindings", tc.src)
+					require.NoError(t, err)
+					require.True(t, tc.want.Equals(got), "%s => %v, want %v", tc.src, got, tc.want)
+				})
+			}
+		})
+	}
+}
+
 // TestCL_VocabMap asserts that the CL vocabulary renames work.
 func TestCL_VocabMap(t *testing.T) {
 	e := newEngine(t)

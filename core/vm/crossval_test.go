@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
@@ -79,6 +80,12 @@ func newCrossValEnv() *core.Env {
 			return core.Bool{V: true}, nil
 		},
 	})
+	for _, name := range []string{"+", "-", "*", "<", ">", "="} {
+		v, ok := env.Get(name)
+		if ok {
+			env.SetFunc(name, v)
+		}
+	}
 	return env
 }
 
@@ -460,6 +467,25 @@ func TestVMVsTreeWalker_LoopRecur(t *testing.T) {
 			compare(t, env, tt.src)
 		})
 	}
+
+	t.Run("CL list binding forms", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name string
+			src  string
+		}{
+			{"let", "(let ((a 1) (b 2)) (+ a b))"},
+			{"let*", "(let* ((a 1) (b (+ a 2))) b)"},
+			{"loop", "(loop ((i 0) (acc 0)) (if (< i 4) (recur (+ i 1) (+ acc i)) acc))"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				compareDialect(t, newCrossValEnv(), cl.Dialect(), tt.src)
+			})
+		}
+	})
 }
 
 func TestVMVsTreeWalker_TryCatch(t *testing.T) {
