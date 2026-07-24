@@ -983,6 +983,7 @@ func (e *Env) mergeCell(name string, src *Cell, canonical bool) (mergeCellCommit
 		}, retainedRelease{}, nil
 	}
 
+	e.retainedBytes += src.retainedBytes - cell.retainedBytes
 	release := retainedRelease{}
 	if cell.retainedMeter != nil {
 		release = retainedRelease{
@@ -1018,6 +1019,7 @@ func (e *Env) mergeFuncCell(name string, src *Cell, canonical bool) (mergeCellCo
 		}, retainedRelease{}, nil
 	}
 
+	e.retainedBytes += src.retainedBytes - cell.retainedBytes
 	release := retainedRelease{}
 	if cell.retainedMeter != nil {
 		release = retainedRelease{
@@ -1033,8 +1035,8 @@ func (e *Env) mergeFuncCell(name string, src *Cell, canonical bool) (mergeCellCo
 	}, release, nil
 }
 
-// MergeInto copies all bindings from this env into target.
-// Does NOT copy parent bindings. Target is locked during merge.
+// MergeInto copies all local bindings from this env into target.
+// Does NOT copy parent bindings. Target writes are atomic against concurrent writes.
 func (e *Env) MergeInto(target *Env) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -1071,22 +1073,20 @@ func (e *Env) MergeInto(target *Env) error {
 			}
 		}
 	}
+	for _, commit := range commits {
+		commit.commit()
+	}
+	// Unlock before releasing: meters may re-enter the env during ReleaseRetained.
 	target.mu.Unlock()
 
 	for _, release := range releases {
 		release.meter.ReleaseRetained(release.bytes, release.slots)
 	}
-
-	target.mu.Lock()
-	for _, commit := range commits {
-		commit.commit()
-	}
-	target.mu.Unlock()
 	return nil
 }
 
-// MergeIntoCanonical copies all bindings from this env into target.
-// Canonical value-cell binds are preserved on merge.
+// MergeIntoCanonical copies all local bindings from this env into target.
+// Canonical value-cell binds are preserved, and target writes are atomic against concurrent writes.
 func (e *Env) MergeIntoCanonical(target *Env) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -1123,16 +1123,14 @@ func (e *Env) MergeIntoCanonical(target *Env) error {
 			}
 		}
 	}
+	for _, commit := range commits {
+		commit.commit()
+	}
+	// Unlock before releasing: meters may re-enter the env during ReleaseRetained.
 	target.mu.Unlock()
 
 	for _, release := range releases {
 		release.meter.ReleaseRetained(release.bytes, release.slots)
 	}
-
-	target.mu.Lock()
-	for _, commit := range commits {
-		commit.commit()
-	}
-	target.mu.Unlock()
 	return nil
 }

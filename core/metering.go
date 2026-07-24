@@ -258,39 +258,49 @@ type retainedRelease struct {
 	slots int64
 }
 
+// settleRetained charges pending retained cells in eval order by first-seen meter.
+// If a later meter denies the charge, every earlier successful meter is released
+// with the exact charged amounts; meters must treat ChargeRetained/ReleaseRetained
+// as symmetric for those amounts.
 func (st *evalState) settleRetained() error {
 	if len(st.pendingCellAllocs) == 0 {
 		return nil
 	}
+	defer func() {
+		st.pendingCellAllocs = nil
+		st.retainedBytes = 0
+		st.retainedSlots = 0
+	}()
+
 	for _, pending := range st.pendingCellAllocs {
 		if pending.env.RetainedMeter() == nil && pending.meter != nil {
 			pending.env.SetRetainedMeter(pending.meter)
 		}
 	}
 	charges := make(map[sessionMeter]*retainedCharge, len(st.pendingCellAllocs))
+	var chargeOrder []*retainedCharge
 	for _, pending := range st.pendingCellAllocs {
 		if pending.meter == nil || (pending.bytes == 0 && pending.slots == 0) {
 			continue
 		}
 		charge, ok := charges[pending.meter]
 		if !ok {
-			charges[pending.meter] = &retainedCharge{
-				meter: pending.meter,
-				bytes: pending.bytes,
-				slots: pending.slots,
-			}
-			continue
+			charge = &retainedCharge{meter: pending.meter}
+			charges[pending.meter] = charge
+			chargeOrder = append(chargeOrder, charge)
 		}
 		charge.bytes += pending.bytes
 		charge.slots += pending.slots
 	}
-	for _, charge := range charges {
+	var charged []*retainedCharge
+	for _, charge := range chargeOrder {
 		if err := charge.meter.ChargeRetained(charge.bytes, charge.slots); err != nil {
-			st.pendingCellAllocs = nil
-			st.retainedBytes = 0
-			st.retainedSlots = 0
+			for _, prev := range charged {
+				prev.meter.ReleaseRetained(prev.bytes, prev.slots)
+			}
 			return NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
 		}
+		charged = append(charged, charge)
 	}
 
 	var releases []retainedRelease
@@ -309,9 +319,6 @@ func (st *evalState) settleRetained() error {
 	for _, release := range releases {
 		release.meter.ReleaseRetained(release.bytes, release.slots)
 	}
-	st.pendingCellAllocs = nil
-	st.retainedBytes = 0
-	st.retainedSlots = 0
 	return nil
 }
 

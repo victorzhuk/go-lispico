@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Env merges are now atomic against concurrent writes, retained usage stays
+  consistent across merge overwrites, and multi-meter retained settlement
+  rolls back earlier charges on partial failure.
+
 - `assoc` and fused native-op results now charge the evaluation allocation
   ledger: deep result bytes for `assoc`, fixed scalar bytes for fused ops.
 
