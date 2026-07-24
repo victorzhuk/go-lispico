@@ -1283,6 +1283,43 @@ func TestCompiler_CellEmission_SetOnCaptured(t *testing.T) {
 	assert.Equal(t, 1, getCell, "own read derefs")
 }
 
+func TestCompiler_CellEmission_RecurOnCapturedSlotBindsFreshCell(t *testing.T) {
+	c := NewCompiler("test")
+	forms, err := core.Read("(loop [i 0 acc []] (if (< i 2) (recur (+ i 1) (conj acc (fn [] i))) acc))")
+	require.NoError(t, err)
+	require.NoError(t, c.Compile(forms[0]))
+	c.Chunk().Emit(vm.OpReturn, 0)
+	c.MarkCaptures()
+
+	var bindCell, setCell int
+	for _, inst := range c.Chunk().Code {
+		switch inst.Op() {
+		case vm.OpBindCell:
+			bindCell++
+		case vm.OpSetCell:
+			setCell++
+		}
+	}
+	assert.Equal(t, 2, bindCell, "initial bind and recur rebind both box captured i")
+	assert.Zero(t, setCell, "recur rebinds captured loop slot instead of writing through")
+}
+
+func TestCompiler_CellEmission_RecurOnUncapturedSlotUntouched(t *testing.T) {
+	c := NewCompiler("test")
+	forms, err := core.Read("(loop [i 0 acc 0] (if (< i 2) (recur (+ i 1) (+ acc i)) acc))")
+	require.NoError(t, err)
+	require.NoError(t, c.Compile(forms[0]))
+	c.Chunk().Emit(vm.OpReturn, 0)
+	c.MarkCaptures()
+
+	for _, inst := range c.Chunk().Code {
+		switch inst.Op() {
+		case vm.OpGetCell, vm.OpSetCell, vm.OpBindCell:
+			t.Fatalf("uncaptured loop emitted cell opcode: %v", inst)
+		}
+	}
+}
+
 func TestCompileAll(t *testing.T) {
 	forms := []core.Value{
 		core.Int{V: 1},

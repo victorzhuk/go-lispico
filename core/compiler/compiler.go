@@ -575,7 +575,13 @@ func (c *Compiler) compileRecur(args []core.Value) error {
 		}
 	}
 	for i := len(loop.slots) - 1; i >= 0; i-- {
-		c.emit(vm.OpSetLocal, loop.slots[i])
+		ip := c.emit(vm.OpSetLocal, loop.slots[i])
+		if loop.slots[i] < len(c.chunk.Captured) && c.chunk.Captured[loop.slots[i]] {
+			if c.binds == nil {
+				c.binds = map[int]bool{}
+			}
+			c.binds[ip] = true
+		}
 		c.emit(vm.OpPop, 0)
 	}
 	c.emitLoop(loop.start)

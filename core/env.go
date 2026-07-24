@@ -385,6 +385,54 @@ func (e *Env) SetWithContext(ctx context.Context, name string, val Value) error 
 	return nil
 }
 
+// ReplaceCell installs a fresh local value cell for name.
+func (e *Env) ReplaceCell(name string, val Value) error {
+	return e.ReplaceCellWithContext(context.Background(), name, val)
+}
+
+// ReplaceCellWithContext installs a fresh local value cell for name.
+func (e *Env) ReplaceCellWithContext(ctx context.Context, name string, val Value) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	old, ok := e.vars[name]
+	b := retainedBindingBytes(name, val)
+	var meter sessionMeter
+	var st *evalState
+	var pending bool
+	if !ok {
+		var err error
+		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		if err != nil {
+			return err
+		}
+	}
+	cell := &Cell{v: val}
+	cell.version.Add(1)
+	e.vars[name] = cell
+	if !ok || old.v == nil {
+		e.newNameGen.Add(1)
+	}
+	if !ok {
+		recordFreshRetained(st, pending, e, cell, meter, b)
+	}
+	return nil
+}
+
+func (e *Env) forkCells(parent *Env, names []Symbol) *Env {
+	next := NewEnv(parent)
+	next.vars = make(map[string]*Cell, len(names))
+	e.mu.RLock()
+	next.mu.Lock()
+	for _, name := range names {
+		if cell, ok := e.vars[name.V]; ok && cell.v != nil {
+			next.vars[name.V] = cell
+		}
+	}
+	next.mu.Unlock()
+	e.mu.RUnlock()
+	return next
+}
+
 // SetCanonical binds name as a canonical operator in this scope.
 // It is intended ONLY for the stdlib plugin to register its builtins during
 // engine initialization. Marking an arbitrary custom GoFunc as canonical will

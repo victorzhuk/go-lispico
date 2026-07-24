@@ -1034,6 +1034,345 @@ func evalSet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	return val, nil
 }
 
+func loopCapturedVars(ctx context.Context, e *engine, body []Value, vars []Symbol, env *Env) map[string]bool {
+	if len(vars) == 0 || !formsMayCreateClosure(ctx, e, body, env) {
+		return nil
+	}
+	targets := make(map[string]bool, len(vars))
+	for _, v := range vars {
+		targets[v.V] = true
+	}
+	var captured map[string]bool
+	for _, form := range body {
+		scanLoopCapture(ctx, e, env, form, targets, nil, &captured)
+	}
+	return captured
+}
+
+func formsMayCreateClosure(ctx context.Context, e *engine, forms []Value, env *Env) bool {
+	for _, form := range forms {
+		if formMayCreateClosure(ctx, e, form, env) {
+			return true
+		}
+	}
+	return false
+}
+
+func formMayCreateClosure(ctx context.Context, e *engine, form Value, env *Env) bool {
+	switch v := form.(type) {
+	case List:
+		if len(v.Items) == 0 {
+			return false
+		}
+		if head, ok := v.Items[0].(Symbol); ok {
+			switch head.V {
+			case "quote":
+				return false
+			case "fn", "defn", "defmacro":
+				return true
+			}
+		}
+		if expanded, ok := expandMacroForLoopScan(ctx, e, v, env); ok {
+			return formMayCreateClosure(ctx, e, expanded, env)
+		}
+		for _, item := range v.Items {
+			if formMayCreateClosure(ctx, e, item, env) {
+				return true
+			}
+		}
+	case Vector:
+		for _, item := range v.Items {
+			if formMayCreateClosure(ctx, e, item, env) {
+				return true
+			}
+		}
+	case *HashMap:
+		found := false
+		v.Each(func(k, val Value) {
+			if found {
+				return
+			}
+			found = formMayCreateClosure(ctx, e, k, env) || formMayCreateClosure(ctx, e, val, env)
+		})
+		return found
+	}
+	return false
+}
+
+func expandMacroForLoopScan(ctx context.Context, e *engine, list List, env *Env) (Value, bool) {
+	if head, ok := list.Items[0].(Symbol); ok {
+		if _, special := e.forms[head.V]; special {
+			return nil, false
+		}
+	}
+	fn, err := e.Eval(ctx, list.Items[0], env)
+	if err != nil {
+		return nil, false
+	}
+	macro, ok := fn.(Macro)
+	if !ok {
+		return nil, false
+	}
+	expanded, err := e.expandMacroForm(ctx, macro, list.Items[1:])
+	if err != nil {
+		return nil, false
+	}
+	return expanded, true
+}
+
+func scanLoopCapture(ctx context.Context, e *engine, env *Env, form Value, targets map[string]bool, shadow map[string]bool, captured *map[string]bool) {
+	switch v := form.(type) {
+	case List:
+		if len(v.Items) == 0 {
+			return
+		}
+		if expanded, ok := expandMacroForLoopScan(ctx, e, v, env); ok {
+			scanLoopCapture(ctx, e, env, expanded, targets, shadow, captured)
+			return
+		}
+		if head, ok := v.Items[0].(Symbol); ok {
+			switch head.V {
+			case "quote":
+				return
+			case "fn":
+				if len(v.Items) >= 3 {
+					params, err := paramsAsVector(v.Items[1])
+					if err == nil {
+						fixed, variadic, err := parseParams(params)
+						if err != nil {
+							return
+						}
+						nextShadow := extendShadow(shadow, fixed, variadic)
+						for name := range targets {
+							if shadow[name] {
+								continue
+							}
+							if formsReferenceTargets(ctx, e, env, v.Items[2:], map[string]bool{name: true}, nextShadow) {
+								markLoopCaptured(captured, name)
+							}
+						}
+					}
+				}
+				return
+			case "defn", "defmacro":
+				if len(v.Items) >= 4 {
+					params, err := paramsAsVector(v.Items[2])
+					if err == nil {
+						fixed, variadic, err := parseParams(params)
+						if err != nil {
+							return
+						}
+						nextShadow := extendShadow(shadow, fixed, variadic)
+						for name := range targets {
+							if shadow[name] {
+								continue
+							}
+							if formsReferenceTargets(ctx, e, env, v.Items[3:], map[string]bool{name: true}, nextShadow) {
+								markLoopCaptured(captured, name)
+							}
+						}
+					}
+				}
+				return
+			case "let", "loop":
+				scanBindingFormCapture(ctx, e, env, v.Items[1:], targets, shadow, captured, false)
+				return
+			case "let*":
+				scanBindingFormCapture(ctx, e, env, v.Items[1:], targets, shadow, captured, true)
+				return
+			}
+		}
+		for _, item := range v.Items {
+			scanLoopCapture(ctx, e, env, item, targets, shadow, captured)
+		}
+	case Vector:
+		for _, item := range v.Items {
+			scanLoopCapture(ctx, e, env, item, targets, shadow, captured)
+		}
+	case *HashMap:
+		v.Each(func(k, val Value) {
+			scanLoopCapture(ctx, e, env, k, targets, shadow, captured)
+			scanLoopCapture(ctx, e, env, val, targets, shadow, captured)
+		})
+	}
+}
+
+func scanBindingFormCapture(ctx context.Context, e *engine, env *Env, args []Value, targets, shadow map[string]bool, captured *map[string]bool, sequential bool) {
+	if len(args) < 2 {
+		for _, item := range args {
+			scanLoopCapture(ctx, e, env, item, targets, shadow, captured)
+		}
+		return
+	}
+	bindings, err := NormalizeBindings("binding", args[0])
+	if err != nil {
+		for _, item := range args {
+			scanLoopCapture(ctx, e, env, item, targets, shadow, captured)
+		}
+		return
+	}
+	bodyShadow := shadow
+	for _, binding := range bindings {
+		scanLoopCapture(ctx, e, env, binding.Value, targets, bodyShadow, captured)
+		if sequential {
+			bodyShadow = addShadow(bodyShadow, binding.Name.V)
+		}
+	}
+	if !sequential {
+		for _, binding := range bindings {
+			bodyShadow = addShadow(bodyShadow, binding.Name.V)
+		}
+	}
+	for _, item := range args[1:] {
+		scanLoopCapture(ctx, e, env, item, targets, bodyShadow, captured)
+	}
+}
+
+func markLoopCaptured(captured *map[string]bool, name string) {
+	if *captured == nil {
+		*captured = make(map[string]bool, 1)
+	}
+	(*captured)[name] = true
+}
+
+func formsReferenceTargets(ctx context.Context, e *engine, env *Env, forms []Value, targets, shadow map[string]bool) bool {
+	for _, form := range forms {
+		if formReferencesTarget(ctx, e, env, form, targets, shadow) {
+			return true
+		}
+	}
+	return false
+}
+
+func formReferencesTarget(ctx context.Context, e *engine, env *Env, form Value, targets, shadow map[string]bool) bool {
+	switch v := form.(type) {
+	case Symbol:
+		return targets[v.V] && !shadow[v.V]
+	case Vector:
+		for _, item := range v.Items {
+			if formReferencesTarget(ctx, e, env, item, targets, shadow) {
+				return true
+			}
+		}
+	case *HashMap:
+		found := false
+		v.Each(func(k, val Value) {
+			if found {
+				return
+			}
+			found = formReferencesTarget(ctx, e, env, k, targets, shadow) || formReferencesTarget(ctx, e, env, val, targets, shadow)
+		})
+		return found
+	case List:
+		return listReferencesTarget(ctx, e, env, v.Items, targets, shadow)
+	}
+	return false
+}
+
+func listReferencesTarget(ctx context.Context, e *engine, env *Env, items []Value, targets, shadow map[string]bool) bool {
+	if len(items) == 0 {
+		return false
+	}
+	list := List{Items: items}
+	if expanded, ok := expandMacroForLoopScan(ctx, e, list, env); ok {
+		return formReferencesTarget(ctx, e, env, expanded, targets, shadow)
+	}
+	head, special := items[0].(Symbol)
+	if !special {
+		return formsReferenceTargets(ctx, e, env, items, targets, shadow)
+	}
+	switch head.V {
+	case "quote":
+		return false
+	case "fn":
+		if len(items) < 3 {
+			return false
+		}
+		params, err := paramsAsVector(items[1])
+		if err != nil {
+			return false
+		}
+		fixed, variadic, err := parseParams(params)
+		if err != nil {
+			return false
+		}
+		return formsReferenceTargets(ctx, e, env, items[2:], targets, extendShadow(shadow, fixed, variadic))
+	case "defn", "defmacro":
+		if len(items) < 4 {
+			return false
+		}
+		params, err := paramsAsVector(items[2])
+		if err != nil {
+			return false
+		}
+		fixed, variadic, err := parseParams(params)
+		if err != nil {
+			return false
+		}
+		return formsReferenceTargets(ctx, e, env, items[3:], targets, extendShadow(shadow, fixed, variadic))
+	case "let", "loop":
+		return bindingFormReferencesTarget(ctx, e, env, items[1:], targets, shadow, false)
+	case "let*":
+		return bindingFormReferencesTarget(ctx, e, env, items[1:], targets, shadow, true)
+	case "set!":
+		if len(items) != 3 {
+			return formsReferenceTargets(ctx, e, env, items[1:], targets, shadow)
+		}
+		if name, ok := items[1].(Symbol); ok && targets[name.V] && !shadow[name.V] {
+			return true
+		}
+		return formReferencesTarget(ctx, e, env, items[2], targets, shadow)
+	default:
+		return formsReferenceTargets(ctx, e, env, items, targets, shadow)
+	}
+}
+
+func bindingFormReferencesTarget(ctx context.Context, e *engine, env *Env, args []Value, targets, shadow map[string]bool, sequential bool) bool {
+	if len(args) < 2 {
+		return formsReferenceTargets(ctx, e, env, args, targets, shadow)
+	}
+	bindings, err := NormalizeBindings("binding", args[0])
+	if err != nil {
+		return formsReferenceTargets(ctx, e, env, args, targets, shadow)
+	}
+	bodyShadow := shadow
+	for _, binding := range bindings {
+		if formReferencesTarget(ctx, e, env, binding.Value, targets, bodyShadow) {
+			return true
+		}
+		if sequential {
+			bodyShadow = addShadow(bodyShadow, binding.Name.V)
+		}
+	}
+	if !sequential {
+		for _, binding := range bindings {
+			bodyShadow = addShadow(bodyShadow, binding.Name.V)
+		}
+	}
+	return formsReferenceTargets(ctx, e, env, args[1:], targets, bodyShadow)
+}
+
+func extendShadow(shadow map[string]bool, fixed []Symbol, variadic Symbol) map[string]bool {
+	next := shadow
+	for _, sym := range fixed {
+		next = addShadow(next, sym.V)
+	}
+	if variadic.V != "" {
+		next = addShadow(next, variadic.V)
+	}
+	return next
+}
+
+func addShadow(shadow map[string]bool, name string) map[string]bool {
+	if shadow[name] {
+		return shadow
+	}
+	next := make(map[string]bool, len(shadow)+1)
+	maps.Copy(next, shadow)
+	next[name] = true
+	return next
+}
+
 func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
 		return nil, evalErrorf("loop requires at least 2 arguments")
@@ -1056,7 +1395,7 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		}
 		loopVars = append(loopVars, binding.Name)
 	}
-
+	captured := loopCapturedVars(ctx, e, args[1:], loopVars, loopEnv)
 	st := evalStateFrom(ctx)
 	st.loopDepth.Add(1)
 	defer func() { st.loopDepth.Add(-1) }()
@@ -1073,8 +1412,24 @@ func evalLoop(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		if len(rv.args) != len(loopVars) {
 			return nil, evalErrorf("recur: expected %d args, got %d", len(loopVars), len(rv.args))
 		}
+		if len(captured) > 0 {
+			next := loopEnv.forkCells(env, loopVars)
+			for i, v := range loopVars {
+				if captured[v.V] {
+					if err := next.ReplaceCellWithContext(ctx, v.V, rv.args[i]); err != nil {
+						return nil, err
+					}
+					continue
+				}
+				if err := next.SetWithContext(ctx, v.V, rv.args[i]); err != nil {
+					return nil, err
+				}
+			}
+			loopEnv = next
+			continue
+		}
 		for i, v := range loopVars {
-			if err := loopEnv.Set(v.V, rv.args[i]); err != nil {
+			if err := loopEnv.SetWithContext(ctx, v.V, rv.args[i]); err != nil {
 				return nil, err
 			}
 		}

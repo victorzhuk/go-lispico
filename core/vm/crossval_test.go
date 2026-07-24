@@ -1727,7 +1727,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
 
 	cells := []captureCell{
 		{
-			name: "closure in loop shares the loop binding across iterations",
+			name: "closure in loop captures each iteration binding",
 			lisp1: `
 (def f0 nil)
 (def f1 nil)
@@ -1744,7 +1744,91 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
     (do (if (= i 0) (set! f0 (fn [] i)) (set! f1 (fn [] i)))
         (recur (+ i 1)))
     (list (funcall f0) (funcall f1))))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 2}}},
+			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}}},
+		},
+		{
+			name: "closures accumulated in loop capture each iteration binding",
+			lisp1: `
+(def fns (loop [i 0 acc []]
+  (if (< i 3)
+    (recur (+ i 1) (conj acc (fn [] i)))
+    acc)))
+(list ((nth fns 0)) ((nth fns 1)) ((nth fns 2)))`,
+			lisp2: `
+(def fns (loop [i 0 acc []]
+  (if (< i 3)
+    (recur (+ i 1) (conj acc (fn [] i)))
+    acc)))
+(list (funcall (nth fns 0)) (funcall (nth fns 1)) (funcall (nth fns 2)))`,
+			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 2}}},
+		},
+		{
+			name: "set before closure in loop writes through current iteration only",
+			lisp1: `
+(def fns (loop [i 0 acc []]
+  (if (< i 2)
+    (do
+      (set! i (+ i 10))
+      (recur (- i 9) (conj acc (fn [] i))))
+    acc)))
+(list ((nth fns 0)) ((nth fns 1)))`,
+			lisp2: `
+(def fns (loop [i 0 acc []]
+  (if (< i 2)
+    (do
+      (set! i (+ i 10))
+      (recur (- i 9) (conj acc (fn [] i))))
+    acc)))
+(list (funcall (nth fns 0)) (funcall (nth fns 1)))`,
+			expected: core.List{Items: []core.Value{core.Int{V: 10}, core.Int{V: 11}}},
+		},
+		{
+			name: "nested loop captures both loop slots per iteration",
+			lisp1: `
+(def f0 nil)
+(def f1 nil)
+(def f2 nil)
+(def f3 nil)
+(loop [i 0]
+  (if (< i 2)
+    (do
+      (loop [j 0]
+        (if (< j 2)
+          (do
+            (if (= i 0)
+              (if (= j 0)
+                (set! f0 (fn [] (+ (* i 10) j)))
+                (set! f1 (fn [] (+ (* i 10) j))))
+              (if (= j 0)
+                (set! f2 (fn [] (+ (* i 10) j)))
+                (set! f3 (fn [] (+ (* i 10) j)))))
+            (recur (+ j 1)))
+          nil))
+      (recur (+ i 1)))
+    (list (f0) (f1) (f2) (f3))))`,
+			lisp2: `
+(def f0 nil)
+(def f1 nil)
+(def f2 nil)
+(def f3 nil)
+(loop [i 0]
+  (if (< i 2)
+    (do
+      (loop [j 0]
+        (if (< j 2)
+          (do
+            (if (= i 0)
+              (if (= j 0)
+                (set! f0 (fn [] (+ (* i 10) j)))
+                (set! f1 (fn [] (+ (* i 10) j))))
+              (if (= j 0)
+                (set! f2 (fn [] (+ (* i 10) j)))
+                (set! f3 (fn [] (+ (* i 10) j)))))
+            (recur (+ j 1)))
+          nil))
+      (recur (+ i 1)))
+    (list (funcall f0) (funcall f1) (funcall f2) (funcall f3))))`,
+			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 10}, core.Int{V: 11}}},
 		},
 		{
 			name: "closure over let in loop gets a fresh binding per iteration",
@@ -1897,5 +1981,94 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
 					vmResult, vmResult, treeResult, treeResult)
 			})
 		}
+	}
+}
+
+func TestVMVsTreeWalker_ClosureCaptureSemantics_MacroGeneratedLoopClosure(t *testing.T) {
+	t.Parallel()
+
+	const src = `
+(defmacro cap [] (quote (fn [] i)))
+(def fns (loop [i 0 acc []]
+  (if (< i 3)
+    (recur (+ i 1) (conj acc (cap)))
+    acc)))
+(list ((nth fns 0)) ((nth fns 1)) ((nth fns 2)))`
+	expected := core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 2}}}
+
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEval := core.NewEvaluator()
+	treeEnv := stdlibEnv()
+	var treeResult core.Value = core.Nil{}
+	for _, form := range forms {
+		treeResult, err = treeEval.Eval(context.Background(), form, treeEnv)
+		require.NoError(t, err, "tree-walker eval")
+	}
+	assert.True(t, expected.Equals(treeResult), "tree-walker result %v != expected %v", treeResult, expected)
+
+	macroEval := core.NewEvaluator()
+	macroEnv := stdlibEnv()
+	vmEnv := stdlibEnv()
+	v := vm.New(vmEnv)
+	var vmResult core.Value = core.Nil{}
+	for _, form := range forms {
+		if list, ok := form.(core.List); ok && len(list.Items) > 0 {
+			if head, ok := list.Items[0].(core.Symbol); ok && head.V == "defmacro" {
+				_, err = macroEval.Eval(context.Background(), form, macroEnv)
+				require.NoError(t, err, "define macro")
+				continue
+			}
+		}
+		expanded := expandMacrosDeepForCrossVal(t, macroEval, macroEnv, form)
+		chunks, err := compiler.CompileAll([]core.Value{expanded})
+		require.NoError(t, err, "compile")
+		vmResult, err = v.Run(context.Background(), chunks[0])
+		require.NoError(t, err, "vm run")
+	}
+	assert.True(t, treeResult.Equals(vmResult),
+		"VM result %v (%T) != tree-walker result %v (%T)",
+		vmResult, vmResult, treeResult, treeResult)
+}
+
+type macroExpander interface {
+	MacroExpand(context.Context, core.Value, *core.Env) (core.Value, error)
+}
+
+func expandMacrosDeepForCrossVal(t *testing.T, expander macroExpander, env *core.Env, form core.Value) core.Value {
+	t.Helper()
+
+	expanded, err := expander.MacroExpand(context.Background(), form, env)
+	require.NoError(t, err, "macro expand")
+	switch v := expanded.(type) {
+	case core.List:
+		if len(v.Items) == 0 {
+			return v
+		}
+		if head, ok := v.Items[0].(core.Symbol); ok && head.V == "quote" {
+			return v
+		}
+		items := make([]core.Value, len(v.Items))
+		for i, item := range v.Items {
+			items[i] = expandMacrosDeepForCrossVal(t, expander, env, item)
+		}
+		return core.List{Items: items}
+	case core.Vector:
+		items := make([]core.Value, len(v.Items))
+		for i, item := range v.Items {
+			items[i] = expandMacrosDeepForCrossVal(t, expander, env, item)
+		}
+		return core.Vector{Items: items}
+	case *core.HashMap:
+		result := core.NewHashMap()
+		v.Each(func(k, val core.Value) {
+			key := expandMacrosDeepForCrossVal(t, expander, env, k)
+			value := expandMacrosDeepForCrossVal(t, expander, env, val)
+			require.NoError(t, result.Set(key, value))
+		})
+		return result
+	default:
+		return expanded
 	}
 }
