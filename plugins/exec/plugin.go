@@ -21,6 +21,7 @@ func (p *Plugin) Metadata() core.PluginMeta {
 		Version:     "1.0.0",
 		Description: "Process execution and crypto utilities for go-lispico",
 		Author:      "go-lispico team",
+		Lifecycle:   "frozen",
 	}
 }
 

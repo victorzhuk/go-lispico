@@ -318,10 +318,14 @@ func (e *engineImpl) ListPlugins() []PluginStatus {
 		}
 
 		meta := p.Metadata()
+		status := meta.Lifecycle
+		if status == "" {
+			status = "active"
+		}
 		statuses = append(statuses, PluginStatus{
 			Name:    name,
 			Version: meta.Version,
-			Status:  "active",
+			Status:  status,
 		})
 	}
 

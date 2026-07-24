@@ -31,6 +31,7 @@ func (p *Plugin) Metadata() core.PluginMeta {
 		Version:     "1.0.0",
 		Description: "finite state machine plugin",
 		Author:      "go-lispico team",
+		Lifecycle:   "idle",
 	}
 }
 

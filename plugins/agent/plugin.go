@@ -33,6 +33,7 @@ func (p *Plugin) Metadata() core.PluginMeta {
 		Version:     "1.0.0",
 		Description: "agent orchestration for go-lispico",
 		Author:      "go-lispico team",
+		Lifecycle:   "frozen",
 	}
 }
 

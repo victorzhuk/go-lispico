@@ -27,6 +27,7 @@ type PluginMeta struct {
 	Version     string
 	Description string
 	Author      string
+	Lifecycle   string   // "active", "idle", "frozen"; empty defaults to "active"
 	Deps        []string // Go module paths this plugin requires
 }
 

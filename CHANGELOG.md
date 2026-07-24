@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ListPlugins()` now reports each plugin's real lifecycle status instead of always returning "active".
 - Env merges are now atomic against concurrent writes, retained usage stays
   consistent across merge overwrites, and multi-meter retained settlement
   rolls back earlier charges on partial failure.

@@ -14,6 +14,7 @@ import (
 type mockPlugin struct {
 	name       string
 	version    string
+	lifecycle  string
 	initErr    error
 	initCalled bool
 	initCount  int
@@ -30,9 +31,13 @@ func (m *mockPlugin) Init(env *core.Env) error {
 }
 
 func (m *mockPlugin) Metadata() core.PluginMeta {
-	return core.PluginMeta{
+	meta := core.PluginMeta{
 		Version: m.version,
 	}
+	if m.lifecycle != "" {
+		meta.Lifecycle = m.lifecycle
+	}
+	return meta
 }
 
 func TestUse_Success(t *testing.T) {
@@ -330,6 +335,48 @@ func TestListPlugins_AfterUnload(t *testing.T) {
 
 	require.Len(t, statuses, 1)
 	assert.Equal(t, "beta", statuses[0].Name)
+}
+
+func TestListPlugins_LifecycleFromPlugins(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	require.NoError(t, eng.Use(&mockPlugin{name: "active-p", version: "1.0.0", lifecycle: "active"}))
+	require.NoError(t, eng.Use(&mockPlugin{name: "idle-p", version: "1.0.0", lifecycle: "idle"}))
+	require.NoError(t, eng.Use(&mockPlugin{name: "frozen-p", version: "1.0.0", lifecycle: "frozen"}))
+
+	statuses := eng.ListPlugins()
+	require.Len(t, statuses, 3)
+
+	for _, s := range statuses {
+		switch s.Name {
+		case "active-p":
+			assert.Equal(t, "active", s.Status)
+		case "idle-p":
+			assert.Equal(t, "idle", s.Status)
+		case "frozen-p":
+			assert.Equal(t, "frozen", s.Status)
+		}
+	}
+}
+
+func TestListPlugins_DefaultLifecycleForThirdParty(t *testing.T) {
+	t.Parallel()
+
+	log := slog.Default()
+	eng, err := New(log)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	require.NoError(t, eng.Use(&mockPlugin{name: "third-party", version: "0.1.0"}))
+
+	statuses := eng.ListPlugins()
+	require.Len(t, statuses, 1)
+	assert.Equal(t, "active", statuses[0].Status)
 }
 
 // bindingPlugin registers named GoFuncs in Init, optionally in both the value
