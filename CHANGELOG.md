@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bytecode VM state is reset or discarded before reuse.
 - Amplifying `json/decode` and `format` builtins now charge the evaluation
   allocation ledger for constructed output before returning oversized results.
+- `EvalWithBindings` and `LoadScope` now recover `GoFunc` panics and return
+  them as `PanicError`, matching `Engine.Eval`; a recovered `LoadScope` call
+  returns a nil scope.
+- **Breaking:** a `GoFunc` panic during `Watch` background hot-reload no
+  longer crashes the host process; the reload reports an error through the
+  watcher log and the watch loop keeps running.
 
 - Fix Lisp-2 vocabulary bridge overwriting user function-cell redefinitions on subsequent plugin `Use()` calls.
 
