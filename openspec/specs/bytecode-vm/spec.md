@@ -168,7 +168,14 @@ assert identical results, and the runtime SHALL be tested end to end through
 
 The VM SHALL execute `+`, `-`, `*`, `/`, `<`, `>`, `<=`, `>=`, `=` through
 dedicated opcodes operating on stack slots, with semantics identical to the stdlib
-builtins including int/float promotion and division-by-zero errors. The compiler
+builtins including int/float promotion and division-by-zero errors. The VM MAY
+specialize execution for a subset of argument shapes — for example two arguments
+that are both integers — but a specialized path SHALL be indistinguishable from
+the general path in every observable respect: the same result value, the same
+error, and the same allocation charged to the evaluation ledger. In particular
+integer overflow SHALL wrap identically on both paths, since the general path
+relies on Go's wrapping arithmetic and a specialized path that instead reported
+an error or saturated would change observable behavior. The compiler
 SHALL emit these opcodes for a canonical native operator whether or not a dialect
 is configured — a configured dialect (the shipped runtime path) SHALL NOT suppress
 native-opcode emission for an operator that is not a special form and not locally
@@ -205,6 +212,11 @@ operator SHALL take the native path on every execution — not intermittently.
 
 - **WHEN** `(+ 1 2.5)` and `(< 1 1.5)` run under the VM
 - **THEN** results SHALL equal the stdlib builtins' results (`3.5`, `true`)
+
+#### Scenario: Specialized and general paths agree
+
+- **WHEN** the same operator is applied to two integers, including values at the `int64` limits where the result wraps, and to argument shapes the specialization does not cover
+- **THEN** results, errors, and charged allocation SHALL be identical to what the general path produces for the same arguments
 
 #### Scenario: Rebound operator falls back
 
