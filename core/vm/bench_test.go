@@ -47,11 +47,30 @@ func newBenchEnv() *core.Env {
 	env.SetCanonical("+", core.GoFunc{
 		Name: "+",
 		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
-			var sum int64
+			var intSum int64
+			var floatSum float64
+			hasFloat := false
 			for _, a := range args {
-				sum += a.(core.Int).V
+				switch v := a.(type) {
+				case core.Float:
+					if !hasFloat {
+						floatSum = float64(intSum)
+						hasFloat = true
+					}
+					floatSum += v.V
+				default:
+					n := v.(core.Int).V
+					if hasFloat {
+						floatSum += float64(n)
+					} else {
+						intSum += n
+					}
+				}
 			}
-			return core.Int{V: sum}, nil
+			if hasFloat {
+				return core.Float{V: floatSum}, nil
+			}
+			return core.Int{V: intSum}, nil
 		},
 	})
 	env.SetCanonical("-", core.GoFunc{
@@ -441,6 +460,78 @@ func BenchmarkSimpleArithmetic_VM(b *testing.B) {
 
 func BenchmarkSimpleArithmetic_TreeWalker(b *testing.B) {
 	src := "(+ 1 2 3 4 5)"
+	forms, _ := core.Read(src)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+// BenchmarkArithMixedType_VM/_TreeWalker covers the int/float-mixing branch
+// of nativeAdd, which a fast path gated on all-Int operands must fall
+// through to unchanged.
+func BenchmarkArithMixedType_VM(b *testing.B) {
+	src := "(+ 1 2.5 3)"
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkArithMixedType_TreeWalker(b *testing.B) {
+	src := "(+ 1 2.5 3)"
+	forms, _ := core.Read(src)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+// BenchmarkComparisonNary_VM/_TreeWalker covers N-ary comparison, which no
+// other benchmark exercises (Fibonacci's `(< n 2)` is 2-arg only) and which
+// a fast path gated on argc==2 must fall through to unchanged.
+func BenchmarkComparisonNary_VM(b *testing.B) {
+	src := "(< 1 2 3)"
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkComparisonNary_TreeWalker(b *testing.B) {
+	src := "(< 1 2 3)"
 	forms, _ := core.Read(src)
 
 	b.ReportAllocs()

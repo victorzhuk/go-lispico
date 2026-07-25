@@ -1108,23 +1108,87 @@ func (vm *VM) dispatchNativeOp(ctx context.Context, env *core.Env, op Opcode, ar
 
 // execNativeFastFused runs op over the argc values already on top of the stack,
 // replacing them with the result (the operator head slot was already dropped).
+// The two-argument, both-Int shape dominates rule code, so it is special-cased
+// through nativeInt2 before falling back to the general N-ary/mixed-type path.
 func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
 	d := len(vm.stack) - argc
 	args := vm.stack[d:]
-	eval := vm.eval
-	if eval == nil {
-		eval = core.NewEvaluator()
+
+	var result core.Value
+	var handled bool
+	if argc == 2 {
+		if a, aOK := args[0].(core.Int); aOK {
+			if b, bOK := args[1].(core.Int); bOK {
+				result, handled = nativeInt2(op, a, b)
+			}
+		}
 	}
-	result, err := execNative(eval, op, args, env)
-	if err != nil {
-		return err
+	if !handled {
+		eval := vm.eval
+		if eval == nil {
+			eval = core.NewEvaluator()
+		}
+		var err error
+		result, err = execNative(eval, op, args, env)
+		if err != nil {
+			return err
+		}
 	}
+
 	if err := vm.chargeAllocBytes(core.MeterScalarBytes); err != nil {
 		return err
 	}
 	vm.stack = vm.stack[:d]
 	vm.push(result)
 	return nil
+}
+
+// nativeInt2 handles the two-argument, both-Int shape of op without the
+// N-ary loop, float-promotion tracking, or formatted errors nativeAdd and its
+// siblings carry for the general case. It reports handled == false for any
+// op or edge case (division by zero) it does not cover, leaving the caller to
+// fall through to the general native functions below unchanged.
+func nativeInt2(op Opcode, a, b core.Int) (core.Value, bool) {
+	switch op {
+	case OpAdd:
+		return addInt2(a, b), true
+	case OpSub:
+		return subInt2(a, b), true
+	case OpMul:
+		return mulInt2(a, b), true
+	case OpDiv:
+		return divInt2(a, b)
+	case OpLt:
+		return core.BoxBool(a.V < b.V), true
+	case OpGt:
+		return core.BoxBool(a.V > b.V), true
+	case OpLe:
+		return core.BoxBool(a.V <= b.V), true
+	case OpGe:
+		return core.BoxBool(a.V >= b.V), true
+	case OpEq:
+		return core.BoxBool(a.V == b.V), true
+	default:
+		return nil, false
+	}
+}
+
+// addInt2, subInt2, and mulInt2 mirror nativeAdd/nativeSub/nativeMul's
+// two-Int case exactly, including int64 wraparound on overflow: Go's +/-/*
+// wrap the same way nativeAdd/nativeSub/nativeMul's plain int64 accumulation
+// does, and neither special-cases it.
+func addInt2(a, b core.Int) core.Value { return core.BoxInt(a.V + b.V) }
+func subInt2(a, b core.Int) core.Value { return core.BoxInt(a.V - b.V) }
+func mulInt2(a, b core.Int) core.Value { return core.BoxInt(a.V * b.V) }
+
+// divInt2 mirrors nativeDiv's two-Int case: int/int always yields Float, and
+// division by zero is left unhandled so the caller falls through to nativeDiv
+// for its "division by zero" error.
+func divInt2(a, b core.Int) (core.Value, bool) {
+	if b.V == 0 {
+		return nil, false
+	}
+	return core.Float{V: float64(a.V) / float64(b.V)}, true
 }
 
 // resolveGlobalValue resolves sym to its value and canonical flag for env. A
