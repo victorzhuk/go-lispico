@@ -321,3 +321,59 @@ func BenchmarkHashMap_ScanVsMap(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkHashMap_AssocChain threads a map through N immutable Assoc calls —
+// the shape `(reduce assoc {} pairs)` compiles to. Per-op cost that rises with
+// n means each call is copying the accumulated map rather than sharing it.
+func BenchmarkHashMap_AssocChain(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				m := NewHashMap()
+				for j := range n {
+					m, _ = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkHashMap_SetBuild fills a fresh map through the mutable Set escape
+// hatch — the path every large-map builder takes (hash-map, merge, map
+// literals, OpMakeMap, json/decode). Giving HashMap a persistent large form
+// puts this path at risk, so it is measured before as well as after.
+func BenchmarkHashMap_SetBuild(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				m := NewHashMap()
+				for j := range n {
+					_ = m.Set(Int{V: int64(j)}, Int{V: int64(j)})
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkHashMap_GetLarge reads from the large form. ScanVsMap pins the
+// small-form boundary and says nothing about this; a trie descent is expected
+// to cost more than the single map lookup it replaces, so record it.
+func BenchmarkHashMap_GetLarge(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		m := NewHashMap()
+		for j := range n {
+			if err := m.Set(Int{V: int64(j)}, Int{V: int64(j)}); err != nil {
+				b.Fatal(err)
+			}
+		}
+		key := Int{V: int64(n - 1)}
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				m.Get(key)
+			}
+		})
+	}
+}
