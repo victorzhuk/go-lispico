@@ -14,8 +14,8 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("list", core.GoFunc{
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			res := core.List{Items: append([]core.Value(nil), args...)}
-			if err := core.CheckConstructionDepth(res, env); err != nil {
+			res := core.NewList(append([]core.Value(nil), args...))
+			if err := chargeCollectionResult(ctx, env, "list", res, core.ValueDeepBytes(res)); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -27,20 +27,44 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("concat", core.GoFunc{
 		Name: "concat",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			var result []core.Value
-			for _, arg := range args {
-				switch c := arg.(type) {
-				case core.List:
-					result = append(result, c.Items...)
-				case core.Vector:
-					result = append(result, c.Items...)
-				case core.Nil:
-				default:
-					return nil, fmt.Errorf("concat: expected collection, got %T", arg)
+			if len(args) == 0 {
+				return core.NewList(nil), nil
+			}
+
+			// The last argument extends without copying when it's a List:
+			// every earlier argument's elements get Cons'd onto it in
+			// reverse, so baseList's own backing — however long — is never
+			// walked or duplicated. A Vector or Nil last argument falls
+			// back to a full flatten, same as before.
+			baseList, sharesLast := args[len(args)-1].(core.List)
+			if !sharesLast {
+				var result []core.Value
+				for _, arg := range args {
+					if err := appendCollectionElems(&result, arg); err != nil {
+						return nil, fmt.Errorf("concat: %w", err)
+					}
+				}
+				res := core.NewList(result)
+				if err := chargeCollectionResult(ctx, env, "concat", res, core.ListShallowBytes(len(result))); err != nil {
+					return nil, err
+				}
+				return res, nil
+			}
+
+			var prefix []core.Value
+			for _, arg := range args[:len(args)-1] {
+				if err := appendCollectionElems(&prefix, arg); err != nil {
+					return nil, fmt.Errorf("concat: %w", err)
 				}
 			}
-			res := core.List{Items: result}
-			if err := chargeCollectionResult(ctx, env, "concat", res); err != nil {
+			res := baseList
+			var bytes int64
+			for i := len(prefix) - 1; i >= 0; i-- {
+				var b int64
+				res, b = res.Cons(prefix[i])
+				bytes += b
+			}
+			if err := chargeCollectionResult(ctx, env, "concat", res, bytes); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -59,18 +83,17 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			var items []core.Value
 			switch c := args[0].(type) {
 			case core.List:
-				items = c.Items
+				items = c.ToSlice()
 			case core.Vector:
-				items = c.Items
+				items = c.ToSlice()
 			default:
 				return nil, fmt.Errorf("reverse: expected collection, got %T", args[0])
 			}
-
 			result := make([]core.Value, len(items))
-			for i, item := range items {
-				result[len(items)-1-i] = item
+			for i, v := range items {
+				result[len(items)-1-i] = v
 			}
-			return core.List{Items: result}, nil
+			return core.NewList(result), nil
 		},
 	}, false); err != nil {
 		return err
@@ -79,8 +102,8 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("vector", core.GoFunc{
 		Name: "vector",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			res := core.Vector{Items: append([]core.Value(nil), args...)}
-			if err := core.CheckConstructionDepth(res, env); err != nil {
+			res := core.NewVector(append([]core.Value(nil), args...))
+			if err := chargeCollectionResult(ctx, env, "vector", res, core.ValueDeepBytes(res)); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -120,15 +143,15 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[0].(type) {
 			case core.List:
-				if len(c.Items) == 0 {
+				if c.Len() == 0 {
 					return core.Nil{}, nil
 				}
-				return c.Items[0], nil
+				return c.At(0), nil
 			case core.Vector:
-				if len(c.Items) == 0 {
+				if c.Len() == 0 {
 					return core.Nil{}, nil
 				}
-				return c.Items[0], nil
+				return c.At(0), nil
 			case core.Nil:
 				return core.Nil{}, nil
 			default:
@@ -148,17 +171,18 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[0].(type) {
 			case core.List:
-				if len(c.Items) <= 1 {
-					return core.List{Items: []core.Value{}}, nil
-				}
-				return core.List{Items: c.Items[1:]}, nil
+				return c.Rest(), nil
 			case core.Vector:
-				if len(c.Items) <= 1 {
-					return core.List{Items: []core.Value{}}, nil
+				if c.Len() <= 1 {
+					return core.NewList([]core.Value{}), nil
 				}
-				return core.List{Items: c.Items[1:]}, nil
+				items := make([]core.Value, c.Len()-1)
+				for i := 1; i < c.Len(); i++ {
+					items[i-1] = c.At(i)
+				}
+				return core.NewList(items), nil
 			case core.Nil:
-				return core.List{Items: []core.Value{}}, nil
+				return core.NewList([]core.Value{}), nil
 			default:
 				return nil, fmt.Errorf("rest: expected collection, got %T", args[0])
 			}
@@ -176,15 +200,15 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[0].(type) {
 			case core.List:
-				if len(c.Items) == 0 {
+				if c.Len() == 0 {
 					return core.Nil{}, nil
 				}
-				return c.Items[len(c.Items)-1], nil
+				return c.At(c.Len() - 1), nil
 			case core.Vector:
-				if len(c.Items) == 0 {
+				if c.Len() == 0 {
 					return core.Nil{}, nil
 				}
-				return c.Items[len(c.Items)-1], nil
+				return c.At(c.Len() - 1), nil
 			case core.Nil:
 				return core.Nil{}, nil
 			default:
@@ -207,24 +231,26 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("nth: index must be integer")
 			}
 
-			var items []core.Value
 			switch c := args[0].(type) {
 			case core.List:
-				items = c.Items
+				if idx.V < 0 || int(idx.V) >= c.Len() {
+					if len(args) == 3 {
+						return args[2], nil
+					}
+					return nil, fmt.Errorf("nth: index out of bounds")
+				}
+				return c.At(int(idx.V)), nil
 			case core.Vector:
-				items = c.Items
+				if idx.V < 0 || int(idx.V) >= c.Len() {
+					if len(args) == 3 {
+						return args[2], nil
+					}
+					return nil, fmt.Errorf("nth: index out of bounds")
+				}
+				return c.At(int(idx.V)), nil
 			default:
 				return nil, fmt.Errorf("nth: expected collection, got %T", args[0])
 			}
-
-			if idx.V < 0 || int(idx.V) >= len(items) {
-				if len(args) == 3 {
-					return args[2], nil
-				}
-				return nil, fmt.Errorf("nth: index out of bounds")
-			}
-
-			return items[idx.V], nil
 		},
 	}, false); err != nil {
 		return err
@@ -239,9 +265,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[0].(type) {
 			case core.List:
-				return core.Int{V: int64(len(c.Items))}, nil
+				return core.Int{V: int64(c.Len())}, nil
 			case core.Vector:
-				return core.Int{V: int64(len(c.Items))}, nil
+				return core.Int{V: int64(c.Len())}, nil
 			case *core.HashMap:
 				return core.Int{V: int64(c.Len())}, nil
 			case core.String:
@@ -265,14 +291,17 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[1].(type) {
 			case core.List:
-				res := core.List{Items: append([]core.Value{args[0]}, c.Items...)}
-				if err := chargeCollectionResult(ctx, env, "cons", res); err != nil {
+				res, bytes := c.Cons(args[0])
+				if err := chargeConsResult(ctx, env, "cons", res, bytes, args[0]); err != nil {
 					return nil, err
 				}
 				return res, nil
 			case core.Vector:
-				res := core.List{Items: append([]core.Value{args[0]}, c.Items...)}
-				if err := chargeCollectionResult(ctx, env, "cons", res); err != nil {
+				items := make([]core.Value, c.Len()+1)
+				items[0] = args[0]
+				copy(items[1:], c.ToSlice())
+				res := core.NewList(items)
+				if err := chargeConsResult(ctx, env, "cons", res, core.ListShallowBytes(len(items)), args[0]); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -293,20 +322,23 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[0].(type) {
 			case core.List:
-				items := make([]core.Value, len(args)-1)
-				copy(items, args[1:])
-				items = append(items, c.Items...)
-				res := core.List{Items: items}
-				if err := chargeCollectionResult(ctx, env, "conj", res); err != nil {
+				// conj prepends args[1:] onto c in order — equivalent to
+				// consing them on one at a time starting from the last, so
+				// c's own backing is extended, never copied.
+				res := c
+				var bytes int64
+				for i := len(args) - 1; i >= 1; i-- {
+					var b int64
+					res, b = res.Cons(args[i])
+					bytes += b
+				}
+				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[1:]...); err != nil {
 					return nil, err
 				}
 				return res, nil
 			case core.Vector:
-				items := make([]core.Value, len(c.Items)+len(args)-1)
-				copy(items, c.Items)
-				copy(items[len(c.Items):], args[1:])
-				res := core.Vector{Items: items}
-				if err := chargeCollectionResult(ctx, env, "conj", res); err != nil {
+				res, bytes := c.Conj(args[1:]...)
+				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[1:]...); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -318,7 +350,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				if err != nil {
 					return nil, err
 				}
-				if err := chargeCollectionResult(ctx, env, "conj", res); err != nil {
+				// See assoc's WHY comment below: HashMap has no persistent
+				// representation, so the map's own shallow size is a real
+				// per-call cost, not a metering bug — only the
+				// newly-inserted value needs a deep charge.
+				bytes := core.HashMapShallowBytes(res.Len()) + core.ValueDeepBytes(args[2])
+				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[2]); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -339,9 +376,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			switch c := args[0].(type) {
 			case core.List:
-				return core.Bool{V: len(c.Items) == 0}, nil
+				return core.Bool{V: c.Len() == 0}, nil
 			case core.Vector:
-				return core.Bool{V: len(c.Items) == 0}, nil
+				return core.Bool{V: c.Len() == 0}, nil
 			case *core.HashMap:
 				return core.Bool{V: c.Len() == 0}, nil
 			case core.Nil:
@@ -393,15 +430,26 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			}
 
 			result := m
+			var bytes int64
 			for i := 1; i < len(args); i += 2 {
 				var err error
 				result, err = result.Assoc(args[i], args[i+1])
 				if err != nil {
 					return nil, fmt.Errorf("assoc: %w", err)
 				}
+				// HashMap has no persistent representation past
+				// hashMapSmallLimit — Assoc's map-form branch does a real
+				// full copy every call (core/types.go), so charging the
+				// map's own shallow size here is honest, not a bug: it
+				// reflects that real per-call allocation. Only the
+				// newly-inserted value gets a deep charge — re-walking
+				// every existing entry's value on every call would
+				// double-bill substructure already charged when it was
+				// created.
+				bytes += core.HashMapShallowBytes(result.Len()) + core.ValueDeepBytes(args[i+1])
 			}
 
-			if err := chargeCollectionResult(ctx, env, "assoc", result); err != nil {
+			if err := chargeCollectionResult(ctx, env, "assoc", result, bytes); err != nil {
 				return nil, err
 			}
 			return result, nil
@@ -427,7 +475,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				items = append(items, k)
 			})
 
-			return core.List{Items: items}, nil
+			return core.NewList(items), nil
 		},
 	}, false); err != nil {
 		return err
@@ -450,7 +498,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				items = append(items, v)
 			})
 
-			return core.List{Items: items}, nil
+			return core.NewList(items), nil
 		},
 	}, false); err != nil {
 		return err
@@ -496,7 +544,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					return nil, fmt.Errorf("merge: expected map, got %T", arg)
 				}
 			}
-			if err := chargeCollectionResult(ctx, env, "merge", result); err != nil {
+			if err := chargeCollectionResult(ctx, env, "merge", result, core.ValueDeepBytes(result)); err != nil {
 				return nil, err
 			}
 			return result, nil
@@ -538,20 +586,17 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("sort: requires 1 argument")
 			}
 
-			var items []core.Value
+			var sorted []core.Value
 			switch c := args[0].(type) {
 			case core.List:
-				items = c.Items
+				sorted = c.ToSlice()
 			case core.Vector:
-				items = c.Items
+				sorted = c.ToSlice()
 			case core.Nil:
-				return core.List{Items: []core.Value{}}, nil
+				return core.NewList([]core.Value{}), nil
 			default:
 				return nil, fmt.Errorf("sort: expected collection, got %T", args[0])
 			}
-
-			sorted := make([]core.Value, len(items))
-			copy(sorted, items)
 
 			var sortErr error
 			sort.SliceStable(sorted, func(i, j int) bool {
@@ -569,7 +614,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, sortErr
 			}
 
-			return core.List{Items: sorted}, nil
+			return core.NewList(sorted), nil
 		},
 	}, false); err != nil {
 		return err
@@ -638,7 +683,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					cur += step
 				}
 			}
-			return core.List{Items: items}, nil
+			res := core.NewList(items)
+			if err := chargeCollectionResult(ctx, env, "range", res, core.ValueDeepBytes(res)); err != nil {
+				return nil, err
+			}
+			return res, nil
 		},
 	}, false); err != nil {
 		return err
@@ -646,7 +695,28 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	return nil
 }
 
-func chargeCollectionResult(ctx context.Context, env *core.Env, name string, res core.Value) error {
+// appendCollectionElems appends arg's elements to *dst — List and Vector via
+// ToSlice, a single O(n) walk, never an indexed At() loop (O(n) per call on
+// a shared List, O(n^2) total across the loop).
+func appendCollectionElems(dst *[]core.Value, arg core.Value) error {
+	switch c := arg.(type) {
+	case core.List:
+		*dst = append(*dst, c.ToSlice()...)
+	case core.Vector:
+		*dst = append(*dst, c.ToSlice()...)
+	case core.Nil:
+	default:
+		return fmt.Errorf("expected collection, got %T", arg)
+	}
+	return nil
+}
+
+// chargeCollectionResult validates res against the collection-length and
+// structural-depth limits, then charges bytes to the allocation ledger.
+// Callers decide what bytes means: the full deep size for a fresh builder
+// assembling unrelated values, or just what an operation newly allocated
+// when it derives its result from an existing collection.
+func chargeCollectionResult(ctx context.Context, env *core.Env, name string, res core.Value, bytes int64) error {
 	if n, ok := collectionLen(res); ok {
 		maxLen := collectionLimit(env)
 		if n > maxLen {
@@ -656,15 +726,51 @@ func chargeCollectionResult(ctx context.Context, env *core.Env, name string, res
 	if err := core.CheckConstructionDepth(res, env); err != nil {
 		return err
 	}
-	return core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(res))
+	return core.ChargeGoFuncResultBytes(ctx, bytes)
+}
+
+// isNestedCollection reports whether v could itself introduce structural
+// depth if consed or conj'd into a collection — List, Vector, *HashMap,
+// Lambda, and Macro all recurse in CheckConstructionDepth; every other
+// type does not.
+func isNestedCollection(v core.Value) bool {
+	switch v.(type) {
+	case core.List, core.Vector, *core.HashMap, core.Lambda, core.Macro:
+		return true
+	default:
+		return false
+	}
+}
+
+// chargeConsResult validates and charges a cons/conj result. Unlike
+// chargeCollectionResult, it narrows the structural-depth walk: prepending
+// a scalar can't increase a list's nesting, so it only pays
+// CheckConstructionDepth's O(n) walk when at least one of the newly
+// introduced elements could itself nest.
+func chargeConsResult(ctx context.Context, env *core.Env, name string, res core.Value, bytes int64, newElems ...core.Value) error {
+	if n, ok := collectionLen(res); ok {
+		maxLen := collectionLimit(env)
+		if n > maxLen {
+			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
+		}
+	}
+	for _, e := range newElems {
+		if isNestedCollection(e) {
+			if err := core.CheckConstructionDepth(res, env); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return core.ChargeGoFuncResultBytes(ctx, bytes)
 }
 
 func collectionLen(v core.Value) (int, bool) {
 	switch c := v.(type) {
 	case core.List:
-		return len(c.Items), true
+		return c.Len(), true
 	case core.Vector:
-		return len(c.Items), true
+		return c.Len(), true
 	case *core.HashMap:
 		return c.Len(), true
 	default:

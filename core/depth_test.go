@@ -8,7 +8,7 @@ import (
 func nestedList(depth int) Value {
 	var v Value = Int{V: 1}
 	for range depth {
-		v = List{Items: []Value{v}}
+		v = NewList([]Value{v})
 	}
 	return v
 }
@@ -31,6 +31,21 @@ func TestValueWalksBoundOverDeepValues(t *testing.T) {
 	}
 }
 
+// TestSharedListDepthIsNotChainLength guards against conflating a shared
+// list's chain length with structural depth: a long flat list of scalars
+// nests one level deep regardless of how many elements its chain walks
+// through, so it must stay under a depth limit far smaller than its length.
+func TestSharedListDepthIsNotChainLength(t *testing.T) {
+	items := make([]Value, 5000)
+	for i := range items {
+		items[i] = Int{V: int64(i)}
+	}
+	list := NewList(items)
+	if ValueDepthExceeds(list, 10) {
+		t.Fatal("ValueDepthExceeds() = true, want false: chain length must not count as structural depth")
+	}
+}
+
 func TestValueWalksPreserveShallowValues(t *testing.T) {
 	items := make([]Value, 100)
 	parts := make([]string, 100)
@@ -38,15 +53,15 @@ func TestValueWalksPreserveShallowValues(t *testing.T) {
 		items[i] = Int{V: int64(i)}
 		parts[i] = items[i].String()
 	}
-	list := List{Items: items}
+	list := NewList(items)
 	want := "(" + strings.Join(parts, " ") + ")"
 	if got := list.String(); got != want {
 		t.Fatalf("String() = %q, want %q", got, want)
 	}
-	if !list.Equals(List{Items: append([]Value(nil), items...)}) {
+	if !list.Equals(NewList(append([]Value(nil), items...))) {
 		t.Fatal("Equals() = false, want true")
 	}
-	if !(Vector{Items: items}).Equals(Vector{Items: append([]Value(nil), items...)}) {
+	if !(NewVector(items)).Equals(NewVector(append([]Value(nil), items...))) {
 		t.Fatal("Vector.Equals() = false, want true")
 	}
 	m := NewHashMap()

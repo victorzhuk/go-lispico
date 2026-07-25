@@ -189,6 +189,57 @@ func ChargeEvalAllocBytes(ctx context.Context, n int64) error {
 	return evalStateFrom(ctx).chargeAllocBytes(n)
 }
 
+// ChargeGoFuncResultBytes charges n bytes and marks that the active GoFunc
+// dispatch already accounted for its own return value, so the apply site's
+// fallback shallow charge (ValueShallowBytes(result)) is skipped for it.
+// Call exactly once, immediately before returning the value n describes.
+func ChargeGoFuncResultBytes(ctx context.Context, n int64) error {
+	st := evalStateFrom(ctx)
+	st.calleeCharged = true
+	return st.chargeAllocBytes(n)
+}
+
+// BeginGoFuncDispatch saves and clears the active evalState's
+// callee-charged marker, returning the previous value. Pair with
+// EndGoFuncDispatch around a single GoFunc.Fn call so a callee's
+// ChargeGoFuncResultBytes is visible only to that call's own apply-site
+// fallback check, not to an outer frame's. Required under reentrancy: a
+// GoFunc like map calls back into apply/vm.call on the same evalState once
+// per element, and a naive ledger-moved check would mistake an inner
+// element-lambda's charge for map's own result already being billed.
+//
+// Uses EvalMeterIfMaterialized, not evalStateFrom: forcing a lazily-wrapped
+// context (AdoptEvalStateWithMeter) to materialize its evalState here would
+// allocate one for every GoFunc dispatch, including callees that never
+// touch resource limits at all — exactly the laziness
+// TestCall_GoFuncDispatchKeepsEvalStateLazy guards. A callee that does
+// charge something materializes the state itself, and EndGoFuncDispatch
+// picks that up.
+func BeginGoFuncDispatch(ctx context.Context) bool {
+	st := EvalMeterIfMaterialized(ctx).st
+	if st == nil {
+		return false
+	}
+	prev := st.calleeCharged
+	st.calleeCharged = false
+	return prev
+}
+
+// EndGoFuncDispatch reads the active evalState's callee-charged marker —
+// true if the GoFunc.Fn call bracketed by the matching BeginGoFuncDispatch
+// charged its own result via ChargeGoFuncResultBytes — and restores prev,
+// the value that BeginGoFuncDispatch returned. See BeginGoFuncDispatch for
+// why this doesn't force materialization either.
+func EndGoFuncDispatch(ctx context.Context, prev bool) (charged bool) {
+	st := EvalMeterIfMaterialized(ctx).st
+	if st == nil {
+		return false
+	}
+	charged = st.calleeCharged
+	st.calleeCharged = prev
+	return charged
+}
+
 func ChargeEvalReader(ctx context.Context, stats ReaderStats) error {
 	return ChargeEvalAllocBytes(ctx, ReaderAllocationBytes(stats))
 }
@@ -508,9 +559,9 @@ func ValueShallowBytes(v Value) int64 {
 	case Keyword:
 		return StringShallowBytes(len(val.V))
 	case List:
-		return ListShallowBytes(len(val.Items))
+		return ListShallowBytes(val.Len())
 	case Vector:
-		return VectorShallowBytes(len(val.Items))
+		return VectorShallowBytes(val.Len())
 	case *HashMap:
 		return HashMapShallowBytes(val.Len())
 	case GoFunc:

@@ -20,7 +20,7 @@ func TestDialect_Lisp2_HeadVsArgumentNamespace(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "lisp2", "(do (def f :val) (defn f [] :fn) [f (f)])")
 	require.NoError(t, err)
-	want := core.Vector{Items: []core.Value{core.Keyword{V: "val"}, core.Keyword{V: "fn"}}}
+	want := core.NewVector([]core.Value{core.Keyword{V: "val"}, core.Keyword{V: "fn"}})
 	assert.True(t, want.Equals(got), "want [:val :fn], got %v", got)
 }
 

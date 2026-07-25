@@ -40,6 +40,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Accumulating into `List` or `Vector` (`cons`/`conj`-heavy loops, `recur`
+  carrying a growing collection) is now linear rather than quadratic in both
+  allocated memory and charged allocation bytes. `List` stores a flat slice
+  at or below 32 elements and a shared-tail node chain above it. `Vector`
+  built in bulk (literals, reader output) always stays flat regardless of
+  size; only `conj` promotes, and only once the vector crosses 32 elements,
+  splitting it into a bit-partitioned trie (32-way fan-out) with a tail
+  buffer. Neither type demotes once promoted.
+- **Breaking:** `core.List` and `core.Vector` no longer expose an `Items
+  []Value` field — both now hold private, threshold-promoted backing. Go
+  embedders constructing or reading these types directly must migrate to
+  `core.NewList`/`core.NewVector` to build one, and `Len()`, `At(i)`,
+  `ToSlice()`, `Rest()` (List), and `Cons`/`Conj` to read or grow one.
 - **Breaking:** Removed `core.Dialect.NilOnlyFalsy()`. All dialects now treat
   `nil` and `false` as falsy, including the Common Lisp dialect.
 

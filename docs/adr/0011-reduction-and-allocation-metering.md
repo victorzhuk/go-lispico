@@ -59,6 +59,36 @@ The fixed table is applied only at evaluator-owned construction boundaries:
 - tree-walker collection literals and quasiquote construction;
 - VM `OpMakeList`, `OpMakeVector`, `OpMakeMap`, and `OpClosure`;
 - compiler-emitted bytecode and constant pools, charged before a compiled chunk is cached;
-- shallow `GoFunc` results at the centralized apply sites.
+- shallow `GoFunc` results at the centralized apply sites, unless the callee already charged the ledger for that same value.
 
 This keeps the meter complete without trying to instrument every composite literal or every Go allocation in the process.
+
+### The apply-site fallback charge and its opt-out
+
+The apply site's shallow `GoFunc` result charge (`ValueShallowBytes(result)`,
+in both `core/eval.go`'s tree-walker apply loop and `core/vm/vm.go`'s
+`OpCall` `GoFunc` case) exists to catch results the fixed table has no other
+charge site for. Left unconditional, it double-charges any builtin whose
+result derives structurally from one of its own arguments — `cons`, `conj`,
+`concat`, and friends on a shared `List`/`Vector` allocate O(1) new storage
+but their *result* is still the whole accumulated structure, so a
+shallow-size charge on every call turns an O(1) structural update into an
+O(n) charge, and repeated calls into the same quadratic-charging defect this
+change removed from accumulation.
+
+`core.ChargeGoFuncResultBytes(ctx, n)` is the opt-out: a builtin that already
+knows its own incremental cost calls it with that cost immediately before
+returning the value it describes, and the apply site's fallback charge is
+skipped for that call. Contract:
+
+- Call exactly once per `GoFunc.Fn` invocation, immediately before returning
+  the value `n` describes — the value returned must be the same value `n`
+  was computed for.
+- `BeginGoFuncDispatch`/`EndGoFuncDispatch` bracket each dispatch so the
+  callee-charged marker is visible only to that call's own apply-site
+  fallback check, not to an outer frame's — required because a `GoFunc` like
+  `map` re-enters `apply`/VM `call` once per element on the same
+  `evalState`, and a naive marker would mistake an inner element-lambda's
+  charge for `map`'s own result already being billed.
+- Both evaluators enforce the same rule off the same marker, so a builtin
+  that opts out charges identically under the tree-walker and the VM.

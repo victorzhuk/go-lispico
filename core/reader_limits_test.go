@@ -56,8 +56,8 @@ func TestReader_NestedVectorUnderDefaultLimitOK(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Vector, got %T", forms[0])
 	}
-	if len(v.Items) != 1 {
-		t.Fatalf("expected 1-item vector, got %d items", len(v.Items))
+	if v.Len() != 1 {
+		t.Fatalf("expected 1-item vector, got %d items", v.Len())
 	}
 }
 

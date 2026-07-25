@@ -252,9 +252,9 @@ func toCommandList(v core.Value) ([]command, error) {
 	var items []core.Value
 	switch val := v.(type) {
 	case core.List:
-		items = val.Items
+		items = val.ToSlice()
 	case core.Vector:
-		items = val.Items
+		items = val.ToSlice()
 	default:
 		return nil, fmt.Errorf("expected list or vector, got %T", v)
 	}
@@ -264,9 +264,9 @@ func toCommandList(v core.Value) ([]command, error) {
 		var pairItems []core.Value
 		switch p := item.(type) {
 		case core.Vector:
-			pairItems = p.Items
+			pairItems = p.ToSlice()
 		case core.List:
-			pairItems = p.Items
+			pairItems = p.ToSlice()
 		default:
 			return nil, fmt.Errorf("command %d must be a vector or list", i)
 		}
@@ -282,7 +282,7 @@ func toCommandList(v core.Value) ([]command, error) {
 
 		var args []string
 		if len(pairItems) > 1 {
-			rest := core.List{Items: pairItems[1:]}
+			rest := core.NewList(pairItems[1:])
 			args, err = toStringSlice(rest)
 			if err != nil {
 				return nil, fmt.Errorf("command %d args: %w", i, err)
@@ -299,9 +299,9 @@ func toStringSlice(v core.Value) ([]string, error) {
 	var items []core.Value
 	switch val := v.(type) {
 	case core.List:
-		items = val.Items
+		items = val.ToSlice()
 	case core.Vector:
-		items = val.Items
+		items = val.ToSlice()
 	default:
 		return nil, fmt.Errorf("expected list or vector, got %T", v)
 	}

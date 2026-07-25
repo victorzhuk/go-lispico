@@ -109,13 +109,13 @@ func extractStrings(v core.Value) []string {
 	var result []string
 	switch val := v.(type) {
 	case core.List:
-		for _, item := range val.Items {
+		for _, item := range val.ToSlice() {
 			if s, ok := item.(core.String); ok {
 				result = append(result, s.V)
 			}
 		}
 	case core.Vector:
-		for _, item := range val.Items {
+		for _, item := range val.ToSlice() {
 			if s, ok := item.(core.String); ok {
 				result = append(result, s.V)
 			}
@@ -128,13 +128,13 @@ func extractKeywords(v core.Value) []string {
 	var result []string
 	switch val := v.(type) {
 	case core.List:
-		for _, item := range val.Items {
+		for _, item := range val.ToSlice() {
 			if kw, ok := item.(core.Keyword); ok {
 				result = append(result, kw.V)
 			}
 		}
 	case core.Vector:
-		for _, item := range val.Items {
+		for _, item := range val.ToSlice() {
 			if kw, ok := item.(core.Keyword); ok {
 				result = append(result, kw.V)
 			}
@@ -179,7 +179,7 @@ func (p *Plugin) runParallel(ctx context.Context, eval core.Evaluator, args []co
 	var agentIDs []string
 	switch v := args[0].(type) {
 	case core.List:
-		for _, item := range v.Items {
+		for _, item := range v.ToSlice() {
 			if kw, ok := item.(core.Keyword); ok {
 				agentIDs = append(agentIDs, kw.V)
 			} else {
@@ -187,7 +187,7 @@ func (p *Plugin) runParallel(ctx context.Context, eval core.Evaluator, args []co
 			}
 		}
 	case core.Vector:
-		for _, item := range v.Items {
+		for _, item := range v.ToSlice() {
 			if kw, ok := item.(core.Keyword); ok {
 				agentIDs = append(agentIDs, kw.V)
 			} else {
@@ -230,7 +230,7 @@ func (p *Plugin) runParallel(ctx context.Context, eval core.Evaluator, args []co
 		return nil, fmt.Errorf("agent/run-parallel: %w", err)
 	}
 
-	return core.Vector{Items: results}, nil
+	return core.NewVector(results), nil
 }
 
 func (p *Plugin) runWithCtx(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -324,7 +324,7 @@ func (p *Plugin) list(ctx context.Context, eval core.Evaluator, args []core.Valu
 		items[i] = core.Keyword{V: id}
 	}
 
-	return core.List{Items: items}, nil
+	return core.NewList(items), nil
 }
 
 func (p *Plugin) info(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -358,8 +358,8 @@ func (p *Plugin) info(ctx context.Context, eval core.Evaluator, args []core.Valu
 	m, _ = m.Assoc(core.Keyword{V: "temperature"}, core.Float{V: agent.Temperature})
 	m, _ = m.Assoc(core.Keyword{V: "max-tokens"}, core.Int{V: int64(agent.MaxTokens)})
 	m, _ = m.Assoc(core.Keyword{V: "system"}, core.String{V: agent.System})
-	m, _ = m.Assoc(core.Keyword{V: "tools"}, core.Vector{Items: toolsVec})
-	m, _ = m.Assoc(core.Keyword{V: "can-delegate"}, core.Vector{Items: delegateVec})
+	m, _ = m.Assoc(core.Keyword{V: "tools"}, core.NewVector(toolsVec))
+	m, _ = m.Assoc(core.Keyword{V: "can-delegate"}, core.NewVector(delegateVec))
 
 	return m, nil
 }

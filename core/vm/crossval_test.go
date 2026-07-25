@@ -1762,7 +1762,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
     (do (if (= i 0) (set! f0 (fn [] i)) (set! f1 (fn [] i)))
         (recur (+ i 1)))
     (list (funcall f0) (funcall f1))))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}}},
+			expected: core.NewList([]core.Value{core.Int{V: 0}, core.Int{V: 1}}),
 		},
 		{
 			name: "closures accumulated in loop capture each iteration binding",
@@ -1778,7 +1778,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
     (recur (+ i 1) (conj acc (fn [] i)))
     acc)))
 (list (funcall (nth fns 0)) (funcall (nth fns 1)) (funcall (nth fns 2)))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 2}}},
+			expected: core.NewList([]core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 2}}),
 		},
 		{
 			name: "set before closure in loop writes through current iteration only",
@@ -1798,7 +1798,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
       (recur (- i 9) (conj acc (fn [] i))))
     acc)))
 (list (funcall (nth fns 0)) (funcall (nth fns 1)))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 10}, core.Int{V: 11}}},
+			expected: core.NewList([]core.Value{core.Int{V: 10}, core.Int{V: 11}}),
 		},
 		{
 			name: "nested loop captures both loop slots per iteration",
@@ -1846,7 +1846,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
           nil))
       (recur (+ i 1)))
     (list (funcall f0) (funcall f1) (funcall f2) (funcall f3))))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 10}, core.Int{V: 11}}},
+			expected: core.NewList([]core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 10}, core.Int{V: 11}}),
 		},
 		{
 			name: "closure over let in loop gets a fresh binding per iteration",
@@ -1868,7 +1868,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
           (if (= i 0) (set! g0 (fn [] x)) (set! g1 (fn [] x))))
         (recur (+ i 1)))
     (list (funcall g0) (funcall g1))))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 10}}},
+			expected: core.NewList([]core.Value{core.Int{V: 0}, core.Int{V: 10}}),
 		},
 		{
 			name: "sibling closures alias one binding through set!",
@@ -1928,7 +1928,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
 (def mid (funcall mk-outer))
 (def inner (funcall mid))
 (list (funcall inner) (funcall inner))`,
-			expected: core.List{Items: []core.Value{core.Int{V: 15}, core.Int{V: 20}}},
+			expected: core.NewList([]core.Value{core.Int{V: 15}, core.Int{V: 20}}),
 		},
 		{
 			name: "loop body mutating a captured local writes through",
@@ -1960,7 +1960,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
 (def mk-v (fn [x & rest] (fn [] (list x rest))))
 (def v1 (funcall mk-v 1 2 3))
 (funcall v1)`,
-			expected: core.List{Items: []core.Value{core.Int{V: 1}, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}}},
+			expected: core.NewList([]core.Value{core.Int{V: 1}, core.NewList([]core.Value{core.Int{V: 2}, core.Int{V: 3}})}),
 		},
 		{
 			name: "catch binding capture",
@@ -2012,7 +2012,7 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics_MacroGeneratedLoopClosure(t *tes
     (recur (+ i 1) (conj acc (cap)))
     acc)))
 (list ((nth fns 0)) ((nth fns 1)) ((nth fns 2)))`
-	expected := core.List{Items: []core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 2}}}
+	expected := core.NewList([]core.Value{core.Int{V: 0}, core.Int{V: 1}, core.Int{V: 2}})
 
 	forms, err := core.Read(src)
 	require.NoError(t, err, "read source")
@@ -2032,8 +2032,8 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics_MacroGeneratedLoopClosure(t *tes
 	v := vm.New(vmEnv)
 	var vmResult core.Value = core.Nil{}
 	for _, form := range forms {
-		if list, ok := form.(core.List); ok && len(list.Items) > 0 {
-			if head, ok := list.Items[0].(core.Symbol); ok && head.V == "defmacro" {
+		if list, ok := form.(core.List); ok && list.Len() > 0 {
+			if head, ok := list.At(0).(core.Symbol); ok && head.V == "defmacro" {
 				_, err = macroEval.Eval(context.Background(), form, macroEnv)
 				require.NoError(t, err, "define macro")
 				continue
@@ -2061,23 +2061,23 @@ func expandMacrosDeepForCrossVal(t *testing.T, expander macroExpander, env *core
 	require.NoError(t, err, "macro expand")
 	switch v := expanded.(type) {
 	case core.List:
-		if len(v.Items) == 0 {
+		if v.Len() == 0 {
 			return v
 		}
-		if head, ok := v.Items[0].(core.Symbol); ok && head.V == "quote" {
+		if head, ok := v.At(0).(core.Symbol); ok && head.V == "quote" {
 			return v
 		}
-		items := make([]core.Value, len(v.Items))
-		for i, item := range v.Items {
+		items := make([]core.Value, v.Len())
+		for i, item := range v.ToSlice() {
 			items[i] = expandMacrosDeepForCrossVal(t, expander, env, item)
 		}
-		return core.List{Items: items}
+		return core.NewList(items)
 	case core.Vector:
-		items := make([]core.Value, len(v.Items))
-		for i, item := range v.Items {
+		items := make([]core.Value, v.Len())
+		for i, item := range v.ToSlice() {
 			items[i] = expandMacrosDeepForCrossVal(t, expander, env, item)
 		}
-		return core.Vector{Items: items}
+		return core.NewVector(items)
 	case *core.HashMap:
 		result := core.NewHashMap()
 		v.Each(func(k, val core.Value) {

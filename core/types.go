@@ -169,21 +169,441 @@ func (k Keyword) Equals(o Value) bool {
 	return false
 }
 
-// List — immutable sequence (slice implementation).
-type List struct{ Items []Value }
+// listFlatThreshold is the largest length List stores as a flat slice.
+// Above it, List switches to a shared-tail node chain so Cons stops copying
+// the whole backing array on every prepend — see listNode.
+const listFlatThreshold = 32
+
+// listNode is one persistent cons cell in a shared-tail List. Immutable once
+// built: Cons only ever allocates a new head node pointing at an existing
+// tail, so any List holding a reference to that tail can safely alias it.
+type listNode struct {
+	head  Value
+	tail  *listNode
+	count int // elements from this node to the end of the chain
+}
+
+// List — immutable sequence. At or below listFlatThreshold elements it is a
+// flat slice (cheap random access; matches reader output and other small,
+// short-lived forms). Above the threshold it is a shared-tail node chain, so
+// Cons is O(1) instead of O(n). Exactly one of flat/shared is set; the zero
+// value List{} is the empty list. There is no demotion: Rest of a shared
+// list stays shared even once its length drops back at or below the
+// threshold.
+type List struct {
+	flat   []Value
+	shared *listNode
+}
 
 func (l List) Type() Keyword  { return Keyword{V: "list"} }
 func (l List) String() string { return boundedString(l, 0) }
 
 func (l List) Equals(o Value) bool { return boundedEquals(l, o, 0) }
 
-// Vector — random-access sequence.
-type Vector struct{ Items []Value }
+// NewList wraps items as a List. Below listFlatThreshold it stores items
+// without copying — same contract as before: the caller must not mutate
+// items afterward. At or above the threshold it builds a shared-tail chain,
+// copying each element once into node storage.
+func NewList(items []Value) List {
+	if len(items) <= listFlatThreshold {
+		return List{flat: items}
+	}
+	return List{shared: newListChain(items)}
+}
+
+// newListChain builds a shared-tail chain from items in index order:
+// items[0] becomes the outermost node's head, items[len-1] the innermost.
+func newListChain(items []Value) *listNode {
+	var node *listNode
+	for i := len(items) - 1; i >= 0; i-- {
+		node = &listNode{head: items[i], tail: node, count: len(items) - i}
+	}
+	return node
+}
+
+func (l List) Len() int {
+	if l.shared != nil {
+		return l.shared.count
+	}
+	return len(l.flat)
+}
+
+// At returns the element at i, panicking out of range like indexing a slice.
+// O(1) flat, O(i) shared — a list already costs that much for random
+// access.
+//
+// The flat branch panics via Go's native slice indexing; the shared branch
+// panics explicitly with a plain string. Unifying them costs 52-340% on the
+// flat path, so this stays asymmetric — every caller bounds-checks first.
+func (l List) At(i int) Value {
+	if l.shared == nil {
+		return l.flat[i]
+	}
+	if i < 0 || i >= l.shared.count {
+		panic("index out of range")
+	}
+	node := l.shared
+	for ; i > 0; i-- {
+		node = node.tail
+	}
+	return node.head
+}
+
+// ToSlice returns a fresh copy of l's elements the caller may mutate.
+func (l List) ToSlice() []Value {
+	if l.shared == nil {
+		out := make([]Value, len(l.flat))
+		copy(out, l.flat)
+		return out
+	}
+	out := make([]Value, l.shared.count)
+	node := l.shared
+	for i := range out {
+		out[i] = node.head
+		node = node.tail
+	}
+	return out
+}
+
+// slice returns the backing storage without copying when flat — the common
+// case for core's hot paths, which read CODE forms off the reader (small
+// and flat in practice) — and materializes a fresh slice when shared.
+// Callers inside core must not retain or mutate a flat result. Cost: O(1)
+// flat, O(n) shared.
+func (l List) slice() []Value {
+	if l.shared == nil {
+		return l.flat
+	}
+	return l.ToSlice()
+}
+
+// each calls fn for every element in order, stopping early if fn returns
+// false. O(n) total on both representations — unlike an indexed At() loop,
+// which is O(n) per call on the shared form.
+func (l List) each(fn func(Value) bool) {
+	if l.shared == nil {
+		for _, v := range l.flat {
+			if !fn(v) {
+				return
+			}
+		}
+		return
+	}
+	for node := l.shared; node != nil; node = node.tail {
+		if !fn(node.head) {
+			return
+		}
+	}
+}
+
+// listCursor walks a List once, in order, without At()'s O(n)-per-call cost
+// on the shared representation — for lock-step pairwise comparison of two
+// lists.
+type listCursor struct {
+	flat []Value
+	node *listNode
+}
+
+func (l List) cursor() listCursor {
+	if l.shared == nil {
+		return listCursor{flat: l.flat}
+	}
+	return listCursor{node: l.shared}
+}
+
+func (c *listCursor) next() (Value, bool) {
+	if c.node != nil {
+		v := c.node.head
+		c.node = c.node.tail
+		return v, true
+	}
+	if len(c.flat) == 0 {
+		return nil, false
+	}
+	v := c.flat[0]
+	c.flat = c.flat[1:]
+	return v, true
+}
+
+// Rest returns l without its first element. O(1) on the shared form (return
+// the tail chain) and a reslice on flat. An empty or single-element list
+// returns an empty list.
+func (l List) Rest() List {
+	if l.shared != nil {
+		if l.shared.tail == nil {
+			return List{}
+		}
+		return List{shared: l.shared.tail}
+	}
+	if len(l.flat) <= 1 {
+		return List{}
+	}
+	return List{flat: l.flat[1:]}
+}
+
+// Cons prepends v to l, returning the new list and the bytes this call
+// newly allocated. Below the threshold it still copies the whole flat
+// backing — cheap at this size, so the charge matches that whole copy. At
+// or past it, Cons allocates a single node referencing the existing chain —
+// O(1) instead of O(n) — and the charge is exactly that one node's cost,
+// never the whole chain: a caller consing onto an already-long shared list
+// is billed the same as one consing onto a short list.
+func (l List) Cons(v Value) (List, int64) {
+	if l.shared != nil {
+		newLen := l.shared.count + 1
+		return List{shared: &listNode{head: v, tail: l.shared, count: newLen}}, ListShallowBytes(1)
+	}
+	newLen := len(l.flat) + 1
+	if newLen <= listFlatThreshold {
+		items := make([]Value, newLen)
+		items[0] = v
+		copy(items[1:], l.flat)
+		return List{flat: items}, ListShallowBytes(newLen)
+	}
+	// Promotion: flat crosses the threshold and becomes a chain of newLen
+	// fresh nodes. A one-time cost bounded by listFlatThreshold+1, not by
+	// how long the list grows through later Cons calls.
+	return List{shared: &listNode{head: v, tail: newListChain(l.flat), count: newLen}}, ListShallowBytes(1) * int64(newLen)
+}
+
+// vectorFlatThreshold governs Conj only, not NewVector: below it, Conj
+// still copies the whole flat backing; at or above it, Conj promotes to
+// the trie, chunking any existing flat backing regardless of how it got
+// that long. A separate constant from listFlatThreshold so the two can be
+// retuned independently, even though both start at 32.
+const vectorFlatThreshold = 32
+
+// vecBits is the trie branching factor's log2: each level dispatches 5 bits
+// of the index, for 32-way (vecBranch) fan-out.
+const (
+	vecBits   = 5
+	vecBranch = 1 << vecBits
+)
+
+// vecNode is one level of a persistent vector trie. Exactly one of
+// kids/vals is populated: internal nodes hold up to vecBranch children,
+// leaves hold up to vecBranch values. Leaves are always full — only a full
+// tail buffer is ever pushed into the trie. Immutable once built: growing
+// the trie copies only the path to the new leaf, sharing every other
+// subtree.
+type vecNode struct {
+	kids []*vecNode
+	vals []Value
+}
+
+// Vector — random-access sequence. At or below vectorFlatThreshold elements
+// it is a flat slice. Above it, elements split between a trie (root,
+// holding a multiple of vecBranch elements at height shift) and a tail
+// buffer of 0..vecBranch pending elements not yet folded into the trie.
+// Exactly one of flat/root is set; the zero value Vector{} is the empty
+// vector. There is no demotion.
+type Vector struct {
+	flat  []Value
+	root  *vecNode
+	shift uint
+	count int
+	tail  []Value
+}
 
 func (v Vector) Type() Keyword  { return Keyword{V: "vector"} }
 func (v Vector) String() string { return boundedString(v, 0) }
 
 func (v Vector) Equals(o Value) bool { return boundedEquals(v, o, 0) }
+
+// NewVector wraps items as a Vector, always flat regardless of length — the
+// caller must not mutate items afterward. Bulk construction never promotes
+// to a trie: promotion happens on Conj crossing vectorFlatThreshold, not on
+// length alone, because reader output and other build-once-never-conj'd
+// vectors gain nothing from sharing and would only pay for it.
+func NewVector(items []Value) Vector {
+	return Vector{flat: items}
+}
+
+func (v Vector) Len() int {
+	if v.root != nil {
+		return v.count
+	}
+	return len(v.flat)
+}
+
+// At returns the element at i, panicking out of range like indexing a
+// slice. O(1) flat or tail, O(log32 n) in the trie. See List.At for why the
+// flat and trie/tail branches panic with different values rather than a
+// uniform one.
+func (v Vector) At(i int) Value {
+	if v.root == nil {
+		return v.flat[i]
+	}
+	if i < 0 || i >= v.count {
+		panic("index out of range")
+	}
+	trieLen := v.count - len(v.tail)
+	if i >= trieLen {
+		return v.tail[i-trieLen]
+	}
+	node := v.root
+	for shift := v.shift; shift > 0; shift -= vecBits {
+		node = node.kids[(i>>shift)&(vecBranch-1)]
+	}
+	return node.vals[i&(vecBranch-1)]
+}
+
+// ToSlice returns a fresh copy of v's elements the caller may mutate.
+func (v Vector) ToSlice() []Value {
+	if v.root == nil {
+		out := make([]Value, len(v.flat))
+		copy(out, v.flat)
+		return out
+	}
+	out := make([]Value, v.count)
+	i := flattenVecNode(v.root, v.shift, out)
+	copy(out[i:], v.tail)
+	return out
+}
+
+// flattenVecNode writes node's elements, in order, into out starting at
+// index 0, and returns the count written.
+func flattenVecNode(node *vecNode, shift uint, out []Value) int {
+	if shift == 0 {
+		return copy(out, node.vals)
+	}
+	i := 0
+	for _, kid := range node.kids {
+		i += flattenVecNode(kid, shift-vecBits, out[i:])
+	}
+	return i
+}
+
+// slice returns the backing storage without copying when flat, and
+// materializes a fresh slice when the trie form is in play. Callers inside
+// core must not retain or mutate a flat result. Cost: O(1) flat, O(n) trie.
+func (v Vector) slice() []Value {
+	if v.root == nil {
+		return v.flat
+	}
+	return v.ToSlice()
+}
+
+// Conj appends vs to the end of v, returning the new vector and the bytes
+// this call newly allocated. Below the threshold it still copies the whole
+// flat backing — cheap at this size, so the charge matches that whole copy.
+// Past it, each element folds into a vecBranch-wide tail buffer; a full
+// tail is pushed into the trie as one new leaf, sharing every existing
+// subtree, and the charge reflects only that leaf plus the path to it —
+// never the whole trie, however large it has grown by sharing.
+func (v Vector) Conj(vs ...Value) (Vector, int64) {
+	newLen := v.Len() + len(vs)
+	if v.root == nil && newLen <= vectorFlatThreshold {
+		items := make([]Value, len(v.flat)+len(vs))
+		copy(items, v.flat)
+		copy(items[len(v.flat):], vs)
+		return Vector{flat: items}, VectorShallowBytes(len(items))
+	}
+
+	var root *vecNode
+	var shift uint
+	var trieLen int
+	var tail []Value
+	var bytes int64
+	if v.root != nil {
+		root, shift, trieLen = v.root, v.shift, v.count-len(v.tail)
+		tail = append([]Value(nil), v.tail...)
+	} else {
+		// Promotion: flat drains into full leaves. A one-time cost bounded
+		// by len(v.flat), not by how large the trie grows afterward.
+		root, shift, trieLen, tail = buildVecTrieFromFlat(v.flat)
+		bytes += VectorShallowBytes(len(v.flat))
+	}
+	for _, val := range vs {
+		if len(tail) == vecBranch {
+			bytes += vecPathBytes(shift)
+			root, shift = pushVecTail(root, shift, trieLen, tail)
+			trieLen += vecBranch
+			tail = nil
+		}
+		tail = append(tail, val)
+	}
+	bytes += VectorShallowBytes(len(tail))
+	return Vector{root: root, shift: shift, count: trieLen + len(tail), tail: tail}, bytes
+}
+
+// vecPathBytes is the charge for pushing one full tail into the trie as a
+// new leaf at the given pre-push shift: the leaf itself plus a freshly
+// copied internal-node chain from root down to it, one node per level.
+// Height — shift/vecBits — grows O(log32 n) with vector length, so a Conj
+// call that fills k tails costs O(k * log32 n), never O(n).
+func vecPathBytes(shift uint) int64 {
+	levels := int64(shift)/vecBits + 1
+	return levels * VectorShallowBytes(vecBranch)
+}
+
+// buildVecTrieFromFlat drains flat into full vecBranch-element leaves and
+// returns the resulting trie plus the remainder (fewer than vecBranch
+// elements) as a pending tail. flat's length and vectorFlatThreshold are
+// independent — a flat vector can hold many more than vecBranch elements by
+// the time Conj first promotes it — so this always chunks in exact
+// vecBranch strides rather than assuming flat already fits in one tail
+// buffer. One-time O(len(flat)) cost, paid once per vector on its first
+// Conj past the flat form.
+func buildVecTrieFromFlat(flat []Value) (root *vecNode, shift uint, trieLen int, tail []Value) {
+	full := len(flat) / vecBranch * vecBranch
+	for i := 0; i < full; i += vecBranch {
+		chunk := append([]Value(nil), flat[i:i+vecBranch]...)
+		root, shift = pushVecTail(root, shift, trieLen, chunk)
+		trieLen += vecBranch
+	}
+	tail = append([]Value(nil), flat[full:]...)
+	return root, shift, trieLen, tail
+}
+
+// pushVecTail incorporates a full tail (vecBranch elements) as a new leaf,
+// growing the tree by one level when root is already at capacity for
+// shift. Returns the new root and its shift; every existing subtree not on
+// the path to the new leaf is shared, not copied. Every caller must drain
+// tail to exactly vecBranch first — a leaf is always full, so a short or
+// empty tail here means an upstream chunking bug, not a valid partial leaf.
+func pushVecTail(root *vecNode, shift uint, trieLen int, tail []Value) (*vecNode, uint) {
+	if len(tail) != vecBranch {
+		panic(fmt.Sprintf("pushVecTail: tail has %d elements, want exactly %d", len(tail), vecBranch))
+	}
+	leaf := &vecNode{vals: tail}
+	if root == nil {
+		return leaf, 0
+	}
+	if trieLen>>vecBits >= 1<<shift {
+		return &vecNode{kids: []*vecNode{root, newVecPath(shift, leaf)}}, shift + vecBits
+	}
+	return pushVecLeaf(root, shift, trieLen, leaf), shift
+}
+
+// newVecPath builds a chain of single-child internal nodes from shift down
+// to leaf — the shape a brand-new sibling subtree needs to match root's
+// height when the tree grows a level.
+func newVecPath(shift uint, leaf *vecNode) *vecNode {
+	if shift == 0 {
+		return leaf
+	}
+	return &vecNode{kids: []*vecNode{newVecPath(shift-vecBits, leaf)}}
+}
+
+// pushVecLeaf copies the path from node to the insertion point for leaf,
+// appending a new child (or new subtree) at the next sequential slot and
+// sharing every other subtree. Append-only growth guarantees the target
+// slot is always either an existing child needing further descent, or
+// exactly the next free one.
+func pushVecLeaf(node *vecNode, shift uint, trieLen int, leaf *vecNode) *vecNode {
+	idx := (trieLen >> shift) & (vecBranch - 1)
+	kids := append([]*vecNode(nil), node.kids...)
+	switch {
+	case shift == vecBits:
+		kids = append(kids, leaf)
+	case idx < len(kids):
+		kids[idx] = pushVecLeaf(kids[idx], shift-vecBits, trieLen, leaf)
+	default:
+		kids = append(kids, newVecPath(shift-vecBits, leaf))
+	}
+	return &vecNode{kids: kids}
+}
 
 // hashKey is the internal map key — disambiguates equal string representations
 // across types (e.g. symbol "true" vs bool true). Numeric and bool keys are
@@ -560,7 +980,7 @@ func FromGoValue(v any) (Value, error) {
 			}
 			items[i] = v
 		}
-		return Vector{Items: items}, nil
+		return NewVector(items), nil
 	case map[string]any:
 		m := NewHashMap()
 		var err error
@@ -598,8 +1018,9 @@ func ToGoValue(v Value) (any, error) {
 	case Symbol:
 		return val.V, nil
 	case Vector:
-		result := make([]any, len(val.Items))
-		for i, item := range val.Items {
+		items := val.ToSlice()
+		result := make([]any, len(items))
+		for i, item := range items {
 			v, err := ToGoValue(item)
 			if err != nil {
 				return nil, err
@@ -608,8 +1029,9 @@ func ToGoValue(v Value) (any, error) {
 		}
 		return result, nil
 	case List:
-		result := make([]any, len(val.Items))
-		for i, item := range val.Items {
+		items := val.ToSlice()
+		result := make([]any, len(items))
+		for i, item := range items {
 			v, err := ToGoValue(item)
 			if err != nil {
 				return nil, err

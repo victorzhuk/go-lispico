@@ -13,7 +13,7 @@ func TestEval_VectorEvaluatesElements(t *testing.T) {
 	env := newTestEnv()
 	env.Set("x", Int{V: 99})
 	got := evalStr(t, env, "[1 x]")
-	want := Vector{Items: []Value{Int{V: 1}, Int{V: 99}}}
+	want := NewVector([]Value{Int{V: 1}, Int{V: 99}})
 	if !got.Equals(want) {
 		t.Fatalf("[1 x] = %s, want %s", got.String(), want.String())
 	}
@@ -395,7 +395,7 @@ func TestEval_QuasiquoteAgreementPin(t *testing.T) {
 	env := newTestEnv()
 
 	// (quasiquote a) — atom, no struct depth increment
-	val, err := e.Eval(context.Background(), List{Items: []Value{Symbol{V: "quasiquote"}, Symbol{V: "a"}}}, env)
+	val, err := e.Eval(context.Background(), NewList([]Value{Symbol{V: "quasiquote"}, Symbol{V: "a"}}), env)
 	if err != nil {
 		t.Fatalf("(quasiquote a) should succeed with MaxStructuralDepth=1: %v", err)
 	}
@@ -404,9 +404,9 @@ func TestEval_QuasiquoteAgreementPin(t *testing.T) {
 	}
 
 	// (quasiquote ((a))) — list/list/atom → depth 2
-	inner := List{Items: []Value{Symbol{V: "a"}}}
-	mid := List{Items: []Value{inner}}
-	_, err = e.Eval(context.Background(), List{Items: []Value{Symbol{V: "quasiquote"}, mid}}, env)
+	inner := NewList([]Value{Symbol{V: "a"}})
+	mid := NewList([]Value{inner})
+	_, err = e.Eval(context.Background(), NewList([]Value{Symbol{V: "quasiquote"}, mid}), env)
 	if err == nil {
 		t.Fatal("(quasiquote ((a))) should error with MaxStructuralDepth=1")
 	}

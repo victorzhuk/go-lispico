@@ -187,7 +187,7 @@ func TestDecode(t *testing.T) {
 		{"int zero", "0", "0", core.Int{V: 0}},
 		{"float", "3.14", "3.14", core.Float{V: 3.14}},
 		{"float negative", "-2.5", "-2.5", core.Float{V: -2.5}},
-		{"array empty", "[]", "[]", core.Vector{Items: []core.Value{}}},
+		{"array empty", "[]", "[]", core.NewVector([]core.Value{})},
 		{"object empty", "{}", "(hash-map)", core.NewHashMap()},
 	}
 
@@ -223,10 +223,10 @@ func TestDecode(t *testing.T) {
 		result := eval(t, env, `(json/decode "[1,2,3]")`)
 		vec, ok := result.(core.Vector)
 		require.True(t, ok, "expected Vector, got %T", result)
-		require.Len(t, vec.Items, 3)
-		assert.True(t, vec.Items[0].Equals(core.Int{V: 1}))
-		assert.True(t, vec.Items[1].Equals(core.Int{V: 2}))
-		assert.True(t, vec.Items[2].Equals(core.Int{V: 3}))
+		require.Len(t, vec.ToSlice(), 3)
+		assert.True(t, vec.At(0).Equals(core.Int{V: 1}))
+		assert.True(t, vec.At(1).Equals(core.Int{V: 2}))
+		assert.True(t, vec.At(2).Equals(core.Int{V: 3}))
 	})
 
 	t.Run("object", func(t *testing.T) {
@@ -250,9 +250,9 @@ func TestDecode(t *testing.T) {
 
 		items, ok := itemsVal.(core.Vector)
 		require.True(t, ok)
-		require.Len(t, items.Items, 2)
+		require.Len(t, items.ToSlice(), 2)
 
-		inner, ok := items.Items[1].(*core.HashMap)
+		inner, ok := items.At(1).(*core.HashMap)
 		require.True(t, ok)
 		xVal, found := inner.Get(core.Keyword{V: "x"})
 		require.True(t, found)
@@ -296,7 +296,7 @@ func TestRoundTrip(t *testing.T) {
 
 		vec, ok := decoded.(core.Vector)
 		require.True(t, ok, "expected Vector, got %T", decoded)
-		require.Len(t, vec.Items, 3)
+		require.Len(t, vec.ToSlice(), 3)
 	})
 
 	t.Run("map", func(t *testing.T) {
@@ -373,8 +373,8 @@ func TestDecodeIntegration(t *testing.T) {
 		result := eval(t, env, `(map (fn [x] (+ x 1)) (json/decode "[1,2,3]"))`)
 		list, ok := result.(core.List)
 		require.True(t, ok)
-		require.Len(t, list.Items, 3)
-		assert.True(t, list.Items[0].Equals(core.Int{V: 2}))
+		require.Len(t, list.ToSlice(), 3)
+		assert.True(t, list.At(0).Equals(core.Int{V: 2}))
 	})
 }
 
@@ -496,16 +496,16 @@ func TestDecodeMixedArray(t *testing.T) {
 	result := eval(t, env, `(json/decode "[1, \"two\", true, null, [3, 4]]")`)
 	vec, ok := result.(core.Vector)
 	require.True(t, ok, "expected Vector, got %T", result)
-	require.Len(t, vec.Items, 5)
+	require.Len(t, vec.ToSlice(), 5)
 
-	assert.True(t, vec.Items[0].Equals(core.Int{V: 1}))
-	assert.True(t, vec.Items[1].Equals(core.String{V: "two"}))
-	assert.True(t, vec.Items[2].Equals(core.Bool{V: true}))
-	assert.True(t, vec.Items[3].Equals(core.Nil{}))
+	assert.True(t, vec.At(0).Equals(core.Int{V: 1}))
+	assert.True(t, vec.At(1).Equals(core.String{V: "two"}))
+	assert.True(t, vec.At(2).Equals(core.Bool{V: true}))
+	assert.True(t, vec.At(3).Equals(core.Nil{}))
 
-	innerVec, ok := vec.Items[4].(core.Vector)
+	innerVec, ok := vec.At(4).(core.Vector)
 	require.True(t, ok)
-	require.Len(t, innerVec.Items, 2)
+	require.Len(t, innerVec.ToSlice(), 2)
 }
 
 func TestPluginMetadata(t *testing.T) {
@@ -709,9 +709,9 @@ func TestDecodeHashMap_RoundTrip(t *testing.T) {
 		require.True(t, found)
 		cVec, ok := cVal.(core.Vector)
 		require.True(t, ok, "expected Vector, got %T", cVal)
-		require.Equal(t, 2, len(cVec.Items))
-		assert.True(t, cVec.Items[0].Equals(core.Int{V: 1}))
-		assert.True(t, cVec.Items[1].Equals(core.Int{V: 2}))
+		require.Equal(t, 2, cVec.Len())
+		assert.True(t, cVec.At(0).Equals(core.Int{V: 1}))
+		assert.True(t, cVec.At(1).Equals(core.Int{V: 2}))
 	})
 
 	t.Run("more than 8 keys round-trips through the promoted map form", func(t *testing.T) {

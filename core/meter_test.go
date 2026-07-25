@@ -206,11 +206,11 @@ func TestMeter_DirectEvaluatorEvalDeniedLeaseIsTerminalResourceLimit(t *testing.
 }
 
 func TestMeter_DirectEvaluatorEvalAbsentMeterPreservesBehavior(t *testing.T) {
-	got, err := NewEvaluator().Eval(t.Context(), Vector{Items: []Value{Int{V: 1}, Int{V: 2}}}, NewEnv(nil))
+	got, err := NewEvaluator().Eval(t.Context(), NewVector([]Value{Int{V: 1}, Int{V: 2}}), NewEnv(nil))
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	want := Vector{Items: []Value{Int{V: 1}, Int{V: 2}}}
+	want := NewVector([]Value{Int{V: 1}, Int{V: 2}})
 	if !got.Equals(want) {
 		t.Fatalf("Eval result = %v, want %v", got, want)
 	}

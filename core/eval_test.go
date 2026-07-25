@@ -307,7 +307,7 @@ func TestEval_Quote(t *testing.T) {
 	env := newTestEnv()
 	got := evalStr(t, env, "(quote (1 2 3))")
 	list, ok := got.(List)
-	if !ok || len(list.Items) != 3 {
+	if !ok || list.Len() != 3 {
 		t.Errorf("quote returned %v, want list of 3", got)
 	}
 }
@@ -317,7 +317,7 @@ func TestEval_QuoteSyntax(t *testing.T) {
 	env := newTestEnv()
 	got := evalStr(t, env, "'(a b c)")
 	list, ok := got.(List)
-	if !ok || len(list.Items) != 3 {
+	if !ok || list.Len() != 3 {
 		t.Errorf("'(a b c) = %v, want list of 3", got)
 	}
 }
@@ -392,22 +392,22 @@ func TestEval_Quasiquote(t *testing.T) {
 	env.Set("x", Int{V: 42})
 	got := evalStr(t, env, "`(a ~x b)")
 	list := got.(List)
-	if len(list.Items) != 3 {
-		t.Fatalf("quasiquote len = %d, want 3", len(list.Items))
+	if list.Len() != 3 {
+		t.Fatalf("quasiquote len = %d, want 3", list.Len())
 	}
-	if !list.Items[1].Equals(Int{V: 42}) {
-		t.Errorf("unquoted x = %v, want 42", list.Items[1])
+	if !list.At(1).Equals(Int{V: 42}) {
+		t.Errorf("unquoted x = %v, want 42", list.At(1))
 	}
 }
 
 func TestEval_QuasiquoteSplice(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
-	env.Set("xs", List{Items: []Value{Int{V: 1}, Int{V: 2}}})
+	env.Set("xs", NewList([]Value{Int{V: 1}, Int{V: 2}}))
 	got := evalStr(t, env, "`(a ~@xs b)")
 	list := got.(List)
-	if len(list.Items) != 4 {
-		t.Fatalf("splice len = %d, want 4", len(list.Items))
+	if list.Len() != 4 {
+		t.Fatalf("splice len = %d, want 4", list.Len())
 	}
 }
 
@@ -609,7 +609,7 @@ func TestEval_VariadicFn(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l, ok := got.(List)
-	if !ok || len(l.Items) != 2 {
+	if !ok || l.Len() != 2 {
 		t.Errorf("variadic rest = %v, want list of 2", got)
 	}
 }
@@ -631,8 +631,8 @@ func TestEval_MacroExpand(t *testing.T) {
 	if !ok {
 		t.Fatalf("expanded = %T, want List", expanded)
 	}
-	if !list.Items[0].Equals(Symbol{V: "if"}) {
-		t.Errorf("expanded head = %v, want if", list.Items[0])
+	if !list.At(0).Equals(Symbol{V: "if"}) {
+		t.Errorf("expanded head = %v, want if", list.At(0))
 	}
 }
 
@@ -689,7 +689,7 @@ func TestEval_ContextCancellation_StraightLineBudget(t *testing.T) {
 	for i := range 200 {
 		items = append(items, Int{V: int64(i)})
 	}
-	vec := Vector{Items: items}
+	vec := NewVector(items)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -984,12 +984,12 @@ func TestEval_Quasiquote_Vector(t *testing.T) {
 
 	got := evalStr(t, env, "`[1 ~x 3]")
 	vec, ok := got.(Vector)
-	if !ok || len(vec.Items) != 3 {
+	if !ok || vec.Len() != 3 {
 		t.Errorf("quasiquote vector = %v, want [1 5 3]", got)
 		return
 	}
-	if !vec.Items[1].Equals(Int{V: 5}) {
-		t.Errorf("vec[1] = %v, want 5", vec.Items[1])
+	if !vec.At(1).Equals(Int{V: 5}) {
+		t.Errorf("vec[1] = %v, want 5", vec.At(1))
 	}
 }
 
@@ -1005,11 +1005,11 @@ func TestEval_Quasiquote_Atom(t *testing.T) {
 func TestEval_QuasiquoteSplice_Vector(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
-	env.Set("xs", Vector{Items: []Value{Int{V: 1}, Int{V: 2}}})
+	env.Set("xs", NewVector([]Value{Int{V: 1}, Int{V: 2}}))
 
 	got := evalStr(t, env, "`(0 ~@xs 3)")
 	list, ok := got.(List)
-	if !ok || len(list.Items) != 4 {
+	if !ok || list.Len() != 4 {
 		t.Errorf("quasiquote splice vector = %v, want 4 items", got)
 	}
 }
@@ -1044,10 +1044,10 @@ func TestEval_QuasiquoteErrors(t *testing.T) {
 
 	// Malformed unquote inside quasiquote: (quasiquote (unquote)) — unquote with 0 args.
 	// The reader never produces this, so we build the form directly.
-	malformed := List{Items: []Value{
+	malformed := NewList([]Value{
 		Symbol{V: "quasiquote"},
-		List{Items: []Value{Symbol{V: "unquote"}}},
-	}}
+		NewList([]Value{Symbol{V: "unquote"}}),
+	})
 	_, err2 := e.Eval(context.Background(), malformed, env)
 	if err2 == nil {
 		t.Error("malformed unquote inside quasiquote should error")

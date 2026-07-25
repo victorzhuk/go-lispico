@@ -84,20 +84,26 @@ type pendingCellAlloc struct {
 // carried in the context so concurrent evaluations on one engine never share
 // depth, reduction, or allocation state.
 type evalState struct {
-	callDepth         atomic.Int64
-	loopDepth         atomic.Int64
-	macroDepth        atomic.Int64
-	structDepth       atomic.Int64
-	reductions        atomic.Int64
-	allocBytes        atomic.Int64
-	evalDepth         atomic.Int64
-	maxReductions     int64
-	maxAllocBytes     int64
-	meter             atomic.Pointer[sessionMeter]
-	leasedReductions  int64
-	leasedAllocBytes  int64
-	retainedBytes     int64
-	retainedSlots     int64
+	callDepth        atomic.Int64
+	loopDepth        atomic.Int64
+	macroDepth       atomic.Int64
+	structDepth      atomic.Int64
+	reductions       atomic.Int64
+	allocBytes       atomic.Int64
+	evalDepth        atomic.Int64
+	maxReductions    int64
+	maxAllocBytes    int64
+	meter            atomic.Pointer[sessionMeter]
+	leasedReductions int64
+	leasedAllocBytes int64
+	retainedBytes    int64
+	retainedSlots    int64
+	// calleeCharged marks that the GoFunc currently dispatching already
+	// charged its own return value via ChargeGoFuncResultBytes, so the
+	// apply site's fallback shallow charge should skip it. Plain, not
+	// atomic — only the evaluating goroutine ever touches it, same as
+	// leasedReductions/leasedAllocBytes above.
+	calleeCharged     bool
 	pendingCellAllocs []pendingCellAlloc
 	// shared lets lazy states alias wrapper-owned counters without a second allocation per evalState.
 	shared          *atomic.Int64
@@ -395,18 +401,19 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (result Value, err
 		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
-		if err := st.chargeAllocBytes(VectorShallowBytes(len(val.Items))); err != nil {
+		n := val.Len()
+		if err := st.chargeAllocBytes(VectorShallowBytes(n)); err != nil {
 			return nil, err
 		}
-		items := make([]Value, len(val.Items))
-		for i, item := range val.Items {
-			r, err := e.Eval(ctx, item, env)
+		items := make([]Value, n)
+		for i := 0; i < n; i++ {
+			r, err := e.Eval(ctx, val.At(i), env)
 			if err != nil {
 				return nil, err
 			}
 			items[i] = r
 		}
-		return Vector{Items: items}, nil
+		return NewVector(items), nil
 	case *HashMap:
 		return e.evalMap(ctx, val, env)
 	case Symbol:
@@ -416,10 +423,10 @@ func (e *engine) Eval(ctx context.Context, v Value, env *Env) (result Value, err
 		}
 		return r, nil
 	case List:
-		if len(val.Items) == 0 {
+		if val.Len() == 0 {
 			return val, nil
 		}
-		return e.evalList(ctx, val.Items, env)
+		return e.evalList(ctx, val.slice(), env)
 	default:
 		return nil, NewTypeError("evaluable", v)
 	}
@@ -519,12 +526,23 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 			if err := st.chargeReductions(1); err != nil {
 				return nil, err
 			}
+			prevCharged := st.calleeCharged
+			st.calleeCharged = false
 			result, err := f.Fn(ctx, e, args, env)
+			charged := st.calleeCharged
+			st.calleeCharged = prevCharged
 			if err != nil {
 				return nil, err
 			}
-			if err := st.chargeAllocBytes(ValueShallowBytes(result)); err != nil {
-				return nil, err
+			// A callee that already charged its own result via
+			// ChargeGoFuncResultBytes (cons/conj/concat/... on a shared
+			// List/Vector) skips this fallback — it would otherwise
+			// re-charge the whole result's shallow size on every call,
+			// turning an O(1) structural update into an O(n) charge.
+			if !charged {
+				if err := st.chargeAllocBytes(ValueShallowBytes(result)); err != nil {
+					return nil, err
+				}
 			}
 			return result, nil
 		case Lambda:
@@ -582,10 +600,11 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 	ctx = e.evalContext(ctx)
 
 	list, ok := form.(List)
-	if !ok || len(list.Items) == 0 {
+	if !ok || list.Len() == 0 {
 		return form, nil
 	}
-	fn, ok := e.resolveHead(ctx, list.Items[0], env)
+	items := list.ToSlice()
+	fn, ok := e.resolveHead(ctx, items[0], env)
 	if !ok {
 		return form, nil
 	}
@@ -593,7 +612,7 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 	if !ok {
 		return form, nil
 	}
-	expanded, err := e.expandMacroForm(ctx, macro, list.Items[1:])
+	expanded, err := e.expandMacroForm(ctx, macro, items[1:])
 	if err != nil {
 		return nil, err
 	}
@@ -649,14 +668,15 @@ func (e *engine) expandMacro(ctx context.Context, m Macro, args []Value, env *En
 func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value, error) {
 	switch val := v.(type) {
 	case List:
-		if len(val.Items) > 0 {
-			if sym, ok := val.Items[0].(Symbol); ok {
+		n := val.Len()
+		if n > 0 {
+			if sym, ok := val.At(0).(Symbol); ok {
 				switch sym.V {
 				case "unquote":
-					if len(val.Items) != 2 {
+					if n != 2 {
 						return nil, evalErrorf("unquote requires 1 argument")
 					}
-					return e.Eval(ctx, val.Items[1], env)
+					return e.Eval(ctx, val.At(1), env)
 				case "unquote-splicing":
 					return nil, evalErrorf("unquote-splicing used outside of list context")
 				}
@@ -673,27 +693,32 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			return nil, err
 		}
 		var result []Value
-		for _, item := range val.Items {
-			if list, ok := item.(List); ok && len(list.Items) > 0 {
-				if sym, ok := list.Items[0].(Symbol); ok && sym.V == "unquote-splicing" {
-					if len(list.Items) != 2 {
+		for i := 0; i < n; i++ {
+			item := val.At(i)
+			if list, ok := item.(List); ok && list.Len() > 0 {
+				if sym, ok := list.At(0).(Symbol); ok && sym.V == "unquote-splicing" {
+					if list.Len() != 2 {
 						return nil, evalErrorf("unquote-splicing requires 1 argument")
 					}
-					expanded, err := e.Eval(ctx, list.Items[1], env)
+					expanded, err := e.Eval(ctx, list.At(1), env)
 					if err != nil {
 						return nil, err
 					}
 					switch seq := expanded.(type) {
 					case List:
-						if err := st.chargeAllocBytes(ValueSlotsBytes(len(seq.Items))); err != nil {
+						if err := st.chargeAllocBytes(ValueSlotsBytes(seq.Len())); err != nil {
 							return nil, err
 						}
-						result = append(result, seq.Items...)
+						for j := 0; j < seq.Len(); j++ {
+							result = append(result, seq.At(j))
+						}
 					case Vector:
-						if err := st.chargeAllocBytes(ValueSlotsBytes(len(seq.Items))); err != nil {
+						if err := st.chargeAllocBytes(ValueSlotsBytes(seq.Len())); err != nil {
 							return nil, err
 						}
-						result = append(result, seq.Items...)
+						for j := 0; j < seq.Len(); j++ {
+							result = append(result, seq.At(j))
+						}
 					default:
 						return nil, evalErrorf("unquote-splicing requires a sequence, got %T", expanded)
 					}
@@ -709,7 +734,7 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			}
 			result = append(result, expanded)
 		}
-		return List{Items: result}, nil
+		return NewList(result), nil
 	case Vector:
 		st := evalStateFrom(ctx)
 		counter := st.counter()
@@ -718,18 +743,19 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 		if e.MaxStructuralDepth > 0 && int(counter.Load()) > e.MaxStructuralDepth {
 			return nil, resourceLimitErrorf("structural depth limit %d exceeded", e.MaxStructuralDepth)
 		}
-		if err := st.chargeAllocBytes(VectorShallowBytes(len(val.Items))); err != nil {
+		n := val.Len()
+		if err := st.chargeAllocBytes(VectorShallowBytes(n)); err != nil {
 			return nil, err
 		}
-		result := make([]Value, len(val.Items))
-		for i, item := range val.Items {
-			expanded, err := e.expandQuasiquote(ctx, item, env)
+		result := make([]Value, n)
+		for i := 0; i < n; i++ {
+			expanded, err := e.expandQuasiquote(ctx, val.At(i), env)
 			if err != nil {
 				return nil, err
 			}
 			result[i] = expanded
 		}
-		return Vector{Items: result}, nil
+		return NewVector(result), nil
 	case *HashMap:
 		st := evalStateFrom(ctx)
 		counter := st.counter()
@@ -805,7 +831,7 @@ func paramsAsVector(v Value) (Vector, error) {
 	case Vector:
 		return p, nil
 	case List:
-		return Vector{Items: append([]Value(nil), p.Items...)}, nil
+		return NewVector(p.ToSlice()), nil
 	default:
 		return Vector{}, evalErrorf("parameters must be a vector or list, got %T", v)
 	}
@@ -923,7 +949,7 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		return nil, err
 	}
 	for _, clause := range clauses {
-		items := clause.(List).Items
+		items := clause.(List).slice()
 		test, body := items[0], items[1]
 		if isCondElse(test) {
 			return e.Eval(ctx, body, env)
@@ -1076,10 +1102,11 @@ func formsMayCreateClosure(ctx context.Context, e *engine, forms []Value, env *E
 func formMayCreateClosure(ctx context.Context, e *engine, form Value, env *Env) bool {
 	switch v := form.(type) {
 	case List:
-		if len(v.Items) == 0 {
+		items := v.slice()
+		if len(items) == 0 {
 			return false
 		}
-		if head, ok := v.Items[0].(Symbol); ok {
+		if head, ok := items[0].(Symbol); ok {
 			switch head.V {
 			case "quote":
 				return false
@@ -1090,13 +1117,13 @@ func formMayCreateClosure(ctx context.Context, e *engine, form Value, env *Env) 
 		if expanded, ok := expandMacroForLoopScan(ctx, e, v, env); ok {
 			return formMayCreateClosure(ctx, e, expanded, env)
 		}
-		for _, item := range v.Items {
+		for _, item := range items {
 			if formMayCreateClosure(ctx, e, item, env) {
 				return true
 			}
 		}
 	case Vector:
-		for _, item := range v.Items {
+		for _, item := range v.slice() {
 			if formMayCreateClosure(ctx, e, item, env) {
 				return true
 			}
@@ -1115,12 +1142,13 @@ func formMayCreateClosure(ctx context.Context, e *engine, form Value, env *Env) 
 }
 
 func expandMacroForLoopScan(ctx context.Context, e *engine, list List, env *Env) (Value, bool) {
-	if head, ok := list.Items[0].(Symbol); ok {
+	items := list.slice()
+	if head, ok := items[0].(Symbol); ok {
 		if _, special := e.forms[head.V]; special {
 			return nil, false
 		}
 	}
-	fn, err := e.Eval(ctx, list.Items[0], env)
+	fn, err := e.Eval(ctx, items[0], env)
 	if err != nil {
 		return nil, false
 	}
@@ -1128,7 +1156,7 @@ func expandMacroForLoopScan(ctx context.Context, e *engine, list List, env *Env)
 	if !ok {
 		return nil, false
 	}
-	expanded, err := e.expandMacroForm(ctx, macro, list.Items[1:])
+	expanded, err := e.expandMacroForm(ctx, macro, items[1:])
 	if err != nil {
 		return nil, false
 	}
@@ -1138,20 +1166,21 @@ func expandMacroForLoopScan(ctx context.Context, e *engine, list List, env *Env)
 func scanLoopCapture(ctx context.Context, e *engine, env *Env, form Value, targets map[string]bool, shadow map[string]bool, captured *map[string]bool) {
 	switch v := form.(type) {
 	case List:
-		if len(v.Items) == 0 {
+		items := v.slice()
+		if len(items) == 0 {
 			return
 		}
 		if expanded, ok := expandMacroForLoopScan(ctx, e, v, env); ok {
 			scanLoopCapture(ctx, e, env, expanded, targets, shadow, captured)
 			return
 		}
-		if head, ok := v.Items[0].(Symbol); ok {
+		if head, ok := items[0].(Symbol); ok {
 			switch head.V {
 			case "quote":
 				return
 			case "fn":
-				if len(v.Items) >= 3 {
-					params, err := paramsAsVector(v.Items[1])
+				if len(items) >= 3 {
+					params, err := paramsAsVector(items[1])
 					if err == nil {
 						fixed, variadic, err := parseParams(params)
 						if err != nil {
@@ -1162,7 +1191,7 @@ func scanLoopCapture(ctx context.Context, e *engine, env *Env, form Value, targe
 							if shadow[name] {
 								continue
 							}
-							if formsReferenceTargets(ctx, e, env, v.Items[2:], map[string]bool{name: true}, nextShadow) {
+							if formsReferenceTargets(ctx, e, env, items[2:], map[string]bool{name: true}, nextShadow) {
 								markLoopCaptured(captured, name)
 							}
 						}
@@ -1170,8 +1199,8 @@ func scanLoopCapture(ctx context.Context, e *engine, env *Env, form Value, targe
 				}
 				return
 			case "defn", "defmacro":
-				if len(v.Items) >= 4 {
-					params, err := paramsAsVector(v.Items[2])
+				if len(items) >= 4 {
+					params, err := paramsAsVector(items[2])
 					if err == nil {
 						fixed, variadic, err := parseParams(params)
 						if err != nil {
@@ -1182,7 +1211,7 @@ func scanLoopCapture(ctx context.Context, e *engine, env *Env, form Value, targe
 							if shadow[name] {
 								continue
 							}
-							if formsReferenceTargets(ctx, e, env, v.Items[3:], map[string]bool{name: true}, nextShadow) {
+							if formsReferenceTargets(ctx, e, env, items[3:], map[string]bool{name: true}, nextShadow) {
 								markLoopCaptured(captured, name)
 							}
 						}
@@ -1190,18 +1219,18 @@ func scanLoopCapture(ctx context.Context, e *engine, env *Env, form Value, targe
 				}
 				return
 			case "let", "loop":
-				scanBindingFormCapture(ctx, e, env, v.Items[1:], targets, shadow, captured, false)
+				scanBindingFormCapture(ctx, e, env, items[1:], targets, shadow, captured, false)
 				return
 			case "let*":
-				scanBindingFormCapture(ctx, e, env, v.Items[1:], targets, shadow, captured, true)
+				scanBindingFormCapture(ctx, e, env, items[1:], targets, shadow, captured, true)
 				return
 			}
 		}
-		for _, item := range v.Items {
+		for _, item := range items {
 			scanLoopCapture(ctx, e, env, item, targets, shadow, captured)
 		}
 	case Vector:
-		for _, item := range v.Items {
+		for _, item := range v.slice() {
 			scanLoopCapture(ctx, e, env, item, targets, shadow, captured)
 		}
 	case *HashMap:
@@ -1264,7 +1293,7 @@ func formReferencesTarget(ctx context.Context, e *engine, env *Env, form Value, 
 	case Symbol:
 		return targets[v.V] && !shadow[v.V]
 	case Vector:
-		for _, item := range v.Items {
+		for _, item := range v.slice() {
 			if formReferencesTarget(ctx, e, env, item, targets, shadow) {
 				return true
 			}
@@ -1279,7 +1308,7 @@ func formReferencesTarget(ctx context.Context, e *engine, env *Env, form Value, 
 		})
 		return found
 	case List:
-		return listReferencesTarget(ctx, e, env, v.Items, targets, shadow)
+		return listReferencesTarget(ctx, e, env, v.slice(), targets, shadow)
 	}
 	return false
 }
@@ -1288,7 +1317,7 @@ func listReferencesTarget(ctx context.Context, e *engine, env *Env, items []Valu
 	if len(items) == 0 {
 		return false
 	}
-	list := List{Items: items}
+	list := NewList(items)
 	if expanded, ok := expandMacroForLoopScan(ctx, e, list, env); ok {
 		return formReferencesTarget(ctx, e, env, expanded, targets, shadow)
 	}
@@ -1473,20 +1502,21 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	}
 
 	catchClause, ok := args[len(args)-1].(List)
-	if !ok || len(catchClause.Items) < 3 {
+	if !ok || catchClause.Len() < 3 {
 		return nil, evalErrorf("try: last argument must be (catch <sym> <handler>)")
 	}
-	catchSym, ok := catchClause.Items[0].(Symbol)
+	items := catchClause.slice()
+	catchSym, ok := items[0].(Symbol)
 	if !ok || catchSym.V != "catch" {
-		return nil, evalErrorf("try: expected catch clause, got %v", catchClause.Items[0])
+		return nil, evalErrorf("try: expected catch clause, got %v", items[0])
 	}
 	errSymIndex := 1
 	bodyStart := 2
-	if len(catchClause.Items) >= 4 {
+	if len(items) >= 4 {
 		errSymIndex = 2
 		bodyStart = 3
 	}
-	errSym, ok := catchClause.Items[errSymIndex].(Symbol)
+	errSym, ok := items[errSymIndex].(Symbol)
 	if !ok {
 		return nil, evalErrorf("catch: error binding must be a symbol")
 	}
@@ -1501,7 +1531,7 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 		if err := catchEnv.Set(errSym.V, String{V: err.Error()}); err != nil {
 			return nil, err
 		}
-		return e.evalBody(ctx, catchClause.Items[bodyStart:], catchEnv)
+		return e.evalBody(ctx, items[bodyStart:], catchEnv)
 	}
 	return result, nil
 }

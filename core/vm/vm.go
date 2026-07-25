@@ -589,13 +589,20 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		if err := vm.chargeReductions(1); err != nil {
 			return nil, err
 		}
+		prevCharged := core.BeginGoFuncDispatch(reCtx)
 		result, err := f.Fn(reCtx, eval, args, env)
+		charged := core.EndGoFuncDispatch(reCtx, prevCharged)
 		vm.syncMeterFromReentry()
 		if err != nil {
 			return nil, err
 		}
-		if err := vm.chargeValue(result); err != nil {
-			return nil, err
+		// A callee that already charged its own result via
+		// ChargeGoFuncResultBytes skips this fallback — see
+		// core.ChargeGoFuncResultBytes for why.
+		if !charged {
+			if err := vm.chargeValue(result); err != nil {
+				return nil, err
+			}
 		}
 		return result, nil
 	case core.Keyword:
@@ -932,7 +939,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			}
 			items := make([]core.Value, n)
 			copy(items, vm.stack[len(vm.stack)-n:])
-			res := core.List{Items: items}
+			res := core.NewList(items)
 			if err := vm.checkConstructionDepth(res); err != nil {
 				return nil, err
 			}
@@ -948,7 +955,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			}
 			items := make([]core.Value, n)
 			copy(items, vm.stack[len(vm.stack)-n:])
-			res := core.Vector{Items: items}
+			res := core.NewVector(items)
 			if err := vm.checkConstructionDepth(res); err != nil {
 				return nil, err
 			}
@@ -1513,13 +1520,20 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if err := vm.chargeReductions(1); err != nil {
 			return err
 		}
+		prevCharged := core.BeginGoFuncDispatch(reCtx)
 		result, err := f.Fn(reCtx, eval, args, frameEnv)
+		charged := core.EndGoFuncDispatch(reCtx, prevCharged)
 		vm.syncMeterFromReentry()
 		if err != nil {
 			return err
 		}
-		if err := vm.chargeValue(result); err != nil {
-			return err
+		// A callee that already charged its own result via
+		// ChargeGoFuncResultBytes skips this fallback — see
+		// core.ChargeGoFuncResultBytes for why.
+		if !charged {
+			if err := vm.chargeValue(result); err != nil {
+				return err
+			}
 		}
 		vm.stack = vm.stack[:len(vm.stack)-argc-1]
 		vm.push(result)
@@ -1586,7 +1600,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			target := frame.base
 			if f.Chunk.Variadic {
 				fixed := f.Chunk.Arity
-				rest := core.List{Items: append([]core.Value(nil), args[fixed:]...)}
+				rest := core.NewList(append([]core.Value(nil), args[fixed:]...))
 				copy(vm.stack[target:], args[:fixed])
 				vm.stack[target+fixed] = rest
 				vm.stack = vm.stack[:target+fixed+1]
@@ -1605,7 +1619,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			base := len(vm.stack) - argc - 1
 			if f.Chunk.Variadic {
 				fixed := f.Chunk.Arity
-				rest := core.List{Items: append([]core.Value(nil), args[fixed:]...)}
+				rest := core.NewList(append([]core.Value(nil), args[fixed:]...))
 				for i := range fixed {
 					vm.stack[base+i] = args[i]
 				}

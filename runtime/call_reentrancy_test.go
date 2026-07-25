@@ -213,7 +213,7 @@ func TestCallReentrancy_ConcurrentRace(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 
-	nested := core.Vector{Items: []core.Value{core.Int{V: 1}, core.Vector{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}}}
+	nested := core.NewVector([]core.Value{core.Int{V: 1}, core.NewVector([]core.Value{core.Int{V: 2}, core.Int{V: 3}})})
 
 	require.NoError(t, eng.Bind("reenter3", core.GoFunc{
 		Name: "reenter3",

@@ -360,7 +360,7 @@ func TestCompileAndRun_DataStructures(t *testing.T) {
 			src:  "'(1 2 3)",
 			check: func(v core.Value) bool {
 				list, ok := v.(core.List)
-				return ok && len(list.Items) == 3
+				return ok && list.Len() == 3
 			},
 		},
 		{
@@ -368,7 +368,7 @@ func TestCompileAndRun_DataStructures(t *testing.T) {
 			src:  "[1 2 3]",
 			check: func(v core.Value) bool {
 				vec, ok := v.(core.Vector)
-				return ok && len(vec.Items) == 3
+				return ok && vec.Len() == 3
 			},
 		},
 		{

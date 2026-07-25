@@ -74,6 +74,174 @@ func BenchmarkMerge(b *testing.B) {
 	}
 }
 
+func consGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
+	tb.Helper()
+	fnVal, ok := env.Get("cons")
+	if !ok {
+		tb.Fatal("cons not registered")
+	}
+	gfn, ok := fnVal.(core.GoFunc)
+	if !ok {
+		tb.Fatalf("cons is not a GoFunc: %T", fnVal)
+	}
+	return gfn
+}
+
+// BenchmarkAccumulate_Cons builds an N-element list by calling the real
+// cons builtin N times in a row — the quadratic-copy accumulation shape
+// this change exists to fix, measured at the charged builtin call site.
+func BenchmarkAccumulate_Cons(b *testing.B) {
+	for _, n := range []int{100, 1000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			env := core.NewEnv(nil)
+			if err := New().Init(env); err != nil {
+				b.Fatalf("init stdlib: %v", err)
+			}
+			gfn := consGoFunc(b, env)
+			ctx := context.Background()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				var acc core.Value = core.List{}
+				for i := range n {
+					v, err := gfn.Fn(ctx, nil, []core.Value{core.Int{V: int64(i)}, acc}, env)
+					if err != nil {
+						b.Fatalf("cons: %v", err)
+					}
+					acc = v
+				}
+			}
+		})
+	}
+}
+
+func conjGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
+	tb.Helper()
+	fnVal, ok := env.Get("conj")
+	if !ok {
+		tb.Fatal("conj not registered")
+	}
+	gfn, ok := fnVal.(core.GoFunc)
+	if !ok {
+		tb.Fatalf("conj is not a GoFunc: %T", fnVal)
+	}
+	return gfn
+}
+
+func concatGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
+	tb.Helper()
+	fnVal, ok := env.Get("concat")
+	if !ok {
+		tb.Fatal("concat not registered")
+	}
+	gfn, ok := fnVal.(core.GoFunc)
+	if !ok {
+		tb.Fatalf("concat is not a GoFunc: %T", fnVal)
+	}
+	return gfn
+}
+
+func reverseGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
+	tb.Helper()
+	fnVal, ok := env.Get("reverse")
+	if !ok {
+		tb.Fatal("reverse not registered")
+	}
+	gfn, ok := fnVal.(core.GoFunc)
+	if !ok {
+		tb.Fatalf("reverse is not a GoFunc: %T", fnVal)
+	}
+	return gfn
+}
+
+// BenchmarkAccumulate_Conj mirrors BenchmarkAccumulate_Cons through conj's
+// List branch instead of cons's — before this change, conj built its result
+// with an indexed At() loop over c, O(n) per call on a shared list, so
+// accumulating n elements was O(n^2). n=10000 makes that regression visible;
+// n=1000 does not.
+func BenchmarkAccumulate_Conj(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			env := core.NewEnv(nil)
+			if err := New().Init(env); err != nil {
+				b.Fatalf("init stdlib: %v", err)
+			}
+			gfn := conjGoFunc(b, env)
+			ctx := context.Background()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				var acc core.Value = core.List{}
+				for i := range n {
+					v, err := gfn.Fn(ctx, nil, []core.Value{acc, core.Int{V: int64(i)}}, env)
+					if err != nil {
+						b.Fatalf("conj: %v", err)
+					}
+					acc = v
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkConcat_LastArgShared concats a 2-element prefix onto an n-element
+// shared list passed as the last argument — the case this change shares
+// instead of copying. n is the shared base list's size; before this change,
+// flattening it with an indexed At() loop was O(n) per call on its own,
+// on top of walking it again to build the flat result.
+func BenchmarkConcat_LastArgShared(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		items := make([]core.Value, n)
+		for i := range items {
+			items[i] = core.Int{V: int64(i)}
+		}
+		base := core.NewList(items)
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			env := core.NewEnv(nil)
+			if err := New().Init(env); err != nil {
+				b.Fatalf("init stdlib: %v", err)
+			}
+			gfn := concatGoFunc(b, env)
+			ctx := context.Background()
+			prefix := core.NewList([]core.Value{core.Int{V: -1}, core.Int{V: -2}})
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := gfn.Fn(ctx, nil, []core.Value{prefix, base}, env); err != nil {
+					b.Fatalf("concat: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkReverse_Large reverses an n-element shared list — before this
+// change, an indexed At() loop made this O(n^2) on the shared representation.
+func BenchmarkReverse_Large(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		items := make([]core.Value, n)
+		for i := range items {
+			items[i] = core.Int{V: int64(i)}
+		}
+		base := core.NewList(items)
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			env := core.NewEnv(nil)
+			if err := New().Init(env); err != nil {
+				b.Fatalf("init stdlib: %v", err)
+			}
+			gfn := reverseGoFunc(b, env)
+			ctx := context.Background()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := gfn.Fn(ctx, nil, []core.Value{base}, env); err != nil {
+					b.Fatalf("reverse: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkBootstrapPhases(b *testing.B) {
 	ctx := context.Background()
 	entries := stdlibBootstrapEntries()

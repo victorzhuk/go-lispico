@@ -129,9 +129,9 @@ func TestLoadDir_Alphabetical(t *testing.T) {
 	require.True(t, ok)
 	vec, ok := val.(core.Vector)
 	require.True(t, ok)
-	require.Len(t, vec.Items, 2)
-	assert.True(t, core.String{V: "b"}.Equals(vec.Items[0]))
-	assert.True(t, core.String{V: "c"}.Equals(vec.Items[1]))
+	require.Len(t, vec.ToSlice(), 2)
+	assert.True(t, core.String{V: "b"}.Equals(vec.At(0)))
+	assert.True(t, core.String{V: "c"}.Equals(vec.At(1)))
 }
 
 func TestLoadDir_SkipsNonLisp(t *testing.T) {
@@ -683,10 +683,10 @@ func bindBuiltin(t testing.TB, e Engine, name string) {
 				}
 				coll := args[0]
 				if vec, ok := coll.(core.Vector); ok {
-					items := make([]core.Value, len(vec.Items))
-					copy(items, vec.Items)
+					items := make([]core.Value, vec.Len())
+					copy(items, vec.ToSlice())
 					items = append(items, args[1:]...)
-					return core.Vector{Items: items}, nil
+					return core.NewVector(items), nil
 				}
 				return coll, nil
 			},

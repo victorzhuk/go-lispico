@@ -233,7 +233,7 @@ func TestVM_ApplyPooled_Parity(t *testing.T) {
 		want core.Value
 	}{
 		{"fixed arity closure", NewClosure(fixed, nil, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}}, core.Int{V: 2}},
-		{"variadic closure", NewClosure(variadic, nil, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}},
+		{"variadic closure", NewClosure(variadic, nil, env), []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}, core.NewList([]core.Value{core.Int{V: 2}, core.Int{V: 3}})},
 		{"keyword", core.Keyword{V: "name"}, []core.Value{m}, core.String{V: "Alice"}},
 		{"gofunc", goFn, []core.Value{core.Int{V: 5}}, core.Int{V: 5}},
 	}

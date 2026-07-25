@@ -150,8 +150,8 @@ func TestEnv_ChildVariadic_Variadic(t *testing.T) {
 	if !ok {
 		t.Fatalf("rest should be List, got %T", rest)
 	}
-	if len(restList.Items) != 2 {
-		t.Errorf("rest len = %d, want 2", len(restList.Items))
+	if restList.Len() != 2 {
+		t.Errorf("rest len = %d, want 2", restList.Len())
 	}
 }
 
@@ -183,8 +183,8 @@ func TestEnv_ChildVariadic_VariadicEmpty(t *testing.T) {
 	if !ok {
 		t.Fatalf("rest should be List")
 	}
-	if len(restList.Items) != 0 {
-		t.Errorf("empty variadic should bind empty list, got %d items", len(restList.Items))
+	if restList.Len() != 0 {
+		t.Errorf("empty variadic should bind empty list, got %d items", restList.Len())
 	}
 }
 
@@ -516,11 +516,11 @@ func TestEnv_LambdaCaptureDoesNotDoubleCount(t *testing.T) {
 	}
 	wantBytes, wantSlots := env.RetainedUsage()
 
-	val, err := NewEvaluator().Eval(t.Context(), List{Items: []Value{
+	val, err := NewEvaluator().Eval(t.Context(), NewList([]Value{
 		Symbol{V: "fn"},
 		Vector{},
 		Symbol{V: "captured"},
-	}}, env)
+	}), env)
 	if err != nil {
 		t.Fatalf("eval fn: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestEnv_RebuildConcurrentReadersWriters(t *testing.T) {
 func TestEnv_RetainedUsageExact(t *testing.T) {
 	t.Parallel()
 	env := NewEnvWithRetainedLimits(nil, 0, 0)
-	val := Vector{Items: []Value{Int{V: 1}, String{V: "x"}}}
+	val := NewVector([]Value{Int{V: 1}, String{V: "x"}})
 	fn := GoFunc{Name: "f"}
 	if err := env.Set("v", val); err != nil {
 		t.Fatalf("set v: %v", err)
@@ -933,4 +933,61 @@ func TestEnv_Cell_ValueCanonicalCoherent(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
+}
+
+// TestEnv_RetainedUsage_FlatVsSharedRepresentationIdentical pins that
+// retained accounting doesn't change when List/Vector switch between a flat
+// backing and a shared-tail chain / trie: retainedBindingBytes charges
+// ValueShallowBytes, a pure function of Len(), never anything that walks the
+// chosen representation. Slice D's incremental-charging change touches
+// cons/conj/concat's own byte formulas, not this one — this test pins that
+// the representation swap (slice C) left it alone.
+func TestEnv_RetainedUsage_FlatVsSharedRepresentationIdentical(t *testing.T) {
+	t.Parallel()
+
+	items := make([]Value, 1000)
+	for i := range items {
+		items[i] = Int{V: int64(i)}
+	}
+
+	const tail = 20
+	flatList := NewList(append([]Value(nil), items[len(items)-tail:]...))
+	sharedList := NewList(append([]Value(nil), items...))
+	for sharedList.Len() > tail {
+		sharedList = sharedList.Rest()
+	}
+	if flatList.Len() != tail || sharedList.Len() != tail {
+		t.Fatalf("setup: List Len() = flat:%d shared:%d, want both %d", flatList.Len(), sharedList.Len(), tail)
+	}
+
+	const vecLen = 130 // several trie levels past vectorFlatThreshold
+	flatVec := NewVector(append([]Value(nil), items[:vecLen]...))
+	sharedVec := Vector{}
+	for _, v := range items[:vecLen] {
+		sharedVec, _ = sharedVec.Conj(v)
+	}
+	if flatVec.Len() != vecLen || sharedVec.Len() != vecLen {
+		t.Fatalf("setup: Vector Len() = flat:%d shared:%d, want both %d", flatVec.Len(), sharedVec.Len(), vecLen)
+	}
+
+	flatEnv := NewEnv(nil)
+	if err := flatEnv.Set("l", flatList); err != nil {
+		t.Fatalf("set flat list: %v", err)
+	}
+	if err := flatEnv.Set("v", flatVec); err != nil {
+		t.Fatalf("set flat vector: %v", err)
+	}
+	sharedEnv := NewEnv(nil)
+	if err := sharedEnv.Set("l", sharedList); err != nil {
+		t.Fatalf("set shared list: %v", err)
+	}
+	if err := sharedEnv.Set("v", sharedVec); err != nil {
+		t.Fatalf("set shared vector: %v", err)
+	}
+
+	flatBytes, flatSlots := flatEnv.RetainedUsage()
+	sharedBytes, sharedSlots := sharedEnv.RetainedUsage()
+	if flatBytes != sharedBytes || flatSlots != sharedSlots {
+		t.Fatalf("RetainedUsage = flat(%d,%d) shared(%d,%d), want equal", flatBytes, flatSlots, sharedBytes, sharedSlots)
+	}
 }

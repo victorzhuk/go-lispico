@@ -21,7 +21,7 @@ func TestDialect_Reader_FunctionRefGatedByFlag(t *testing.T) {
 
 	got, err := on.Eval(context.Background(), "reader", "(quote #'foo)")
 	require.NoError(t, err)
-	want := core.List{Items: []core.Value{core.Symbol{V: "function"}, core.Symbol{V: "foo"}}}
+	want := core.NewList([]core.Value{core.Symbol{V: "function"}, core.Symbol{V: "foo"}})
 	assert.True(t, want.Equals(got), "want (function foo), got %v", got)
 
 	off, err := New(nil, WithDialect(clojure.Dialect()))
@@ -40,7 +40,7 @@ func TestDialect_Reader_ReaderVectorGatedByFlag(t *testing.T) {
 
 	got, err := on.Eval(context.Background(), "reader", "(quote #(1 2 3))")
 	require.NoError(t, err)
-	want := core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}}
+	want := core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}})
 	assert.True(t, want.Equals(got), "want #(1 2 3) vector, got %v", got)
 
 	off, err := New(nil, WithDialect(clojure.Dialect()))
@@ -60,7 +60,7 @@ func TestDialect_Reader_BracketLiteralsGatedByFlag(t *testing.T) {
 
 	got, err := on.Eval(context.Background(), "reader", "(quote [1 2])")
 	require.NoError(t, err)
-	want := core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}}
+	want := core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}})
 	assert.True(t, want.Equals(got), "want [1 2] vector, got %v", got)
 
 	got, err = on.Eval(context.Background(), "reader", "(quote {:a 1})")

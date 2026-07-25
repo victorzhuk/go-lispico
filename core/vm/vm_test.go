@@ -382,10 +382,10 @@ func TestVM_OpMakeList(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected List, got %T", result)
 	}
-	if len(list.Items) != 3 {
-		t.Fatalf("expected 3 items, got %d", len(list.Items))
+	if list.Len() != 3 {
+		t.Fatalf("expected 3 items, got %d", list.Len())
 	}
-	if !list.Items[0].Equals(core.Int{V: 1}) || !list.Items[1].Equals(core.Int{V: 2}) || !list.Items[2].Equals(core.Int{V: 3}) {
+	if !list.At(0).Equals(core.Int{V: 1}) || !list.At(1).Equals(core.Int{V: 2}) || !list.At(2).Equals(core.Int{V: 3}) {
 		t.Errorf("unexpected list items: %v", list)
 	}
 }
@@ -415,8 +415,8 @@ func TestVM_OpMakeVector(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Vector, got %T", result)
 	}
-	if len(vec.Items) != 2 {
-		t.Errorf("expected 2 items, got %d", len(vec.Items))
+	if vec.Len() != 2 {
+		t.Errorf("expected 2 items, got %d", vec.Len())
 	}
 }
 
@@ -464,7 +464,7 @@ func TestVM_OpMakeMap(t *testing.T) {
 func vmNestedList(depth int) core.Value {
 	var v core.Value = core.Int{V: 1}
 	for range depth {
-		v = core.List{Items: []core.Value{v}}
+		v = core.NewList([]core.Value{v})
 	}
 	return v
 }
@@ -850,8 +850,8 @@ func TestVM_EmptyList(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected List, got %T", result)
 	}
-	if len(list.Items) != 0 {
-		t.Errorf("expected empty list, got %d items", len(list.Items))
+	if list.Len() != 0 {
+		t.Errorf("expected empty list, got %d items", list.Len())
 	}
 }
 
@@ -874,8 +874,8 @@ func TestVM_EmptyVector(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Vector, got %T", result)
 	}
-	if len(vec.Items) != 0 {
-		t.Errorf("expected empty vector, got %d items", len(vec.Items))
+	if vec.Len() != 0 {
+		t.Errorf("expected empty vector, got %d items", vec.Len())
 	}
 }
 
@@ -1999,7 +1999,7 @@ func TestVM_StructDepthLeakAcrossPooledReuse(t *testing.T) {
 
 	result, err := v.Run(context.Background(), vectorLiteralChunk())
 	require.NoError(t, err, "a later evaluation on the reused VM must see the full structural-depth budget")
-	assert.True(t, result.Equals(core.Vector{Items: []core.Value{core.Int{V: 1}}}))
+	assert.True(t, result.Equals(core.NewVector([]core.Value{core.Int{V: 1}})))
 }
 
 // TestVM_NativeOp_FreezeUnwoundOnThrow proves throw() truncates freezeStack to

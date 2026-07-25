@@ -204,11 +204,11 @@ func TestParse_List(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected List, got %T", v)
 	}
-	if len(l.Items) != 3 {
-		t.Errorf("len = %d, want 3", len(l.Items))
+	if l.Len() != 3 {
+		t.Errorf("len = %d, want 3", l.Len())
 	}
-	if !l.Items[0].Equals(Symbol{V: "+"}) {
-		t.Errorf("head = %v, want +", l.Items[0])
+	if !l.At(0).Equals(Symbol{V: "+"}) {
+		t.Errorf("head = %v, want +", l.At(0))
 	}
 }
 
@@ -219,12 +219,12 @@ func TestParse_NestedList(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l := v.(List)
-	inner, ok := l.Items[1].(List)
+	inner, ok := l.At(1).(List)
 	if !ok {
 		t.Fatalf("expected nested List")
 	}
-	if !inner.Items[0].Equals(Symbol{V: "*"}) {
-		t.Errorf("inner head = %v, want *", inner.Items[0])
+	if !inner.At(0).Equals(Symbol{V: "*"}) {
+		t.Errorf("inner head = %v, want *", inner.At(0))
 	}
 }
 
@@ -238,8 +238,8 @@ func TestParse_Vector(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Vector, got %T", v)
 	}
-	if len(vec.Items) != 3 {
-		t.Errorf("len = %d, want 3", len(vec.Items))
+	if vec.Len() != 3 {
+		t.Errorf("len = %d, want 3", vec.Len())
 	}
 }
 
@@ -269,11 +269,11 @@ func TestParse_QuoteExpansion(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l, ok := v.(List)
-	if !ok || len(l.Items) != 2 {
+	if !ok || l.Len() != 2 {
 		t.Fatalf("expected (quote foo), got %v", v)
 	}
-	if !l.Items[0].Equals(Symbol{V: "quote"}) {
-		t.Errorf("head = %v, want quote", l.Items[0])
+	if !l.At(0).Equals(Symbol{V: "quote"}) {
+		t.Errorf("head = %v, want quote", l.At(0))
 	}
 }
 
@@ -284,8 +284,8 @@ func TestParse_QuasiquoteExpansion(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l := v.(List)
-	if !l.Items[0].Equals(Symbol{V: "quasiquote"}) {
-		t.Errorf("head = %v, want quasiquote", l.Items[0])
+	if !l.At(0).Equals(Symbol{V: "quasiquote"}) {
+		t.Errorf("head = %v, want quasiquote", l.At(0))
 	}
 }
 
@@ -296,8 +296,8 @@ func TestParse_UnquoteExpansion(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l := v.(List)
-	if !l.Items[0].Equals(Symbol{V: "unquote"}) {
-		t.Errorf("head = %v, want unquote", l.Items[0])
+	if !l.At(0).Equals(Symbol{V: "unquote"}) {
+		t.Errorf("head = %v, want unquote", l.At(0))
 	}
 }
 
@@ -308,8 +308,8 @@ func TestParse_UnquoteSplicing(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l := v.(List)
-	if !l.Items[0].Equals(Symbol{V: "unquote-splicing"}) {
-		t.Errorf("head = %v, want unquote-splicing", l.Items[0])
+	if !l.At(0).Equals(Symbol{V: "unquote-splicing"}) {
+		t.Errorf("head = %v, want unquote-splicing", l.At(0))
 	}
 }
 
@@ -331,8 +331,8 @@ func TestParse_EmptyList(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	l := v.(List)
-	if len(l.Items) != 0 {
-		t.Errorf("empty list len = %d, want 0", len(l.Items))
+	if l.Len() != 0 {
+		t.Errorf("empty list len = %d, want 0", l.Len())
 	}
 }
 
@@ -354,7 +354,7 @@ func TestParse_EmptyInput(t *testing.T) {
 
 func TestParseParams_Fixed(t *testing.T) {
 	t.Parallel()
-	params := Vector{Items: []Value{Symbol{V: "a"}, Symbol{V: "b"}}}
+	params := NewVector([]Value{Symbol{V: "a"}, Symbol{V: "b"}})
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -369,7 +369,7 @@ func TestParseParams_Fixed(t *testing.T) {
 
 func TestParseParams_Variadic(t *testing.T) {
 	t.Parallel()
-	params := Vector{Items: []Value{Symbol{V: "a"}, Symbol{V: "&"}, Symbol{V: "rest"}}}
+	params := NewVector([]Value{Symbol{V: "a"}, Symbol{V: "&"}, Symbol{V: "rest"}})
 	fixed, variadic, err := parseParams(params)
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -384,7 +384,7 @@ func TestParseParams_Variadic(t *testing.T) {
 
 func TestParseParams_NonSymbol(t *testing.T) {
 	t.Parallel()
-	params := Vector{Items: []Value{Int{V: 1}}}
+	params := NewVector([]Value{Int{V: 1}})
 	_, _, err := parseParams(params)
 	if err == nil {
 		t.Error("expected error for non-symbol param")
@@ -393,7 +393,7 @@ func TestParseParams_NonSymbol(t *testing.T) {
 
 func TestParseParams_AmpersandWithoutRest(t *testing.T) {
 	t.Parallel()
-	params := Vector{Items: []Value{Symbol{V: "&"}}}
+	params := NewVector([]Value{Symbol{V: "&"}})
 	_, _, err := parseParams(params)
 	if err == nil {
 		t.Error("expected error for & without rest symbol")

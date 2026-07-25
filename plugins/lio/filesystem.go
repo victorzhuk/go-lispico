@@ -128,7 +128,7 @@ func (p *Plugin) ls(ctx context.Context, eval core.Evaluator, args []core.Value,
 		items[i] = core.String{V: entry.Name()}
 	}
 
-	return core.List{Items: items}, nil
+	return core.NewList(items), nil
 }
 
 func (p *Plugin) mkdir(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {

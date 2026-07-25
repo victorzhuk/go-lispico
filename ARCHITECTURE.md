@@ -78,6 +78,47 @@ type Value interface {
 | `Lambda`  | User function          | `(fn [x] x)`     |
 | `Macro`   | Compile-time expansion | `(defmacro ...)` |
 
+#### Value Representation
+
+`List` and `Vector` are hybrid: a flat slice below a size threshold, a
+persistent tree above it. Both thresholds are 32 elements, tuned
+independently (`listFlatThreshold`, `vectorFlatThreshold` in `types.go`).
+
+- **List**: at or below `listFlatThreshold` it is a flat slice — cheap random
+  access, matching reader output and other small, short-lived forms. Above
+  it, `Cons` switches to a shared-tail node chain: each `Cons` allocates one
+  node pointing at the existing tail, so prepend is O(1) instead of O(n) and
+  every list sharing that tail can alias it safely. `NewList` builds
+  whichever form matches the input length up front.
+- **Vector**: `NewVector` always stores flat, regardless of length — bulk
+  construction (reader output, literals) never promotes, because a vector
+  that's never `Conj`'d again gains nothing from sharing and would only pay
+  for it. `Conj` is the only path that promotes: crossing
+  `vectorFlatThreshold` splits the vector into a bit-partitioned trie
+  (32-way fan-out, 5 bits of the index per level) holding the bulk of the
+  elements plus a tail buffer of 0–32 pending elements not yet folded into
+  the trie. Growing the trie copies only the path to the new leaf, sharing
+  every other subtree.
+
+Both types keep exactly one representation field set (flat XOR
+shared/root), and there is no demotion — a `List.Rest()` or `Vector` that
+drops back at or below the threshold stays in its promoted form. Sharing is
+sound because:
+
+- **Immutability**: nodes are never mutated after construction; every
+  operation that grows a structure allocates new nodes and reuses old ones
+  by reference, never in place.
+- **No demotion**: once shared/trie, always shared/trie, so a live alias
+  into an older node can never be invalidated by a later operation on a
+  different value.
+- **Promotion is representation-invisible**: equality (`boundedEquals`),
+  ordering, printing (`boundedString`), and both evaluators all go through
+  `Len()`/`At()`/`ToSlice()`/`each()`/a cursor — never through the flat or
+  shared/root fields directly — so a flat and a promoted value of equal
+  contents compare, print, and iterate identically. The tree-walker and the
+  bytecode VM share the same `List`/`Vector` values and accessors, so
+  promotion is invisible across evaluators too.
+
 #### Environment
 
 Environments form a chain for lexical scoping:

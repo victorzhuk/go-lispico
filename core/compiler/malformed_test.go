@@ -68,7 +68,7 @@ func mlist(items ...any) core.List {
 	for _, it := range items {
 		out = append(out, mval(it))
 	}
-	return core.List{Items: out}
+	return core.NewList(out)
 }
 
 func mvec(items ...any) core.Vector {
@@ -76,7 +76,7 @@ func mvec(items ...any) core.Vector {
 	for _, it := range items {
 		out = append(out, mval(it))
 	}
-	return core.Vector{Items: out}
+	return core.NewVector(out)
 }
 
 func mval(it any) core.Value {

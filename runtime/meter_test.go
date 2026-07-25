@@ -592,7 +592,7 @@ func TestMeter_ConcurrentRootDefsWithDistinctMeters(t *testing.T) {
 	for i, meter := range meters {
 		name := fmt.Sprintf("root%d", i)
 		snap := meter.snapshot()
-		wantBytes := core.RetainedBindingBytes(name, core.Vector{Items: []core.Value{core.Int{V: int64(i)}}})
+		wantBytes := core.RetainedBindingBytes(name, core.NewVector([]core.Value{core.Int{V: int64(i)}}))
 		if snap.chargeCalls != 1 || snap.chargedBytes != wantBytes || snap.chargedSlots != 1 {
 			t.Fatalf("meter %d ChargeRetained = calls %d (%d,%d), want 1 (%d,1)", i, snap.chargeCalls, snap.chargedBytes, snap.chargedSlots, wantBytes)
 		}
@@ -731,11 +731,11 @@ func (evaluatorSetupPlugin) Name() string { return "setup-evaluator" }
 func (evaluatorSetupPlugin) Metadata() core.PluginMeta { return core.PluginMeta{Version: "test"} }
 
 func (p evaluatorSetupPlugin) Init(env *core.Env) error {
-	_, err := env.Evaluator().Eval(p.ctx, core.List{Items: []core.Value{
+	_, err := env.Evaluator().Eval(p.ctx, core.NewList([]core.Value{
 		core.Symbol{V: "def"},
 		core.Symbol{V: "setup/evaluator-value"},
 		core.Int{V: 42},
-	}}, env)
+	}), env)
 	return err
 }
 

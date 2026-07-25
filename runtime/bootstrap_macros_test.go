@@ -33,7 +33,7 @@ func TestBootstrap_ThreadingMacro_ThreadLast(t *testing.T) {
 
 	result, err := eng.Eval(context.Background(), "test", "(->> (list 1 2 3) (map (fn (x) (+ x 1))))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}, core.Int{V: 4}}}
+	expected := core.NewList([]core.Value{core.Int{V: 2}, core.Int{V: 3}, core.Int{V: 4}})
 	assert.True(t, expected.Equals(result), "expected %v, got %v", expected, result)
 }
 

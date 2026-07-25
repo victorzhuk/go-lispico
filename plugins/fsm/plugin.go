@@ -350,7 +350,7 @@ func (p *Plugin) reachable(ctx context.Context, eval core.Evaluator, args []core
 		items[i] = core.Keyword{V: string(s)}
 	}
 
-	return core.List{Items: items}, nil
+	return core.NewList(items), nil
 }
 
 func (p *Plugin) stateMachine(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -392,7 +392,7 @@ func (p *Plugin) list(ctx context.Context, eval core.Evaluator, args []core.Valu
 		ids = append(ids, core.String{V: id})
 	}
 
-	return core.List{Items: ids}, nil
+	return core.NewList(ids), nil
 }
 
 func (p *Plugin) broadcast(ctx context.Context, ev StateEvent) {

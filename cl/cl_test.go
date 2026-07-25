@@ -60,14 +60,14 @@ func TestCL_Vocab_DrivesDialect(t *testing.T) {
 	t.Run("#'f parses", func(t *testing.T) {
 		got, err := e.Eval(context.Background(), "cl", "(quote #'f)")
 		require.NoError(t, err)
-		want := core.List{Items: []core.Value{core.Symbol{V: "function"}, core.Symbol{V: "f"}}}
+		want := core.NewList([]core.Value{core.Symbol{V: "function"}, core.Symbol{V: "f"}})
 		assert.True(t, want.Equals(got), "#'f must read as (function f), got %v", got)
 	})
 
 	t.Run("#(1 2) parses as a vector", func(t *testing.T) {
 		got, err := e.Eval(context.Background(), "cl", "(quote #(1 2))")
 		require.NoError(t, err)
-		want := core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}}
+		want := core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}})
 		assert.True(t, want.Equals(got), "#(1 2) must read as a vector, got %v", got)
 	})
 
@@ -123,7 +123,7 @@ func TestCL_VocabMap(t *testing.T) {
 	t.Run("cdr reads rest", func(t *testing.T) {
 		got, err := e.Eval(context.Background(), "cl", "(cdr '(1 2 3))")
 		require.NoError(t, err)
-		want := core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}
+		want := core.NewList([]core.Value{core.Int{V: 2}, core.Int{V: 3}})
 		assert.True(t, want.Equals(got), "cdr: got %v", got)
 	})
 
@@ -200,13 +200,13 @@ func TestCL_SpecScenario_ReaderAffordances(t *testing.T) {
 	// #'f SHALL parse
 	got, err := e.Eval(context.Background(), "cl", "(quote #'f)")
 	require.NoError(t, err)
-	want := core.List{Items: []core.Value{core.Symbol{V: "function"}, core.Symbol{V: "f"}}}
+	want := core.NewList([]core.Value{core.Symbol{V: "function"}, core.Symbol{V: "f"}})
 	assert.True(t, want.Equals(got), "#'f => (function f)")
 
 	// #(...) SHALL parse
 	got, err = e.Eval(context.Background(), "cl", "(quote #(1 2 3))")
 	require.NoError(t, err)
-	wantVec := core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}}
+	wantVec := core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}})
 	assert.True(t, wantVec.Equals(got), "#(1 2 3) => vector")
 
 	// [1 2] SHALL NOT read as a vector literal

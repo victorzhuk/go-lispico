@@ -436,7 +436,7 @@ func (p *Parser) parseList() (Value, error) {
 	}
 
 	p.addNode(0)
-	return List{Items: items}, nil
+	return NewList(items), nil
 }
 
 func (p *Parser) parseVector() (Value, error) {
@@ -456,7 +456,7 @@ func (p *Parser) parseVector() (Value, error) {
 	}
 
 	p.addNode(0)
-	return Vector{Items: items}, nil
+	return NewVector(items), nil
 }
 
 func (p *Parser) parseHashMap() (Value, error) {
@@ -500,7 +500,7 @@ func (p *Parser) parseFunctionRef() (Value, error) {
 	}
 	p.addNode(int64(len("function")))
 	p.addNode(0)
-	return List{Items: []Value{Symbol{V: "function"}, form}}, nil
+	return NewList([]Value{Symbol{V: "function"}, form}), nil
 }
 
 func (p *Parser) parseReaderVector() (Value, error) {
@@ -520,7 +520,7 @@ func (p *Parser) parseReaderVector() (Value, error) {
 	}
 
 	p.addNode(0)
-	return Vector{Items: items}, nil
+	return NewVector(items), nil
 }
 
 func (p *Parser) parseQuote() (Value, error) {
@@ -531,7 +531,7 @@ func (p *Parser) parseQuote() (Value, error) {
 	}
 	p.addNode(int64(len("quote")))
 	p.addNode(0)
-	return List{Items: []Value{Symbol{V: "quote"}, form}}, nil
+	return NewList([]Value{Symbol{V: "quote"}, form}), nil
 }
 
 func (p *Parser) parseQuasiquote() (Value, error) {
@@ -542,7 +542,7 @@ func (p *Parser) parseQuasiquote() (Value, error) {
 	}
 	p.addNode(int64(len("quasiquote")))
 	p.addNode(0)
-	return List{Items: []Value{Symbol{V: "quasiquote"}, form}}, nil
+	return NewList([]Value{Symbol{V: "quasiquote"}, form}), nil
 }
 
 func (p *Parser) parseUnquote() (Value, error) {
@@ -553,7 +553,7 @@ func (p *Parser) parseUnquote() (Value, error) {
 	}
 	p.addNode(int64(len("unquote")))
 	p.addNode(0)
-	return List{Items: []Value{Symbol{V: "unquote"}, form}}, nil
+	return NewList([]Value{Symbol{V: "unquote"}, form}), nil
 }
 
 func (p *Parser) parseUnquoteSplicing() (Value, error) {
@@ -564,7 +564,7 @@ func (p *Parser) parseUnquoteSplicing() (Value, error) {
 	}
 	p.addNode(int64(len("unquote-splicing")))
 	p.addNode(0)
-	return List{Items: []Value{Symbol{V: "unquote-splicing"}, form}}, nil
+	return NewList([]Value{Symbol{V: "unquote-splicing"}, form}), nil
 }
 
 func parseNumber(s string, line, col int) (Value, error) {
@@ -604,16 +604,17 @@ func isSymbolChar(ch byte) bool {
 // parseParams splits a parameter vector into fixed params and an optional variadic rest.
 // Recognizes `&` as the variadic marker: `[a b & rest]` → fixed=[a,b], variadic=rest.
 func parseParams(params Vector) (fixed []Symbol, variadic Symbol, err error) {
-	for i := 0; i < len(params.Items); i++ {
-		s, ok := params.Items[i].(Symbol)
+	items := params.ToSlice()
+	for i := 0; i < len(items); i++ {
+		s, ok := items[i].(Symbol)
 		if !ok {
-			return nil, Symbol{}, fmt.Errorf("param must be symbol, got %T", params.Items[i])
+			return nil, Symbol{}, fmt.Errorf("param must be symbol, got %T", items[i])
 		}
 		if s.V == "&" {
-			if i+1 >= len(params.Items) {
+			if i+1 >= len(items) {
 				return nil, Symbol{}, fmt.Errorf("& requires a following symbol")
 			}
-			rest, ok := params.Items[i+1].(Symbol)
+			rest, ok := items[i+1].(Symbol)
 			if !ok {
 				return nil, Symbol{}, fmt.Errorf("variadic param must be symbol")
 			}

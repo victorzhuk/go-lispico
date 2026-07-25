@@ -59,7 +59,7 @@ func TestExec_Run(t *testing.T) {
 	t.Run("simple command", func(t *testing.T) {
 		args := []core.Value{
 			core.String{V: "echo"},
-			core.Vector{Items: []core.Value{core.String{V: "hello"}}},
+			core.NewVector([]core.Value{core.String{V: "hello"}}),
 		}
 		result, err := p.run(context.Background(), nil, args, env)
 		require.NoError(t, err)
@@ -77,7 +77,7 @@ func TestExec_Run(t *testing.T) {
 	t.Run("command with options", func(t *testing.T) {
 		args := []core.Value{
 			core.String{V: "echo"},
-			core.Vector{Items: []core.Value{core.String{V: "test"}}},
+			core.NewVector([]core.Value{core.String{V: "test"}}),
 			core.NewHashMap(),
 		}
 		result, err := p.run(context.Background(), nil, args, env)
@@ -91,10 +91,10 @@ func TestExec_Run(t *testing.T) {
 	t.Run("non-zero exit code", func(t *testing.T) {
 		args := []core.Value{
 			core.String{V: "sh"},
-			core.Vector{Items: []core.Value{
+			core.NewVector([]core.Value{
 				core.String{V: "-c"},
 				core.String{V: "exit 42"},
-			}},
+			}),
 		}
 		result, err := p.run(context.Background(), nil, args, env)
 		require.NoError(t, err)
@@ -110,7 +110,7 @@ func TestExec_Run(t *testing.T) {
 
 		args := []core.Value{
 			core.String{V: "sleep"},
-			core.Vector{Items: []core.Value{core.String{V: "10"}}},
+			core.NewVector([]core.Value{core.String{V: "10"}}),
 			opts,
 		}
 		result, err := p.run(context.Background(), nil, args, env)
@@ -130,7 +130,7 @@ func TestExec_Run(t *testing.T) {
 
 		args := []core.Value{
 			core.String{V: "sleep"},
-			core.Vector{Items: []core.Value{core.String{V: "10"}}},
+			core.NewVector([]core.Value{core.String{V: "10"}}),
 		}
 		result, err := p.run(ctx, nil, args, env)
 		require.NoError(t, err)
@@ -146,7 +146,7 @@ func TestExec_Run(t *testing.T) {
 
 		args := []core.Value{
 			core.String{V: "pwd"},
-			core.Vector{Items: []core.Value{}},
+			core.NewVector([]core.Value{}),
 			opts,
 		}
 		result, err := p.run(context.Background(), nil, args, env)
@@ -165,7 +165,7 @@ func TestExec_Run(t *testing.T) {
 
 		args := []core.Value{
 			core.String{V: "sh"},
-			core.Vector{Items: []core.Value{core.String{V: "-c"}, core.String{V: "echo $MY_TEST_VAR"}}},
+			core.NewVector([]core.Value{core.String{V: "-c"}, core.String{V: "echo $MY_TEST_VAR"}}),
 			opts,
 		}
 		result, err := p.run(context.Background(), nil, args, env)
@@ -231,10 +231,10 @@ func TestExec_Pipe(t *testing.T) {
 	require.NoError(t, p.Init(env))
 
 	t.Run("pipe two commands", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.String{V: "hello world"}}},
-			core.Vector{Items: []core.Value{core.String{V: "tr"}, core.String{V: "a-z"}, core.String{V: "A-Z"}}},
-		}}
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "hello world"}}),
+			core.NewVector([]core.Value{core.String{V: "tr"}, core.String{V: "a-z"}, core.String{V: "A-Z"}}),
+		})
 		args := []core.Value{commands}
 
 		result, err := p.pipe(context.Background(), nil, args, env)
@@ -246,9 +246,9 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("pipe with list", func(t *testing.T) {
-		commands := core.List{Items: []core.Value{
-			core.List{Items: []core.Value{core.String{V: "echo"}, core.String{V: "test"}}},
-		}}
+		commands := core.NewList([]core.Value{
+			core.NewList([]core.Value{core.String{V: "echo"}, core.String{V: "test"}}),
+		})
 		args := []core.Value{commands}
 
 		result, err := p.pipe(context.Background(), nil, args, env)
@@ -260,9 +260,9 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("single command", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.String{V: "single"}}},
-		}}
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "single"}}),
+		})
 		args := []core.Value{commands}
 
 		result, err := p.pipe(context.Background(), nil, args, env)
@@ -274,9 +274,9 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("pipe with timeout option", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.String{V: "test"}}},
-		}}
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "test"}}),
+		})
 		opts := core.NewHashMap()
 		opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 5000})
 		args := []core.Value{commands, opts}
@@ -290,9 +290,9 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("pipe with invalid timeout type", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.String{V: "test"}}},
-		}}
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "test"}}),
+		})
 		opts := core.NewHashMap()
 		opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.String{V: "not-an-int"})
 		args := []core.Value{commands, opts}
@@ -302,9 +302,9 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("pipe with invalid options type", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.String{V: "test"}}},
-		}}
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "test"}}),
+		})
 		args := []core.Value{commands, core.Int{V: 123}}
 
 		_, err := p.pipe(context.Background(), nil, args, env)
@@ -312,9 +312,9 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("pipe with command failure", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "sh"}, core.String{V: "-c"}, core.String{V: "exit 5"}}},
-		}}
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "sh"}, core.String{V: "-c"}, core.String{V: "exit 5"}}),
+		})
 		args := []core.Value{commands}
 
 		result, err := p.pipe(context.Background(), nil, args, env)
@@ -326,7 +326,7 @@ func TestExec_Pipe(t *testing.T) {
 	})
 
 	t.Run("empty commands", func(t *testing.T) {
-		commands := core.Vector{Items: []core.Value{}}
+		commands := core.NewVector([]core.Value{})
 		args := []core.Value{commands}
 		_, err := p.pipe(context.Background(), nil, args, env)
 		assert.Error(t, err)
@@ -348,10 +348,10 @@ func TestExec_PipeStartFailureReapsStartedStages(t *testing.T) {
 	env := core.NewEnv(nil)
 	require.NoError(t, p.Init(env))
 
-	commands := core.Vector{Items: []core.Value{
-		core.Vector{Items: []core.Value{core.String{V: "sleep"}, core.String{V: "5"}}},
-		core.Vector{Items: []core.Value{core.String{V: "lispico-test-nonexistent-cmd-xyz"}}},
-	}}
+	commands := core.NewVector([]core.Value{
+		core.NewVector([]core.Value{core.String{V: "sleep"}, core.String{V: "5"}}),
+		core.NewVector([]core.Value{core.String{V: "lispico-test-nonexistent-cmd-xyz"}}),
+	})
 	args := []core.Value{commands}
 
 	start := time.Now()
@@ -509,21 +509,21 @@ func TestCrypto_Uuid(t *testing.T) {
 
 func TestToStringSlice(t *testing.T) {
 	t.Run("from vector", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
+		v := core.NewVector([]core.Value{
 			core.String{V: "a"},
 			core.String{V: "b"},
 			core.String{V: "c"},
-		}}
+		})
 		result, err := toStringSlice(v)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"a", "b", "c"}, result)
 	})
 
 	t.Run("from list", func(t *testing.T) {
-		v := core.List{Items: []core.Value{
+		v := core.NewList([]core.Value{
 			core.String{V: "x"},
 			core.String{V: "y"},
-		}}
+		})
 		result, err := toStringSlice(v)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"x", "y"}, result)
@@ -536,7 +536,7 @@ func TestToStringSlice(t *testing.T) {
 	})
 
 	t.Run("non-string element", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{core.Int{V: 123}}}
+		v := core.NewVector([]core.Value{core.Int{V: 123}})
 		_, err := toStringSlice(v)
 		assert.Error(t, err)
 	})
@@ -544,10 +544,10 @@ func TestToStringSlice(t *testing.T) {
 
 func TestToCommandList(t *testing.T) {
 	t.Run("valid commands", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.String{V: "hello"}}},
-			core.List{Items: []core.Value{core.String{V: "grep"}, core.String{V: "h"}}},
-		}}
+		v := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "hello"}}),
+			core.NewList([]core.Value{core.String{V: "grep"}, core.String{V: "h"}}),
+		})
 		cmds, err := toCommandList(v)
 		require.NoError(t, err)
 		require.Len(t, cmds, 2)
@@ -558,9 +558,9 @@ func TestToCommandList(t *testing.T) {
 	})
 
 	t.Run("command without args", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "ls"}}},
-		}}
+		v := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "ls"}}),
+		})
 		cmds, err := toCommandList(v)
 		require.NoError(t, err)
 		require.Len(t, cmds, 1)
@@ -575,33 +575,33 @@ func TestToCommandList(t *testing.T) {
 	})
 
 	t.Run("invalid command type", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
+		v := core.NewVector([]core.Value{
 			core.String{V: "not a command"},
-		}}
+		})
 		_, err := toCommandList(v)
 		assert.Error(t, err)
 	})
 
 	t.Run("empty command vector", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{}},
-		}}
+		v := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{}),
+		})
 		_, err := toCommandList(v)
 		assert.Error(t, err)
 	})
 
 	t.Run("non-string command name", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.Int{V: 123}}},
-		}}
+		v := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.Int{V: 123}}),
+		})
 		_, err := toCommandList(v)
 		assert.Error(t, err)
 	})
 
 	t.Run("non-string arg in command", func(t *testing.T) {
-		v := core.Vector{Items: []core.Value{
-			core.Vector{Items: []core.Value{core.String{V: "echo"}, core.Int{V: 123}}},
-		}}
+		v := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.Int{V: 123}}),
+		})
 		_, err := toCommandList(v)
 		assert.Error(t, err)
 	})
@@ -617,7 +617,7 @@ func TestExec_EnvIsolation(t *testing.T) {
 	stdoutOf := func(opts ...core.Value) string {
 		args := append([]core.Value{
 			core.String{V: "sh"},
-			core.Vector{Items: []core.Value{core.String{V: "-c"}, core.String{V: "echo $LISPICO_FAKE_SECRET"}}},
+			core.NewVector([]core.Value{core.String{V: "-c"}, core.String{V: "echo $LISPICO_FAKE_SECRET"}}),
 		}, opts...)
 		result, err := p.run(context.Background(), nil, args, env)
 		require.NoError(t, err)

@@ -290,9 +290,9 @@ func TestAgentRunParallel(t *testing.T) {
 		require.NoError(t, err)
 		vec, ok := result.(core.Vector)
 		require.True(t, ok)
-		assert.Len(t, vec.Items, 2)
-		assert.Equal(t, core.String{V: "response"}, vec.Items[0])
-		assert.Equal(t, core.String{V: "response"}, vec.Items[1])
+		assert.Len(t, vec.ToSlice(), 2)
+		assert.Equal(t, core.String{V: "response"}, vec.At(0))
+		assert.Equal(t, core.String{V: "response"}, vec.At(1))
 	})
 
 	t.Run("successful parallel run with quoted list", func(t *testing.T) {
@@ -309,7 +309,7 @@ func TestAgentRunParallel(t *testing.T) {
 		require.NoError(t, err)
 		vec, ok := result.(core.Vector)
 		require.True(t, ok)
-		assert.Len(t, vec.Items, 2)
+		assert.Len(t, vec.ToSlice(), 2)
 	})
 
 	t.Run("unknown agent in list", func(t *testing.T) {
@@ -467,7 +467,7 @@ func TestAgentList(t *testing.T) {
 		require.NoError(t, err)
 		list, ok := result.(core.List)
 		require.True(t, ok)
-		assert.Empty(t, list.Items)
+		assert.Empty(t, list.ToSlice())
 	})
 
 	t.Run("multiple agents", func(t *testing.T) {
@@ -486,10 +486,10 @@ func TestAgentList(t *testing.T) {
 		require.NoError(t, err)
 		list, ok := result.(core.List)
 		require.True(t, ok)
-		assert.Len(t, list.Items, 3)
+		assert.Len(t, list.ToSlice(), 3)
 
 		ids := make(map[string]bool)
-		for _, item := range list.Items {
+		for _, item := range list.ToSlice() {
 			if kw, ok := item.(core.Keyword); ok {
 				ids[kw.V] = true
 			}

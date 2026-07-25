@@ -102,10 +102,10 @@ func TestCondShape_QuotedCond_RoundTrip_CL_TreeWalker(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "(quote (cond (a b)))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
-		core.List{Items: []core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}},
-	}}
+		core.NewList([]core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}),
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -117,10 +117,10 @@ func TestCondShape_QuotedCond_RoundTrip_CL_Bytecode(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "(quote (cond (a b)))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
-		core.List{Items: []core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}},
-	}}
+		core.NewList([]core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}),
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -132,13 +132,13 @@ func TestCondShape_QuotedCond_RoundTrip_Clojure_TreeWalker(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "(quote (cond a b c d))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
 		core.Symbol{V: "a"},
 		core.Symbol{V: "b"},
 		core.Symbol{V: "c"},
 		core.Symbol{V: "d"},
-	}}
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -150,13 +150,13 @@ func TestCondShape_QuotedCond_RoundTrip_Clojure_Bytecode(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "(quote (cond a b c d))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
 		core.Symbol{V: "a"},
 		core.Symbol{V: "b"},
 		core.Symbol{V: "c"},
 		core.Symbol{V: "d"},
-	}}
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -244,10 +244,10 @@ func TestCondShape_QuasiquotedCond_RoundTrip_CL_TreeWalker(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "`(cond (a b))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
-		core.List{Items: []core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}},
-	}}
+		core.NewList([]core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}),
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -259,10 +259,10 @@ func TestCondShape_QuasiquotedCond_RoundTrip_CL_Bytecode(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "`(cond (a b))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
-		core.List{Items: []core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}},
-	}}
+		core.NewList([]core.Value{core.Symbol{V: "a"}, core.Symbol{V: "b"}}),
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -274,13 +274,13 @@ func TestCondShape_QuasiquotedCond_RoundTrip_Clojure_TreeWalker(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "`(cond a b c d)")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
 		core.Symbol{V: "a"},
 		core.Symbol{V: "b"},
 		core.Symbol{V: "c"},
 		core.Symbol{V: "d"},
-	}}
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -292,13 +292,13 @@ func TestCondShape_QuasiquotedCond_RoundTrip_Clojure_Bytecode(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "`(cond a b c d)")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
 		core.Symbol{V: "a"},
 		core.Symbol{V: "b"},
 		core.Symbol{V: "c"},
 		core.Symbol{V: "d"},
-	}}
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -311,10 +311,10 @@ func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_CL_TreeWalker(t *testing.T)
 
 	got, err := e.Eval(context.Background(), "test", "`(cond (~(+ 1 2) x))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
-		core.List{Items: []core.Value{core.Int{V: 3}, core.Symbol{V: "x"}}},
-	}}
+		core.NewList([]core.Value{core.Int{V: 3}, core.Symbol{V: "x"}}),
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -327,10 +327,10 @@ func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_CL_Bytecode(t *testing.T) {
 
 	got, err := e.Eval(context.Background(), "test", "`(cond (~(+ 1 2) x))")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
-		core.List{Items: []core.Value{core.Int{V: 3}, core.Symbol{V: "x"}}},
-	}}
+		core.NewList([]core.Value{core.Int{V: 3}, core.Symbol{V: "x"}}),
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -343,11 +343,11 @@ func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_Clojure_TreeWalker(t *testi
 
 	got, err := e.Eval(context.Background(), "test", "`(cond ~(+ 1 2) x)")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
 		core.Int{V: 3},
 		core.Symbol{V: "x"},
-	}}
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }
 
@@ -360,10 +360,10 @@ func TestCondShape_QuasiquotedCond_Unquote_RoundTrip_Clojure_Bytecode(t *testing
 
 	got, err := e.Eval(context.Background(), "test", "`(cond ~(+ 1 2) x)")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{
+	expected := core.NewList([]core.Value{
 		core.Symbol{V: "cond"},
 		core.Int{V: 3},
 		core.Symbol{V: "x"},
-	}}
+	})
 	assert.True(t, got.Equals(expected), "got %v, want %v", got, expected)
 }

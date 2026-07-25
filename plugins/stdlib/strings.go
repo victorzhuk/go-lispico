@@ -69,11 +69,11 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			var parts []string
 			switch c := coll.(type) {
 			case core.List:
-				for _, item := range c.Items {
+				for _, item := range c.ToSlice() {
 					parts = append(parts, toString(item))
 				}
 			case core.Vector:
-				for _, item := range c.Items {
+				for _, item := range c.ToSlice() {
 					parts = append(parts, toString(item))
 				}
 			default:
@@ -106,7 +106,7 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				items[i] = core.String{V: p}
 			}
 
-			return core.List{Items: items}, nil
+			return core.NewList(items), nil
 		},
 	}, false); err != nil {
 		return err
@@ -250,7 +250,7 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				items[i] = core.String{V: line}
 			}
 
-			return core.List{Items: items}, nil
+			return core.NewList(items), nil
 		},
 	}, false); err != nil {
 		return err

@@ -156,12 +156,13 @@ func (c *Compiler) Compile(form core.Value) error {
 
 	case core.Vector:
 		c.emit(vm.OpStructEnter, 1)
-		for _, item := range f.Items {
+		items := f.ToSlice()
+		for _, item := range items {
 			if err := c.Compile(item); err != nil {
 				return err
 			}
 		}
-		c.emit(vm.OpMakeVector, len(f.Items))
+		c.emit(vm.OpMakeVector, len(items))
 		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
 		c.emit(vm.OpStructEnter, 1)
@@ -192,11 +193,12 @@ func (c *Compiler) compileList(f core.List) error {
 	if c.err != nil {
 		return c.err
 	}
-	if len(f.Items) == 0 {
+	items := f.ToSlice()
+	if len(items) == 0 {
 		c.emit(vm.OpNil, 0)
 		return nil
 	}
-	head, isSym := f.Items[0].(core.Symbol)
+	head, isSym := items[0].(core.Symbol)
 	if isSym {
 		canonicalName := head.V
 		isSpecial := true
@@ -213,74 +215,74 @@ func (c *Compiler) compileList(f core.List) error {
 		if isSpecial {
 			switch canonicalName {
 			case "if":
-				return c.compileIf(f.Items[1:])
+				return c.compileIf(items[1:])
 			case "def":
-				return c.compileDef(f.Items[1:])
+				return c.compileDef(items[1:])
 			case "defn":
-				return c.compileDefn(f.Items[1:])
+				return c.compileDefn(items[1:])
 			case "fn":
-				return c.compileFn(f.Items[1:])
+				return c.compileFn(items[1:])
 			case "function":
-				if len(f.Items[1:]) != 1 {
+				if len(items[1:]) != 1 {
 					return fmt.Errorf("function: requires exactly 1 argument")
 				}
-				sym, ok := f.Items[1].(core.Symbol)
+				sym, ok := items[1].(core.Symbol)
 				if !ok {
-					return fmt.Errorf("function: argument must be symbol, got %T", f.Items[1])
+					return fmt.Errorf("function: argument must be symbol, got %T", items[1])
 				}
 				c.emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
 				return nil
 			case "funcall":
 				// funcall evaluates its first argument as a value expression and calls it.
-				if len(f.Items[1:]) < 1 {
+				if len(items[1:]) < 1 {
 					return fmt.Errorf("funcall: requires at least 1 argument")
 				}
-				if err := c.Compile(f.Items[1]); err != nil {
+				if err := c.Compile(items[1]); err != nil {
 					return err
 				}
-				for _, arg := range f.Items[2:] {
+				for _, arg := range items[2:] {
 					if err := c.Compile(arg); err != nil {
 						return err
 					}
 				}
-				c.emit(vm.OpCall, len(f.Items[2:]))
+				c.emit(vm.OpCall, len(items[2:]))
 				return nil
 			case "let":
-				return c.compileLet(f.Items[1:])
+				return c.compileLet(items[1:])
 			case "let*":
-				return c.compileLetStar(f.Items[1:])
+				return c.compileLetStar(items[1:])
 			case "do":
-				return c.compileDo(f.Items[1:])
+				return c.compileDo(items[1:])
 			case "quote":
-				if len(f.Items) < 2 {
+				if len(items) < 2 {
 					return compileErrf("quote: missing value")
 				}
-				c.emit(vm.OpConst, c.chunk.AddConstant(f.Items[1]))
+				c.emit(vm.OpConst, c.chunk.AddConstant(items[1]))
 				return nil
 			case "cond":
-				return c.compileCond(f.Items[1:])
+				return c.compileCond(items[1:])
 			case "and":
-				return c.compileAnd(f.Items[1:])
+				return c.compileAnd(items[1:])
 			case "or":
-				return c.compileOr(f.Items[1:])
+				return c.compileOr(items[1:])
 			case "not":
-				return c.compileNot(f.Items[1:])
+				return c.compileNot(items[1:])
 			case "quasiquote":
-				return c.compileQuasiquote(f.Items[1:])
+				return c.compileQuasiquote(items[1:])
 			case "set!":
-				return c.compileSet(f.Items[1:])
+				return c.compileSet(items[1:])
 			case "when":
-				return c.compileWhen(f.Items[1:])
+				return c.compileWhen(items[1:])
 			case "unless":
-				return c.compileUnless(f.Items[1:])
+				return c.compileUnless(items[1:])
 			case "loop":
-				return c.compileLoop(f.Items[1:])
+				return c.compileLoop(items[1:])
 			case "recur":
-				return c.compileRecur(f.Items[1:])
+				return c.compileRecur(items[1:])
 			case "try":
-				return c.compileTry(f.Items[1:])
+				return c.compileTry(items[1:])
 			case "throw":
-				return c.compileThrow(f.Items[1:])
+				return c.compileThrow(items[1:])
 			case "catch":
 				return compileErrf("catch used outside of try")
 			case "defmacro":
@@ -293,10 +295,10 @@ func (c *Compiler) compileList(f core.List) error {
 		// this can't misfire. Skip only when locally shadowed, falling back
 		// to compileCall/OpCall.
 		if op, ok := nativeOp(canonicalName); ok && !c.isLocallyShadowed(canonicalName) {
-			return c.compileNativeOp(f.Items, op)
+			return c.compileNativeOp(items, op)
 		}
 	}
-	return c.compileCall(f.Items)
+	return c.compileCall(items)
 }
 
 func (c *Compiler) compileIf(args []core.Value) error {
@@ -600,20 +602,21 @@ func (c *Compiler) compileTry(args []core.Value) error {
 		return compileErrf("try: expected body and catch clause")
 	}
 	catchClause, ok := args[len(args)-1].(core.List)
-	if !ok || len(catchClause.Items) < 3 {
+	if !ok || catchClause.Len() < 3 {
 		return compileErrf("try: last argument must be (catch <sym> <handler>...)")
 	}
-	head, ok := catchClause.Items[0].(core.Symbol)
+	items := catchClause.ToSlice()
+	head, ok := items[0].(core.Symbol)
 	if !ok || head.V != "catch" {
-		return compileErrf("try: expected catch clause, got %v", catchClause.Items[0])
+		return compileErrf("try: expected catch clause, got %v", items[0])
 	}
 	errSymIndex := 1
 	bodyStart := 2
-	if len(catchClause.Items) >= 4 {
+	if len(items) >= 4 {
 		errSymIndex = 2
 		bodyStart = 3
 	}
-	errSym, ok := catchClause.Items[errSymIndex].(core.Symbol)
+	errSym, ok := items[errSymIndex].(core.Symbol)
 	if !ok {
 		return compileErrf("catch: error binding must be a symbol")
 	}
@@ -631,7 +634,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	catchSlot := len(c.locals)
 	c.addLocal(errSym.V)
 	c.emitBind(catchSlot)
-	if err := c.compileDo(catchClause.Items[bodyStart:]); err != nil {
+	if err := c.compileDo(items[bodyStart:]); err != nil {
 		return err
 	}
 	c.locals = c.locals[:base]
@@ -898,7 +901,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		return nil
 	}
 	fnItems := append([]core.Value{core.Symbol{V: "fn"}, args[1]}, args[2:]...)
-	def := core.List{Items: []core.Value{core.Symbol{V: "def"}, name, core.List{Items: fnItems}}}
+	def := core.NewList([]core.Value{core.Symbol{V: "def"}, name, core.NewList(fnItems)})
 	return c.Compile(def)
 }
 
@@ -936,7 +939,7 @@ func (c *Compiler) compileCond(args []core.Value) error {
 	var jumps []int
 	hasElse := false
 	for _, clause := range clauses {
-		items := clause.(core.List).Items
+		items := clause.(core.List).ToSlice()
 		test, expr := items[0], items[1]
 		if isElse(test) {
 			if err := c.Compile(expr); err != nil {
@@ -1042,13 +1045,14 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 	}
 	switch val := v.(type) {
 	case core.List:
-		if len(val.Items) > 0 {
-			if sym, ok := val.Items[0].(core.Symbol); ok {
+		n := val.Len()
+		if n > 0 {
+			if sym, ok := val.At(0).(core.Symbol); ok {
 				if sym.V == "unquote" {
-					if len(val.Items) != 2 {
+					if n != 2 {
 						return fmt.Errorf("unquote: expected 1 argument")
 					}
-					return c.Compile(val.Items[1])
+					return c.Compile(val.At(1))
 				}
 				if sym.V == "unquote-splicing" {
 					return unsupportedErr("unquote-splicing: not yet supported in bytecode compiler")
@@ -1059,24 +1063,26 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 			return core.NewResourceLimitError("compile depth limit exceeded")
 		}
 		c.emit(vm.OpStructEnter, 1)
-		for _, item := range val.Items {
+		items := val.ToSlice()
+		for _, item := range items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
 				return err
 			}
 		}
-		c.emit(vm.OpMakeList, len(val.Items))
+		c.emit(vm.OpMakeList, len(items))
 		c.emit(vm.OpStructLeave, 1)
 	case core.Vector:
 		if d := literalDepth(val, 0); d < 0 {
 			return core.NewResourceLimitError("compile depth limit exceeded")
 		}
 		c.emit(vm.OpStructEnter, 1)
-		for _, item := range val.Items {
+		items := val.ToSlice()
+		for _, item := range items {
 			if err := c.compileQuasiquoteValue(item); err != nil {
 				return err
 			}
 		}
-		c.emit(vm.OpMakeVector, len(val.Items))
+		c.emit(vm.OpMakeVector, len(items))
 		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
 		d := literalDepth(val, 0)
@@ -1099,7 +1105,7 @@ func literalDepth(v core.Value, depth int) int {
 	switch val := v.(type) {
 	case core.List:
 		max := 0
-		for _, item := range val.Items {
+		for _, item := range val.ToSlice() {
 			d := literalDepth(item, depth+1)
 			if d < 0 {
 				return -1
@@ -1111,7 +1117,7 @@ func literalDepth(v core.Value, depth int) int {
 		return max + 1
 	case core.Vector:
 		max := 0
-		for _, item := range val.Items {
+		for _, item := range val.ToSlice() {
 			d := literalDepth(item, depth+1)
 			if d < 0 {
 				return -1
@@ -1171,9 +1177,9 @@ func parseParams(v core.Value) (params []core.Symbol, variadic core.Symbol, err 
 	var items []core.Value
 	switch val := v.(type) {
 	case core.Vector:
-		items = val.Items
+		items = val.ToSlice()
 	case core.List:
-		items = val.Items
+		items = val.ToSlice()
 	default:
 		return nil, core.Symbol{}, compileErrf("fn params must be vector or list, got %T", v)
 	}

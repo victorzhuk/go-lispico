@@ -138,7 +138,7 @@ func TestBytecodeRuntime_Variadic(t *testing.T) {
 	ctx := context.Background()
 	result, err := eng.Eval(ctx, "variadic", "((fn [a & rest] rest) 1 2 3)")
 	require.NoError(t, err)
-	expected := core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}
+	expected := core.NewList([]core.Value{core.Int{V: 2}, core.Int{V: 3}})
 	assert.True(t, result.Equals(expected), "variadic rest, got %v", result)
 }
 

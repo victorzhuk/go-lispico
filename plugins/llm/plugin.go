@@ -153,9 +153,9 @@ func (p *Plugin) chat(ctx context.Context, eval core.Evaluator, args []core.Valu
 	var items []core.Value
 	switch v := args[1].(type) {
 	case core.List:
-		items = v.Items
+		items = v.ToSlice()
 	case core.Vector:
-		items = v.Items
+		items = v.ToSlice()
 	default:
 		return nil, fmt.Errorf("llm/chat: messages must be a list or vector")
 	}
@@ -226,7 +226,7 @@ func (p *Plugin) embed(ctx context.Context, eval core.Evaluator, args []core.Val
 		items[i] = core.Float{V: f}
 	}
 
-	return core.Vector{Items: items}, nil
+	return core.NewVector(items), nil
 }
 
 func (p *Plugin) toolCall(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -242,9 +242,9 @@ func (p *Plugin) toolCall(ctx context.Context, eval core.Evaluator, args []core.
 	var toolsItems []core.Value
 	switch v := args[1].(type) {
 	case core.List:
-		toolsItems = v.Items
+		toolsItems = v.ToSlice()
 	case core.Vector:
-		toolsItems = v.Items
+		toolsItems = v.ToSlice()
 	default:
 		return nil, fmt.Errorf("llm/tool-call: tools must be a list or vector")
 	}
@@ -306,7 +306,7 @@ func (p *Plugin) toolCall(ctx context.Context, eval core.Evaluator, args []core.
 		results = append(results, m)
 	}
 
-	return core.List{Items: results}, nil
+	return core.NewList(results), nil
 }
 
 func (p *Plugin) parseRequestOptions(opts *core.HashMap, env *core.Env) LLMRequest {
@@ -362,9 +362,9 @@ func (p *Plugin) parseRequestOptions(opts *core.HashMap, env *core.Env) LLMReque
 		var items []core.Value
 		switch vv := v.(type) {
 		case core.List:
-			items = vv.Items
+			items = vv.ToSlice()
 		case core.Vector:
-			items = vv.Items
+			items = vv.ToSlice()
 		}
 		for _, item := range items {
 			if msgMap, ok := item.(*core.HashMap); ok {

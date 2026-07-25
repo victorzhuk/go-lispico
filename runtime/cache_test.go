@@ -315,7 +315,7 @@ func TestCache_UnfitChunkRunsUncached(t *testing.T) {
 	e := newCacheLimitsEngine(t, ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 1, MaxCacheNodes: 1, MaxCollectionLen: 1 << 30})
 
 	v := evalCacheSource(t, e, "[1 2]")
-	assert.True(t, core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}}.Equals(v))
+	assert.True(t, core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}}).Equals(v))
 	evalCacheSource(t, e, "[1 2]")
 
 	assert.Equal(t, 0, cacheStats(t, e).Entries)

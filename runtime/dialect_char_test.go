@@ -52,7 +52,7 @@ func TestDialect_Characterization_DefaultForms(t *testing.T) {
 		got := eval(t, nil, "(quote (1 2 3))")
 		lst, ok := got.(core.List)
 		require.True(t, ok, "expected List, got %T", got)
-		assert.Len(t, lst.Items, 3)
+		assert.Len(t, lst.ToSlice(), 3)
 	})
 	t.Run("cond picks matching branch", func(t *testing.T) {
 		assert.True(t, core.Int{V: 2}.Equals(eval(t, nil, "(cond false 1 true 2)")))

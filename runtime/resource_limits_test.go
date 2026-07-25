@@ -428,7 +428,7 @@ func TestLimits_DirectEvaluatorEvalFlushesResidualReductions(t *testing.T) {
 
 	ctx := core.WithEvalResourceLimits(t.Context(), 1, 1<<20)
 	ev := core.NewEvaluator()
-	_, err := ev.Eval(ctx, core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}}, core.NewEnv(nil))
+	_, err := ev.Eval(ctx, core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}}), core.NewEnv(nil))
 
 	assert.True(t, isResourceLimit(t, err), "expected residual reductions to flush, got %v", err)
 }
@@ -541,10 +541,11 @@ func TestMetering_AssocChargesDeepBytes(t *testing.T) {
 	skipUntilMeteringFields(t)
 
 	const width = 1024
-	payload := core.Vector{Items: make([]core.Value, width)}
-	for i := range payload.Items {
-		payload.Items[i] = core.Int{V: int64(i)}
+	payloadItems := make([]core.Value, width)
+	for i := range payloadItems {
+		payloadItems[i] = core.Int{V: int64(i)}
 	}
+	payload := core.NewVector(payloadItems)
 
 	src := "(assoc (assoc {} :a (payload)) :b (payload))"
 	newEngine := func(t testing.TB, bytecode bool, limits ResourceLimits) Engine {
@@ -833,5 +834,48 @@ func runConcurrentMeteredEval(t *testing.T, bytecode bool, limits ResourceLimits
 
 	for err := range errs {
 		require.NoError(t, err)
+	}
+}
+
+// TestMetering_MapStillChargedByApplySiteFallback pins that map — which
+// builds a fresh List but never calls any Charge* function itself, relying
+// entirely on the apply site's fallback shallow charge — is still charged
+// after the callee-charged marker (core.ChargeGoFuncResultBytes,
+// core.BeginGoFuncDispatch/EndGoFuncDispatch) was added for cons/conj/
+// concat/assoc/merge/list/vector/range/hash-map. This is the regression
+// that would matter if the marker ever defaulted to "already charged".
+func TestMetering_MapStillChargedByApplySiteFallback(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const n = 2000
+	items := make([]core.Value, n)
+	for i := range items {
+		items[i] = core.Int{V: int64(i)}
+	}
+	lst := core.NewList(items)
+
+	usage := func(t *testing.T, bytecode bool, src string) int64 {
+		t.Helper()
+		eng := newMeteringStdlibEngine(t, bytecode, meteringLimits(t, 1_000_000, 4<<20))
+		require.NoError(t, eng.Bind("list-of-n", core.GoFunc{
+			Name: "list-of-n",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return lst, nil
+			},
+		}))
+		ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, 4<<20)
+		_, err := eng.Eval(ctx, "usage", src)
+		require.NoError(t, err)
+		return core.EvalMeterFrom(ctx).Snapshot().AllocationBytes
+	}
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			base := usage(t, bytecode, "(list-of-n)")
+			mapped := usage(t, bytecode, "(map (fn [x] x) (list-of-n))")
+			wantMin := base + core.ListShallowBytes(n)
+			assert.GreaterOrEqual(t, mapped, wantMin,
+				"map result must still be charged via the apply-site fallback (base=%d, mapped=%d)", base, mapped)
+		})
 	}
 }

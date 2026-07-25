@@ -386,8 +386,8 @@ func TestPlugin_Embed(t *testing.T) {
 	require.NoError(t, err)
 	vec, ok := result.(core.Vector)
 	require.True(t, ok)
-	assert.Len(t, vec.Items, 3)
-	assert.Equal(t, core.Float{V: 0.1}, vec.Items[0])
+	assert.Len(t, vec.ToSlice(), 3)
+	assert.Equal(t, core.Float{V: 0.1}, vec.At(0))
 }
 
 func TestPlugin_Stream(t *testing.T) {
@@ -445,9 +445,9 @@ func TestPlugin_ToolCall(t *testing.T) {
 	require.NoError(t, err)
 	list, ok := result.(core.List)
 	require.True(t, ok)
-	require.Len(t, list.Items, 1)
+	require.Len(t, list.ToSlice(), 1)
 
-	toolMap := list.Items[0].(*core.HashMap)
+	toolMap := list.At(0).(*core.HashMap)
 	name, _ := toolMap.Get(core.Keyword{V: "name"})
 	assert.Equal(t, core.String{V: "get_weather"}, name)
 }
@@ -676,7 +676,7 @@ func TestPlugin_EmbedWithModel(t *testing.T) {
 	require.NoError(t, err)
 	vec, ok := result.(core.Vector)
 	require.True(t, ok)
-	assert.Len(t, vec.Items, 1)
+	assert.Len(t, vec.ToSlice(), 1)
 }
 
 func TestPlugin_ToolCallWithVector(t *testing.T) {
@@ -701,7 +701,7 @@ func TestPlugin_ToolCallWithVector(t *testing.T) {
 	require.NoError(t, err)
 	list, ok := result.(core.List)
 	require.True(t, ok)
-	assert.Len(t, list.Items, 1)
+	assert.Len(t, list.ToSlice(), 1)
 }
 
 func TestPlugin_WithTemp(t *testing.T) {

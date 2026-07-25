@@ -133,7 +133,7 @@ func fromJSONValue(v any) (core.Value, error) {
 			}
 			items[i] = lv
 		}
-		return core.Vector{Items: items}, nil
+		return core.NewVector(items), nil
 	default:
 		return nil, fmt.Errorf("json/decode: unsupported JSON type %T", v)
 	}

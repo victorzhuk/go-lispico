@@ -266,7 +266,7 @@ func TestFileOperations(t *testing.T) {
 
 		list, ok := result.(core.List)
 		require.True(t, ok)
-		assert.Len(t, list.Items, 2)
+		assert.Len(t, list.ToSlice(), 2)
 	})
 
 	t.Run("mkdir creates directory", func(t *testing.T) {

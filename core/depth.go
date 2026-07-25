@@ -48,20 +48,27 @@ func constructionDepthExceeded(v Value, depth, limit int) bool {
 		if depth > limit {
 			return true
 		}
-		for _, item := range val.Items {
+		exceeded := false
+		val.each(func(item Value) bool {
 			switch item.(type) {
 			case List, Vector, *HashMap, Lambda, Macro:
 				if constructionDepthExceeded(item, depth, limit) {
-					return true
+					exceeded = true
+					return false
 				}
 			}
+			return true
+		})
+		if exceeded {
+			return true
 		}
 	case Vector:
 		depth++
 		if depth > limit {
 			return true
 		}
-		for _, item := range val.Items {
+		for i := 0; i < val.Len(); i++ {
+			item := val.At(i)
 			switch item.(type) {
 			case List, Vector, *HashMap, Lambda, Macro:
 				if constructionDepthExceeded(item, depth, limit) {
@@ -114,19 +121,16 @@ func boundedString(v Value, depth int) string {
 	case nil:
 		return "nil"
 	case List:
-		parts := make([]string, 0, len(val.Items))
-		for _, item := range val.Items {
-			s := boundedString(item, depth+1)
-			parts = append(parts, s)
-			if depth+1 > DefaultMaxStructuralDepth {
-				break
-			}
-		}
+		parts := make([]string, 0, val.Len())
+		val.each(func(item Value) bool {
+			parts = append(parts, boundedString(item, depth+1))
+			return depth+1 <= DefaultMaxStructuralDepth
+		})
 		return "(" + strings.Join(parts, " ") + ")"
 	case Vector:
-		parts := make([]string, 0, len(val.Items))
-		for _, item := range val.Items {
-			s := boundedString(item, depth+1)
+		parts := make([]string, 0, val.Len())
+		for i := 0; i < val.Len(); i++ {
+			s := boundedString(val.At(i), depth+1)
 			parts = append(parts, s)
 			if depth+1 > DefaultMaxStructuralDepth {
 				break
@@ -167,22 +171,27 @@ func boundedEquals(a, b Value, depth int) bool {
 		return b == nil
 	case List:
 		bv, ok := b.(List)
-		if !ok || len(av.Items) != len(bv.Items) {
+		if !ok || av.Len() != bv.Len() {
 			return false
 		}
-		for i := range av.Items {
-			if !boundedEquals(av.Items[i], bv.Items[i], depth+1) {
+		ac, bc := av.cursor(), bv.cursor()
+		for {
+			x, ok := ac.next()
+			if !ok {
+				return true
+			}
+			y, _ := bc.next()
+			if !boundedEquals(x, y, depth+1) {
 				return false
 			}
 		}
-		return true
 	case Vector:
 		bv, ok := b.(Vector)
-		if !ok || len(av.Items) != len(bv.Items) {
+		if !ok || av.Len() != bv.Len() {
 			return false
 		}
-		for i := range av.Items {
-			if !boundedEquals(av.Items[i], bv.Items[i], depth+1) {
+		for i := 0; i < av.Len(); i++ {
+			if !boundedEquals(av.At(i), bv.At(i), depth+1) {
 				return false
 			}
 		}
@@ -216,15 +225,16 @@ func boundedDeepBytes(v Value, depth int) int64 {
 	case nil:
 		return 0
 	case List:
-		bytes := ListShallowBytes(len(val.Items))
-		for _, item := range val.Items {
+		bytes := ListShallowBytes(val.Len())
+		val.each(func(item Value) bool {
 			bytes += boundedDeepBytes(item, depth+1)
-		}
+			return true
+		})
 		return bytes
 	case Vector:
-		bytes := VectorShallowBytes(len(val.Items))
-		for _, item := range val.Items {
-			bytes += boundedDeepBytes(item, depth+1)
+		bytes := VectorShallowBytes(val.Len())
+		for i := 0; i < val.Len(); i++ {
+			bytes += boundedDeepBytes(val.At(i), depth+1)
 		}
 		return bytes
 	case *HashMap:
@@ -271,14 +281,15 @@ func boundedNodeCount(v Value, depth int) int {
 		return 0
 	case List:
 		nodes := 1
-		for _, item := range val.Items {
+		val.each(func(item Value) bool {
 			nodes += boundedNodeCount(item, depth+1)
-		}
+			return true
+		})
 		return nodes
 	case Vector:
 		nodes := 1
-		for _, item := range val.Items {
-			nodes += boundedNodeCount(item, depth+1)
+		for i := 0; i < val.Len(); i++ {
+			nodes += boundedNodeCount(val.At(i), depth+1)
 		}
 		return nodes
 	case *HashMap:

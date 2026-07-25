@@ -3,12 +3,44 @@ package vm_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
+
+// buildLetSource returns `(let [v0 0 v1 1 ... v(n-1) (n-1)] (+ v0 v1 ...))` —
+// a let binding n symbols, straddling the persistent vector's future
+// promotion boundary at n=32.
+func buildLetSource(n int) string {
+	var pairs, sum strings.Builder
+	for i := range n {
+		if i > 0 {
+			sum.WriteByte(' ')
+		}
+		fmt.Fprintf(&pairs, "v%d %d ", i, i)
+		fmt.Fprintf(&sum, "v%d", i)
+	}
+	return fmt.Sprintf("(let [%s] (+ %s))", strings.TrimSpace(pairs.String()), sum.String())
+}
+
+// buildFnSource returns a def-then-call program for a fn taking n params.
+func buildFnSource(n int) string {
+	var params, sum, args strings.Builder
+	for i := range n {
+		if i > 0 {
+			sum.WriteByte(' ')
+			args.WriteByte(' ')
+		}
+		fmt.Fprintf(&params, "p%d ", i)
+		fmt.Fprintf(&sum, "p%d", i)
+		fmt.Fprintf(&args, "%d", i)
+	}
+	return fmt.Sprintf("(def addN (fn [%s] (+ %s)))\n(addN %s)",
+		strings.TrimSpace(params.String()), sum.String(), args.String())
+}
 
 func newBenchEnv() *core.Env {
 	env := core.NewEnv(nil)
@@ -65,20 +97,35 @@ func newBenchEnv() *core.Env {
 			return core.Bool{V: true}, nil
 		},
 	})
+	env.Set("cons", core.GoFunc{
+		Name: "cons",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			c := args[1].(core.List)
+			res, _ := c.Cons(args[0])
+			return res, nil
+		},
+	})
+	env.Set("count", core.GoFunc{
+		Name: "count",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Int{V: int64(args[0].(core.List).Len())}, nil
+		},
+	})
 	env.Set("map", core.GoFunc{
 		Name: "map",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			fn := args[0]
 			list := args[1].(core.List)
-			result := make([]core.Value, len(list.Items))
-			for i, item := range list.Items {
+			n := list.Len()
+			result := make([]core.Value, n)
+			for i := 0; i < n; i++ {
 				var err error
-				result[i], err = eval.Apply(ctx, fn, []core.Value{item}, env)
+				result[i], err = eval.Apply(ctx, fn, []core.Value{list.At(i)}, env)
 				if err != nil {
 					return nil, err
 				}
 			}
-			return core.List{Items: result}, nil
+			return core.NewList(result), nil
 		},
 	})
 	return env
@@ -441,6 +488,138 @@ func BenchmarkLet_TreeWalker(b *testing.B) {
 	}
 }
 
+// BenchmarkLetWide16_VM/_TreeWalker and BenchmarkLetWide40_VM/_TreeWalker
+// cover the binding-carrier regression risk at the VM's execution path:
+// `let` binds through a Vector, and a wide binding vector straddling the
+// future promotion threshold at n=32 must not regress against BenchmarkLet's
+// small (5-binding) shape above.
+func BenchmarkLetWide16_VM(b *testing.B) {
+	forms, _ := core.Read(buildLetSource(16))
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkLetWide16_TreeWalker(b *testing.B) {
+	forms, _ := core.Read(buildLetSource(16))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+func BenchmarkLetWide40_VM(b *testing.B) {
+	forms, _ := core.Read(buildLetSource(40))
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkLetWide40_TreeWalker(b *testing.B) {
+	forms, _ := core.Read(buildLetSource(40))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+// BenchmarkFnCallWide16_VM/_TreeWalker and BenchmarkFnCallWide40_VM/_TreeWalker
+// cover the same carrier risk for fn parameter lists, complementing the
+// fixed 2-param BenchmarkFunctionCall_VM/_TreeWalker above.
+func BenchmarkFnCallWide16_VM(b *testing.B) {
+	forms, _ := core.Read(buildFnSource(16))
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkFnCallWide16_TreeWalker(b *testing.B) {
+	forms, _ := core.Read(buildFnSource(16))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+func BenchmarkFnCallWide40_VM(b *testing.B) {
+	forms, _ := core.Read(buildFnSource(40))
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkFnCallWide40_TreeWalker(b *testing.B) {
+	forms, _ := core.Read(buildFnSource(40))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
 func BenchmarkTailCall_VM(b *testing.B) {
 	src := `
 (def sum-to (fn [n acc]
@@ -471,6 +650,100 @@ func BenchmarkTailCall_TreeWalker(b *testing.B) {
     acc
     (sum-to (- n 1) (+ acc n)))))
 (sum-to 1000 0)`
+
+	forms, _ := core.Read(src)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+func BenchmarkAccumulate100_VM(b *testing.B) {
+	src := `
+(def build (fn [n]
+  (loop [i 0 acc '()]
+    (if (= i n)
+      acc
+      (recur (+ i 1) (cons i acc))))))
+(build 100)`
+
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkAccumulate100_TreeWalker(b *testing.B) {
+	src := `
+(def build (fn [n]
+  (loop [i 0 acc '()]
+    (if (= i n)
+      acc
+      (recur (+ i 1) (cons i acc))))))
+(build 100)`
+
+	forms, _ := core.Read(src)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		e := core.NewEvaluator()
+		for _, form := range forms {
+			e.Eval(context.Background(), form, env)
+		}
+	}
+}
+
+func BenchmarkAccumulate1000_VM(b *testing.B) {
+	src := `
+(def build (fn [n]
+  (loop [i 0 acc '()]
+    (if (= i n)
+      acc
+      (recur (+ i 1) (cons i acc))))))
+(build 1000)`
+
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		env := newBenchEnv()
+		v := vm.New(env)
+		for _, chunk := range chunks {
+			v.Run(context.Background(), chunk)
+		}
+	}
+}
+
+func BenchmarkAccumulate1000_TreeWalker(b *testing.B) {
+	src := `
+(def build (fn [n]
+  (loop [i 0 acc '()]
+    (if (= i n)
+      acc
+      (recur (+ i 1) (cons i acc))))))
+(build 1000)`
 
 	forms, _ := core.Read(src)
 

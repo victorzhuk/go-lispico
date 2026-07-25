@@ -12,6 +12,7 @@
     "Goldset/merge-config": "data-dominated",
     "Goldset/text-render": "data-dominated",
     "Goldset/pipeline": "data-dominated",
-    "Goldset/rule-load": "startup"
+    "Goldset/rule-load": "startup",
+    "Goldset/queue-promote": "data-dominated"
   }
 }

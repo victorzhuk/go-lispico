@@ -324,8 +324,8 @@ func TestStrings_SplitJoin(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 3 {
-			t.Errorf("expected 3 items, got %d", len(list.Items))
+		if list.Len() != 3 {
+			t.Errorf("expected 3 items, got %d", list.Len())
 		}
 	})
 
@@ -397,8 +397,8 @@ func TestCollections_Constructors(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 3 {
-			t.Errorf("expected 3 items, got %d", len(list.Items))
+		if list.Len() != 3 {
+			t.Errorf("expected 3 items, got %d", list.Len())
 		}
 	})
 
@@ -408,8 +408,8 @@ func TestCollections_Constructors(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected vector, got %T", result)
 		}
-		if len(vec.Items) != 3 {
-			t.Errorf("expected 3 items, got %d", len(vec.Items))
+		if vec.Len() != 3 {
+			t.Errorf("expected 3 items, got %d", vec.Len())
 		}
 	})
 
@@ -447,13 +447,9 @@ func TestCollections_ConstructorArgIsolation(t *testing.T) {
 		t.Fatalf("expected list, got %T", listResult)
 	}
 
-	list.Items[0] = core.Int{V: 99}
-	if !listInput[0].Equals(core.Int{V: 1}) {
-		t.Fatalf("list constructor should copy args; mutating list changed caller arg: %v", listInput[0])
-	}
 	listInput[1] = core.Int{V: 88}
-	if !list.Items[1].Equals(core.Int{V: 2}) {
-		t.Fatalf("list constructor should copy args; mutating caller arg changed list item: %v", list.Items[1])
+	if !list.At(1).Equals(core.Int{V: 2}) {
+		t.Fatalf("list constructor should copy args; mutating caller arg changed list item: %v", list.At(1))
 	}
 
 	vectorValue, ok := env.Get("vector")
@@ -475,13 +471,9 @@ func TestCollections_ConstructorArgIsolation(t *testing.T) {
 		t.Fatalf("expected vector, got %T", vectorResult)
 	}
 
-	vector.Items[0] = core.Int{V: 77}
-	if !vectorInput[0].Equals(core.Int{V: 4}) {
-		t.Fatalf("vector constructor should copy args; mutating vector changed caller arg: %v", vectorInput[0])
-	}
 	vectorInput[1] = core.Int{V: 66}
-	if !vector.Items[1].Equals(core.Int{V: 5}) {
-		t.Fatalf("vector constructor should copy args; mutating caller arg changed vector item: %v", vector.Items[1])
+	if !vector.At(1).Equals(core.Int{V: 5}) {
+		t.Fatalf("vector constructor should copy args; mutating caller arg changed vector item: %v", vector.At(1))
 	}
 }
 
@@ -495,8 +487,8 @@ func TestCollections_Access(t *testing.T) {
 	}{
 		{"first", `(first (list 1 2 3))`, core.Int{V: 1}},
 		{"first empty", `(first (list))`, core.Nil{}},
-		{"rest", `(rest (list 1 2 3))`, core.List{Items: []core.Value{core.Int{V: 2}, core.Int{V: 3}}}},
-		{"rest empty", `(rest (list))`, core.List{Items: []core.Value{}}},
+		{"rest", `(rest (list 1 2 3))`, core.NewList([]core.Value{core.Int{V: 2}, core.Int{V: 3}})},
+		{"rest empty", `(rest (list))`, core.NewList([]core.Value{})},
 		{"last", `(last (list 1 2 3))`, core.Int{V: 3}},
 		{"nth", `(nth (list 1 2 3) 1)`, core.Int{V: 2}},
 		{"nth with default", `(nth (list 1 2 3) 10 :not-found)`, core.Keyword{V: "not-found"}},
@@ -524,10 +516,10 @@ func TestCollections_ConsConj(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 4 {
-			t.Errorf("expected 4 items, got %d", len(list.Items))
+		if list.Len() != 4 {
+			t.Errorf("expected 4 items, got %d", list.Len())
 		}
-		if !list.Items[0].Equals(core.Int{V: 0}) {
+		if !list.At(0).Equals(core.Int{V: 0}) {
 			t.Errorf("expected first item to be 0")
 		}
 	})
@@ -538,7 +530,7 @@ func TestCollections_ConsConj(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if !list.Items[0].Equals(core.Int{V: 1}) {
+		if !list.At(0).Equals(core.Int{V: 1}) {
 			t.Errorf("expected first item to be 1")
 		}
 	})
@@ -549,7 +541,7 @@ func TestCollections_ConsConj(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected vector, got %T", result)
 		}
-		if !vec.Items[2].Equals(core.Int{V: 3}) {
+		if !vec.At(2).Equals(core.Int{V: 3}) {
 			t.Errorf("expected last item to be 3")
 		}
 	})
@@ -596,8 +588,8 @@ func TestCollections_MapOps(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 2 {
-			t.Errorf("expected 2 keys, got %d", len(list.Items))
+		if list.Len() != 2 {
+			t.Errorf("expected 2 keys, got %d", list.Len())
 		}
 	})
 
@@ -607,8 +599,8 @@ func TestCollections_MapOps(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 2 {
-			t.Errorf("expected 2 vals, got %d", len(list.Items))
+		if list.Len() != 2 {
+			t.Errorf("expected 2 vals, got %d", list.Len())
 		}
 	})
 }
@@ -622,11 +614,11 @@ func TestHigherOrder_Map(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 3 {
-			t.Errorf("expected 3 items, got %d", len(list.Items))
+		if list.Len() != 3 {
+			t.Errorf("expected 3 items, got %d", list.Len())
 		}
-		if !list.Items[0].Equals(core.Int{V: 2}) {
-			t.Errorf("expected first item to be 2, got %v", list.Items[0])
+		if !list.At(0).Equals(core.Int{V: 2}) {
+			t.Errorf("expected first item to be 2, got %v", list.At(0))
 		}
 	})
 }
@@ -640,8 +632,8 @@ func TestHigherOrder_Filter(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected list, got %T", result)
 		}
-		if len(list.Items) != 2 {
-			t.Errorf("expected 2 items, got %d", len(list.Items))
+		if list.Len() != 2 {
+			t.Errorf("expected 2 items, got %d", list.Len())
 		}
 	})
 }
@@ -810,8 +802,8 @@ func TestBootstrap_ThreadLast(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected list, got %T", result)
 	}
-	if len(list.Items) != 3 {
-		t.Errorf("expected 3 items, got %d", len(list.Items))
+	if list.Len() != 3 {
+		t.Errorf("expected 3 items, got %d", list.Len())
 	}
 }
 

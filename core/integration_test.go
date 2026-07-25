@@ -210,7 +210,7 @@ func TestIntegration_Quasiquote_Nested(t *testing.T) {
 
 	got := evalAll(t, env, src)
 	list, ok := got.(List)
-	if !ok || len(list.Items) != 5 {
+	if !ok || list.Len() != 5 {
 		t.Errorf("quasiquote splice = %v, want 5-element list", got)
 	}
 }

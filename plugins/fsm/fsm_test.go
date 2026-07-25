@@ -300,11 +300,11 @@ func TestStateMachine_TransitionWithEval_ActionExecutes(t *testing.T) {
 	actionLambda := core.Lambda{
 		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "event"}},
 		Body: []core.Value{
-			core.List{Items: []core.Value{
+			core.NewList([]core.Value{
 				core.Symbol{V: "set!"},
 				core.Symbol{V: "action-ran"},
 				core.Bool{V: true},
-			}},
+			}),
 		},
 		Env: env,
 	}
@@ -343,11 +343,11 @@ func TestStateMachine_CallbackInvoked(t *testing.T) {
 	callbackLambda := core.Lambda{
 		Params: []core.Symbol{{V: "machine-id"}, {V: "from"}, {V: "to"}},
 		Body: []core.Value{
-			core.List{Items: []core.Value{
+			core.NewList([]core.Value{
 				core.Symbol{V: "set!"},
 				core.Symbol{V: "notified"},
 				core.Bool{V: true},
-			}},
+			}),
 		},
 		Env: env,
 	}
@@ -510,7 +510,7 @@ func TestPlugin_Reachable(t *testing.T) {
 
 	list, ok := reachable.(core.List)
 	require.True(t, ok)
-	assert.Len(t, list.Items, 2)
+	assert.Len(t, list.ToSlice(), 2)
 }
 
 func TestPlugin_StateMachine(t *testing.T) {
@@ -572,7 +572,7 @@ func TestPlugin_List(t *testing.T) {
 
 	list, ok := result.(core.List)
 	require.True(t, ok)
-	assert.Len(t, list.Items, 2)
+	assert.Len(t, list.ToSlice(), 2)
 }
 
 func TestPlugin_Events(t *testing.T) {
@@ -595,11 +595,11 @@ func TestPlugin_Broadcast(t *testing.T) {
 	callbackLambda := core.Lambda{
 		Params: []core.Symbol{{V: "mid"}, {V: "from"}, {V: "to"}},
 		Body: []core.Value{
-			core.List{Items: []core.Value{
+			core.NewList([]core.Value{
 				core.Symbol{V: "set!"},
 				core.Symbol{V: "transition-fired"},
 				core.Bool{V: true},
-			}},
+			}),
 		},
 		Env: env,
 	}
@@ -1242,7 +1242,7 @@ func TestPlugin_Acceptance_FullWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	list, ok := reachable.(core.List)
 	require.True(t, ok)
-	assert.Len(t, list.Items, 2)
+	assert.Len(t, list.ToSlice(), 2)
 
 	_, err = p.transition(ctx, eval, []core.Value{core.Keyword{V: "document"}, core.Keyword{V: "approve"}}, env)
 	require.NoError(t, err)

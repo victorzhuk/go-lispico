@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -110,14 +111,14 @@ func TestKeyword(t *testing.T) {
 
 func TestList(t *testing.T) {
 	t.Parallel()
-	l := List{Items: []Value{Int{V: 1}, Int{V: 2}, Int{V: 3}}}
+	l := NewList([]Value{Int{V: 1}, Int{V: 2}, Int{V: 3}})
 	if l.String() != "(1 2 3)" {
 		t.Errorf("String() = %q, want (1 2 3)", l.String())
 	}
-	if !l.Equals(List{Items: []Value{Int{V: 1}, Int{V: 2}, Int{V: 3}}}) {
+	if !l.Equals(NewList([]Value{Int{V: 1}, Int{V: 2}, Int{V: 3}})) {
 		t.Error("equal lists should be equal")
 	}
-	if l.Equals(List{Items: []Value{Int{V: 1}, Int{V: 2}}}) {
+	if l.Equals(NewList([]Value{Int{V: 1}, Int{V: 2}})) {
 		t.Error("lists of different length should not be equal")
 	}
 	empty := List{}
@@ -128,12 +129,130 @@ func TestList(t *testing.T) {
 
 func TestVector(t *testing.T) {
 	t.Parallel()
-	v := Vector{Items: []Value{Int{V: 1}, Int{V: 2}}}
+	v := NewVector([]Value{Int{V: 1}, Int{V: 2}})
 	if v.String() != "[1 2]" {
 		t.Errorf("String() = %q, want [1 2]", v.String())
 	}
-	if !v.Equals(Vector{Items: []Value{Int{V: 1}, Int{V: 2}}}) {
+	if !v.Equals(NewVector([]Value{Int{V: 1}, Int{V: 2}})) {
 		t.Error("equal vectors should be equal")
+	}
+}
+
+// TestVectorConjFromOversizedFlat pins Conj's flat-to-trie promotion against
+// a flat backing longer than vecBranch, built directly (not through
+// NewVector) so the case holds regardless of how vectorFlatThreshold
+// relates to vecBranch. A flat vector conj'd onto must drain in full
+// vecBranch-sized leaves; every size here, both a multiple of vecBranch and
+// not, must land on the same Len/At/Equals/ToSlice as building the same
+// elements one Conj at a time from empty.
+func TestVectorConjFromOversizedFlat(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{0, 1, 31, 32, 33, 63, 64, 65, 96, 97, 128, 129, 200} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			t.Parallel()
+			items := make([]Value, n)
+			for i := range items {
+				items[i] = Int{V: int64(i)}
+			}
+			extra := Int{V: -1}
+
+			bulk, _ := (Vector{flat: items}).Conj(extra)
+
+			incremental := Vector{}
+			for _, v := range items {
+				incremental, _ = incremental.Conj(v)
+			}
+			incremental, _ = incremental.Conj(extra)
+
+			if bulk.Len() != n+1 {
+				t.Fatalf("Len() = %d, want %d", bulk.Len(), n+1)
+			}
+			if bulk.Len() != incremental.Len() {
+				t.Fatalf("bulk Len() = %d, incremental Len() = %d", bulk.Len(), incremental.Len())
+			}
+			for i := 0; i < n+1; i++ {
+				if !bulk.At(i).Equals(incremental.At(i)) {
+					t.Fatalf("At(%d) = bulk:%v incremental:%v, want equal", i, bulk.At(i), incremental.At(i))
+				}
+			}
+			if !bulk.Equals(incremental) || !incremental.Equals(bulk) {
+				t.Fatalf("Equals mismatch: bulk=%s incremental=%s", bulk.String(), incremental.String())
+			}
+			bulkSlice, incSlice := bulk.ToSlice(), incremental.ToSlice()
+			if len(bulkSlice) != len(incSlice) {
+				t.Fatalf("ToSlice() len = bulk:%d incremental:%d", len(bulkSlice), len(incSlice))
+			}
+			for i := range bulkSlice {
+				if !bulkSlice[i].Equals(incSlice[i]) {
+					t.Fatalf("ToSlice()[%d] = bulk:%v incremental:%v, want equal", i, bulkSlice[i], incSlice[i])
+				}
+			}
+		})
+	}
+}
+
+// TestVectorConjZeroValues confirms Conj with no new values still promotes
+// an oversized flat backing to a trie — reachable once a caller stops
+// chunking NewVector by size, since nothing then requires at least one new
+// value to trigger the drain.
+func TestVectorConjZeroValues(t *testing.T) {
+	t.Parallel()
+	items := make([]Value, 64)
+	for i := range items {
+		items[i] = Int{V: int64(i)}
+	}
+	v, _ := (Vector{flat: items}).Conj()
+	if v.Len() != 64 {
+		t.Fatalf("Len() = %d, want 64", v.Len())
+	}
+	for i := range items {
+		if !v.At(i).Equals(items[i]) {
+			t.Fatalf("At(%d) = %v, want %v", i, v.At(i), items[i])
+		}
+	}
+}
+
+// TestVectorConjTailAtBranchBoundary exercises Conj when the incoming
+// vector's tail is already exactly vecBranch elements — a full leaf not
+// yet flushed into the trie, which the append-one-at-a-time vs loop leaves
+// behind whenever the running count lands on a vecBranch multiple on its
+// final iteration. The fixture is built directly with pushVecTail rather
+// than through Conj's public threshold gate, so the case holds regardless
+// of vectorFlatThreshold. The next Conj must flush that leaf before
+// appending rather than growing tail past vecBranch.
+func TestVectorConjTailAtBranchBoundary(t *testing.T) {
+	t.Parallel()
+	items := make([]Value, 2*vecBranch)
+	for i := range items {
+		items[i] = Int{V: int64(i)}
+	}
+	var root *vecNode
+	var shift uint
+	var trieLen int
+	var tail []Value
+	for _, val := range items {
+		if len(tail) == vecBranch {
+			root, shift = pushVecTail(root, shift, trieLen, tail)
+			trieLen += vecBranch
+			tail = nil
+		}
+		tail = append(tail, val)
+	}
+	v := Vector{root: root, shift: shift, count: trieLen + len(tail), tail: tail}
+	if v.root == nil || len(v.tail) != vecBranch {
+		t.Fatalf("setup: root!=nil=%v taillen=%d, want true and %d", v.root != nil, len(v.tail), vecBranch)
+	}
+	v, _ = v.Conj(Int{V: 999})
+	if v.Len() != 65 {
+		t.Fatalf("Len() = %d, want 65", v.Len())
+	}
+	for i := 0; i < 64; i++ {
+		if !v.At(i).Equals(Int{V: int64(i)}) {
+			t.Fatalf("At(%d) = %v, want %d", i, v.At(i), i)
+		}
+	}
+	if !v.At(64).Equals(Int{V: 999}) {
+		t.Fatalf("At(64) = %v, want 999", v.At(64))
 	}
 }
 
@@ -197,7 +316,7 @@ func TestHashMap_Equality(t *testing.T) {
 func TestHashMap_UnhashableKey(t *testing.T) {
 	t.Parallel()
 	m := NewHashMap()
-	_, err := m.Assoc(List{Items: []Value{Int{V: 1}}}, Int{V: 1})
+	_, err := m.Assoc(NewList([]Value{Int{V: 1}}), Int{V: 1})
 	if err == nil {
 		t.Error("Assoc with unhashable key should return error")
 	}
@@ -289,7 +408,7 @@ func TestEquals_CrossType(t *testing.T) {
 func TestHashMap_Dissoc_UnhashableKey(t *testing.T) {
 	t.Parallel()
 	m := NewHashMap()
-	_, err := m.Dissoc(List{Items: []Value{Int{V: 1}}})
+	_, err := m.Dissoc(NewList([]Value{Int{V: 1}}))
 	if err == nil {
 		t.Error("Dissoc with unhashable key should error")
 	}
@@ -331,8 +450,8 @@ func TestFromGoValue_Slice(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Vector, got %T", got)
 	}
-	if len(vec.Items) != 3 {
-		t.Errorf("len = %d, want 3", len(vec.Items))
+	if vec.Len() != 3 {
+		t.Errorf("len = %d, want 3", vec.Len())
 	}
 }
 
@@ -455,7 +574,7 @@ func TestHashMap_Each(t *testing.T) {
 func TestToGoValue_Collections(t *testing.T) {
 	t.Parallel()
 
-	list := List{Items: []Value{Int{V: 1}, Bool{V: true}}}
+	list := NewList([]Value{Int{V: 1}, Bool{V: true}})
 	got, err := ToGoValue(list)
 	if err != nil {
 		t.Fatalf("ToGoValue(List) error: %v", err)
@@ -465,7 +584,7 @@ func TestToGoValue_Collections(t *testing.T) {
 		t.Errorf("ToGoValue(List) = %v (%T), want []any len 2", got, got)
 	}
 
-	vec := Vector{Items: []Value{String{V: "hi"}}}
+	vec := NewVector([]Value{String{V: "hi"}})
 	got2, err := ToGoValue(vec)
 	if err != nil {
 		t.Fatalf("ToGoValue(Vector) error: %v", err)

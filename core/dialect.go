@@ -496,18 +496,21 @@ func (d Dialect) normalizeCondNested(args []Value) ([]Value, error) {
 		if !ok {
 			return nil, evalErrorf("cond: clauses must be (test body...) lists")
 		}
-		if len(list.Items) < 2 {
+		n := list.Len()
+		if n < 2 {
 			return nil, evalErrorf("cond: clauses must be (test body...) lists")
 		}
-		if len(list.Items) == 2 {
+		if n == 2 {
 			clauses = append(clauses, list)
 		} else {
 			// Multi-expression body: wrap in (doVisible body...)
 			doName := d.visibleName("do")
-			wrapped := List{Items: make([]Value, 0, len(list.Items))}
-			wrapped.Items = append(wrapped.Items, Symbol{V: doName})
-			wrapped.Items = append(wrapped.Items, list.Items[1:]...)
-			clause := List{Items: []Value{list.Items[0], wrapped}}
+			wrapped := make([]Value, 0, n)
+			wrapped = append(wrapped, Symbol{V: doName})
+			for i := 1; i < n; i++ {
+				wrapped = append(wrapped, list.At(i))
+			}
+			clause := NewList([]Value{list.At(0), NewList(wrapped)})
 			clauses = append(clauses, clause)
 		}
 	}
@@ -520,7 +523,7 @@ func (d Dialect) normalizeCondFlat(args []Value) ([]Value, error) {
 	}
 	clauses := make([]Value, 0, len(args)/2)
 	for i := 0; i < len(args); i += 2 {
-		clauses = append(clauses, List{Items: []Value{args[i], args[i+1]}})
+		clauses = append(clauses, NewList([]Value{args[i], args[i+1]}))
 	}
 	return clauses, nil
 }

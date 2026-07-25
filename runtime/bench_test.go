@@ -652,3 +652,49 @@ func BenchmarkEngine_LoadFileBytecode(b *testing.B) {
 		_, _ = eng.Eval(context.Background(), "file", src)
 	}
 }
+
+// benchmarkEngineAccumulate runs the accumulation-loop shape from
+// TestAccumulation100k end to end through the public Eval API, at n small
+// enough to stay under the default allocation ledger.
+func benchmarkEngineAccumulate(b *testing.B, bytecode bool, n int) {
+	b.Helper()
+	opts := []EngineOption{WithDialect(clojure.Dialect())}
+	if bytecode {
+		opts = append(opts, WithBytecode())
+	} else {
+		opts = append(opts, WithTreeWalker())
+	}
+	eng, err := New(nil, opts...)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	src := fmt.Sprintf(`(loop [i 0 acc '()] (if (< i %d) (recur (+ i 1) (cons i acc)) (count acc)))`, n)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := eng.Eval(context.Background(), "bench", src); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEngine_Accumulate100_Bytecode(b *testing.B) {
+	benchmarkEngineAccumulate(b, true, 100)
+}
+
+func BenchmarkEngine_Accumulate100_TreeWalker(b *testing.B) {
+	benchmarkEngineAccumulate(b, false, 100)
+}
+
+func BenchmarkEngine_Accumulate1000_Bytecode(b *testing.B) {
+	benchmarkEngineAccumulate(b, true, 1000)
+}
+
+func BenchmarkEngine_Accumulate1000_TreeWalker(b *testing.B) {
+	benchmarkEngineAccumulate(b, false, 1000)
+}

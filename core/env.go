@@ -779,7 +779,7 @@ func (e *Env) ChildVariadic(params []Symbol, args []Value, variadic Symbol) (*En
 				return nil, err
 			}
 		}
-		if err := child.Set(variadic.V, List{Items: args[len(params):]}); err != nil {
+		if err := child.Set(variadic.V, NewList(args[len(params):])); err != nil {
 			return nil, err
 		}
 	} else {

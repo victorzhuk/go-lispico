@@ -197,9 +197,17 @@ a dead-branch over-limit literal (`(if false <deep> 1)`) is not rejected.
 Reductions piggyback the existing 128-step cancellation budget in both
 evaluators, and allocation charging uses the fixed deterministic size table in
 ADR 0011. Reader output is charged before the first form runs; VM/tree-walker
-work and `GoFunc` re-entry share one per-evaluation ledger. The per-engine
-bytecode chunk cache obeys the entry, deep-byte, and expanded-node ceilings;
-the process-level stdlib bootstrap artifact cache is exempt.
+work and `GoFunc` re-entry share one per-evaluation ledger. Charging is
+incremental: a builtin whose result derives structurally from one of its own
+arguments (`cons`, `conj`, `concat`, and similarly shaped ops on `List`/
+`Vector`) charges only what it newly allocated, not the whole result's
+shallow size on every call; a builtin that builds its result from otherwise
+unrelated values charges that result's full deep size. Retained per-`Env`
+binding capacity (`MaxRetainedBytesPerEnv`/`MaxRetainedSlotsPerEnv`, ADR 0012)
+is a separate measure with its own ledger, not folded into
+`MaxAllocationBytes`. The per-engine bytecode chunk cache obeys the entry,
+deep-byte, and expanded-node ceilings; the process-level stdlib bootstrap
+artifact cache is exempt.
 
 ## Status
 

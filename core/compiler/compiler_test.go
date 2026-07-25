@@ -110,11 +110,11 @@ func TestCompiler_Symbol(t *testing.T) {
 
 func TestCompiler_Vector(t *testing.T) {
 	c := NewCompiler("test")
-	vec := core.Vector{Items: []core.Value{
+	vec := core.NewVector([]core.Value{
 		core.Int{V: 1},
 		core.Int{V: 2},
 		core.Int{V: 3},
-	}}
+	})
 	require.NoError(t, c.Compile(vec))
 
 	chunk := c.Chunk()
@@ -139,11 +139,11 @@ func TestCompiler_List_Empty(t *testing.T) {
 
 func TestCompiler_List_Literal(t *testing.T) {
 	c := NewCompiler("test")
-	lst := core.List{Items: []core.Value{
+	lst := core.NewList([]core.Value{
 		core.Symbol{V: "list"},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	require.NoError(t, c.Compile(lst))
 
 	chunk := c.Chunk()
@@ -158,12 +158,12 @@ func TestCompiler_List_Literal(t *testing.T) {
 func TestCompiler_If(t *testing.T) {
 	t.Run("with else", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "if"},
 			core.Bool{V: true},
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
@@ -177,11 +177,11 @@ func TestCompiler_If(t *testing.T) {
 
 	t.Run("without else", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "if"},
 			core.Bool{V: true},
 			core.Int{V: 1},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
@@ -196,11 +196,11 @@ func TestCompiler_If(t *testing.T) {
 
 func TestCompiler_Def(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "def"},
 		core.Symbol{V: "x"},
 		core.Int{V: 42},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -215,10 +215,10 @@ func TestCompiler_Def(t *testing.T) {
 func TestCompiler_Def_Error(t *testing.T) {
 	t.Run("wrong arg count", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "def"},
 			core.Symbol{V: "x"},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "expected 2 args")
@@ -226,11 +226,11 @@ func TestCompiler_Def_Error(t *testing.T) {
 
 	t.Run("name not symbol", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "def"},
 			core.Int{V: 42},
 			core.Int{V: 1},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "name must be symbol")
@@ -240,12 +240,12 @@ func TestCompiler_Def_Error(t *testing.T) {
 func TestCompiler_Do(t *testing.T) {
 	t.Run("multiple forms", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "do"},
 			core.Int{V: 1},
 			core.Int{V: 2},
 			core.Int{V: 3},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
@@ -259,9 +259,9 @@ func TestCompiler_Do(t *testing.T) {
 
 	t.Run("empty", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "do"},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
@@ -272,16 +272,16 @@ func TestCompiler_Do(t *testing.T) {
 
 func TestCompiler_Let(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "x"},
 			core.Int{V: 1},
 			core.Symbol{V: "y"},
 			core.Int{V: 2},
-		}},
+		}),
 		core.Symbol{V: "x"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -296,14 +296,14 @@ func TestCompiler_Let(t *testing.T) {
 
 func TestCompiler_Let_ListBindings(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
-		core.List{Items: []core.Value{
-			core.List{Items: []core.Value{core.Symbol{V: "x"}, core.Int{V: 1}}},
-			core.List{Items: []core.Value{core.Symbol{V: "y"}, core.Int{V: 2}}},
-		}},
+		core.NewList([]core.Value{
+			core.NewList([]core.Value{core.Symbol{V: "x"}, core.Int{V: 1}}),
+			core.NewList([]core.Value{core.Symbol{V: "y"}, core.Int{V: 2}}),
+		}),
 		core.Symbol{V: "x"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -318,14 +318,14 @@ func TestCompiler_Let_ListBindings(t *testing.T) {
 
 func TestCompiler_LetStar_ListBindings(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let*"},
-		core.List{Items: []core.Value{
-			core.List{Items: []core.Value{core.Symbol{V: "x"}, core.Int{V: 1}}},
-			core.List{Items: []core.Value{core.Symbol{V: "y"}, core.Symbol{V: "x"}}},
-		}},
+		core.NewList([]core.Value{
+			core.NewList([]core.Value{core.Symbol{V: "x"}, core.Int{V: 1}}),
+			core.NewList([]core.Value{core.Symbol{V: "y"}, core.Symbol{V: "x"}}),
+		}),
 		core.Symbol{V: "y"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -341,21 +341,21 @@ func TestCompiler_LetStar_ListBindings(t *testing.T) {
 func TestCompiler_Let_Error(t *testing.T) {
 	t.Run("empty list bindings", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "let"},
 			core.List{},
 			core.Int{V: 1},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 	})
 
 	t.Run("bindings not vector or pair list", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "let"},
 			core.Int{V: 42},
 			core.Int{V: 1},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "vector")
@@ -364,15 +364,15 @@ func TestCompiler_Let_Error(t *testing.T) {
 
 	t.Run("odd bindings count", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "let"},
-			core.Vector{Items: []core.Value{
+			core.NewVector([]core.Value{
 				core.Symbol{V: "x"},
 				core.Int{V: 1},
 				core.Symbol{V: "y"},
-			}},
+			}),
 			core.Int{V: 1},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "even number")
@@ -380,11 +380,11 @@ func TestCompiler_Let_Error(t *testing.T) {
 
 	t.Run("list element not pair", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "let"},
-			core.List{Items: []core.Value{core.Symbol{V: "x"}}},
+			core.NewList([]core.Value{core.Symbol{V: "x"}}),
 			core.Int{V: 1},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "vector")
@@ -393,13 +393,13 @@ func TestCompiler_Let_Error(t *testing.T) {
 
 	t.Run("list pair head not symbol", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "let"},
-			core.List{Items: []core.Value{
-				core.List{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}},
-			}},
+			core.NewList([]core.Value{
+				core.NewList([]core.Value{core.Int{V: 1}, core.Int{V: 2}}),
+			}),
 			core.Int{V: 1},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "vector")
@@ -411,11 +411,11 @@ func TestCompiler_Let_Error(t *testing.T) {
 func TestCompiler_Set(t *testing.T) {
 	t.Run("global", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "set!"},
 			core.Symbol{V: "x"},
 			core.Int{V: 42},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
@@ -427,11 +427,11 @@ func TestCompiler_Set(t *testing.T) {
 	t.Run("local", func(t *testing.T) {
 		c := NewCompiler("test")
 		c.addLocal("x")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "set!"},
 			core.Symbol{V: "x"},
 			core.Int{V: 42},
-		}}
+		})
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
@@ -444,15 +444,15 @@ func TestCompiler_Set(t *testing.T) {
 
 func TestCompiler_Try_LocalsAfterTry(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "try"},
 		core.Int{V: 5},
-		core.List{Items: []core.Value{
+		core.NewList([]core.Value{
 			core.Symbol{V: "catch"},
 			core.Symbol{V: "e"},
 			core.Symbol{V: "e"},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	c.addLocal("post")
 	assert.Equal(t, 0, c.resolveLocal("post"),
@@ -461,14 +461,14 @@ func TestCompiler_Try_LocalsAfterTry(t *testing.T) {
 
 func TestCompiler_Quote(t *testing.T) {
 	c := NewCompiler("test")
-	quoted := core.List{Items: []core.Value{
+	quoted := core.NewList([]core.Value{
 		core.Symbol{V: "a"},
 		core.Symbol{V: "b"},
-	}}
-	form := core.List{Items: []core.Value{
+	})
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "quote"},
 		quoted,
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -480,14 +480,14 @@ func TestCompiler_Quote(t *testing.T) {
 
 func TestCompiler_Fn(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "x"},
 			core.Symbol{V: "y"},
-		}},
+		}),
 		core.Symbol{V: "x"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -507,15 +507,15 @@ func TestCompiler_Fn(t *testing.T) {
 
 func TestCompiler_Fn_Variadic(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "x"},
 			core.Symbol{V: "&"},
 			core.Symbol{V: "rest"},
-		}},
+		}),
 		core.Symbol{V: "rest"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -530,10 +530,10 @@ func TestCompiler_Fn_Variadic(t *testing.T) {
 func TestCompiler_Fn_Error(t *testing.T) {
 	t.Run("params not vector or list", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
 			core.Int{V: 42},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "params must be vector or list")
@@ -541,10 +541,10 @@ func TestCompiler_Fn_Error(t *testing.T) {
 
 	t.Run("param not symbol", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
-			core.Vector{Items: []core.Value{core.Int{V: 1}}},
-		}}
+			core.NewVector([]core.Value{core.Int{V: 1}}),
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "param must be symbol")
@@ -552,10 +552,10 @@ func TestCompiler_Fn_Error(t *testing.T) {
 
 	t.Run("& without rest param", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
-			core.Vector{Items: []core.Value{core.Symbol{V: "&"}}},
-		}}
+			core.NewVector([]core.Value{core.Symbol{V: "&"}}),
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "& requires a rest param name")
@@ -564,12 +564,12 @@ func TestCompiler_Fn_Error(t *testing.T) {
 
 func TestCompiler_When(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "when"},
 		core.Bool{V: true},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -584,11 +584,11 @@ func TestCompiler_When(t *testing.T) {
 
 func TestCompiler_Unless(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "unless"},
 		core.Bool{V: false},
 		core.Int{V: 1},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
 	assert.Equal(t, vm.OpFalse, chunk.Code[0].Op())
@@ -600,12 +600,12 @@ func TestCompiler_Unless(t *testing.T) {
 
 func TestCompiler_When_SkippedNil(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "when"},
 		core.Bool{V: false},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -619,12 +619,12 @@ func TestCompiler_When_SkippedNil(t *testing.T) {
 
 func TestCompiler_Unless_SkippedNil(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "unless"},
 		core.Bool{V: true},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -638,11 +638,11 @@ func TestCompiler_Unless_SkippedNil(t *testing.T) {
 
 func TestCompiler_Recur(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "recur"},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	err := c.Compile(form)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "recur outside loop")
@@ -650,13 +650,13 @@ func TestCompiler_Recur(t *testing.T) {
 
 func TestCompiler_Loop(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "loop"},
-		core.List{Items: []core.Value{
-			core.List{Items: []core.Value{core.Symbol{V: "x"}, core.Int{V: 0}}},
-		}},
+		core.NewList([]core.Value{
+			core.NewList([]core.Value{core.Symbol{V: "x"}, core.Int{V: 0}}),
+		}),
 		core.Symbol{V: "x"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -669,11 +669,11 @@ func TestCompiler_Loop(t *testing.T) {
 
 func TestCompiler_NativeOpAdd(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "+"},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -686,11 +686,11 @@ func TestCompiler_NativeOpAdd(t *testing.T) {
 }
 
 func TestCompiler_NativeOpSub(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "-"},
 		core.Int{V: 10},
 		core.Int{V: 3},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -700,11 +700,11 @@ func TestCompiler_NativeOpSub(t *testing.T) {
 }
 
 func TestCompiler_NativeOpMul(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "*"},
 		core.Int{V: 6},
 		core.Int{V: 7},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -713,11 +713,11 @@ func TestCompiler_NativeOpMul(t *testing.T) {
 }
 
 func TestCompiler_NativeOpDiv(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "/"},
 		core.Int{V: 10},
 		core.Int{V: 2},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -726,11 +726,11 @@ func TestCompiler_NativeOpDiv(t *testing.T) {
 }
 
 func TestCompiler_NativeOpLt(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "<"},
 		core.Int{V: 1},
 		core.Int{V: 2},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -739,11 +739,11 @@ func TestCompiler_NativeOpLt(t *testing.T) {
 }
 
 func TestCompiler_NativeOpGt(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: ">"},
 		core.Int{V: 3},
 		core.Int{V: 2},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -752,11 +752,11 @@ func TestCompiler_NativeOpGt(t *testing.T) {
 }
 
 func TestCompiler_NativeOpLe(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "<="},
 		core.Int{V: 2},
 		core.Int{V: 2},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -765,11 +765,11 @@ func TestCompiler_NativeOpLe(t *testing.T) {
 }
 
 func TestCompiler_NativeOpGe(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: ">="},
 		core.Int{V: 2},
 		core.Int{V: 2},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -778,11 +778,11 @@ func TestCompiler_NativeOpGe(t *testing.T) {
 }
 
 func TestCompiler_NativeOpEq(t *testing.T) {
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "="},
 		core.Int{V: 5},
 		core.Int{V: 5},
-	}}
+	})
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
@@ -792,18 +792,18 @@ func TestCompiler_NativeOpEq(t *testing.T) {
 
 func TestCompiler_NativeOp_ShadowedByLet(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 5},
-		}},
-		core.List{Items: []core.Value{
+		}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -819,18 +819,18 @@ func TestCompiler_NativeOp_ShadowedByLet(t *testing.T) {
 
 func TestCompiler_NativeOp_NotShadowed(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "x"},
 			core.Int{V: 5},
-		}},
-		core.List{Items: []core.Value{
+		}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -847,20 +847,20 @@ func TestCompiler_NativeOp_NotShadowed(t *testing.T) {
 func TestCompiler_NativeOp_ShadowedByEnclosingFn(t *testing.T) {
 	c := NewCompiler("test")
 	// (fn [+] ((fn [] (+ 1 2))))
-	innerFn := core.List{Items: []core.Value{
+	innerFn := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{}},
-		core.List{Items: []core.Value{
+		core.NewVector([]core.Value{}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}},
-	}}
-	outerFn := core.List{Items: []core.Value{
+		}),
+	})
+	outerFn := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "+"}}},
+		core.NewVector([]core.Value{core.Symbol{V: "+"}}),
 		innerFn,
-	}}
+	})
 	require.NoError(t, c.Compile(outerFn))
 	// Nesting: top chunk → sub[0] (outer fn body, has + param) → sub[0] (inner fn body)
 	require.Len(t, c.chunk.SubChunks, 1)
@@ -896,11 +896,11 @@ func TestCompiler_NativeOp_Dialect(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Run("add", func(t *testing.T) {
 				c := NewCompilerWithDialect("test", tc.dialect)
-				form := core.List{Items: []core.Value{
+				form := core.NewList([]core.Value{
 					core.Symbol{V: "+"},
 					core.Symbol{V: "a"},
 					core.Symbol{V: "b"},
-				}}
+				})
 				require.NoError(t, c.Compile(form))
 
 				chunk := c.Chunk()
@@ -911,11 +911,11 @@ func TestCompiler_NativeOp_Dialect(t *testing.T) {
 
 			t.Run("lt", func(t *testing.T) {
 				c := NewCompilerWithDialect("test", tc.dialect)
-				form := core.List{Items: []core.Value{
+				form := core.NewList([]core.Value{
 					core.Symbol{V: "<"},
 					core.Symbol{V: "a"},
 					core.Symbol{V: "b"},
-				}}
+				})
 				require.NoError(t, c.Compile(form))
 
 				chunk := c.Chunk()
@@ -935,18 +935,18 @@ func TestCompiler_NativeOp_Dialect(t *testing.T) {
 func TestCompiler_NativeOp_DialectShadowedByLet(t *testing.T) {
 	clojureDialect := clojure.Dialect()
 	c := NewCompilerWithDialect("test", &clojureDialect)
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 5},
-		}},
-		core.List{Items: []core.Value{
+		}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -968,19 +968,19 @@ func TestCompiler_NativeOp_DialectShadowedByLet(t *testing.T) {
 func TestCompiler_NativeOp_DialectRebindStillNative(t *testing.T) {
 	clDialect := cl.Dialect()
 	c := NewCompilerWithDialect("test", &clDialect)
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "progn"},
-		core.List{Items: []core.Value{
+		core.NewList([]core.Value{
 			core.Symbol{V: "def"},
 			core.Symbol{V: "+"},
 			core.Symbol{V: "f"},
-		}},
-		core.List{Items: []core.Value{
+		}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "+"},
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
@@ -1015,11 +1015,11 @@ func TestCompiler_HashMap(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_Uncaptured(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
 		core.Symbol{V: "x"},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 	assert.Nil(t, sub.Captured)
@@ -1028,15 +1028,15 @@ func TestCompiler_CaptureAnalysis_Uncaptured(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_DirectCapture(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
-		core.List{Items: []core.Value{
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
 			core.Vector{},
 			core.Symbol{V: "x"},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1052,19 +1052,19 @@ func TestCompiler_CaptureAnalysis_DirectCapture(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_TransitiveCapture(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
-		core.List{Items: []core.Value{
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
 			core.Vector{},
-			core.List{Items: []core.Value{
+			core.NewList([]core.Value{
 				core.Symbol{V: "fn"},
 				core.Vector{},
 				core.Symbol{V: "x"},
-			}},
-		}},
-	}}
+			}),
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1083,15 +1083,15 @@ func TestCompiler_CaptureAnalysis_TransitiveCapture(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_LexicalShadowing(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
-		core.List{Items: []core.Value{
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
-			core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+			core.NewVector([]core.Value{core.Symbol{V: "x"}}),
 			core.Symbol{V: "x"},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1106,19 +1106,19 @@ func TestCompiler_CaptureAnalysis_LexicalShadowing(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_FnParamVariadic(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "x"},
 			core.Symbol{V: "&"},
 			core.Symbol{V: "rest"},
-		}},
-		core.List{Items: []core.Value{
+		}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
 			core.Vector{},
 			core.Symbol{V: "rest"},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1133,14 +1133,14 @@ func TestCompiler_CaptureAnalysis_FnParamVariadic(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_Quote(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
-		core.List{Items: []core.Value{
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "quote"},
 			core.Symbol{V: "x"},
-		}},
-	}}
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1151,20 +1151,20 @@ func TestCompiler_CaptureAnalysis_Quote(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_QuasiquoteUnquote(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
-		core.List{Items: []core.Value{
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
+		core.NewList([]core.Value{
 			core.Symbol{V: "quasiquote"},
-			core.List{Items: []core.Value{
+			core.NewList([]core.Value{
 				core.Symbol{V: "list"},
-				core.List{Items: []core.Value{
+				core.NewList([]core.Value{
 					core.Symbol{V: "unquote"},
 					core.Symbol{V: "x"},
-				}},
-			}},
-		}},
-	}}
+				}),
+			}),
+		}),
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1184,11 +1184,11 @@ func TestCompiler_CaptureAnalysis_QuasiquoteUnquote(t *testing.T) {
 
 func TestCompiler_CaptureAnalysis_NoLocals(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
 		core.Vector{},
 		core.Int{V: 42},
-	}}
+	})
 	require.NoError(t, c.Compile(form))
 	sub := c.Chunk().SubChunks[0]
 
@@ -1358,7 +1358,7 @@ func TestCompiler_ChargesReductionsPerInstruction(t *testing.T) {
 	c := NewCompiler("test")
 	c.SetEvalMeter(meter)
 
-	err := c.Compile(core.Vector{Items: []core.Value{core.Int{V: 1}, core.Int{V: 2}}})
+	err := c.Compile(core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}}))
 	require.Error(t, err)
 
 	var lerr *core.LispicoError
@@ -1378,7 +1378,7 @@ func TestCompiler_DeepEmitStopsAtReductionLimit(t *testing.T) {
 	for i := range 256 {
 		items = append(items, core.Int{V: int64(i)})
 	}
-	err := c.Compile(core.List{Items: items})
+	err := c.Compile(core.NewList(items))
 	require.Error(t, err)
 
 	var lerr *core.LispicoError
@@ -1395,7 +1395,7 @@ func TestCompiler_DeepEmitStopsAtReductionLimit(t *testing.T) {
 func nestedCallForm(depth int) core.Value {
 	var v core.Value = core.Symbol{V: "x"}
 	for range depth {
-		v = core.List{Items: []core.Value{core.Symbol{V: "f"}, v}}
+		v = core.NewList([]core.Value{core.Symbol{V: "f"}, v})
 	}
 	return v
 }
@@ -1413,12 +1413,12 @@ func TestCompiler_MacroExpandedFormDepthLimit(t *testing.T) {
 func TestCompiler_LiteralDepthLimit(t *testing.T) {
 	var v core.Value = core.Int{V: 1}
 	for range core.MaxCompileDepth + 1 {
-		v = core.Vector{Items: []core.Value{v}}
+		v = core.NewVector([]core.Value{v})
 	}
 	m := core.NewHashMap()
 	require.NoError(t, m.Set(core.Keyword{V: "x"}, v))
 	c := NewCompiler("test")
-	err := c.Compile(core.List{Items: []core.Value{core.Symbol{V: "quasiquote"}, m}})
+	err := c.Compile(core.NewList([]core.Value{core.Symbol{V: "quasiquote"}, m}))
 	require.Error(t, err)
 
 	var lerr *core.LispicoError
@@ -1441,14 +1441,14 @@ func TestCompiler_UnknownType(t *testing.T) {
 
 func TestCompiler_LetNonSymbolBinding(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Int{V: 1},
 			core.Int{V: 2},
-		}},
+		}),
 		core.Int{V: 1},
-	}}
+	})
 	err := c.Compile(form)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vector")
@@ -1458,15 +1458,15 @@ func TestCompiler_LetNonSymbolBinding(t *testing.T) {
 
 func TestCompiler_FnNonSymbolRestParam(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "fn"},
-		core.Vector{Items: []core.Value{
+		core.NewVector([]core.Value{
 			core.Symbol{V: "a"},
 			core.Symbol{V: "&"},
 			core.Int{V: 5},
-		}},
+		}),
 		core.Symbol{V: "a"},
-	}}
+	})
 	err := c.Compile(form)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expected symbol")
@@ -1475,10 +1475,10 @@ func TestCompiler_FnNonSymbolRestParam(t *testing.T) {
 func TestCompiler_Fn_EmptyBody(t *testing.T) {
 	t.Run("no body forms", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
 			core.Vector{},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "at least 2 arguments")
@@ -1486,9 +1486,9 @@ func TestCompiler_Fn_EmptyBody(t *testing.T) {
 
 	t.Run("no params at all", func(t *testing.T) {
 		c := NewCompiler("test")
-		form := core.List{Items: []core.Value{
+		form := core.NewList([]core.Value{
 			core.Symbol{V: "fn"},
-		}}
+		})
 		err := c.Compile(form)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "at least 2 arguments")
@@ -1497,23 +1497,23 @@ func TestCompiler_Fn_EmptyBody(t *testing.T) {
 
 func TestCompiler_Defn_EmptyBody(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "defn"},
 		core.Symbol{V: "f"},
 		core.Vector{},
-	}}
+	})
 	err := c.Compile(form)
 	require.Error(t, err)
 }
 
 func TestCompiler_Defmacro_Unsupported(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "defmacro"},
 		core.Symbol{V: "id"},
-		core.Vector{Items: []core.Value{core.Symbol{V: "x"}}},
+		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
 		core.Symbol{V: "x"},
-	}}
+	})
 	err := c.Compile(form)
 	require.Error(t, err)
 
@@ -1524,15 +1524,15 @@ func TestCompiler_Defmacro_Unsupported(t *testing.T) {
 
 func TestCompiler_UnquoteSplicing_Unsupported(t *testing.T) {
 	c := NewCompiler("test")
-	form := core.List{Items: []core.Value{
+	form := core.NewList([]core.Value{
 		core.Symbol{V: "quasiquote"},
-		core.List{Items: []core.Value{
-			core.List{Items: []core.Value{
+		core.NewList([]core.Value{
+			core.NewList([]core.Value{
 				core.Symbol{V: "unquote-splicing"},
 				core.Symbol{V: "xs"},
-			}},
-		}},
-	}}
+			}),
+		}),
+	})
 	err := c.Compile(form)
 	require.Error(t, err)
 

@@ -215,7 +215,7 @@ func TestRange_StandaloneDefaultCap(t *testing.T) {
 	v := eval(t, env, "(range 0 5)")
 	list, ok := v.(core.List)
 	require.True(t, ok)
-	require.Len(t, list.Items, 5)
+	require.Len(t, list.ToSlice(), 5)
 }
 
 func TestCollections_ConstructionDepthLimitNotCatchable(t *testing.T) {
@@ -250,13 +250,15 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 	err = evalErr(t, limitEnv, "(concat [1 2] [3 4])")
 	requireResourceLimit(t, err)
 
-	hugeList := core.List{Items: make([]core.Value, 256)}
-	hugeVector := core.Vector{Items: make([]core.Value, 256)}
-	for i := range hugeList.Items {
+	hugeListItems := make([]core.Value, 256)
+	hugeVectorItems := make([]core.Value, 256)
+	for i := range hugeListItems {
 		v := core.String{V: strings.Repeat("x", 128)}
-		hugeList.Items[i] = v
-		hugeVector.Items[i] = v
+		hugeListItems[i] = v
+		hugeVectorItems[i] = v
 	}
+	hugeList := core.NewList(hugeListItems)
+	hugeVector := core.NewVector(hugeVectorItems)
 	hugeMap := core.NewHashMap()
 	for i := range 256 {
 		require.NoError(t, hugeMap.Set(core.Int{V: int64(i)}, core.String{V: strings.Repeat("x", 128)}))
@@ -268,8 +270,11 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 		args    []core.Value
 	}{
 		{"concat", "concat", []core.Value{hugeList, hugeList}},
-		{"cons", "cons", []core.Value{core.Int{V: 0}, hugeList}},
-		{"conj list", "conj", []core.Value{hugeList, core.Int{V: 0}}},
+		// cons and conj onto an existing List are excluded here: hugeList
+		// is already above the shared-tail threshold, so extending it
+		// allocates one node, not a copy of the whole list — a 4096-byte
+		// budget no longer bounds that call. The collection-length check
+		// below covers them instead.
 		{"conj vector", "conj", []core.Value{hugeVector, core.Int{V: 0}}},
 		{"conj map", "conj", []core.Value{hugeMap, core.Keyword{V: "extra"}, core.String{V: strings.Repeat("x", 128)}}},
 		{"merge", "merge", []core.Value{hugeMap, hugeMap}},
@@ -279,6 +284,23 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 			fn := collectionGoFunc(t, env, tt.builtin)
 			ctx := core.WithEvalResourceLimits(t.Context(), 1<<20, 4096)
 			_, err := fn.Fn(ctx, nil, tt.args, env)
+			requireResourceLimit(t, err)
+		})
+	}
+
+	lenLimitEnv := setupEnv(t)
+	lenLimitEnv.SetEvaluator(collectionLimitEvaluator{limit: 3})
+	for _, tt := range []struct {
+		name    string
+		builtin string
+		args    []core.Value
+	}{
+		{"cons", "cons", []core.Value{core.Int{V: 0}, hugeList}},
+		{"conj list", "conj", []core.Value{hugeList, core.Int{V: 0}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fn := collectionGoFunc(t, lenLimitEnv, tt.builtin)
+			_, err := fn.Fn(t.Context(), nil, tt.args, lenLimitEnv)
 			requireResourceLimit(t, err)
 		})
 	}
@@ -317,9 +339,9 @@ func TestRange_ExtremeBoundsNoOverflow(t *testing.T) {
 	v := eval(t, env, "(range 9223372036854775805 9223372036854775807)")
 	list, ok := v.(core.List)
 	require.True(t, ok)
-	require.Len(t, list.Items, 2)
-	i0, _ := list.Items[0].(core.Int)
-	i1, _ := list.Items[1].(core.Int)
+	require.Len(t, list.ToSlice(), 2)
+	i0, _ := list.At(0).(core.Int)
+	i1, _ := list.At(1).(core.Int)
 	require.Equal(t, int64(9223372036854775805), i0.V)
 	require.Equal(t, int64(9223372036854775806), i1.V)
 }
@@ -370,6 +392,6 @@ func TestRange_CancelledMidBuild(t *testing.T) {
 	require.Error(t, err, "mid-build cancellation must abort range")
 	assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
 	if list, ok := v.(core.List); ok {
-		assert.Less(t, len(list.Items), 1000, "range must not complete the list on mid-build cancel")
+		assert.Less(t, list.Len(), 1000, "range must not complete the list on mid-build cancel")
 	}
 }

@@ -17,36 +17,39 @@ func bindingSyntaxError(form string) string {
 func NormalizeBindings(form string, raw Value) ([]Binding, error) {
 	switch rawBindings := raw.(type) {
 	case Vector:
-		if len(rawBindings.Items)%2 != 0 {
+		items := rawBindings.slice()
+		if len(items)%2 != 0 {
 			return nil, fmt.Errorf("%s; vector form must have even number of elements", bindingSyntaxError(form))
 		}
-		b := make([]Binding, 0, len(rawBindings.Items)/2)
-		for i := 0; i < len(rawBindings.Items); i += 2 {
-			name, ok := rawBindings.Items[i].(Symbol)
+		b := make([]Binding, 0, len(items)/2)
+		for i := 0; i < len(items); i += 2 {
+			name, ok := items[i].(Symbol)
 			if !ok {
-				return nil, fmt.Errorf("%s; binding name must be a symbol, got %T", bindingSyntaxError(form), rawBindings.Items[i])
+				return nil, fmt.Errorf("%s; binding name must be a symbol, got %T", bindingSyntaxError(form), items[i])
 			}
-			b = append(b, Binding{Name: name, Value: rawBindings.Items[i+1]})
+			b = append(b, Binding{Name: name, Value: items[i+1]})
 		}
 		return b, nil
 	case List:
-		if len(rawBindings.Items) == 0 {
+		if rawBindings.Len() == 0 {
 			return nil, nil
 		}
-		b := make([]Binding, 0, len(rawBindings.Items))
-		for _, pair := range rawBindings.Items {
+		items := rawBindings.slice()
+		b := make([]Binding, 0, len(items))
+		for _, pair := range items {
 			bindingPair, ok := pair.(List)
 			if !ok {
 				return nil, fmt.Errorf("%s; each binding must be a two-item list", bindingSyntaxError(form))
 			}
-			if len(bindingPair.Items) != 2 {
+			pairItems := bindingPair.slice()
+			if len(pairItems) != 2 {
 				return nil, fmt.Errorf("%s; each binding pair must have 2 items", bindingSyntaxError(form))
 			}
-			name, ok := bindingPair.Items[0].(Symbol)
+			name, ok := pairItems[0].(Symbol)
 			if !ok {
-				return nil, fmt.Errorf("%s; binding name must be a symbol, got %T", bindingSyntaxError(form), bindingPair.Items[0])
+				return nil, fmt.Errorf("%s; binding name must be a symbol, got %T", bindingSyntaxError(form), pairItems[0])
 			}
-			b = append(b, Binding{Name: name, Value: bindingPair.Items[1]})
+			b = append(b, Binding{Name: name, Value: pairItems[1]})
 		}
 		return b, nil
 	default:
