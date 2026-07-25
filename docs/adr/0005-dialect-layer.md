@@ -6,6 +6,15 @@ status: accepted
 
 go-lispico grows a dialect layer so one kernel can present Common Lisp by default, the current Clojure-style surface as an opt-in dialect, and restricted rule subsets (yagel) as fail-closed dialects. A dialect is a delta — renames, additions, removals — over a declared base: the full kernel table for language dialects, or empty for restricted ones. The delta covers special forms and vocabulary alike; vocabulary is a name map onto one shared pure builtin core, with thin adapters only where semantics genuinely differ. Two semantic axes are configurable in v1: symbol namespaces (Lisp-1 vs Lisp-2) and truthiness (nil-only vs nil+false falsy). The data model is not an axis: values stay the immutable List/Vector/HashMap set; cons cells, dotted pairs, and `nil == '()` are deferred. The reader gains per-dialect feature flags (`[..]`/`{..}` literals, `#'`, `#(...)`) rather than a readtable. A dialect is selected on the Go side at Engine construction and is immutable for the Engine's lifetime; `runtime.New()` without options runs the Common Lisp dialect.
 
+## Amendment
+
+Truthiness is no longer an axis. `core.Dialect.NilOnlyFalsy()` was removed and
+`Dialect.TruthyFunc()` returns `core.IsTruthy` for every dialect: `nil` and
+`false` are falsy, everything else truthy, including under Common Lisp. The one
+configurable semantic axis is symbol namespaces (Lisp-1 vs Lisp-2); the
+truthiness hook survives only as the fixed predicate `if`/`when`/`and`/`or`
+consult.
+
 ## Consequences
 
 - The package-global `specialForms` map becomes per-Engine dispatch state expressed as canonical kernel forms under neutral names; this is the enabling refactor and lands first.

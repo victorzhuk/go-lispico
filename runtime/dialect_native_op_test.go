@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/plugins/data"
+	"github.com/victorzhuk/go-lispico/plugins/json"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
@@ -144,8 +144,8 @@ func TestOperatorRedefinitionSurvivesPluginUse(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, vmGot.Equals(core.Int{V: 999}))
 
-	require.NoError(t, tw.Use(data.New()))
-	require.NoError(t, vmEng.Use(data.New()))
+	require.NoError(t, tw.Use(json.New()))
+	require.NoError(t, vmEng.Use(json.New()))
 
 	twGot, err = tw.Eval(ctx, "call-after", "(+ 1 2)")
 	require.NoError(t, err)
@@ -198,8 +198,8 @@ func TestNonOperatorBuiltinRedefinitionSurvivesPluginUse(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, vmGot.Equals(tc.want))
 
-			require.NoError(t, tw.Use(data.New()))
-			require.NoError(t, vmEng.Use(data.New()))
+			require.NoError(t, tw.Use(json.New()))
+			require.NoError(t, vmEng.Use(json.New()))
 
 			twGot, err = tw.Eval(ctx, "call-after", tc.call)
 			require.NoError(t, err)
@@ -227,8 +227,8 @@ func TestPluginGoFuncsCallableAndCanonicalFastPath(t *testing.T) {
 	t.Cleanup(func() { _ = vmEng.Close() })
 	require.NoError(t, vmEng.Use(stdlib.New()))
 
-	require.NoError(t, tw.Use(data.New()))
-	require.NoError(t, vmEng.Use(data.New()))
+	require.NoError(t, tw.Use(json.New()))
+	require.NoError(t, vmEng.Use(json.New()))
 
 	ctx := context.Background()
 

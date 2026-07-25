@@ -137,6 +137,43 @@ func TestMergeInto_OverwriteRetainedBytesMatchesCellSum(t *testing.T) {
 	}
 }
 
+func TestMergeInto_CapacityErrorLeavesTargetUnchanged(t *testing.T) {
+	dst := NewEnvWithRetainedLimits(nil, 0, 2)
+
+	tooBig := NewEnv(nil)
+	for _, name := range []string{"a", "b", "c"} {
+		if err := tooBig.Set(name, Int{V: 1}); err != nil {
+			t.Fatalf("set src %s: %v", name, err)
+		}
+	}
+
+	for attempt := range 3 {
+		if err := tooBig.MergeInto(dst); err == nil {
+			t.Fatalf("attempt %d: merge of 3 bindings into a 2-slot env must fail", attempt)
+		}
+		gotBytes, gotSlots := dst.RetainedUsage()
+		if gotBytes != 0 || gotSlots != 0 {
+			t.Fatalf("attempt %d: failed merge left usage bytes=%d slots=%d, want 0/0", attempt, gotBytes, gotSlots)
+		}
+		if names := dst.LocalNames(); len(names) != 0 {
+			t.Fatalf("attempt %d: failed merge left bindings %v", attempt, names)
+		}
+	}
+
+	fits := NewEnv(nil)
+	for _, name := range []string{"a", "b"} {
+		if err := fits.Set(name, Int{V: 1}); err != nil {
+			t.Fatalf("set fits %s: %v", name, err)
+		}
+	}
+	if err := fits.MergeInto(dst); err != nil {
+		t.Fatalf("merge within capacity after failed merges: %v", err)
+	}
+	if _, gotSlots := dst.RetainedUsage(); gotSlots != 2 {
+		t.Fatalf("slots after successful merge = %d, want 2", gotSlots)
+	}
+}
+
 func TestMergeIntoCanonical_OverwriteFuncRetainedBytesMatchesCellSum(t *testing.T) {
 	dst := NewEnv(nil)
 

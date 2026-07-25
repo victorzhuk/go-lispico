@@ -45,10 +45,16 @@ the history file is missing or unwritable.
 
 ### Requirement: Dialect and evaluator selection
 
-The binary SHALL accept `-dialect` with values `cl` (default) and `clojure`, and
-`-bytecode` to opt into the bytecode evaluator, mapping directly onto
-`runtime.WithDialect` and `runtime.WithBytecode`. An unknown dialect SHALL fail
-with a clear error listing valid values.
+The binary SHALL accept `-dialect` with values `cl` (default) and `clojure`,
+`-bytecode` to select the bytecode evaluator explicitly, and `-tree-walker` to
+roll back to tree-walk-only execution, mapping directly onto
+`runtime.WithDialect`, `runtime.WithBytecode`, and `runtime.WithTreeWalker`. An
+unknown dialect SHALL fail with a clear error listing valid values.
+
+#### Scenario: Tree-walker rollback selected
+
+- **WHEN** `lispico -tree-walker` evaluates a form
+- **THEN** it SHALL run on the tree-walking evaluator with no bytecode compilation
 
 #### Scenario: Clojure dialect selected
 

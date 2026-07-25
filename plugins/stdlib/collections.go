@@ -401,9 +401,6 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				}
 			}
 
-			if err := core.CheckConstructionDepth(result, env); err != nil {
-				return nil, err
-			}
 			if err := chargeCollectionResult(ctx, env, "assoc", result); err != nil {
 				return nil, err
 			}

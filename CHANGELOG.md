@@ -26,11 +26,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Engine.LoadScope(ctx, source, bindings) (Value, *Env, error)` evaluates
   source with bindings and returns the child scope so the embedder owns
   its lifecycle: usage probe, rebuild, or retirement.
+- `runtime.Meter` lets an embedder own evaluation budgets: reduction and
+  allocation leases (`LeaseEval`/`ReturnEval`) plus retained-capacity charges
+  (`ChargeRetained`/`ReleaseRetained`). Bind one per engine with
+  `runtime.WithEngineMeter(m)` or per call with `runtime.WithMeter(ctx, m)`,
+  which overrides the engine meter; `runtime.NoopMeter` grants everything.
+- `(*runtime.Fn).Pin()` returns a single-owner `*runtime.PinnedFn` with its own
+  VM allocated up front, for hot call sites that would otherwise pay pool
+  acquisition per call. It returns nil on the tree-walker path, and each handle
+  must be driven by exactly one goroutine.
+- `lispico -tree-walker` selects tree-walk-only execution from the REPL binary,
+  mirroring `runtime.WithTreeWalker()`.
 
 ### Changed
 
 - **Breaking:** Removed `core.Dialect.NilOnlyFalsy()`. All dialects now treat
   `nil` and `false` as falsy, including the Common Lisp dialect.
+
+- **Breaking:** The JSON plugin moved from `plugins/data` to `plugins/json`,
+  matching the `json` namespace its functions already used
+  (`json/encode`, `json/decode`, `json/pretty-encode`). Update imports to
+  `github.com/victorzhuk/go-lispico/plugins/json` and `json.New()`; no Lisp-side
+  name changed.
+
+- Bytecode closures now capture only the variables they reference: a captured
+  local is cell-resident and mutations no longer mirror into the environment
+  map, so a closure keeps one cell alive instead of its whole lexical chain.
 
 - `runtime.New()` now defaults to bytecode VM execution, with form-by-form fallback to
   the tree-walking evaluator for unsupported forms (for example `defmacro` nested in a
@@ -56,10 +77,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A macro defined by `defmacro` in one `Eval` now expands in later `Eval` calls
+  under Lisp-2 dialects (the default Common Lisp dialect) on the bytecode VM.
+  Macro expansion resolved the head in value position while `defmacro` binds the
+  function cell, so the call compiled as a plain call and failed with
+  `TypeError: expected callable, got core.Macro`.
 - `ListPlugins()` now reports each plugin's real lifecycle status instead of always returning "active".
 - Env merges are now atomic against concurrent writes, retained usage stays
   consistent across merge overwrites, and multi-meter retained settlement
   rolls back earlier charges on partial failure.
+- A retained-capacity error part-way through `MergeInto`/`MergeIntoCanonical`
+  now leaves the target env untouched. Aggregate usage and new bindings are
+  staged and applied only after every binding passes its reservation, so a
+  hot-reload that overflows the target no longer inflates its retained totals
+  on every attempt.
 
 - `assoc` and fused native-op results now charge the evaluation allocation
   ledger: deep result bytes for `assoc`, fixed scalar bytes for fused ops.

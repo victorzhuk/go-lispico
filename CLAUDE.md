@@ -11,11 +11,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Alpha** — Core functionality is complete. The project includes:
 
 - Core interpreter with 13 types and 22 special forms
-- Bytecode compiler and VM — cross-validated for tree-walker parity on its
-  compiled subset (`let`/`let*`, `set!`, keyword application, `when`/`unless`,
-  `try`/`catch`); unsupported forms fall back to the tree-walker
+- Bytecode compiler and VM — cross-validated for tree-walker parity; only
+  `defmacro` nested in a body and `unquote-splicing` fall back to the
+  tree-walker, form by form
 - Runtime API with hot-reload support
-- 8 plugins: `stdlib` and `data` are active; `fsm` is idle, no consumer;
+- 8 plugins: `stdlib` and `json` are active; `fsm` is idle, no consumer;
   `llm`, `agent`, `lio`, `net`, `exec` are frozen
   (see `docs/adr/0004-kernel-first-mission.md`)
 - Consumer performance gate: a repo-owned gold set (`internal/goldset`) records
@@ -72,7 +72,7 @@ plugins/        # Domain plugins (opt-in deps)
 ├── lio/        # File I/O operations
 ├── net/        # HTTP client
 ├── exec/       # Shell execution + crypto
-├── data/       # Data structures
+├── json/       # JSON encode/decode (namespace `json`)
 └── fsm/        # Finite state machines
 ```
 

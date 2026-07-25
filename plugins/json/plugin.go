@@ -1,8 +1,8 @@
-package data
+package json
 
 import (
 	"context"
-	"encoding/json"
+	stdjson "encoding/json"
 	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -46,7 +46,7 @@ func (p *Plugin) encode(ctx context.Context, eval core.Evaluator, args []core.Va
 	if err != nil {
 		return nil, fmt.Errorf("json/encode: %w", err)
 	}
-	b, err := json.Marshal(goVal)
+	b, err := stdjson.Marshal(goVal)
 	if err != nil {
 		return nil, fmt.Errorf("json/encode: %w", err)
 	}
@@ -65,7 +65,7 @@ func (p *Plugin) decode(ctx context.Context, eval core.Evaluator, args []core.Va
 		return nil, fmt.Errorf("json/decode: requires string argument, got %T", args[0])
 	}
 	var raw any
-	if err := json.Unmarshal([]byte(s.V), &raw); err != nil {
+	if err := stdjson.Unmarshal([]byte(s.V), &raw); err != nil {
 		return nil, fmt.Errorf("json/decode: %w", err)
 	}
 	res, err := fromJSONValue(raw)
@@ -92,7 +92,7 @@ func (p *Plugin) prettyEncode(ctx context.Context, eval core.Evaluator, args []c
 	if err != nil {
 		return nil, fmt.Errorf("json/pretty-encode: %w", err)
 	}
-	b, err := json.MarshalIndent(goVal, "", "  ")
+	b, err := stdjson.MarshalIndent(goVal, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("json/pretty-encode: %w", err)
 	}

@@ -1,11 +1,11 @@
-# data-plugin Specification
+# json-plugin Specification
 
 ## Purpose
 
-The data-plugin capability implements JSON encoding and decoding between Lisp values and JSON strings, preserving structure across a round trip and detecting whole-number JSON numbers as Int rather than Float.
+The json-plugin capability implements JSON encoding and decoding between Lisp values and JSON strings, preserving structure across a round trip and detecting whole-number JSON numbers as Int rather than Float.
 ## Requirements
-### Requirement: data-plugin implementation
-The system SHALL implement the data-plugin functionality as described in the proposal.
+### Requirement: json-plugin implementation
+The system SHALL implement the json-plugin functionality as described in the proposal.
 
 #### Scenario: JSON encoding works
 - **WHEN** a Lisp value is passed to `json/encode`

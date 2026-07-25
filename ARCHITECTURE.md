@@ -12,7 +12,7 @@ go-lispico is designed as an embeddable scripting kernel with three layers:
 │  cmd/lispico (interactive REPL binary, golang.org/x/term)   │
 ├─────────────────────────────────────────────────────────────┤
 │                        PLUGINS                              │
-│  stdlib  agent  llm  lio  net  exec  data  fsm              │
+│  stdlib  agent  llm  lio  net  exec  json  fsm              │
 │   (each with optional external dependencies)                │
 ├─────────────────────────────────────────────────────────────┤
 │                      RUNTIME                                │
@@ -220,6 +220,9 @@ defer scope.Rebuild() // compact dead backing when done
 - `WithDialect(d)` — Select a custom dialect; the default is the Common Lisp
   dialect (`cl.Dialect()`). Select the Clojure-style surface with
   `WithDialect(clojure.Dialect())`.
+- `WithEngineMeter(m)` — Bind an embedder `Meter` for every evaluation on this
+  engine: reduction/allocation leases and retained-capacity charges settle
+  against it. `runtime.WithMeter(ctx, m)` overrides it for a single call.
 - `WithResourceLimits(l)` — Set resource ceilings (`MaxReaderDepth`,
   `MaxStructuralDepth`, `MaxCollectionLen`, `MaxCacheEntries`,
   `MaxCacheBytes`, `MaxCacheNodes`, `MaxReductions`, `MaxAllocationBytes`,
@@ -235,7 +238,8 @@ Evaluator options are last-wins for mode selection.
 
 The `cmd/lispico/` binary is the interactive REPL. It layers terminal handling
 (`golang.org/x/term`) on top of `runtime.Engine` without modifying the Engine
-contract. The binary owns flag parsing (`-dialect`, `-bytecode`), file
+contract. The binary owns flag parsing (`-dialect`, `-bytecode`,
+`-tree-walker`), file
 execution mode, and raw-mode terminal sessions with history persistence.
 
 ### plugins/
@@ -246,14 +250,14 @@ Domain-specific plugins extend functionality. Each plugin:
 - May have external dependencies
 - Registers functions in a namespace
 
-The pure-computation plugins (`stdlib`, `data`) are the actively developed
+The pure-computation plugins (`stdlib`, `json`) are the actively developed
 surface; the world-touching plugins are frozen — security and correctness
 fixes only (see `docs/adr/0004-kernel-first-mission.md`).
 
 ```
 plugins/
 ├── stdlib/    # Standard library (pure Lisp + Go builtins)
-├── data/      # Data structures (JSON)
+├── json/      # JSON encode/decode
 ├── fsm/       # Finite state machines (pure, idle)
 ├── llm/       # LLM API bindings (frozen)
 ├── agent/     # Agent orchestration (frozen)

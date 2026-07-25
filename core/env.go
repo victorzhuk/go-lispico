@@ -952,184 +952,132 @@ func (e *Env) LocalNames() []string {
 }
 
 type mergeCellCommit struct {
-	cell      *Cell
+	name      string
 	src       *Cell
+	cell      *Cell // nil when the binding is new and its cell is created at commit
 	canonical bool
+	funcCell  bool
 }
 
-func (m mergeCellCommit) commit() {
-	m.cell.v = m.src.v
-	m.cell.canonical = m.canonical
-	m.cell.retainedMeter = m.src.retainedMeter
-	m.cell.retainedBytes = m.src.retainedBytes
-	m.cell.rebuilt = m.src.rebuilt
-	m.cell.version.Add(1)
+// mergePlan stages a whole merge before any of it lands: aggregate deltas and
+// cell creation stay pending until every binding has passed its capacity
+// reservation, so a mid-merge limit error leaves the target untouched instead of
+// ratcheting retained totals upward on every failed hot-reload.
+type mergePlan struct {
+	commits  []mergeCellCommit
+	releases []retainedRelease
+	bytes    int64
+	slots    int64
 }
 
-func (e *Env) mergeCell(name string, src *Cell, canonical bool) (mergeCellCommit, retainedRelease, error) {
-	cell, ok := e.vars[name]
+func (p *mergePlan) add(target *Env, name string, src *Cell, canonical, funcCell bool) error {
+	var (
+		cell *Cell
+		ok   bool
+	)
+	if funcCell {
+		cell, ok = target.funcs[name]
+	} else {
+		cell, ok = target.vars[name]
+	}
 	if !ok {
-		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
-			return mergeCellCommit{}, retainedRelease{}, err
+		if err := target.reserveRetainedBindings(p.bytes+src.retainedBytes, p.slots+1); err != nil {
+			return err
 		}
-		cell = e.localCell(name)
-		e.newNameGen.Add(1)
-		e.retainedBytes += src.retainedBytes
-		e.retainedSlots++
-		return mergeCellCommit{
-			cell:      cell,
+		p.bytes += src.retainedBytes
+		p.slots++
+		p.commits = append(p.commits, mergeCellCommit{
+			name:      name,
 			src:       src,
 			canonical: canonical,
-		}, retainedRelease{}, nil
+			funcCell:  funcCell,
+		})
+		return nil
 	}
 
-	e.retainedBytes += src.retainedBytes - cell.retainedBytes
-	release := retainedRelease{}
+	p.bytes += src.retainedBytes - cell.retainedBytes
 	if cell.retainedMeter != nil {
-		release = retainedRelease{
+		p.releases = append(p.releases, retainedRelease{
 			meter: cell.retainedMeter,
 			bytes: cell.retainedBytes,
 			slots: 1,
-		}
+		})
 	}
-	return mergeCellCommit{
-		cell:      cell,
+	p.commits = append(p.commits, mergeCellCommit{
+		name:      name,
 		src:       src,
+		cell:      cell,
 		canonical: canonical,
-	}, release, nil
+		funcCell:  funcCell,
+	})
+	return nil
 }
 
-func (e *Env) mergeFuncCell(name string, src *Cell, canonical bool) (mergeCellCommit, retainedRelease, error) {
-	cell, ok := e.funcs[name]
-	if e.funcs == nil {
-		ok = false
-	}
-	if !ok {
-		if err := e.reserveRetainedBindings(src.retainedBytes, 1); err != nil {
-			return mergeCellCommit{}, retainedRelease{}, err
+// applyMergePlan lands a staged plan. Caller holds the write lock.
+func (e *Env) applyMergePlan(p *mergePlan) {
+	for _, c := range p.commits {
+		cell := c.cell
+		if cell == nil {
+			if c.funcCell {
+				cell = e.localFuncCell(c.name)
+			} else {
+				cell = e.localCell(c.name)
+			}
+			e.newNameGen.Add(1)
 		}
-		cell = e.localFuncCell(name)
-		e.newNameGen.Add(1)
-		e.retainedBytes += src.retainedBytes
-		e.retainedSlots++
-		return mergeCellCommit{
-			cell:      cell,
-			src:       src,
-			canonical: canonical,
-		}, retainedRelease{}, nil
+		cell.v = c.src.v
+		cell.canonical = c.canonical
+		cell.retainedMeter = c.src.retainedMeter
+		cell.retainedBytes = c.src.retainedBytes
+		cell.rebuilt = c.src.rebuilt
+		cell.version.Add(1)
 	}
-
-	e.retainedBytes += src.retainedBytes - cell.retainedBytes
-	release := retainedRelease{}
-	if cell.retainedMeter != nil {
-		release = retainedRelease{
-			meter: cell.retainedMeter,
-			bytes: cell.retainedBytes,
-			slots: 1,
-		}
-	}
-	return mergeCellCommit{
-		cell:      cell,
-		src:       src,
-		canonical: canonical,
-	}, release, nil
+	e.retainedBytes += p.bytes
+	e.retainedSlots += p.slots
 }
 
 // MergeInto copies all local bindings from this env into target.
-// Does NOT copy parent bindings. Target writes are atomic against concurrent writes.
+// Does NOT copy parent bindings. Target writes are atomic against concurrent
+// writes, and a capacity error leaves target unchanged.
 func (e *Env) MergeInto(target *Env) error {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	target.mu.Lock()
-	var (
-		commits  []mergeCellCommit
-		releases []retainedRelease
-	)
-
-	for name, cell := range e.vars {
-		if cell.v != nil {
-			commit, release, err := target.mergeCell(name, cell, false)
-			if err != nil {
-				target.mu.Unlock()
-				return err
-			}
-			commits = append(commits, commit)
-			if release.meter != nil {
-				releases = append(releases, release)
-			}
-		}
-	}
-	for name, cell := range e.funcs {
-		if cell.v != nil {
-			commit, release, err := target.mergeFuncCell(name, cell, false)
-			if err != nil {
-				target.mu.Unlock()
-				return err
-			}
-			commits = append(commits, commit)
-			if release.meter != nil {
-				releases = append(releases, release)
-			}
-		}
-	}
-	for _, commit := range commits {
-		commit.commit()
-	}
-	// Unlock before releasing: meters may re-enter the env during ReleaseRetained.
-	target.mu.Unlock()
-
-	for _, release := range releases {
-		release.meter.ReleaseRetained(release.bytes, release.slots)
-	}
-	return nil
+	return e.mergeInto(target, false)
 }
 
 // MergeIntoCanonical copies all local bindings from this env into target.
 // Canonical value-cell binds are preserved, and target writes are atomic against concurrent writes.
 func (e *Env) MergeIntoCanonical(target *Env) error {
+	return e.mergeInto(target, true)
+}
+
+func (e *Env) mergeInto(target *Env, canonical bool) error {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	target.mu.Lock()
-	var (
-		commits  []mergeCellCommit
-		releases []retainedRelease
-	)
-
+	var plan mergePlan
 	for name, cell := range e.vars {
-		if cell.v != nil {
-			commit, release, err := target.mergeCell(name, cell, true)
-			if err != nil {
-				target.mu.Unlock()
-				return err
-			}
-			commits = append(commits, commit)
-			if release.meter != nil {
-				releases = append(releases, release)
-			}
+		if cell.v == nil {
+			continue
+		}
+		if err := plan.add(target, name, cell, canonical, false); err != nil {
+			target.mu.Unlock()
+			return err
 		}
 	}
 	for name, cell := range e.funcs {
-		if cell.v != nil {
-			commit, release, err := target.mergeFuncCell(name, cell, true)
-			if err != nil {
-				target.mu.Unlock()
-				return err
-			}
-			commits = append(commits, commit)
-			if release.meter != nil {
-				releases = append(releases, release)
-			}
+		if cell.v == nil {
+			continue
+		}
+		if err := plan.add(target, name, cell, canonical, true); err != nil {
+			target.mu.Unlock()
+			return err
 		}
 	}
-	for _, commit := range commits {
-		commit.commit()
-	}
+	target.applyMergePlan(&plan)
 	// Unlock before releasing: meters may re-enter the env during ReleaseRetained.
 	target.mu.Unlock()
 
-	for _, release := range releases {
+	for _, release := range plan.releases {
 		release.meter.ReleaseRetained(release.bytes, release.slots)
 	}
 	return nil

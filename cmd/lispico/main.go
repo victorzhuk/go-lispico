@@ -16,7 +16,7 @@ import (
 
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/plugins/data"
+	"github.com/victorzhuk/go-lispico/plugins/json"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 	"github.com/victorzhuk/go-lispico/runtime"
 )
@@ -28,8 +28,9 @@ func main() {
 func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	fs := flag.NewFlagSet("lispico", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dialect := fs.String("dialect", "cl", "")
-	bytecode := fs.Bool("bytecode", false, "")
+	dialect := fs.String("dialect", "cl", "dialect to run: cl or clojure")
+	bytecode := fs.Bool("bytecode", false, "bytecode VM execution (already the default)")
+	treeWalker := fs.Bool("tree-walker", false, "tree-walk-only execution (rollback path)")
 
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -52,6 +53,9 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	if *bytecode {
 		opts = append(opts, runtime.WithBytecode())
 	}
+	if *treeWalker {
+		opts = append(opts, runtime.WithTreeWalker())
+	}
 
 	eng, err := runtime.New(nil, opts...)
 	if err != nil {
@@ -64,7 +68,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprintf(stderr, "lispico: %v\n", err)
 		return 1
 	}
-	if err := eng.Use(data.New()); err != nil {
+	if err := eng.Use(json.New()); err != nil {
 		fmt.Fprintf(stderr, "lispico: %v\n", err)
 		return 1
 	}

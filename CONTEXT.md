@@ -87,7 +87,7 @@ A named language configuration an Engine runs, fixed at Engine construction — 
 _Avoid_: profile, subset, flavor, language mode
 
 **Semantic axis**:
-A kernel evaluation rule a Dialect may set. v1 axes: symbol namespaces (Lisp-1 vs Lisp-2) and truthiness (nil-only vs nil+false falsy). Data representation (immutable List/Vector/HashMap, no cons cells) and data immutability are fixed, not axes.
+A kernel evaluation rule a Dialect may set. The one v1 axis is symbol namespaces (Lisp-1 vs Lisp-2). Truthiness is fixed for every dialect (`nil` and `false` falsy), as are data representation (immutable List/Vector/HashMap, no cons cells) and data immutability.
 _Avoid_: feature flag, mode, option
 
 **Form-shape rule**:

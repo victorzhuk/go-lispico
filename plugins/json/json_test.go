@@ -1,8 +1,8 @@
-package data
+package json
 
 import (
 	"context"
-	"encoding/json"
+	stdjson "encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -755,7 +755,7 @@ func TestDecodeHashMap_Scaling(t *testing.T) {
 
 	timeDecode := func(jsonStr string) time.Duration {
 		var raw any
-		if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		if err := stdjson.Unmarshal([]byte(jsonStr), &raw); err != nil {
 			t.Fatal(err)
 		}
 		start := time.Now()

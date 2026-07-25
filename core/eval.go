@@ -585,8 +585,8 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 	if !ok || len(list.Items) == 0 {
 		return form, nil
 	}
-	fn, err := e.Eval(ctx, list.Items[0], env)
-	if err != nil {
+	fn, ok := e.resolveHead(ctx, list.Items[0], env)
+	if !ok {
 		return form, nil
 	}
 	macro, ok := fn.(Macro)
@@ -598,6 +598,22 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 		return nil, err
 	}
 	return e.MacroExpand(ctx, expanded, env)
+}
+
+// resolveHead resolves a form's head the way evalList does: under Lisp-2 the
+// function cell owns operator bindings, so a defmacro binding is invisible in
+// value position and the form would compile as a plain call.
+func (e *engine) resolveHead(ctx context.Context, head Value, env *Env) (Value, bool) {
+	if sym, ok := head.(Symbol); ok && e.lisp2 {
+		if fn, ok := env.GetFunc(sym.V); ok {
+			return fn, true
+		}
+	}
+	fn, err := e.Eval(ctx, head, env)
+	if err != nil {
+		return nil, false
+	}
+	return fn, true
 }
 
 // expandMacroForm runs the macro body with unevaluated args and returns the

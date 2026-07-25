@@ -16,9 +16,6 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 - **Hot-reload** via `eng.Watch(ctx, dir)`
 - **Plugin system** for extending functionality
 
-
-The names above are the kernel special-form names. Under the default
-CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
 ## Quick Start
 
 ```go
@@ -112,7 +109,8 @@ Interactive session with line editing, history, and multiline support:
 Flags:
 
 - `-dialect cl|clojure` — select dialect (default: `cl`)
-- `-bytecode` — force bytecode VM mode (default)
+- `-bytecode` — bytecode VM execution (already the default; explicit opt-in)
+- `-tree-walker` — tree-walk-only execution (rollback path)
 
 File execution — evaluate file(s) in order, then exit:
 
@@ -132,7 +130,7 @@ echo '(+ 1 2)' | ./bin/lispico   # prints 3, exits 0
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        PLUGINS                              │
-│  stdlib  agent  llm  lio  net  exec  data  fsm              │
+│  stdlib  agent  llm  lio  net  exec  json  fsm              │
 │   (each with optional external dependencies)                │
 ├─────────────────────────────────────────────────────────────┤
 │                      RUNTIME                                │
@@ -149,14 +147,14 @@ echo '(+ 1 2)' | ./bin/lispico   # prints 3, exits 0
 
 go-lispico is a language kernel first: the embedding host is expected to
 register its own IO primitives, so the pure-computation plugins (`stdlib`,
-`data`) are the actively developed surface. The world-touching plugins are
+`json`) are the actively developed surface. The world-touching plugins are
 **frozen** — security and correctness fixes only
 (see `docs/adr/0004-kernel-first-mission.md`).
 
 | Plugin   | Status | Description                                                      |
 | -------- | ------ | ---------------------------------------------------------------- |
 | `stdlib` | active | Standard library (arithmetic, comparison, collections, strings) |
-| `data`   | active | Data structures (JSON parsing)                                   |
+| `json`   | active | JSON encode/decode (`plugins/json`)                              |
 | `fsm`    | idle   | Finite state machines (pure, no consumer)                        |
 | `llm`    | frozen | LLM API bindings (OpenAI, etc.)                                  |
 | `agent`  | frozen | Agent orchestration                                              |

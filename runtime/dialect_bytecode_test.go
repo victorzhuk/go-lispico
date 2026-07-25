@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
 // TestDialect_Bytecode_NormalizeRename verifies that a dialect rename normalizes
@@ -130,6 +131,32 @@ func TestDialect_Bytecode_UniformTruthiness(t *testing.T) {
 	got, err = e.Eval(context.Background(), "int-truthy", "(if 0 :y :n)")
 	require.NoError(t, err)
 	assert.True(t, core.Keyword{V: "y"}.Equals(got), "0 must be truthy: (if 0 :y :n) => :y")
+}
+
+// TestDialect_Lisp2_MacroAcrossEvals verifies that a macro defined in one Eval
+// expands in the next under Lisp-2, where defmacro binds the function cell:
+// head resolution in value position would miss it and compile a plain call.
+func TestDialect_Lisp2_MacroAcrossEvals(t *testing.T) {
+	modes := map[string]EngineOption{
+		"bytecode":    WithBytecode(),
+		"tree-walker": WithTreeWalker(),
+	}
+	for name, mode := range modes {
+		t.Run(name, func(t *testing.T) {
+			e, err := New(nil, mode)
+			require.NoError(t, err)
+			defer e.Close()
+			require.NoError(t, e.Use(stdlib.New()))
+
+			ctx := context.Background()
+			_, err = e.Eval(ctx, "define", "(defmacro twice (x) (list 'progn x x))")
+			require.NoError(t, err)
+
+			got, err := e.Eval(ctx, "use", "(twice 7)")
+			require.NoError(t, err, "macro from a previous Eval must expand")
+			assert.True(t, core.Int{V: 7}.Equals(got), "(twice 7) => 7, got %v", got)
+		})
+	}
 }
 
 // TestDialect_Bytecode_EmptyBase verifies that an empty-base dialect with
