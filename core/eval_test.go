@@ -1115,6 +1115,41 @@ func TestEval_MacroExpand_DepthExceeded(t *testing.T) {
 	}
 }
 
+func TestEval_MacroExpand_SpecialFormHead(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	e := NewEvaluator()
+	form, _ := ReadOne("(unless false 42)")
+	expanded, err := e.MacroExpand(context.Background(), form, env)
+	if err != nil {
+		t.Fatalf("MacroExpand error: %v", err)
+	}
+	if !expanded.Equals(form) {
+		t.Errorf("MacroExpand(special form) = %v, want form unchanged", expanded)
+	}
+}
+
+func TestEval_MacroExpand_Lisp2FunctionCellWinsOverSpecialForm(t *testing.T) {
+	t.Parallel()
+	e, err := NewEvaluatorWithDialect(FullDialect().Lisp2())
+	if err != nil {
+		t.Fatalf("NewEvaluatorWithDialect: %v", err)
+	}
+	env := NewEnv(nil)
+	macro := Macro{Name: "unless", Params: []Symbol{{V: "x"}}, Body: []Value{Int{V: 99}}, Env: env}
+	if err := env.SetFunc("unless", macro); err != nil {
+		t.Fatalf("SetFunc: %v", err)
+	}
+	form, _ := ReadOne("(unless true)")
+	expanded, err := e.MacroExpand(context.Background(), form, env)
+	if err != nil {
+		t.Fatalf("MacroExpand error: %v", err)
+	}
+	if !expanded.Equals(Int{V: 99}) {
+		t.Errorf("MacroExpand = %v, want 99: a function-cell macro must still win over its special-form name", expanded)
+	}
+}
+
 func TestEval_SetEvaluator(t *testing.T) {
 	t.Parallel()
 	env := NewEnv(nil)

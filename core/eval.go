@@ -623,9 +623,17 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 // function cell owns operator bindings, so a defmacro binding is invisible in
 // value position and the form would compile as a plain call.
 func (e *engine) resolveHead(ctx context.Context, head Value, env *Env) (Value, bool) {
-	if sym, ok := head.(Symbol); ok && e.lisp2 {
+	sym, isSym := head.(Symbol)
+	if isSym && e.lisp2 {
 		if fn, ok := env.GetFunc(sym.V); ok {
 			return fn, true
+		}
+	}
+	if isSym {
+		// Special forms dispatch through evalList and are never values, so
+		// evaluating one here would only build an error to report "not a macro".
+		if _, special := e.forms[sym.V]; special {
+			return nil, false
 		}
 	}
 	fn, err := e.Eval(ctx, head, env)
