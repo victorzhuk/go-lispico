@@ -24,13 +24,86 @@ seven of these thirteen cells `engine-sensitive`, meaning the gate exists to
 catch regressions *in the evaluator*. A cost that both modes pay equally
 dilutes exactly the signal those cells are supposed to isolate: a real
 evaluator regression has to move a benchmark's total time enough to clear the
-gate's non-regression tolerance despite ~35-38% of that time being unrelated,
-identical-between-modes parse work. As currently shaped, the gate
-systematically under-detects the class of regression it was built for. This is
-filed as its own change (hoist parsing out of `BenchmarkGoldset`'s `b.N` loop)
-rather than fixed here, because it changes what the gate measures and
-invalidates every stored `bench-vm.txt` baseline — the same one-way door as
-the fixed run parameters above.
+gate's non-regression tolerance despite a material share of that time being
+unrelated, identical-between-modes parse work — see "Measured per-fixture
+parse share" below for exactly how much, per fixture (it is not the flat
+~35-38% this single profile capture suggested).
+
+Hoisting parsing out of `BenchmarkGoldset`'s `b.N` loop was considered and
+rejected: the only way to do it without widening the public `runtime.Engine`
+surface is to bypass the Engine and hand-assemble `core.Read` +
+`compiler.CompileAll` + `vm.Run`, which would stop measuring the chunk cache,
+dialect vocabulary, stdlib materialization, and resource metering this gate
+exists to cover — a different, narrower benchmark wearing the old name.
+Instead, `BenchmarkGoldsetParse` (`internal/goldset/bench_test.go`) measures
+the reader's share directly, alongside the unchanged `BenchmarkGoldset`, so
+the dilution is quantified per fixture rather than removed.
+
+## Measured per-fixture parse share
+
+Added 2026-07-25 (commit `df7c77e` + `BenchmarkGoldsetParse`,
+`internal/goldset/bench_test.go`): a benchmark that parses each fixture's
+source alone, via `core.Read`, outside any timed evaluation.
+`BenchmarkGoldset` itself is untouched — same name, same body, still
+re-parsing every `b.N` iteration — so pairing the two gives a *measured*
+per-fixture parse share instead of the profile-derived corpus-wide estimate
+above. That estimate was a single pprof capture's CPU-sample average; the
+real picture is far less uniform.
+
+`GOMAXPROCS=2`, `benchtime=200ms`, `count=10`, `sec/op`, per fixture (`eval` /
+`vm` label the two `BenchmarkGoldset` modes; `tier` is this fixture's
+`internal/perfgate/tiers.json` classification):
+
+| fixture | tier | eval mode: eval / parse | share | vm mode: eval / parse | share |
+|---|---|---|---|---|---|
+| counter-closure | engine-sensitive | 8.480µ / 3.399µ | 40.1% | 6.622µ / 3.271µ | 49.4% |
+| guard-nil       | engine-sensitive | 3.004µ / 1.564µ | 52.1% | 4.048µ / 1.641µ | 40.5% |
+| kw-lookup       | engine-sensitive | 4.206µ / 1.746µ | 41.5% | 3.591µ / 1.809µ | 50.4% |
+| loop-sum        | engine-sensitive | 148.2µ / 1.963µ | 1.3%  | 13.90µ / 2.009µ | 14.5% |
+| merge-config    | data-dominated   | 8.128µ / 3.203µ | 39.4% | 7.368µ / 3.198µ | 43.4% |
+| pipeline        | data-dominated   | 21.75µ / 3.615µ | 16.6% | 11.22µ / 3.621µ | 32.3% |
+| queue-promote   | data-dominated   | 79.04µ / 2.835µ | 3.6%  | 24.81µ / 3.397µ | 13.7% |
+| registry-fold   | data-dominated   | 10.46µ / 3.695µ | 35.3% | 8.894µ / 3.735µ | 42.0% |
+| route-decision  | engine-sensitive | 5.948µ / 2.871µ | 48.3% | 5.734µ / 2.981µ | 52.0% |
+| rule-load       | startup          | 15.39µ / 8.373µ | 54.4% | 20.58µ / 9.242µ | 44.9% |
+| safe-parse      | engine-sensitive | 9.592µ / 4.104µ | 42.8% | 6.034µ / 3.972µ | 65.8% |
+| text-render     | data-dominated   | 4.810µ / 1.964µ | 40.8% | 4.245µ / 2.066µ | 48.7% |
+| twice-macro     | engine-sensitive | 5.187µ / 2.364µ | 45.6% | 9.045µ / 2.151µ | 23.8% |
+| geomean         | —                | 11.33µ / 2.897µ | 25.6% | 8.120µ / 2.969µ | 36.6% |
+
+Range: 1.3% (`loop-sum`, eval mode) to 65.8% (`safe-parse`, vm mode) — an
+order of magnitude wider than the single flat corpus-wide figure suggested.
+The dilution this gate cares about (an evaluator regression getting masked by
+shared parse cost) is not evenly distributed:
+
+- `loop-sum` and `queue-promote`, the two costliest cells by raw eval time,
+  have the *lowest* parse share (1.3-14.5%, 3.6-13.7%). A real evaluator
+  regression in either clears the gate's tolerance easily — parse cost barely
+  dilutes them.
+- `safe-parse`, `route-decision`, `guard-nil`, `kw-lookup`, `rule-load` sit at
+  40-66% parse share in at least one mode — for these, half or more of the
+  measured cell is reader cost with nothing to do with the evaluator. A
+  regression here has to be roughly 2x as large to move the cell's total by
+  the same amount.
+
+`BenchmarkGoldsetParse` cells are mode-invariant by construction — the
+benchmark never reads `GOLDSET_MODE` — and two independent captures (labeled
+`eval`/`vm` above only for pairing with the corresponding `BenchmarkGoldset`
+run) confirm it: `B/op` and `allocs/op` are byte-identical across all 13
+fixtures (`benchstat`, `p=1.000`, "all samples are equal"). `sec/op` agrees
+within noise for 10 of 13 cells; 3 show a small but statistically significant
+difference (`queue-promote` +19.84% p=0.009, `rule-load` +10.37% p=0.023,
+`twice-macro` -8.99% p=0.011) that, given the identical allocation profile,
+reads as inter-process scheduling jitter rather than a real cost difference —
+nothing in the parse-only path branches on which label ran it.
+
+`BenchmarkGoldset`'s own cells remain, and will remain, mixed parse+eval
+measurements: splitting them cleanly would need a public `runtime.Engine`
+method that evaluates already-parsed forms, judged not worth widening the
+embedding surface for a benchmark (no real embedder hot path needs it — one
+parses once via `LoadScope` and calls repeatedly via `Call`). This table is
+the compensating control: it quantifies the dilution per fixture instead of
+removing it.
 
 ## Eval mode (tree-walker)
 
@@ -155,7 +228,9 @@ VM-mode-specific and each under 3.5% — not worth chasing from this baseline.
   noisy below ~5 percentage points at this `-benchtime`; re-measure rather than
   conclude on a single capture. The structural picture — parsing ~35-38% of
   CPU and ~75% of allocation in both modes, global-lookup cost near-zero — held
-  in both captures.
+  in both captures. That figure is a corpus-wide CPU-sample average, though;
+  "Measured per-fixture parse share" above supersedes it with a direct
+  per-fixture `sec/op` measurement, which varies far more widely (1.3-65.8%).
 - `allocs/op` and `B/op` from `go test -benchmem` are deterministic and are the
   trustworthy signal when timings disagree between runs.
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"testing"
+
+	"github.com/victorzhuk/go-lispico/core"
 )
 
 // benchMode selects the execution mode for this bench process via
@@ -42,6 +44,28 @@ func BenchmarkGoldset(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				if _, err := eng.Eval(ctx, fx.Name, fx.Source); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkGoldsetParse isolates the reader's share of BenchmarkGoldset: the
+// same fixture sources, parsed alone through the shared, mode-invariant
+// reader (docs/profiling-baseline.md).
+func BenchmarkGoldsetParse(b *testing.B) {
+	fixtures, err := Fixtures()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	for _, fx := range fixtures {
+		b.Run(fx.Name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := core.Read(fx.Source); err != nil {
 					b.Fatal(err)
 				}
 			}
