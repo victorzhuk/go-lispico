@@ -14,9 +14,14 @@ name: Release consumer gate
 
 on:
   workflow_dispatch: {}
-  # Not wired to fire automatically until the fixed GOMAXPROCS and BENCHTIME
-  # values are chosen (empty BENCHTIME fails the bench step) and the gate's
-  # verdict is meant to block releases.
+  # Runs on demand only. The fixed GOMAXPROCS and BENCHTIME below make an
+  # automatic run viable, but this workflow has never been exercised
+  # end-to-end, so firing it on every published release would be premature.
+  # Separately, `release: published` only fires after the release is already
+  # public -- Actions has no pre-publish hook -- so this can never block a
+  # release. What it does once wired up: record post-hoc regression evidence
+  # against the published release and store this run's bench-vm.txt as the
+  # next release's non-regression baseline.
   # release:
   #   types: [published]
 
@@ -27,10 +32,16 @@ permissions:
   contents: write
 
 env:
-  # design.md "Open inputs": fixed GOMAXPROCS not yet chosen
-  GOMAXPROCS: ""
-  # design.md "Open inputs": fixed benchtime not yet chosen
-  BENCHTIME: ""
+  # 2 behaves identically on a 2- or 4-vCPU hosted runner, so a runner-spec
+  # change can't silently shift a stored baseline; still gives real
+  # parallelism for the concurrent tier.
+  GOMAXPROCS: "2"
+  # ~10^5 iterations per sample on these microsecond-scale fixtures, well
+  # below the gate's +-5% non-regression tolerance -- ~48s of bench time per
+  # mode-pass, affordable even when an inconclusive verdict doubles it.
+  # Changing this (or GOMAXPROCS) invalidates every stored bench-vm.txt
+  # baseline for non-regression comparison.
+  BENCHTIME: "200ms"
   # ADR 0008 "at least ten samples" floor -- real value, not a placeholder
   BENCH_COUNT: "10"
 

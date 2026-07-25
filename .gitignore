@@ -40,6 +40,7 @@ go.work.sum
 # Build artifacts
 /build/
 /tmp/
+/profiles/
 
 # Environment files
 .env
