@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -47,6 +48,14 @@ type stdlibTemplateLayer struct {
 	// true; UnloadPlugin/ReloadPlugin/rollbackPluginUse never touch it — the
 	// layer is process-scoped and outlives any single engine's attachment.
 	complete bool
+	// published holds the same entries built above, stored once by
+	// markComplete in the same r.mu.Lock() section that flips complete to
+	// true. putEntry refuses every write once complete is true (its guard),
+	// so from that moment entries is never mutated again — Load here needs
+	// no lock and every engine's attach path (publishedEntries, consulted by
+	// populateTemplateBindings and ForceAll) reads through this pointer
+	// directly instead of copying.
+	published atomic.Pointer[map[string]*stdlibTemplateEntry]
 }
 
 type stdlibTemplateRegistry struct {
@@ -143,30 +152,41 @@ func (r *stdlibTemplateRegistry) entryFor(key stdlibTemplateKey, name string) (*
 	return entry, ok
 }
 
-// snapshotEntries copies the layer so iteration never holds the registry
-// lock; only used on the once-per-Use bookkeeping path, never the miss path.
-func (r *stdlibTemplateRegistry) snapshotEntries(layer *stdlibTemplateLayer) map[string]*stdlibTemplateEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make(map[string]*stdlibTemplateEntry, len(layer.entries))
-	for k, v := range layer.entries {
-		out[k] = v
+// publishedEntries returns the layer's shared, read-only entry map — the exact
+// map markComplete published, not a copy. Callers (populateTemplateBindings,
+// ForceAll) must never write into the result: every other engine attaching
+// this layer reads the same map concurrently. Nil until the layer is published,
+// which is why a build that failed contributes no bindings rather than partial
+// ones. Only used on the once-per-Use bookkeeping path, never the miss path.
+func (l *stdlibTemplateLayer) publishedEntries() map[string]*stdlibTemplateEntry {
+	if m := l.published.Load(); m != nil {
+		return *m
 	}
-	return out
+	return nil
 }
 
-func (r *stdlibTemplateRegistry) putEntry(key stdlibTemplateKey, entry *stdlibTemplateEntry) {
+// putEntry refuses to write once the layer is published: complete flips
+// under this same lock and is never undone, so a write reaching here after
+// that would mutate the exact map publishedEntries hands to every attached
+// engine. That path is not expected to be reachable today (task 2.1), but
+// the guard is what keeps it that way instead of merely documenting it.
+func (r *stdlibTemplateRegistry) putEntry(key stdlibTemplateKey, entry *stdlibTemplateEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.disabled {
-		return
+		return nil
 	}
 	layer, ok := r.layers[key]
 	if !ok {
 		layer = &stdlibTemplateLayer{entries: make(map[string]*stdlibTemplateEntry)}
 		r.layers[key] = layer
 	}
+	if layer.complete {
+		return fmt.Errorf("stdlib template layer %s/%s/%s already published: refusing write to %q",
+			key.dialectFP, key.pluginName, key.pluginVersion, entry.name)
+	}
 	layer.entries[entry.name] = entry
+	return nil
 }
 
 // layerState reports whether key's layer is already complete, and whether
@@ -184,15 +204,18 @@ func (r *stdlibTemplateRegistry) layerState(key stdlibTemplateKey) (complete, di
 }
 
 // markComplete flips the layer's complete flag after its first successful
-// build. A key with no layer (its plugin never routed a registration through
-// putEntry — a direct-env plugin) is left alone: there is nothing to mark,
-// so layerState keeps reporting incomplete and that plugin's Init always
-// reruns, exactly as before this registry existed.
+// build and publishes its entries for the lock-free attach path. A key with
+// no layer (its plugin never routed a registration through putEntry — a
+// direct-env plugin) is left alone: there is nothing to mark, so layerState
+// keeps reporting incomplete and that plugin's Init always reruns, exactly
+// as before this registry existed.
 func (r *stdlibTemplateRegistry) markComplete(key stdlibTemplateKey) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if l, ok := r.layers[key]; ok {
 		l.complete = true
+		entries := l.entries
+		l.published.Store(&entries)
 	}
 }
 
@@ -490,11 +513,13 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 	// resolves renames from the pre-strip snapshot).
 	for visible, ve := range vocab {
 		if ve.Adapter == nil && ve.Canonical == name {
-			stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
+			if err := stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
 				name:  visible,
 				kind:  stdlibTemplateGoValue,
 				value: val,
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -504,13 +529,12 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 		}
 	}
 
-	stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
+	return stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
 		name:      name,
 		kind:      stdlibTemplateGoValue,
 		value:     val,
 		canonical: canonical,
 	})
-	return nil
 }
 
 // RegisterSource defers a pure-Lisp bootstrap definition (defmacro/defn).
@@ -527,12 +551,15 @@ func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source stri
 		return false
 	}
 	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}
-	stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
+	if err := stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
 		name:     name,
 		kind:     stdlibTemplateBootstrap,
 		source:   source,
 		reusable: reusable,
-	})
+	}); err != nil {
+		m.engine.logger.Warn("stdlib template layer already published, falling back to eager bootstrap", "name", name, "error", err)
+		return false
+	}
 	return true
 }
 
@@ -601,7 +628,7 @@ func (m *stdlibLazyMaterializer) ForceAll(env *core.Env) {
 		if !ok {
 			continue
 		}
-		for name, entry := range stdlibLazyTemplateRegistry.snapshotEntries(layer) {
+		for name, entry := range layer.publishedEntries() {
 			m.state.mu.Lock()
 			_, dead := m.state.tombstoned[name]
 			_, live := m.state.installed[name]

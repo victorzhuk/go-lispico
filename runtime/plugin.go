@@ -35,13 +35,20 @@ func (e *engineImpl) populateTemplateBindings(pluginName, pluginVersion string) 
 	if !ok {
 		return
 	}
-	entries := stdlibLazyTemplateRegistry.snapshotEntries(layer)
+	entries := layer.publishedEntries()
 	if len(entries) == 0 {
 		return
 	}
 	if e.bindings == nil {
 		e.bindings = make(map[string]map[string]struct{})
 	}
+	// owned stays a genuine per-engine map, never the shared published one:
+	// applyVocabulary (engine.go) can already have bound names into
+	// e.rootEnv through a dialect adapter before this runs, so
+	// e.bindings[pluginName] may already exist here and gets mutated below.
+	// Aliasing entries' own map onto it would let one engine's adapter
+	// bookkeeping corrupt every sibling reading the same published set
+	// (runtime/dialect_vocab_test.go exercises this path).
 	owned, ok := e.bindings[pluginName]
 	if !ok {
 		owned = make(map[string]struct{}, len(entries))
