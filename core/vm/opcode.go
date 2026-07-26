@@ -54,6 +54,13 @@ const (
 	OpBindCell
 	OpGetCap
 	OpSetCap
+	// OpDefMacro and OpDefMacroFunc bind a macro built from the Macro
+	// prototype at the operand's constant index, filling its defining
+	// environment in at run time. Two opcodes rather than one because the VM
+	// carries no dialect: the compiler picks the cell, exactly as it does
+	// with OpSetGlobal and OpSetFunc.
+	OpDefMacro
+	OpDefMacroFunc
 )
 
 var opNames = [...]string{
@@ -101,6 +108,8 @@ var opNames = [...]string{
 	OpBindCell:         "BIND_CELL",
 	OpGetCap:           "GET_CAP",
 	OpSetCap:           "SET_CAP",
+	OpDefMacro:         "DEF_MACRO",
+	OpDefMacroFunc:     "DEF_MACRO_FUNC",
 }
 
 // String implements fmt.Stringer.

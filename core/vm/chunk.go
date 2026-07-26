@@ -312,6 +312,13 @@ func (c *Chunk) Validate() error {
 			if a < 0 || a >= len(c.Caps) {
 				return bytecodeErrorf("%s: capture index %d out of range", op, a)
 			}
+		case OpDefMacro, OpDefMacroFunc:
+			if a < 0 || a >= len(c.Constants) {
+				return bytecodeErrorf("%s: constant index %d out of range", op, a)
+			}
+			if _, ok := c.Constants[a].(core.Macro); !ok {
+				return bytecodeErrorf("%s: constant %d is not a macro", op, a)
+			}
 		case OpClosure:
 			if a < 0 || a >= len(c.SubChunks) {
 				return bytecodeErrorf("%s: subchunk index %d out of range", op, a)

@@ -430,7 +430,7 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 }
 
 // isUnsupportedInBytecode reports whether err is the compiler's typed
-// "unsupported in bytecode" error (any defmacro, wherever it appears, and unquote-splicing),
+// "unsupported in bytecode" error (a defmacro nested inside a larger form, unquote-splicing),
 // so the caller can fall back to the tree-walker instead of failing the eval.
 func isUnsupportedInBytecode(err error) bool {
 	var lerr *core.LispicoError

@@ -903,17 +903,39 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 		Body:     args[2:],
 		Env:      env,
 	}
-	identical := macroRebindIsIdentical(env, name.V, macro)
-	if err := e.bindOperator(ctx, env, name.V, macro); err != nil {
+	if err := BindMacro(ctx, env, name.V, macro, e.lisp2); err != nil {
 		return nil, err
 	}
+	return macro, nil
+}
+
+// BindMacro binds macro under name through the cell the dialect owns — the
+// function cell under Lisp-2, the value cell under Lisp-1 — and bumps the
+// macro epoch unless this rebinds an identical definition.
+//
+// Both evaluators go through here. The bytecode compiler emits an opcode that
+// calls it rather than reimplementing the rule, because the two must agree on
+// exactly when a chunk cache entry is invalidated: a compiled `defmacro` that
+// bumped the epoch unconditionally would evict the very chunk it was compiled
+// into, on every evaluation.
+func BindMacro(ctx context.Context, env *Env, name string, macro Macro, lisp2 bool) error {
 	// Rebinding a macro to the definition already bound there cannot change
 	// any expansion a cached chunk embedded, so no cache entry is affected
 	// and bumping the epoch would only force a needless recompile.
+	identical := macroRebindIsIdentical(env, name, macro)
+	var err error
+	if lisp2 {
+		err = env.SetFuncWithContext(ctx, name, macro)
+	} else {
+		err = env.SetWithContext(ctx, name, macro)
+	}
+	if err != nil {
+		return err
+	}
 	if !identical {
 		env.BumpMacroEpoch()
 	}
-	return macro, nil
+	return nil
 }
 
 // macroRebindIsIdentical reports whether binding macro under name leaves every

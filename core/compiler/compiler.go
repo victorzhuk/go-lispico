@@ -9,7 +9,7 @@ import (
 )
 
 // CodeUnsupported identifies a *core.LispicoError for a form the bytecode
-// compiler does not support (any defmacro, wherever it appears, and unquote-splicing).
+// compiler does not support (a defmacro nested inside a larger form, unquote-splicing).
 // Callers use it to distinguish "fall back to the tree-walker" from a real
 // compile error.
 const CodeUnsupported = "BytecodeUnsupported"
@@ -286,7 +286,7 @@ func (c *Compiler) compileList(f core.List) error {
 			case "catch":
 				return compileErrf("catch used outside of try")
 			case "defmacro":
-				return unsupportedErr("defmacro is not supported by the bytecode compiler")
+				return c.compileDefmacro(items[1:])
 			}
 		}
 		// +, -, *, etc. aren't special forms, so a configured dialect marks
@@ -849,6 +849,51 @@ func isElse(v core.Value) bool {
 		return x.V == "else"
 	}
 	return false
+}
+
+// compileDefmacro emits a macro definition. Unlike a function, a macro's body
+// is not compiled: it is evaluated at expansion time against the scope the
+// macro was defined in, so the body travels as data. Everything except that
+// scope is fixed here, in a prototype constant; the opcode fills the scope in
+// at run time and binds through core.BindMacro, the same path the tree-walker
+// takes, so both agree on when the chunk cache is invalidated.
+func (c *Compiler) compileDefmacro(args []core.Value) error {
+	if c.err != nil {
+		return c.err
+	}
+	if len(args) < 3 {
+		return compileErrf("defmacro requires at least 3 arguments (name params body...)")
+	}
+	// Only a defmacro that IS the form being compiled can be compiled. Macro
+	// expansion is a pre-pass over the whole form, so a macro defined inside a
+	// larger form is not yet bound when a sibling use within that same form is
+	// expanded — the use would compile as a plain call and fail at run time
+	// with "expected callable, got core.Macro". At the top of a form there is
+	// no sibling to get this wrong. Nested definitions defer to the
+	// tree-walker, which binds and expands in evaluation order.
+	if c.compileDepth > 1 {
+		return unsupportedErr("defmacro nested in a form is not supported by the bytecode compiler")
+	}
+	name, ok := args[0].(core.Symbol)
+	if !ok {
+		return compileErrf("defmacro: first argument must be a symbol")
+	}
+	fixed, variadic, err := parseParams(args[1])
+	if err != nil {
+		return err
+	}
+	proto := core.Macro{
+		Name:     name.V,
+		Params:   fixed,
+		Variadic: variadic,
+		Body:     args[2:],
+	}
+	op := vm.OpDefMacro
+	if c.dialect != nil && c.dialect.IsLisp2() {
+		op = vm.OpDefMacroFunc
+	}
+	c.emit(op, c.chunk.AddConstant(proto))
+	return nil
 }
 
 func (c *Compiler) compileDefn(args []core.Value) error {

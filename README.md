@@ -164,7 +164,7 @@ register its own IO primitives, so the pure-computation plugins (`stdlib`,
 
 ## Bytecode VM
 
-`runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (namely any `defmacro`, wherever it appears, and `unquote-splicing`).
+`runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (namely a `defmacro` nested inside a larger form, and `unquote-splicing`).
 
 Evaluator control:
 

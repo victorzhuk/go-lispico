@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Core interpreter with 13 types and 22 special forms
 - Bytecode compiler and VM — cross-validated for tree-walker parity; `defmacro`
-  (anywhere, not only nested) and `unquote-splicing` fall back to the
+  nested inside a larger form and `unquote-splicing` fall back to the
   tree-walker, form by form
 - Runtime API with hot-reload support
 - 8 plugins: `stdlib` and `json` are active; `fsm` is idle, no consumer;

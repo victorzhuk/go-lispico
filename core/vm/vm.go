@@ -816,6 +816,19 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				return nil, err
 			}
 
+		case OpDefMacro, OpDefMacroFunc:
+			// The constant is a prototype with no defining environment: a
+			// macro's body is evaluated at expansion time against the scope it
+			// was defined in, and only the run knows that scope. Everything
+			// else about it is fixed at compile time.
+			proto := chunk.Constants[instr.A()].(core.Macro)
+			macro := proto
+			macro.Env = env
+			if err := core.BindMacro(ctx, env, macro.Name, macro, instr.Op() == OpDefMacroFunc); err != nil {
+				return nil, err
+			}
+			vm.push(macro)
+
 		case OpSetLexical:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
 			top, err := vm.peek()

@@ -1507,7 +1507,9 @@ func TestCompiler_Defn_EmptyBody(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestCompiler_Defmacro_Unsupported(t *testing.T) {
+// TestCompiler_Defmacro_TopLevelCompiles: a defmacro that is the whole form
+// compiles. Nested ones are covered by TestUnsupported_NestedDefmacro.
+func TestCompiler_Defmacro_TopLevelCompiles(t *testing.T) {
 	c := NewCompiler("test")
 	form := core.NewList([]core.Value{
 		core.Symbol{V: "defmacro"},
@@ -1515,12 +1517,9 @@ func TestCompiler_Defmacro_Unsupported(t *testing.T) {
 		core.NewVector([]core.Value{core.Symbol{V: "x"}}),
 		core.Symbol{V: "x"},
 	})
-	err := c.Compile(form)
-	require.Error(t, err)
-
-	var lispErr *core.LispicoError
-	require.ErrorAs(t, err, &lispErr)
-	assert.Equal(t, CodeUnsupported, lispErr.Code)
+	require.NoError(t, c.Compile(form))
+	require.NoError(t, c.EmitReturn())
+	require.NoError(t, c.Chunk().Validate())
 }
 
 func TestCompiler_UnquoteSplicing_Unsupported(t *testing.T) {
@@ -1542,28 +1541,30 @@ func TestCompiler_UnquoteSplicing_Unsupported(t *testing.T) {
 	assert.Equal(t, CodeUnsupported, lispErr.Code)
 }
 
-// TestUnsupported_DefmacroAnywhere pins the fallback's real scope. The
-// rejection is a case in compileList's special-form switch, which every list
-// form reaches at every position, so nesting has nothing to do with it. Seven
-// places in the repo once described this as "defmacro nested in a body",
-// which reads as a corner case ordinary top-level definitions avoid.
-func TestUnsupported_DefmacroAnywhere(t *testing.T) {
-	for _, src := range []string{
-		`(defmacro m (x) x)`,
-		`(do (defmacro m (x) x))`,
-		`(if true (defmacro m (x) x) nil)`,
-	} {
+// TestUnsupported_NestedDefmacro pins the fallback's real boundary. A defmacro
+// that is the whole form compiles; one nested inside a larger form does not,
+// and the reason is not incidental: macro expansion is a pre-pass over the
+// whole form, so a sibling use of a macro defined in that same form would
+// compile as a plain call and fail at run time. unquote-splicing is the only
+// other trigger.
+func TestUnsupported_NestedDefmacro(t *testing.T) {
+	mustUnsupported := func(t *testing.T, src string) {
+		t.Helper()
 		forms, err := core.Read(src)
-		if err != nil {
-			t.Fatalf("%s: read: %v", src, err)
-		}
+		require.NoError(t, err)
 		err = NewCompiler("test").Compile(forms[0])
-		if err == nil {
-			t.Fatalf("%s: compiled without error, want the unsupported error", src)
-		}
 		var le *core.LispicoError
 		if !errors.As(err, &le) || le.Code != CodeUnsupported {
 			t.Fatalf("%s: err = %v, want code %s", src, err, CodeUnsupported)
 		}
 	}
+
+	forms, err := core.Read(`(defmacro m (x) x)`)
+	require.NoError(t, err)
+	require.NoError(t, NewCompiler("test").Compile(forms[0]),
+		"a top-level defmacro must compile")
+
+	mustUnsupported(t, `(do (defmacro m (x) x))`)
+	mustUnsupported(t, `(if true (defmacro m (x) x) nil)`)
+	mustUnsupported(t, "`(a ~@b)")
 }
