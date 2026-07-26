@@ -338,6 +338,13 @@ registration routes through the process-level template; a plugin that writes
 directly into the engine environment SHALL keep per-engine `Init`. Plugins
 with the same name but different identity/version SHALL NOT share a layer.
 
+Attaching a completed layer SHALL NOT copy its entry set. A layer's entry set
+SHALL be published once, when the layer is marked complete, and SHALL NOT be
+written thereafter; every engine attaching that layer SHALL read the published
+set rather than a per-engine copy. State that an engine mutates — which
+plugins it has attached, which names it has materialized, and its own
+bindings — SHALL remain per-engine.
+
 #### Scenario: First use is identical to eager load
 
 - **WHEN** a fresh engine with deferred stdlib evaluates a program using arithmetic, collection functions, and a stdlib macro
@@ -372,6 +379,16 @@ with the same name but different identity/version SHALL NOT share a layer.
 
 - **WHEN** many engines with one dialect fingerprint concurrently load the same plugin in a fresh process
 - **THEN** the template layer SHALL be constructed exactly once, every load SHALL succeed, and `go test -race` SHALL report no data race
+
+#### Scenario: Attaching a completed layer copies nothing
+
+- **WHEN** a second engine loads a plugin whose layer is already complete
+- **THEN** no per-engine copy of the layer's entry set SHALL be allocated, and the engine SHALL read the same published set the first engine reads
+
+#### Scenario: Unload does not disturb a shared entry set
+
+- **WHEN** one engine unloads a plugin whose layer it shares with other engines, after materializing some of its names
+- **THEN** the published entry set SHALL be unchanged, and every other engine sharing it SHALL resolve the plugin's names exactly as before
 
 ### Requirement: Evaluation reductions and cumulative allocation are metered
 
