@@ -45,8 +45,18 @@ previous local layout.
 
 #### Scenario: Unsupported form defers to the tree-walker
 
-- **WHEN** a program uses a form the VM does not compile (any `defmacro`, wherever it appears, or `unquote-splicing`)
+- **WHEN** a program uses a form the VM does not compile (a `defmacro` nested inside a larger form, or `unquote-splicing`)
 - **THEN** compilation SHALL return a typed "unsupported in bytecode" error and the runtime SHALL evaluate that form with the tree-walker, never panicking
+
+#### Scenario: A top-level defmacro compiles
+
+- **WHEN** a `defmacro` is the whole form being compiled
+- **THEN** it SHALL compile and bind through the same path the tree-walking evaluator uses, so both agree on the macro bound and on whether the chunk cache is invalidated
+
+#### Scenario: A defmacro inside a larger form defers
+
+- **WHEN** a `defmacro` appears nested inside another form, such as a `do` body that also uses the macro it defines
+- **THEN** compilation SHALL return the typed "unsupported in bytecode" error and the runtime SHALL evaluate that form with the tree-walker, which binds and expands in evaluation order
 
 #### Scenario: loop/recur iterates in constant stack
 
