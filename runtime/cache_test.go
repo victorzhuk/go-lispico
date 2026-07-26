@@ -406,3 +406,62 @@ func TestCache_MultiCeilingEvictionOneInsert(t *testing.T) {
 	assert.False(t, cacheContainsSource(t, e, "2"))
 	assert.True(t, cacheContainsSource(t, e, bigSrc))
 }
+
+// epochOf returns the engine's current chunk-cache epoch, the counter that
+// keys cached chunks against macro definitions.
+func epochOf(t *testing.T, e Engine) string {
+	t.Helper()
+	return e.Stats().Cache.Epoch
+}
+
+// TestCache_IdenticalMacroRebindKeepsEpoch pins the defect: re-evaluating one
+// unchanged source that happens to define a macro must not churn the cache.
+// Before the fix the epoch climbed on every evaluation, so every form in the
+// source recompiled every time — the "Repeated evaluation reuses the chunk"
+// scenario silently excluded any source containing a defmacro.
+func TestCache_IdenticalMacroRebindKeepsEpoch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []EngineOption
+		src  string
+	}{
+		{"lisp2-default-cl", nil, "(defmacro twice (x) (list 'progn x x))"},
+		{"lisp1-clojure", []EngineOption{WithDialect(clojure.Dialect())},
+			"(defmacro twice [x] (list 'do x x))"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, err := New(nil, append(tc.opts, WithBytecode())...)
+			require.NoError(t, err)
+			defer e.Close()
+
+			_, err = e.Eval(context.Background(), "m", tc.src)
+			require.NoError(t, err)
+			first := epochOf(t, e)
+
+			for i := range 4 {
+				_, err = e.Eval(context.Background(), "m", tc.src)
+				require.NoError(t, err)
+				require.Equal(t, first, epochOf(t, e),
+					"eval #%d rebound an identical macro and churned the cache epoch", i+2)
+			}
+		})
+	}
+}
+
+// TestCache_ChangedMacroBodyInvalidates is the case that must never regress:
+// a real redefinition still takes effect. TestCache_MacroInvalidation covers
+// the behavior; this covers the epoch that drives it.
+func TestCache_ChangedMacroBodyInvalidates(t *testing.T) {
+	e, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	defer e.Close()
+
+	_, err = e.Eval(context.Background(), "m", "(defmacro m (x) (list 'quote x))")
+	require.NoError(t, err)
+	before := epochOf(t, e)
+
+	_, err = e.Eval(context.Background(), "m", "(defmacro m (x) (list 'quote (list x x)))")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, before, epochOf(t, e), "a changed macro body must invalidate")
+}

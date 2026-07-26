@@ -897,11 +897,80 @@ func evalDefmacro(ctx context.Context, e *engine, args []Value, env *Env) (Value
 		Body:     args[2:],
 		Env:      env,
 	}
+	identical := macroRebindIsIdentical(env, name.V, macro)
 	if err := e.bindOperator(ctx, env, name.V, macro); err != nil {
 		return nil, err
 	}
-	env.BumpMacroEpoch()
+	// Rebinding a macro to the definition already bound there cannot change
+	// any expansion a cached chunk embedded, so no cache entry is affected
+	// and bumping the epoch would only force a needless recompile.
+	if !identical {
+		env.BumpMacroEpoch()
+	}
 	return macro, nil
+}
+
+// macroRebindIsIdentical reports whether binding macro under name leaves every
+// cached expansion valid, i.e. whether an identical macro is already bound
+// there in the same defining scope.
+//
+// It fails closed by construction. Value.Equals is depth-bounded and returns
+// false past the limit, so a body too deep to compare counts as a
+// redefinition; and the defining Env is compared by pointer, so a macro
+// closing over a different scope never matches however alike its body looks.
+// Serving a stale expansion is a defect; recompiling needlessly is only a cost.
+// lookupBoundMacro finds a macro already bound to name, checking the function
+// cell before the value cell because the active dialect decides which one
+// holds it — the former under Lisp-2, the latter under Lisp-1. Consulting only
+// one silently disables identical-rebind detection under the other dialect.
+//
+// It walks the materialized cells directly rather than going through
+// Env.Get/GetFunc, which would consult the lazy stdlib layer and materialize
+// on miss. That matters twice: the layer holds stdlib builtins and never a
+// user macro, so materializing could not find one anyway; and a defmacro
+// evaluated while the stdlib bootstrap is still loading would re-enter it and
+// deadlock.
+func lookupBoundMacro(env *Env, name string) (Macro, bool) {
+	for e := env; e != nil; e = e.parent {
+		e.mu.RLock()
+		var v Value
+		if cell, ok := e.funcs[name]; ok {
+			v = cell.v
+		}
+		if v == nil {
+			if cell, ok := e.vars[name]; ok {
+				v = cell.v
+			}
+		}
+		e.mu.RUnlock()
+		if v != nil {
+			m, ok := v.(Macro)
+			return m, ok
+		}
+	}
+	return Macro{}, false
+}
+
+func macroRebindIsIdentical(env *Env, name string, macro Macro) bool {
+	pm, ok := lookupBoundMacro(env, name)
+	if !ok {
+		return false
+	}
+	if pm.Name != macro.Name || pm.Env != macro.Env || pm.Variadic != macro.Variadic ||
+		len(pm.Params) != len(macro.Params) || len(pm.Body) != len(macro.Body) {
+		return false
+	}
+	for i := range pm.Params {
+		if pm.Params[i] != macro.Params[i] {
+			return false
+		}
+	}
+	for i := range pm.Body {
+		if !pm.Body[i].Equals(macro.Body[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func evalFn(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {

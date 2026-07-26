@@ -1303,3 +1303,49 @@ func TestEval_Not_ArityError(t *testing.T) {
 		t.Error("(not true false) with 2 args should error")
 	}
 }
+
+// TestMacroRebindIsIdentical covers the branches that decide whether a
+// defmacro invalidates the chunk cache. Every uncertain case must answer
+// false: a wrong true serves a stale expansion, a wrong false only recompiles.
+func TestMacroRebindIsIdentical(t *testing.T) {
+	env := newTestEnv()
+	other := newTestEnv()
+	body := []Value{NewList([]Value{Symbol{V: "quote"}, Symbol{V: "x"}})}
+	base := Macro{Name: "m", Params: []Symbol{{V: "x"}}, Body: body, Env: env}
+
+	if err := env.Set("m", base); err != nil {
+		t.Fatal(err)
+	}
+
+	// deepBody nests past DefaultMaxStructuralDepth so Equals cannot decide it.
+	var deep Value = Symbol{V: "x"}
+	for range DefaultMaxStructuralDepth + 10 {
+		deep = NewList([]Value{deep})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		macro Macro
+		want  bool
+	}{
+		{"identical", base, true},
+		{"different defining scope", Macro{Name: "m", Params: base.Params, Body: body, Env: other}, false},
+		{"different body", Macro{Name: "m", Params: base.Params, Env: env,
+			Body: []Value{NewList([]Value{Symbol{V: "quote"}, Symbol{V: "y"}})}}, false},
+		{"different params", Macro{Name: "m", Params: []Symbol{{V: "y"}}, Body: body, Env: env}, false},
+		{"different variadic", Macro{Name: "m", Params: base.Params, Body: body, Env: env,
+			Variadic: Symbol{V: "rest"}}, false},
+		{"extra body form", Macro{Name: "m", Params: base.Params, Env: env,
+			Body: append(append([]Value{}, body...), Symbol{V: "z"})}, false},
+		{"body too deep to compare", Macro{Name: "m", Params: base.Params, Env: env,
+			Body: []Value{deep}}, false},
+		{"unbound name", Macro{Name: "absent", Params: base.Params, Body: body, Env: env}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.macro.Name
+			if got := macroRebindIsIdentical(env, name, tc.macro); got != tc.want {
+				t.Fatalf("macroRebindIsIdentical = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

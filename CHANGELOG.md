@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Re-evaluating an unchanged source that contains a `defmacro` no longer
+  recompiles it. `defmacro` bumped the macro epoch unconditionally, and the
+  epoch keys the compiled-chunk cache, so every form in such a source was
+  recompiled on every evaluation — the "repeated evaluation reuses the chunk"
+  guarantee silently excluded any source defining a macro. Rebinding a macro to
+  an identical definition in the same scope now leaves the epoch alone. A real
+  redefinition still invalidates, and the comparison fails closed: a body too
+  deep to compare, or one closing over a different scope, counts as a
+  redefinition. Measured on the `twice-macro` gold-set fixture under the VM:
+  103 → 68 allocs/op (−34%), 7.97 → 5.86 KiB/op (−26%).
 - A macro defined by `defmacro` in one `Eval` now expands in later `Eval` calls
   under Lisp-2 dialects (the default Common Lisp dialect) on the bytecode VM.
   Macro expansion resolved the head in value position while `defmacro` binds the
