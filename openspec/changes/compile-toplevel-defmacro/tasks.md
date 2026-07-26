@@ -84,4 +84,13 @@
       `p=1.000`. Report the corrected payoff: the earlier 29-allocation figure
       measured the cost of having the form, not of the fallback, so only part
       of it was ever recoverable.
-- [ ] 7.6 `cmd/perfgate` verdict, judged on `B/op` and `allocs/op`.
+- [x] 7.6 `cmd/perfgate`: 22 PASS, 4 FAIL, none a regression. Allocations move
+      only on `twice-macro`; every other cell is `p=1.000`. Two FAILs are this
+      change's own improvement (`twice-macro` −14.18%) and noise
+      (`GoldsetParse/text-render` −7.58%). `registry-fold` at **+23.44%** was
+      far outside the usual noise band and was investigated rather than
+      dismissed: a paired branch-against-master capture at `-count=12` returned
+      `~ (p=0.242)`, with `route-decision` `~ (p=0.066)` and `twice-macro`
+      −6.77% (p=0.012). The gate's figure came from comparing two separately
+      captured files — the fifth time today a gate FAIL has evaporated under
+      paired measurement.
