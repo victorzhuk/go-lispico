@@ -71,6 +71,34 @@ verdict is frozen; a cell still inconclusive after the rerun fails if it is an
 improvement cell and passes if it is a non-regression cell. Ordinary pull
 requests SHALL carry no percentage gates.
 
+A tier's percentage bound SHALL be applied as a bound on regression when the
+comparison is against a stored baseline from a previous release: a candidate
+faster than its baseline SHALL pass at any margin, because failing a release for
+making the engine faster is the outcome ADR 0008 rejects when it declines a
+standing improvement gate. Byte and allocation-count checks are unaffected —
+they were already non-increasing, and a faster candidate that allocates more
+SHALL still fail. The bound SHALL remain two-sided in the two cases where the
+paired runs are expected to measure the same cost rather than two releases: a
+data/output-dominated cell under first authorization, where the runs are the two
+evaluators of one commit and the cost is mode-invariant by classification, and a
+concurrent cell, whose timed figure may be a throughput measure whose sign
+convention is not yet stated.
+
+#### Scenario: A faster candidate passes a non-regression cell
+
+- **WHEN** a non-regression cell's latency improves beyond its tier's percentage bound, with bytes and allocation count not increasing
+- **THEN** the cell SHALL pass, at any improvement margin
+
+#### Scenario: A faster candidate that allocates more still fails
+
+- **WHEN** a non-regression cell's latency improves but its allocated bytes or allocation count increase
+- **THEN** the cell SHALL fail on the byte or allocation check, which the one-sided latency bound does not relax
+
+#### Scenario: Mode-invariant cost moving either way is a finding
+
+- **WHEN** a data/output-dominated cell is judged under first authorization, where the two runs are the Evaluator and VM variants of one commit, and its latency moves beyond the bound in either direction
+- **THEN** the cell SHALL fail, because a cost classified as mode-invariant is not expected to depend on the evaluator
+
 #### Scenario: Inconclusive improvement cell fails
 
 - **WHEN** an engine-sensitive cell remains benchstat-inconclusive after its doubled-benchtime rerun
