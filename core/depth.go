@@ -15,6 +15,23 @@ type ConstructionDepthEvaluator interface {
 }
 
 func CheckConstructionDepth(v Value, env *Env) error {
+	return checkDepthAt(v, 0, env)
+}
+
+// CheckNestedElementDepth checks v as an element placed one level inside a
+// container whose own depth is already known to be within the limit.
+//
+// It exists so extending a collection need not re-walk what it extends.
+// Placing e into a valid container C gives depth(C+e) = max(depth(C),
+// 1+depth(e)), and depth(C) was checked when C was built, so only the new
+// element can push the result over. The walk is then bounded by the element
+// rather than by the accumulated result, which is what stops a loop that
+// conses collections from being quadratic.
+func CheckNestedElementDepth(v Value, env *Env) error {
+	return checkDepthAt(v, 1, env)
+}
+
+func checkDepthAt(v Value, depth int, env *Env) error {
 	limit := DefaultMaxStructuralDepth
 	if env != nil {
 		if ev := env.Evaluator(); ev != nil {
@@ -28,7 +45,7 @@ func CheckConstructionDepth(v Value, env *Env) error {
 	if limit <= 0 {
 		return nil
 	}
-	if constructionDepthExceeded(v, 0, limit) {
+	if constructionDepthExceeded(v, depth, limit) {
 		return &LispicoError{Code: CodeResourceLimit, Message: fmt.Sprintf("structural depth limit %d exceeded", limit)}
 	}
 	return nil

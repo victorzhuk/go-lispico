@@ -115,6 +115,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Accumulating collections with `cons` or `conj` is no longer quadratic in time.
+  The construction-depth check re-walked the whole collection being extended on
+  every call, so a loop consing small lists onto an accumulator allocated
+  linearly but spent time quadratically — at 800 iterations, 10.8× the cost of
+  the same loop consing scalars, for twice the allocations. Extension now checks
+  only the element being added, which is sound because the collection being
+  extended was checked when it was built. 800 iterations: 1583µs → 305µs
+  (−81%). The limit itself is unchanged: the same constructions are rejected at
+  the same depth, including a loop that nests one level deeper per step.
 - Expanding a quasiquoted list longer than 32 forms is no longer quadratic in
   its length. Past that threshold a list is a shared chain where reading
   position `i` costs `i` steps, and three engine loops walked lists by

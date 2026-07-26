@@ -767,10 +767,13 @@ func chargeConsResult(ctx context.Context, env *core.Env, name string, res core.
 	}
 	for _, e := range newElems {
 		if isNestedCollection(e) {
-			if err := core.CheckConstructionDepth(res, env); err != nil {
+			// Only the new element can deepen the result: the collection
+			// being extended was depth-checked when it was built, so
+			// re-walking it here would cost the accumulated size on every
+			// call and make a loop that conses collections quadratic.
+			if err := core.CheckNestedElementDepth(e, env); err != nil {
 				return err
 			}
-			break
 		}
 	}
 	return core.ChargeGoFuncResultBytes(ctx, bytes)
