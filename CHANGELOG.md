@@ -107,6 +107,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Expanding a quasiquoted list longer than 32 forms is no longer quadratic in
+  its length. Past that threshold a list is a shared chain where reading
+  position `i` costs `i` steps, and three engine loops walked lists by
+  position: quasiquote expansion, splicing a sequence into a quasiquoted form,
+  and wrapping a multi-expression `cond` clause body. They now iterate with a
+  cursor. A 256-form quasiquoted literal expands in 9.89µs rather than 38.97µs
+  (−75%), with byte-identical allocations — only the traversal changed. Macros
+  whose template is a long generated `do` block, dispatch table, or `cond` paid
+  this on every expansion.
 - Re-evaluating an unchanged source that contains a `defmacro` no longer
   recompiles it. `defmacro` bumped the macro epoch unconditionally, and the
   epoch keys the compiled-chunk cache, so every form in such a source was

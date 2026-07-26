@@ -701,8 +701,12 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 			return nil, err
 		}
 		var result []Value
+		// Walk with a cursor rather than At(i): a list past the flat
+		// threshold is a shared chain, so positional indexing would restart
+		// the walk per element and make this quadratic in the form's length.
+		cur := val.cursor()
 		for i := 0; i < n; i++ {
-			item := val.At(i)
+			item, _ := cur.next()
 			if list, ok := item.(List); ok && list.Len() > 0 {
 				if sym, ok := list.At(0).(Symbol); ok && sym.V == "unquote-splicing" {
 					if list.Len() != 2 {
@@ -717,8 +721,10 @@ func (e *engine) expandQuasiquote(ctx context.Context, v Value, env *Env) (Value
 						if err := st.chargeAllocBytes(ValueSlotsBytes(seq.Len())); err != nil {
 							return nil, err
 						}
+						sc := seq.cursor()
 						for j := 0; j < seq.Len(); j++ {
-							result = append(result, seq.At(j))
+							v, _ := sc.next()
+							result = append(result, v)
 						}
 					case Vector:
 						if err := st.chargeAllocBytes(ValueSlotsBytes(seq.Len())); err != nil {

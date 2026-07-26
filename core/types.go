@@ -204,6 +204,12 @@ func (l List) Equals(o Value) bool { return boundedEquals(l, o, 0) }
 // without copying — same contract as before: the caller must not mutate
 // items afterward. At or above the threshold it builds a shared-tail chain,
 // copying each element once into node storage.
+// The threshold promotion is not cosmetic and is not symmetric with
+// NewVector by accident: it keeps Cons O(1) on a bulk-built list, which
+// core-engine's sequence-extension bound requires. Building flat and
+// promoting on first Cons instead would charge that call the whole list.
+// NewVector faces the opposite constraint — indexed reads on a Vector must
+// stay effectively constant-time — so it stays flat.
 func NewList(items []Value) List {
 	if len(items) <= listFlatThreshold {
 		return List{flat: items}

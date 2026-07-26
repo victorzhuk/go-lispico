@@ -503,14 +503,20 @@ func (d Dialect) normalizeCondNested(args []Value) ([]Value, error) {
 		if n == 2 {
 			clauses = append(clauses, list)
 		} else {
-			// Multi-expression body: wrap in (doVisible body...)
+			// Multi-expression body: wrap in (doVisible body...).
+			// Cursor rather than At(i): a clause body past the flat
+			// threshold is a shared chain, where positional indexing
+			// restarts the walk per element.
 			doName := d.visibleName("do")
 			wrapped := make([]Value, 0, n)
 			wrapped = append(wrapped, Symbol{V: doName})
+			cur := list.cursor()
+			test, _ := cur.next()
 			for i := 1; i < n; i++ {
-				wrapped = append(wrapped, list.At(i))
+				v, _ := cur.next()
+				wrapped = append(wrapped, v)
 			}
-			clause := NewList([]Value{list.At(0), NewList(wrapped)})
+			clause := NewList([]Value{test, NewList(wrapped)})
 			clauses = append(clauses, clause)
 		}
 	}

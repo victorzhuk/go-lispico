@@ -380,3 +380,54 @@ func BenchmarkHashMap_GetLarge(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkListAt indexes a bulk-built list at sizes straddling
+// listFlatThreshold. NewList promotes past the threshold, so At goes from a
+// slice index to a chain walk; anything looping over At pays that per element.
+func BenchmarkListAt(b *testing.B) {
+	for _, n := range []int{32, 100, 1000} {
+		items := make([]Value, n)
+		for i := range items {
+			items[i] = Int{V: int64(i)}
+		}
+		lst := NewList(items)
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := range b.N {
+				_ = lst.At(i % n)
+			}
+		})
+	}
+}
+
+// BenchmarkQuasiquoteWideList expands a quasiquoted list literal at sizes
+// straddling listFlatThreshold. The expansion loop indexes the source list
+// positionally, so a promoted backing makes it quadratic in the literal's
+// length.
+func BenchmarkQuasiquoteWideList(b *testing.B) {
+	for _, n := range []int{16, 64, 256} {
+		var sb strings.Builder
+		sb.WriteString("`(")
+		for i := range n {
+			if i > 0 {
+				sb.WriteByte(' ')
+			}
+			fmt.Fprintf(&sb, "%d", i)
+		}
+		sb.WriteByte(')')
+		forms, err := Read(sb.String())
+		if err != nil {
+			b.Fatal(err)
+		}
+		env := newCoreEnv()
+		e := NewEvaluator()
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if _, err := e.Eval(context.Background(), forms[0], env); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
