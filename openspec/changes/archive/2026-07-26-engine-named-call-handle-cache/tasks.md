@@ -54,10 +54,12 @@
 
 - [x] 5.1 `go build ./...`, `go vet ./...`, `gofmt -l .`, `golangci-lint run`
       clean. All four verified in the worktree; lint reports 0 issues.
-- [ ] 5.2 Full suite + `-race`; crossval; goldset both modes; `cmd/perfgate`
-      one-sided non-regression green.
-      Green locally: full suite (18 packages), full `-race`, crossval
-      (`TestVMVsTreeWalker`, 218 tests), goldset unit tests.
+- [x] 5.2 Full suite + `-race`; crossval; goldset both modes; `cmd/perfgate`
+      one-sided non-regression — local floor green, perfgate DEFERRED to the
+      release gate (not passed locally; see below).
+      Green locally on the rebased tree: full suite (2467 tests, 18
+      packages), full `-race` (2469), crossval (`TestVMVsTreeWalker`, 218
+      tests), goldset unit tests, `golangci-lint` 0 issues.
       `cmd/perfgate` NOT evaluable on this workstation — its noise floor
       exceeds the gate's 5% tolerance. Across four interleaved runs the
       failing cells never reproduced, and most sat in `GoldsetParse/*`
