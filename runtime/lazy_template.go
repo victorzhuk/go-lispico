@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"golang.org/x/sync/singleflight"
 )
 
 type stdlibTemplateKind uint8
@@ -29,18 +30,34 @@ type stdlibTemplateEntry struct {
 }
 
 type stdlibTemplateKey struct {
-	dialectFP  string
-	pluginName string
+	dialectFP     string
+	pluginName    string
+	pluginVersion string
+}
+
+// cacheKey renders key for singleflight.Group.Do, which takes a string key.
+func (k stdlibTemplateKey) cacheKey() string {
+	return k.dialectFP + "\x00" + k.pluginName + "\x00" + k.pluginVersion
 }
 
 type stdlibTemplateLayer struct {
 	entries map[string]*stdlibTemplateEntry
+	// complete marks a layer whose owning plugin's first Init finished
+	// without error. Only ensureLayer's build callback ever sets this to
+	// true; UnloadPlugin/ReloadPlugin/rollbackPluginUse never touch it — the
+	// layer is process-scoped and outlives any single engine's attachment.
+	complete bool
 }
 
 type stdlibTemplateRegistry struct {
 	mu       sync.RWMutex
 	layers   map[stdlibTemplateKey]*stdlibTemplateLayer
 	disabled bool
+	// flight single-flights concurrent first builds of one key. Its lock is
+	// internal to singleflight and disjoint from mu, so build (which
+	// reenters putEntry via RegisterValue/RegisterSource) never deadlocks
+	// against a held mu.
+	flight singleflight.Group
 }
 
 var stdlibLazyTemplateRegistry = &stdlibTemplateRegistry{
@@ -53,8 +70,8 @@ var stdlibLazyTemplateRegistry = &stdlibTemplateRegistry{
 // matching eager behavior where Delete removes the binding for good).
 type stdlibLazyEngineState struct {
 	mu           sync.Mutex
-	active       map[string]struct{}
-	activeList   atomic.Value // []string snapshot of active, rebuilt on activate/deactivate; read on the miss path without allocation
+	active       map[string]string // pluginName -> pluginVersion, the plugins currently attached on this engine
+	activeList   atomic.Value      // []stdlibTemplateKey snapshot of active, rebuilt on activate/deactivate; read on the miss path without allocation
 	installed    map[string]struct{}
 	tombstoned   map[string]struct{}
 	materialized int64
@@ -63,11 +80,11 @@ type stdlibLazyEngineState struct {
 
 func newStdlibLazyEngineState() *stdlibLazyEngineState {
 	s := &stdlibLazyEngineState{
-		active:     make(map[string]struct{}),
+		active:     make(map[string]string),
 		installed:  make(map[string]struct{}),
 		tombstoned: make(map[string]struct{}),
 	}
-	s.activeList.Store([]string(nil))
+	s.activeList.Store([]stdlibTemplateKey(nil))
 	return s
 }
 
@@ -132,6 +149,60 @@ func (r *stdlibTemplateRegistry) putEntry(key stdlibTemplateKey, entry *stdlibTe
 	layer.entries[entry.name] = entry
 }
 
+// layerState reports whether key's layer is already complete, and whether
+// the registry is disabled (the test-only eager fallback). disabled always
+// wins so the caller bypasses single-flight and runs build directly, one
+// call per engine, exactly as an unshared plugin would.
+func (r *stdlibTemplateRegistry) layerState(key stdlibTemplateKey) (complete, disabled bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.disabled {
+		return false, true
+	}
+	l, ok := r.layers[key]
+	return ok && l.complete, false
+}
+
+// markComplete flips the layer's complete flag after its first successful
+// build. A key with no layer (its plugin never routed a registration through
+// putEntry — a direct-env plugin) is left alone: there is nothing to mark,
+// so layerState keeps reporting incomplete and that plugin's Init always
+// reruns, exactly as before this registry existed.
+func (r *stdlibTemplateRegistry) markComplete(key stdlibTemplateKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l, ok := r.layers[key]; ok {
+		l.complete = true
+	}
+}
+
+// ensureLayer builds key's layer at most once per process: concurrent first
+// calls single-flight onto one build, and any call once the layer is
+// complete returns immediately without calling build. build must never run
+// with r.mu held — it reenters putEntry (via RegisterValue/RegisterSource),
+// which takes r.mu itself; flight's own lock is disjoint from r.mu, so this
+// can never deadlock against a held registry lock.
+func (r *stdlibTemplateRegistry) ensureLayer(key stdlibTemplateKey, build func() error) error {
+	if complete, disabled := r.layerState(key); disabled {
+		return build()
+	} else if complete {
+		return nil
+	}
+	_, err, _ := r.flight.Do(key.cacheKey(), func() (any, error) {
+		if complete, disabled := r.layerState(key); disabled {
+			return nil, build()
+		} else if complete {
+			return nil, nil
+		}
+		if buildErr := build(); buildErr != nil {
+			return nil, buildErr
+		}
+		r.markComplete(key)
+		return nil, nil
+	})
+	return err
+}
+
 // stdlibLazyMaterializer is the core.LazyLayer installed on an engine's root
 // env. It is consulted only on a real binding miss; materialization runs
 // through env.Set/SetCanonical/SetFunc/SetFuncCanonical, each of which takes
@@ -142,6 +213,11 @@ type stdlibLazyMaterializer struct {
 	engine    *engineImpl
 	state     *stdlibLazyEngineState
 	dialectFP string
+	// loadingVersion mirrors engine.loadingPlugin: the Metadata().Version of
+	// the plugin whose Init is running inside Use/ReloadPlugin, set only for
+	// that call's duration. RegisterValue/RegisterSource read it to build the
+	// template key: name+version identifies the layer (task 2.3).
+	loadingVersion string
 }
 
 func newStdlibLazyMaterializer(engine *engineImpl) *stdlibLazyMaterializer {
@@ -160,10 +236,10 @@ func newStdlibLazyMaterializer(engine *engineImpl) *stdlibLazyMaterializer {
 	}
 }
 
-// activePlugins reads the atomic snapshot so the miss path never
-// allocates or takes state.mu.
-func (m *stdlibLazyMaterializer) activePlugins() []string {
-	return m.state.activeList.Load().([]string)
+// activeKeys reads the atomic snapshot so the miss path never allocates or
+// takes state.mu; each key already carries the plugin's version.
+func (m *stdlibLazyMaterializer) activeKeys() []stdlibTemplateKey {
+	return m.state.activeList.Load().([]stdlibTemplateKey)
 }
 
 // LookupAndMaterialize resolves name from the active plugin templates,
@@ -189,9 +265,9 @@ func (m *stdlibLazyMaterializer) LookupAndMaterialize(env *core.Env, name string
 	}
 	m.state.mu.Unlock()
 
-	for _, ns := range m.activePlugins() {
-		if entry, ok := stdlibLazyTemplateRegistry.entryFor(stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: ns}, name); ok {
-			return m.materializeOne(env, ns, entry)
+	for _, key := range m.activeKeys() {
+		if entry, ok := stdlibLazyTemplateRegistry.entryFor(key, name); ok {
+			return m.materializeOne(env, key.pluginName, entry)
 		}
 	}
 	return nil, false, false
@@ -385,7 +461,7 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 
 	dialect := m.engine.config.dialect
 	vocab := dialect.Vocab()
-	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin}
+	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}
 
 	// Vocabulary renames bind the visible name to the canonical GoFunc. The
 	// alias is a plain (non-canonical) binding, matching the eager Set in
@@ -430,7 +506,7 @@ func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source stri
 	if disabled || m.engine.loadingPlugin != "" {
 		return false
 	}
-	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin}
+	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}
 	stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
 		name:     name,
 		kind:     stdlibTemplateBootstrap,
@@ -441,24 +517,24 @@ func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source stri
 }
 
 // rebuildActiveList refreshes the atomic snapshot; caller holds state.mu.
-func (s *stdlibLazyEngineState) rebuildActiveList() {
-	active := make([]string, 0, len(s.active))
-	for ns := range s.active {
-		active = append(active, ns)
+func (s *stdlibLazyEngineState) rebuildActiveList(dialectFP string) {
+	keys := make([]stdlibTemplateKey, 0, len(s.active))
+	for name, version := range s.active {
+		keys = append(keys, stdlibTemplateKey{dialectFP: dialectFP, pluginName: name, pluginVersion: version})
 	}
-	s.activeList.Store(active)
+	s.activeList.Store(keys)
 }
 
 // activate revives the plugin's names from tombstones left by an earlier
 // UnloadPlugin: a re-Used plugin must load as if fresh.
-func (m *stdlibLazyMaterializer) activate(pluginName string, names map[string]struct{}) {
+func (m *stdlibLazyMaterializer) activate(pluginName, pluginVersion string, names map[string]struct{}) {
 	if m == nil {
 		return
 	}
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
-	m.state.active[pluginName] = struct{}{}
-	m.state.rebuildActiveList()
+	m.state.active[pluginName] = pluginVersion
+	m.state.rebuildActiveList(m.dialectFP)
 	for name := range names {
 		delete(m.state.tombstoned, name)
 	}
@@ -473,7 +549,7 @@ func (m *stdlibLazyMaterializer) deactivate(pluginName string) {
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
 	delete(m.state.active, pluginName)
-	m.state.rebuildActiveList()
+	m.state.rebuildActiveList(m.dialectFP)
 }
 
 // MaterializeCount reports how many bindings this engine materialized;
@@ -495,14 +571,13 @@ func (m *stdlibLazyMaterializer) ForceAll(env *core.Env) {
 		return
 	}
 	m.state.mu.Lock()
-	active := make([]string, 0, len(m.state.active))
-	for ns := range m.state.active {
-		active = append(active, ns)
+	keys := make([]stdlibTemplateKey, 0, len(m.state.active))
+	for name, version := range m.state.active {
+		keys = append(keys, stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: name, pluginVersion: version})
 	}
 	m.state.mu.Unlock()
-	dialectFP := m.dialectFP
-	for _, ns := range active {
-		layer, ok := stdlibLazyTemplateRegistry.layerFor(stdlibTemplateKey{dialectFP: dialectFP, pluginName: ns})
+	for _, key := range keys {
+		layer, ok := stdlibLazyTemplateRegistry.layerFor(key)
 		if !ok {
 			continue
 		}
@@ -514,7 +589,7 @@ func (m *stdlibLazyMaterializer) ForceAll(env *core.Env) {
 			if dead || live {
 				continue
 			}
-			m.materializeOne(env, ns, entry)
+			m.materializeOne(env, key.pluginName, entry)
 		}
 	}
 }

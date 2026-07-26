@@ -25,12 +25,12 @@ func (e *engineImpl) snapshotBindings() []string {
 // populateTemplateBindings merges every name the lazy template layer holds
 // for pluginName into e.bindings (so UnloadPlugin deletes template entries
 // along with materialized ones) and activates the layer on this engine.
-func (e *engineImpl) populateTemplateBindings(pluginName string) {
+func (e *engineImpl) populateTemplateBindings(pluginName, pluginVersion string) {
 	if e.lazyMaterializer == nil {
 		return
 	}
 	dialectFP := e.lazyMaterializer.dialectFP
-	k := stdlibTemplateKey{dialectFP: dialectFP, pluginName: pluginName}
+	k := stdlibTemplateKey{dialectFP: dialectFP, pluginName: pluginName, pluginVersion: pluginVersion}
 	layer, ok := stdlibLazyTemplateRegistry.layerFor(k)
 	if !ok {
 		return
@@ -50,7 +50,39 @@ func (e *engineImpl) populateTemplateBindings(pluginName string) {
 	for name := range entries {
 		owned[name] = struct{}{}
 	}
-	e.lazyMaterializer.activate(pluginName, owned)
+	e.lazyMaterializer.activate(pluginName, pluginVersion, owned)
+}
+
+// initPlugin runs p.Init, short-circuiting when a completed process-level
+// template layer already covers this dialect fingerprint + plugin identity
+// (name and version). Scope is fail-closed by the same structural guard
+// RegisterValue/RegisterSource already enforce: only a plugin whose Name()
+// is "" ever defers registration into the template, so only that plugin's
+// key can ever have a layer to attach; every other plugin's Init always runs
+// here unconditionally, byte-for-byte as before this function existed. That
+// gate also protects concurrency: ensureLayer single-flights per key, and
+// single-flighting a non-template plugin's Init across two engines would
+// silently skip one engine's own env writes, which is only safe when Init's
+// only observable effect is the shared, env-independent template entry.
+func (e *engineImpl) initPlugin(p core.Plugin, name, version string) error {
+	e.loadingPlugin = name
+	if e.lazyMaterializer != nil {
+		e.lazyMaterializer.loadingVersion = version
+	}
+	defer func() {
+		e.loadingPlugin = ""
+		if e.lazyMaterializer != nil {
+			e.lazyMaterializer.loadingVersion = ""
+		}
+	}()
+
+	if name != "" || e.lazyMaterializer == nil {
+		return p.Init(e.rootEnv)
+	}
+	key := stdlibTemplateKey{dialectFP: e.lazyMaterializer.dialectFP, pluginName: name, pluginVersion: version}
+	return stdlibLazyTemplateRegistry.ensureLayer(key, func() error {
+		return p.Init(e.rootEnv)
+	})
 }
 
 func (e *engineImpl) removePluginBindings(name string) {
@@ -113,6 +145,7 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 	defer e.mu.Unlock()
 
 	name := p.Name()
+	version := p.Metadata().Version
 	if err := e.registry.Register(p); err != nil {
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
@@ -136,11 +169,9 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 		}
 	}()
 
-	e.loadingPlugin = name
-	if initErr := p.Init(e.rootEnv); initErr != nil {
+	if initErr := e.initPlugin(p, name, version); initErr != nil {
 		return fmt.Errorf("init plugin %s: %w", name, initErr)
 	}
-	e.loadingPlugin = ""
 
 	if vocabErr := e.applyVocabulary(); vocabErr != nil {
 		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
@@ -154,7 +185,7 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 		}
 		e.bindings[name] = added
 	}
-	e.populateTemplateBindings(name)
+	e.populateTemplateBindings(name, version)
 
 	finished = true
 	if finishErr := core.FinishEval(ctx, top); finishErr != nil {
@@ -162,7 +193,7 @@ func (e *engineImpl) Use(p core.Plugin) (err error) {
 	}
 
 	e.stats.incPlugins()
-	e.logger.Info("plugin loaded", "name", name, "version", p.Metadata().Version)
+	e.logger.Info("plugin loaded", "name", name, "version", version)
 
 	return nil
 }
@@ -212,6 +243,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 	defer e.mu.Unlock()
 
 	name := p.Name()
+	version := p.Metadata().Version
 	oldPlugin, hadOld := e.registry.Get(name)
 	oldRoot := e.snapshotRootEnv()
 	var oldBindings map[string]struct{}
@@ -270,12 +302,9 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 		}
 	}()
 
-	e.loadingPlugin = name
-	if initErr := p.Init(e.rootEnv); initErr != nil {
-		e.loadingPlugin = ""
+	if initErr := e.initPlugin(p, name, version); initErr != nil {
 		return fmt.Errorf("init plugin %s: %w", name, initErr)
 	}
-	e.loadingPlugin = ""
 
 	if err := e.applyVocabulary(); err != nil {
 		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, err)
@@ -289,7 +318,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 		}
 		e.bindings[name] = added
 	}
-	e.populateTemplateBindings(name)
+	e.populateTemplateBindings(name, version)
 
 	if !hadOld {
 		e.stats.incPlugins()
@@ -300,7 +329,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
 		return finishErr
 	}
 
-	e.logger.Info("plugin reloaded", "name", name, "version", p.Metadata().Version)
+	e.logger.Info("plugin reloaded", "name", name, "version", version)
 
 	return nil
 }

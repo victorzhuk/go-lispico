@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -486,5 +489,353 @@ func TestLazyMaterialize_NativeOpParityOnOff(t *testing.T) {
 		assert.True(t, core.Int{V: 42}.Equals(got))
 		require.NoError(t, eng.Close())
 		restore()
+	}
+}
+
+// errSharedTemplateInit is returned by sharedTemplatePlugin when constructed
+// with fail: true, to exercise the failed-Init retry path without any real
+// dependency failure.
+var errSharedTemplateInit = errors.New("shared template init failed")
+
+// sharedTemplatePlugin mirrors stdlib's namespace shape (Name() == "") so its
+// registration routes through the process-level template registry exactly
+// like plugins/stdlib does — the structural condition RegisterValue checks
+// before deferring. inits counts real Init executions (shared across
+// instances that must resolve to one process-level layer); fail forces this
+// instance's Init to error before it ever registers anything.
+type sharedTemplatePlugin struct {
+	version string
+	inits   *int64
+	fail    bool
+}
+
+func (p *sharedTemplatePlugin) Name() string { return "" }
+
+func (p *sharedTemplatePlugin) Metadata() core.PluginMeta {
+	return core.PluginMeta{Version: p.version}
+}
+
+func (p *sharedTemplatePlugin) Init(env *core.Env) error {
+	atomic.AddInt64(p.inits, 1)
+	if p.fail {
+		return errSharedTemplateInit
+	}
+	return env.RegisterValue("shared-template-fn", core.GoFunc{
+		Name: "shared-template-fn",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			return core.Int{V: 42}, nil
+		},
+	}, false)
+}
+
+// TestLazyMaterialize_SecondEngineSkipsInit pins the counter proof: Init runs
+// exactly once across N engines that share one dialect fingerprint and
+// plugin identity, even though each engine calls Use independently.
+func TestLazyMaterialize_SecondEngineSkipsInit(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-skip-init", "if")
+	var inits int64
+
+	const engines = 4
+	for range engines {
+		eng, err := New(nil, WithBytecode(), WithDialect(dialect))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = eng.Close() })
+		require.NoError(t, eng.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &inits}))
+	}
+
+	assert.Equal(t, int64(1), atomic.LoadInt64(&inits),
+		"Init must run exactly once across engines sharing one dialect fingerprint and plugin identity")
+}
+
+// TestLazyMaterialize_SecondEngineSharesClosurePointers pins the
+// pointer-identity proof: the materialized core.GoFunc on a second engine is
+// the exact same underlying func as on the first, not a re-built duplicate.
+func TestLazyMaterialize_SecondEngineSharesClosurePointers(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-shared-ptr", "if")
+	var inits int64
+
+	engA, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engA.Close() })
+	require.NoError(t, engA.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &inits}))
+
+	engB, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engB.Close() })
+	require.NoError(t, engB.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &inits}))
+
+	_, err = engA.Eval(context.Background(), "a", "(shared-template-fn)")
+	require.NoError(t, err)
+	_, err = engB.Eval(context.Background(), "b", "(shared-template-fn)")
+	require.NoError(t, err)
+
+	vA, ok := engA.RootEnv().Get("shared-template-fn")
+	require.True(t, ok)
+	vB, ok := engB.RootEnv().Get("shared-template-fn")
+	require.True(t, ok)
+
+	fnA, ok := vA.(core.GoFunc)
+	require.True(t, ok)
+	fnB, ok := vB.(core.GoFunc)
+	require.True(t, ok)
+
+	assert.Equal(t, reflect.ValueOf(fnA.Fn).Pointer(), reflect.ValueOf(fnB.Fn).Pointer(),
+		"materialized closures on both engines must be the same underlying func")
+	assert.Equal(t, int64(1), atomic.LoadInt64(&inits))
+}
+
+// TestLazyMaterialize_FailedInitLeavesLayerIncomplete pins retry-after-failure:
+// a failing first Init never completes the layer, and the next Use (now
+// succeeding) builds it cleanly with no residue from the failed attempt.
+func TestLazyMaterialize_FailedInitLeavesLayerIncomplete(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-failed-init", "if")
+	var inits int64
+
+	eng1, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng1.Close() })
+	err = eng1.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &inits, fail: true})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errSharedTemplateInit)
+
+	eng2, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng2.Close() })
+	require.NoError(t, eng2.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &inits}))
+
+	v, err := eng2.Eval(context.Background(), "ok", "(shared-template-fn)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 42}.Equals(v))
+
+	assert.Equal(t, int64(2), atomic.LoadInt64(&inits),
+		"the failed attempt and the successful retry both ran Init")
+}
+
+// TestLazyMaterialize_DifferentVersionsGetDistinctLayers pins task 2.3: two
+// versions of the same (empty) plugin name never share a layer, each builds
+// independently, and a later engine at a version already built attaches
+// that version's layer specifically, not the other one's.
+func TestLazyMaterialize_DifferentVersionsGetDistinctLayers(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-distinct-versions", "if")
+	var initsV1, initsV2 int64
+
+	eng1, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng1.Close() })
+	require.NoError(t, eng1.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &initsV1}))
+
+	eng2, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng2.Close() })
+	require.NoError(t, eng2.Use(&sharedTemplatePlugin{version: "2.0.0", inits: &initsV2}))
+
+	v1, err := eng1.Eval(context.Background(), "v1", "(shared-template-fn)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 42}.Equals(v1))
+	v2, err := eng2.Eval(context.Background(), "v2", "(shared-template-fn)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 42}.Equals(v2))
+
+	assert.Equal(t, int64(1), atomic.LoadInt64(&initsV1))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&initsV2),
+		"v2's build must not be skipped by v1's completion")
+
+	eng3, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng3.Close() })
+	require.NoError(t, eng3.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &initsV1}))
+	v3, err := eng3.Eval(context.Background(), "v3", "(shared-template-fn)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 42}.Equals(v3))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&initsV1),
+		"a third engine at v1 attaches v1's existing layer, not v2's, with no re-Init")
+}
+
+// TestLazyMaterialize_ConcurrentFirstUseBuildsOnce pins the spec scenario
+// "Concurrent first loads build one layer": many engines with one dialect
+// fingerprint racing their first Use of the same plugin identity build the
+// layer exactly once, and every engine still evaluates correctly. Run with
+// -race.
+func TestLazyMaterialize_ConcurrentFirstUseBuildsOnce(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-concurrent-use", "if")
+	var inits int64
+
+	const engines = 32
+	made := make([]Engine, engines)
+	var wg sync.WaitGroup
+	wg.Add(engines)
+	for i := range engines {
+		go func(i int) {
+			defer wg.Done()
+			eng, err := New(nil, WithBytecode(), WithDialect(dialect))
+			assert.NoError(t, err)
+			assert.NoError(t, eng.Use(&sharedTemplatePlugin{version: "1.0.0", inits: &inits}))
+			made[i] = eng
+		}(i)
+	}
+	wg.Wait()
+
+	for i, eng := range made {
+		t.Cleanup(func() { _ = eng.Close() })
+		v, err := eng.Eval(context.Background(), "concurrent", "(shared-template-fn)")
+		require.NoError(t, err, "engine %d", i)
+		assert.True(t, core.Int{V: 42}.Equals(v), "engine %d", i)
+	}
+
+	assert.Equal(t, int64(1), atomic.LoadInt64(&inits),
+		"concurrent first Use of one key must build the layer exactly once")
+}
+
+// TestLazyMaterialize_EnumerationIdenticalFirstAndSecondEngine pins the
+// spec's enumeration scenario across roles: a second engine that only
+// attached the layer must enumerate the same surface as the first engine
+// that built it.
+func TestLazyMaterialize_EnumerationIdenticalFirstAndSecondEngine(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-enum-parity", "if")
+
+	first, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = first.Close() })
+	require.NoError(t, first.Use(stdlib.New()))
+	firstVars := first.RootEnv().VarNames()
+	firstFuncs := first.RootEnv().FuncNames()
+
+	second, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+	require.NoError(t, second.Use(stdlib.New()))
+	secondVars := second.RootEnv().VarNames()
+	secondFuncs := second.RootEnv().FuncNames()
+
+	assert.ElementsMatch(t, firstVars, secondVars,
+		"second engine (attached layer) must enumerate the same surface as the first (built it)")
+	assert.ElementsMatch(t, firstFuncs, secondFuncs)
+}
+
+// TestLazyMaterialize_ShadowAndDeleteIdenticalFirstAndSecondEngine pins
+// shadow-then-delete parity across roles instead of across the eager/lazy
+// toggle: a second (attaching) engine must behave exactly like the first
+// (building) engine when a deferred name is shadowed and then deleted.
+func TestLazyMaterialize_ShadowAndDeleteIdenticalFirstAndSecondEngine(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-shadow-delete-parity", "if")
+
+	first, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = first.Close() })
+	require.NoError(t, first.Use(stdlib.New()))
+
+	second, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+	require.NoError(t, second.Use(stdlib.New()))
+
+	shadow := core.GoFunc{
+		Name: "+",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			return core.Int{V: 999}, nil
+		},
+	}
+
+	for name, eng := range map[string]Engine{"first": first, "second": second} {
+		require.NoError(t, eng.Bind("+", shadow), name)
+		v, err := eng.Eval(context.Background(), "shadowed", "(+ 1 2)")
+		require.NoError(t, err, name)
+		assert.True(t, core.Int{V: 999}.Equals(v), "%s: shadow must win", name)
+
+		eng.RootEnv().Delete("+")
+		_, err = eng.Eval(context.Background(), "after-delete", "(+ 1 2)")
+		assert.Error(t, err, "%s: delete must not be undone by deferral", name)
+		assert.Contains(t, err.Error(), "undefined", name)
+	}
+}
+
+// TestLazyMaterialize_UnloadIdenticalFirstAndSecondEngine pins the spec
+// scenario "Unload removes deferred and materialized bindings": unloading
+// the layer-building first engine removes its own bindings only, a sibling
+// second engine sharing the layer stays unaffected, and a third engine can
+// still attach the layer afterward without rebuilding it.
+func TestLazyMaterialize_UnloadIdenticalFirstAndSecondEngine(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-unload-parity", "if")
+
+	first, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = first.Close() })
+	require.NoError(t, first.Use(stdlib.New()))
+
+	second, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+	require.NoError(t, second.Use(stdlib.New()))
+
+	for _, eng := range []Engine{first, second} {
+		v, err := eng.Eval(context.Background(), "touch", "(+ 1 2)")
+		require.NoError(t, err)
+		assert.True(t, core.Int{V: 3}.Equals(v))
+	}
+
+	require.NoError(t, first.UnloadPlugin(""))
+	for _, src := range []string{"(+ 1 2)", "(reduce + 0 [1])"} {
+		_, err := first.Eval(context.Background(), "after-unload", src)
+		assert.Error(t, err, "src=%s", src)
+		assert.Contains(t, err.Error(), "undefined", "src=%s", src)
+	}
+
+	v, err := second.Eval(context.Background(), "sibling-untouched", "(reduce + 0 [1 2 3])")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 6}.Equals(v),
+		"second engine must be unaffected by unloading the layer-building first engine")
+
+	third, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = third.Close() })
+	require.NoError(t, third.Use(stdlib.New()))
+	v, err = third.Eval(context.Background(), "third", "(str \"a\" \"b\")")
+	require.NoError(t, err)
+	assert.Equal(t, "\"ab\"", v.String(),
+		"a third engine still attaches the shared layer after a sibling's unload")
+}
+
+// TestLazyMaterialize_ReloadIdenticalFirstAndSecondEngine pins hot-reload
+// parity: reloading the same plugin identity attaches the already-complete
+// layer on both a first (builder) and second (attacher) engine, and
+// evaluation keeps working identically on either side afterward.
+func TestLazyMaterialize_ReloadIdenticalFirstAndSecondEngine(t *testing.T) {
+	t.Parallel()
+
+	dialect := clojure.Dialect().Add("lazy-template-reload-parity", "if")
+
+	first, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = first.Close() })
+	require.NoError(t, first.Use(stdlib.New()))
+
+	second, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+	require.NoError(t, second.Use(stdlib.New()))
+
+	require.NoError(t, first.ReloadPlugin(stdlib.New()))
+	require.NoError(t, second.ReloadPlugin(stdlib.New()))
+
+	for name, eng := range map[string]Engine{"first": first, "second": second} {
+		v, err := eng.Eval(context.Background(), "after-reload", "(reduce + 0 [1 2 3 4])")
+		require.NoError(t, err, name)
+		assert.True(t, core.Int{V: 10}.Equals(v), name)
 	}
 }
