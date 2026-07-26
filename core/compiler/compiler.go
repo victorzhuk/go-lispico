@@ -9,7 +9,7 @@ import (
 )
 
 // CodeUnsupported identifies a *core.LispicoError for a form the bytecode
-// compiler does not support (defmacro nested in a body, unquote-splicing).
+// compiler does not support (any defmacro, wherever it appears, and unquote-splicing).
 // Callers use it to distinguish "fall back to the tree-walker" from a real
 // compile error.
 const CodeUnsupported = "BytecodeUnsupported"

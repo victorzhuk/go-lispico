@@ -21,7 +21,7 @@ cannot compile fall back to the tree-walking Evaluator form-by-form. Use
 ## Consequences
 
 - The on-disk bytecode cache is removed. It was never invoked from the runtime path — `WithBytecodeCache` had no effect — and the one end-to-end file-load benchmark showed the "cached" path losing to the tree-walker. Reintroduce a cache only once it is wired into evaluation and benchmarked to beat the tree-walker end-to-end.
-- Forms the VM does not compile (currently `defmacro` nested in a body, `unquote-splicing`) must return a clean error and defer to the Evaluator, never panic. The two evaluators must agree on results, including the runtime type bound by `catch`.
+- Forms the VM does not compile (currently any `defmacro`, wherever it appears, and `unquote-splicing`) must return a clean error and defer to the Evaluator, never panic. The two evaluators must agree on results, including the runtime type bound by `catch`.
 
 ## Considered options
 

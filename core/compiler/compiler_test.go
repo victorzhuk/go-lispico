@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1539,4 +1540,30 @@ func TestCompiler_UnquoteSplicing_Unsupported(t *testing.T) {
 	var lispErr *core.LispicoError
 	require.ErrorAs(t, err, &lispErr)
 	assert.Equal(t, CodeUnsupported, lispErr.Code)
+}
+
+// TestUnsupported_DefmacroAnywhere pins the fallback's real scope. The
+// rejection is a case in compileList's special-form switch, which every list
+// form reaches at every position, so nesting has nothing to do with it. Seven
+// places in the repo once described this as "defmacro nested in a body",
+// which reads as a corner case ordinary top-level definitions avoid.
+func TestUnsupported_DefmacroAnywhere(t *testing.T) {
+	for _, src := range []string{
+		`(defmacro m (x) x)`,
+		`(do (defmacro m (x) x))`,
+		`(if true (defmacro m (x) x) nil)`,
+	} {
+		forms, err := core.Read(src)
+		if err != nil {
+			t.Fatalf("%s: read: %v", src, err)
+		}
+		err = NewCompiler("test").Compile(forms[0])
+		if err == nil {
+			t.Fatalf("%s: compiled without error, want the unsupported error", src)
+		}
+		var le *core.LispicoError
+		if !errors.As(err, &le) || le.Code != CodeUnsupported {
+			t.Fatalf("%s: err = %v, want code %s", src, err, CodeUnsupported)
+		}
+	}
 }

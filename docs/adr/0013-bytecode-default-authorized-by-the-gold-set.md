@@ -26,7 +26,7 @@ authorizing a flip that already happened.
   again, or defaulting a third execution mode) needs a fresh gate run under both
   modes, not a new category of evidence.
 - Forms the VM cannot compile still defer to the tree-walker form by form
-  (`defmacro` nested in a body, `unquote-splicing`), and
+  (any `defmacro`, wherever it appears, `unquote-splicing`), and
   `runtime.WithTreeWalker()` remains the rollback. Neither is affected here.
 - The gold set runs the Clojure dialect, so dialect-specific default behavior
   (Lisp-2 function cells, CL list bindings) is covered by the dialect test

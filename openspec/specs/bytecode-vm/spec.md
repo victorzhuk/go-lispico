@@ -45,7 +45,7 @@ previous local layout.
 
 #### Scenario: Unsupported form defers to the tree-walker
 
-- **WHEN** a program uses a form the VM does not compile (a `defmacro` nested in a body, or `unquote-splicing`)
+- **WHEN** a program uses a form the VM does not compile (any `defmacro`, wherever it appears, or `unquote-splicing`)
 - **THEN** compilation SHALL return a typed "unsupported in bytecode" error and the runtime SHALL evaluate that form with the tree-walker, never panicking
 
 #### Scenario: loop/recur iterates in constant stack
