@@ -143,6 +143,42 @@ type Dialect struct {
 	// cond is the cond clause-shape axis. Zero value (condNested) is the kernel
 	// default: (cond (test body...) ...). condFlat is Clojure-style.
 	cond condShape
+	// cache holds this value's memoized resolve()/Fingerprint() results, or is
+	// nil for an ordinary (non-memoized) Dialect. Every builder method below
+	// clears it on the copy it returns: a Dialect value is copied by every
+	// builder, so a cache left in place would silently serve the pre-mutation
+	// base's resolved table and fingerprint instead of the mutated one. See
+	// Memoized.
+	cache *dialectCache
+}
+
+// dialectCache is the memoized state for one Memoized Dialect. It is
+// populated once, eagerly, by Memoized itself and never written again, so
+// sharing the pointer across copies of that Dialect value (and across
+// goroutines, once the value has been safely published — e.g. via
+// sync.OnceValue) is race-free.
+type dialectCache struct {
+	table map[string]formFn
+	err   error
+	fp    string
+}
+
+// Memoized returns a copy of d whose resolve() table and Fingerprint() hash
+// are computed once, up front, and shared by every copy of the returned
+// value. It exists for process-wide stock dialect singletons (cl.Dialect,
+// clojure.Dialect), built once behind sync.OnceValue so the eager computation
+// below runs exactly once per process and is safely published to every
+// caller that follows. A hand-built custom dialect has no reason to call it.
+//
+// Every builder method clears the cache on the Dialect it returns, so
+// mutating a Memoized value (Add, Vocabulary, ...) always resolves and
+// fingerprints the mutated copy fresh rather than inheriting the base's
+// cached answer.
+func (d Dialect) Memoized() Dialect {
+	d.cache = &dialectCache{}
+	d.cache.table, d.cache.err = d.resolveUncached()
+	d.cache.fp = d.fingerprintUncached()
+	return d
 }
 
 // FullDialect starts from the full kernel table. With no delta it is the
@@ -173,7 +209,7 @@ func (d Dialect) Remove(name string) Dialect {
 // FlatCond sets the cond clause-shape axis so cond parses flat test/expression
 // pairs (Clojure-style): (cond t1 e1 t2 e2 ...). The default axis keeps nested
 // clauses (Common Lisp-style).
-func (d Dialect) FlatCond() Dialect { d.cond = condFlat; return d }
+func (d Dialect) FlatCond() Dialect { d.cond = condFlat; d.cache = nil; return d }
 
 // Vocabulary sets a name→canonical-name map: each visible name resolves to
 // the GoFunc the canonical name was registered under. A nil vocab (the zero
@@ -185,6 +221,7 @@ func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
 	for name, canonical := range vocab {
 		d.vocab[name] = VocabEntry{Canonical: canonical}
 	}
+	d.cache = nil
 	return d
 }
 
@@ -197,6 +234,7 @@ func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
 func (d Dialect) WithAdapter(name string, fn Value) Dialect {
 	d.vocab = copyVocab(d.vocab)
 	d.vocab[name] = VocabEntry{Adapter: fn}
+	d.cache = nil
 	return d
 }
 
@@ -301,6 +339,7 @@ func (d Dialect) isTruthy(v Value) bool {
 // The default axis is Lisp-1, a single namespace.
 func (d Dialect) Lisp2() Dialect {
 	d.ns = nsLisp2
+	d.cache = nil
 	return d
 }
 
@@ -318,6 +357,7 @@ func (d Dialect) IsLisp2() bool { return d.isLisp2() }
 // keeps bracket literals on.
 func (d Dialect) WithoutBracketLiterals() Dialect {
 	d.brackets = bracketsOff
+	d.cache = nil
 	return d
 }
 
@@ -326,6 +366,7 @@ func (d Dialect) WithoutBracketLiterals() Dialect {
 // defined by the namespace axis; this flag only makes it parse.
 func (d Dialect) WithFunctionRef() Dialect {
 	d.funcRef = funcRefOn
+	d.cache = nil
 	return d
 }
 
@@ -333,6 +374,7 @@ func (d Dialect) WithFunctionRef() Dialect {
 // vector. The default axis leaves # non-special.
 func (d Dialect) WithReaderVector() Dialect {
 	d.readerVec = readerVecOn
+	d.cache = nil
 	return d
 }
 
@@ -394,13 +436,24 @@ func (d Dialect) with(op deltaOp) Dialect {
 	ops := make([]deltaOp, len(d.ops), len(d.ops)+1)
 	copy(ops, d.ops)
 	d.ops = append(ops, op)
+	d.cache = nil
 	return d
 }
 
-// resolve applies the delta to a fresh copy of the base, producing the
-// effective dispatch table. It fails if a rename or add references a canonical
-// form absent from the kernel.
+// resolve returns the Dialect's effective dispatch table. A Memoized value
+// returns its cached table on every call; any other Dialect resolves fresh
+// each time (see resolveUncached).
 func (d Dialect) resolve() (map[string]formFn, error) {
+	if d.cache != nil {
+		return d.cache.table, d.cache.err
+	}
+	return d.resolveUncached()
+}
+
+// resolveUncached applies the delta to a fresh copy of the base, producing
+// the effective dispatch table. It fails if a rename or add references a
+// canonical form absent from the kernel.
+func (d Dialect) resolveUncached() (map[string]formFn, error) {
 	table := make(map[string]formFn, len(kernel))
 	if d.base == baseFull {
 		maps.Copy(table, kernel)
@@ -435,8 +488,18 @@ func (d Dialect) resolve() (map[string]formFn, error) {
 }
 
 // Fingerprint returns a stable hash string that changes when the Dialect's
-// semantic configuration changes. Used as part of the bytecode chunk cache key.
+// semantic configuration changes. Used as part of the bytecode chunk cache
+// key. A Memoized value returns its cached hash on every call; any other
+// Dialect hashes fresh each time (see fingerprintUncached).
 func (d Dialect) Fingerprint() string {
+	if d.cache != nil {
+		return d.cache.fp
+	}
+	return d.fingerprintUncached()
+}
+
+// fingerprintUncached computes d's fingerprint hash from scratch.
+func (d Dialect) fingerprintUncached() string {
 	h := sha256.New()
 	fmt.Fprintf(h, "base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
 		d.base, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)

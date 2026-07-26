@@ -18,11 +18,13 @@
 // evaluates on the bytecode VM when WithBytecode() is enabled (ADR 0006).
 package cl
 
-import "github.com/victorzhuk/go-lispico/core"
+import (
+	"sync"
 
-// Dialect returns the Common Lisp dialect — a non-identity composition over
-// the full kernel.
-func Dialect() core.Dialect {
+	"github.com/victorzhuk/go-lispico/core"
+)
+
+var stockDialect = sync.OnceValue(func() core.Dialect {
 	return core.FullDialect().
 		Lisp2().
 		WithoutBracketLiterals().
@@ -45,5 +47,12 @@ func Dialect() core.Dialect {
 			"mapcar":  "map",
 			"apply":   "apply",
 			"type":    "type",
-		})
-}
+		}).
+		Memoized()
+})
+
+// Dialect returns the Common Lisp dialect — a non-identity composition over
+// the full kernel. The returned value is a process-wide singleton: resolution
+// and fingerprinting run once, on first call, and every caller shares the
+// same resolved dispatch table and hash.
+func Dialect() core.Dialect { return stockDialect() }

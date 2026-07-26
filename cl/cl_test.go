@@ -2,6 +2,8 @@ package cl_test
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -212,4 +214,125 @@ func TestCL_SpecScenario_ReaderAffordances(t *testing.T) {
 	// [1 2] SHALL NOT read as a vector literal
 	_, err = e.Eval(context.Background(), "cl", "(quote [1 2])")
 	require.Error(t, err, "[1 2] must fail under CL")
+}
+
+// TestCL_Dialect_Memoized asserts that repeated cl.Dialect() calls are
+// stable and that Fingerprint() on the memoized value skips the SHA-256 hash
+// work an uncached Dialect repeats on every call. Allocation count, not
+// wall-clock, is the observation mechanism: a cache hit returns the
+// already-hashed string, while an uncached Fingerprint() allocates a new
+// hash.Hash and formats its inputs (including sorting the vocabulary keys)
+// every time.
+func TestCL_Dialect_Memoized(t *testing.T) {
+	memoized := cl.Dialect()
+	uncached := core.FullDialect().
+		Lisp2().
+		WithoutBracketLiterals().
+		WithFunctionRef().
+		WithReaderVector().
+		Add("defun", "defn").
+		Rename("set!", "setq").
+		Rename("do", "progn").
+		Vocabulary(map[string]string{
+			"car":     "first",
+			"cdr":     "rest",
+			"null":    "nil?",
+			"cons":    "cons",
+			"list":    "list",
+			"append":  "concat",
+			"length":  "count",
+			"reverse": "reverse",
+			"nth":     "nth",
+			"sort":    "sort",
+			"mapcar":  "map",
+			"apply":   "apply",
+			"type":    "type",
+		})
+	require.Equal(t, memoized.Fingerprint(), uncached.Fingerprint(), "memoized and uncached Fingerprint() must agree")
+	assert.Equal(t, cl.Dialect().Fingerprint(), memoized.Fingerprint(), "repeated cl.Dialect() calls must produce the same fingerprint")
+
+	memoizedAllocs := testing.AllocsPerRun(50, func() {
+		_ = memoized.Fingerprint()
+	})
+	uncachedAllocs := testing.AllocsPerRun(50, func() {
+		_ = uncached.Fingerprint()
+	})
+
+	t.Logf("memoized Fingerprint(): %.1f allocs/op, uncached Fingerprint(): %.1f allocs/op", memoizedAllocs, uncachedAllocs)
+	assert.Less(t, memoizedAllocs, uncachedAllocs, "Fingerprint() on a memoized Dialect must not redo the SHA-256 hash work")
+}
+
+// TestCL_ConcurrentEnginesCorpusParity builds engines from cl.Dialect()
+// concurrently and re-runs the existing vocab/surface-form assertions on
+// each, proving the process-memoized dialect behaves identically to
+// independent construction under concurrent use.
+func TestCL_ConcurrentEnginesCorpusParity(t *testing.T) {
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e, err := runtime.New(nil, runtime.WithDialect(cl.Dialect()))
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer e.Close()
+			if err := e.Use(stdlib.New()); err != nil {
+				errs <- err
+				return
+			}
+
+			ctx := context.Background()
+
+			got, err := e.Eval(ctx, "corpus", "(defun f (x) x)")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !(core.Keyword{V: "fn"}).Equals(got.Type()) {
+				errs <- fmt.Errorf("defun return type = %s", got.Type())
+				return
+			}
+
+			got, err = e.Eval(ctx, "corpus", "(f 42)")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !(core.Int{V: 42}).Equals(got) {
+				errs <- fmt.Errorf("(f 42) = %v", got)
+				return
+			}
+
+			got, err = e.Eval(ctx, "corpus", "(car '(1 2 3))")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !(core.Int{V: 1}).Equals(got) {
+				errs <- fmt.Errorf("car = %v", got)
+				return
+			}
+
+			got, err = e.Eval(ctx, "corpus", "(if false :y :n)")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !(core.Keyword{V: "n"}).Equals(got) {
+				errs <- fmt.Errorf("(if false :y :n) = %v", got)
+				return
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 }
