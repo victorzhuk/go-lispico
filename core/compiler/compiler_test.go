@@ -997,8 +997,8 @@ func TestCompiler_NativeOp_DialectRebindStillNative(t *testing.T) {
 func TestCompiler_HashMap(t *testing.T) {
 	c := NewCompiler("test")
 	hm := core.NewHashMap()
-	hm, _ = hm.Assoc(core.Keyword{V: "a"}, core.Int{V: 1})
-	hm, _ = hm.Assoc(core.Keyword{V: "b"}, core.Int{V: 2})
+	hm, _, _ = hm.Assoc(core.Keyword{V: "a"}, core.Int{V: 1})
+	hm, _, _ = hm.Assoc(core.Keyword{V: "b"}, core.Int{V: 2})
 
 	require.NoError(t, c.Compile(hm))
 	chunk := c.Chunk()

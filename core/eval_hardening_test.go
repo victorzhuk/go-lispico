@@ -24,7 +24,7 @@ func TestEval_MapEvaluatesElements(t *testing.T) {
 	env := newTestEnv()
 	env.Set("x", Int{V: 99})
 	got := evalStr(t, env, "{:a x}")
-	want, _ := NewHashMap().Assoc(Keyword{V: "a"}, Int{V: 99})
+	want, _, _ := NewHashMap().Assoc(Keyword{V: "a"}, Int{V: 99})
 	if !got.Equals(want) {
 		t.Fatalf("{:a x} = %s, want %s", got.String(), want.String())
 	}
@@ -35,7 +35,7 @@ func TestEval_QuasiquoteMap(t *testing.T) {
 	env := newTestEnv()
 	env.Set("x", Int{V: 99})
 	got := evalStr(t, env, "`{:a ~x}")
-	want, _ := NewHashMap().Assoc(Keyword{V: "a"}, Int{V: 99})
+	want, _, _ := NewHashMap().Assoc(Keyword{V: "a"}, Int{V: 99})
 	if !got.Equals(want) {
 		t.Fatalf("`{:a ~x} = %s, want %s", got.String(), want.String())
 	}

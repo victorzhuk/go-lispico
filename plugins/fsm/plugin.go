@@ -211,10 +211,10 @@ func (p *Plugin) transition(ctx context.Context, eval core.Evaluator, args []cor
 	}
 
 	resMap := core.NewHashMap()
-	resMap, _ = resMap.Assoc(core.Keyword{V: "state"}, core.Keyword{V: string(result.State)})
-	resMap, _ = resMap.Assoc(core.Keyword{V: "valid"}, core.Bool{V: result.Valid})
+	resMap, _, _ = resMap.Assoc(core.Keyword{V: "state"}, core.Keyword{V: string(result.State)})
+	resMap, _, _ = resMap.Assoc(core.Keyword{V: "valid"}, core.Bool{V: result.Valid})
 	if result.Error != "" {
-		resMap, _ = resMap.Assoc(core.Keyword{V: "error"}, core.String{V: result.Error})
+		resMap, _, _ = resMap.Assoc(core.Keyword{V: "error"}, core.String{V: result.Error})
 	}
 
 	return resMap, nil
@@ -372,9 +372,9 @@ func (p *Plugin) stateMachine(ctx context.Context, eval core.Evaluator, args []c
 	}
 
 	m := core.NewHashMap()
-	m, _ = m.Assoc(core.Keyword{V: "id"}, core.String{V: sm.id})
-	m, _ = m.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: string(sm.initial)})
-	m, _ = m.Assoc(core.Keyword{V: "current"}, core.Keyword{V: string(sm.current)})
+	m, _, _ = m.Assoc(core.Keyword{V: "id"}, core.String{V: sm.id})
+	m, _, _ = m.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: string(sm.initial)})
+	m, _, _ = m.Assoc(core.Keyword{V: "current"}, core.Keyword{V: string(sm.current)})
 
 	return m, nil
 }

@@ -353,13 +353,13 @@ func (p *Plugin) info(ctx context.Context, eval core.Evaluator, args []core.Valu
 	}
 
 	m := core.NewHashMap()
-	m, _ = m.Assoc(core.Keyword{V: "id"}, core.Keyword{V: agent.ID})
-	m, _ = m.Assoc(core.Keyword{V: "model"}, core.String{V: agent.Model})
-	m, _ = m.Assoc(core.Keyword{V: "temperature"}, core.Float{V: agent.Temperature})
-	m, _ = m.Assoc(core.Keyword{V: "max-tokens"}, core.Int{V: int64(agent.MaxTokens)})
-	m, _ = m.Assoc(core.Keyword{V: "system"}, core.String{V: agent.System})
-	m, _ = m.Assoc(core.Keyword{V: "tools"}, core.NewVector(toolsVec))
-	m, _ = m.Assoc(core.Keyword{V: "can-delegate"}, core.NewVector(delegateVec))
+	m, _, _ = m.Assoc(core.Keyword{V: "id"}, core.Keyword{V: agent.ID})
+	m, _, _ = m.Assoc(core.Keyword{V: "model"}, core.String{V: agent.Model})
+	m, _, _ = m.Assoc(core.Keyword{V: "temperature"}, core.Float{V: agent.Temperature})
+	m, _, _ = m.Assoc(core.Keyword{V: "max-tokens"}, core.Int{V: int64(agent.MaxTokens)})
+	m, _, _ = m.Assoc(core.Keyword{V: "system"}, core.String{V: agent.System})
+	m, _, _ = m.Assoc(core.Keyword{V: "tools"}, core.NewVector(toolsVec))
+	m, _, _ = m.Assoc(core.Keyword{V: "can-delegate"}, core.NewVector(delegateVec))
 
 	return m, nil
 }

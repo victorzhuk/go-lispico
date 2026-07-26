@@ -50,15 +50,15 @@ func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.Ha
 	}
 
 	result := core.NewHashMap()
-	result, _ = result.Assoc(core.Keyword{V: "status"}, core.Int{V: int64(resp.StatusCode)})
+	result, _, _ = result.Assoc(core.Keyword{V: "status"}, core.Int{V: int64(resp.StatusCode)})
 
 	headers := core.NewHashMap()
 	for k, v := range resp.Header {
 		if len(v) > 0 {
-			headers, _ = headers.Assoc(core.String{V: k}, core.String{V: v[0]})
+			headers, _, _ = headers.Assoc(core.String{V: k}, core.String{V: v[0]})
 		}
 	}
-	result, _ = result.Assoc(core.Keyword{V: "headers"}, headers)
+	result, _, _ = result.Assoc(core.Keyword{V: "headers"}, headers)
 
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "application/json") && len(body) > 0 {
@@ -66,15 +66,15 @@ func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.Ha
 		if err := json.Unmarshal(body, &jsonData); err == nil {
 			bodyVal, err := goToLisp(jsonData)
 			if err != nil {
-				result, _ = result.Assoc(core.Keyword{V: "body"}, core.String{V: string(body)})
+				result, _, _ = result.Assoc(core.Keyword{V: "body"}, core.String{V: string(body)})
 			} else {
-				result, _ = result.Assoc(core.Keyword{V: "body"}, bodyVal)
+				result, _, _ = result.Assoc(core.Keyword{V: "body"}, bodyVal)
 			}
 		} else {
-			result, _ = result.Assoc(core.Keyword{V: "body"}, core.String{V: string(body)})
+			result, _, _ = result.Assoc(core.Keyword{V: "body"}, core.String{V: string(body)})
 		}
 	} else {
-		result, _ = result.Assoc(core.Keyword{V: "body"}, core.String{V: string(body)})
+		result, _, _ = result.Assoc(core.Keyword{V: "body"}, core.String{V: string(body)})
 	}
 
 	return result, nil

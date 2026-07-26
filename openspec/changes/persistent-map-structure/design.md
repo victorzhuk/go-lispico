@@ -87,7 +87,30 @@ root struct rather than on `vecNode`. This grows `HashMap` from 32 to 40 bytes.
 arch-independent approximation table, not `unsafe.Sizeof` assertions, and moving one
 shifts every recorded ledger expectation in the suite for no gain in honesty.
 
-### `Set`: measure before choosing — this is the one open decision
+### `Set` keeps a Go map as a build-only staging form — settled by measurement
+
+**Measured.** Path-copying `Set` was implemented first, as planned below, and the
+cost was not acceptable: `BenchmarkHashMap_SetBuild` regressed +293–321% in time
+and +388–3721% in allocations, and end-to-end `json/decode` of a 4000-key object
+went from ~820µs to ~4.32ms — roughly 5×, on the one large-map path that is
+actually exercised.
+
+The resolution keeps three storage forms rather than two. `Set` past the small
+limit builds into a plain Go map, exactly as before this change; `Assoc` and
+`Dissoc` convert that map to a trie once, on first use, and stay persistent from
+there. Bulk construction is therefore unchanged — `SetBuild` allocations came back
+byte-identical to baseline (14 / 1513 / 19570, ±0%) and `json/decode` returned to
+its baseline range — while a chained `assoc` still gets structural sharing.
+
+The conversion is O(n) and happens at most once per chain, because every result
+after the first is already in trie form. A caller that repeatedly derives from the
+same Set-built map pays it per call, which is what a whole-map copy cost anyway,
+so nothing regresses against today. The receiver is never mutated by the
+conversion, so concurrent readers are unaffected and no ownership flag is needed.
+
+The rejected alternatives, kept because they explain the shape:
+
+### Why not an ownership flag, or in-place trie mutation
 
 `Set` is the mutable escape hatch. Its contract already says it is "an in-place
 escape hatch for building a fresh map before it is shared". Every in-repo caller
@@ -111,11 +134,28 @@ goroutines. That is a data race on a type whose concurrent use is a stated
 requirement, and making it atomic taxes every `Assoc`. Rejected on that basis, not
 on complexity.
 
-So: implement path-copying `Set` first, measure `BenchmarkHashMap_SetBuild`
-against the recorded baseline, and report the delta. If it is material, the
-follow-up is a package-internal builder that owns its nodes from construction and
-is handed to the six call sites — no exported surface, no flag on the shared type.
-Do not choose between these by argument; the benchmark exists to decide it.
+The staging-map form above avoids the question entirely: the fast path never
+touches a trie, and the trie is only ever reached through operations that share
+rather than mutate.
+
+### `Assoc`/`Dissoc` report the bytes they allocated — a deliberate API break
+
+The charge in task 4.1 needs the storage a single update actually allocated, and
+only the trie knows it. `List.Cons` and `Vector.Conj` already return
+`(value, int64)` for exactly this reason, so `Assoc` and `Dissoc` become
+`(*HashMap, int64, error)`.
+
+This breaks 44 non-test call sites across 21 files, most of the form
+`m, _ = m.Assoc(k, v)` → `m, _, _ = m.Assoc(k, v)`, several in plugins frozen by
+ADR 0004. Keeping them compiling is mechanical and is not a feature change.
+
+The alternative — leaving `Assoc` alone and adding a parallel metered variant —
+was rejected because it preserves the defect's cause: the next charging call site
+written against the ordinary `Assoc` silently under-charges, which is exactly the
+class of bug this change exists to fix. One way to update a map, and it tells you
+what it cost.
+
+Breaking, documented in the changelog with the migration.
 
 ### Canonicalization on `Dissoc` is limited to dropping empty nodes
 
@@ -148,11 +188,12 @@ builtin in the same breath as this one.
   collateral-damage check only, and rely on the ledger ceiling plus the two new
   benchmarks for the actual result. Stating this here so a green gate is not
   later cited as proof the change worked.
-- **`Get` gets slightly slower** on the large form: a few levels of trie descent
-  against one Go map lookup. Acceptable — reads were never the defect — but it is
-  a real regression and `BenchmarkHashMap_ScanVsMap` does not measure it, since it
-  pins the small-form boundary. A large-form `Get` benchmark is added so the cost
-  is recorded rather than discovered later.
+- **`Get` on the trie was predicted to be slower and is not.** A few levels of
+  trie descent were expected to cost more than one Go map lookup; measured, it is
+  ~21ns against ~54ns at n=10000, about 2.6× faster. `hashKey` embeds a string
+  field, so Go's map hashing covers the whole struct while FNV over a small
+  integer key does not. Recorded because the prediction was wrong, not because
+  the win is needed — reads were never the defect.
 - **Two guarding tests are in the diff.** `TestHashMap_PromotionBoundary` reads the
   unexported storage field and `TestAssocMonotonic_ChargesPerCallHonestly` asserts
   the exact charge this change alters. Both must be edited by the change they

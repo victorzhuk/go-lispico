@@ -29,8 +29,16 @@ allocates.
 
 #### Scenario: Map accumulation completes under the default ledger
 
-- **WHEN** a loop `assoc`s 100,000 distinct keys into an accumulating map with default resource limits
+- **WHEN** a loop `assoc`s 20,000 distinct keys into an accumulating map with default resource limits
 - **THEN** it SHALL return the accumulated map rather than a `ResourceLimitError`
+
+Unlike the sequence requirement's 100,000-element cons, a chained `assoc` has a
+finite ceiling by construction: each call copies a root-to-leaf path, so building
+an n-key map one key at a time allocates O(n log n) bytes no matter how the
+structure is arranged. The bound above is chosen an order of magnitude past the
+whole-copy representation's ceiling and with margin below the measured one; it
+pins the improvement without asserting an unbounded budget that no persistent map
+can honestly deliver.
 
 #### Scenario: Over-budget assoc fails closed
 

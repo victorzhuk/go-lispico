@@ -19,8 +19,12 @@ const (
 	MeterEnvCellBytes          int64 = 32
 	MeterClosureHeaderBytes    int64 = 64
 	MeterClosureCaptureBytes   int64 = 8
-	MeterInstructionBytes      int64 = 4
-	MeterReaderNodeBytes       int64 = 32
+	// MeterTrieChildBytes sizes one child slot in a persistent map node. A
+	// child is a bare node pointer, not an interface value, so it is one
+	// word rather than MeterValueSlotBytes' two.
+	MeterTrieChildBytes   int64 = 8
+	MeterInstructionBytes int64 = 4
+	MeterReaderNodeBytes  int64 = 32
 )
 
 const (

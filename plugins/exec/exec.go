@@ -96,8 +96,8 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 	err = cmd.Run()
 
 	result := core.NewHashMap()
-	result, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: stdout.String()})
-	result, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: stderr.String()})
+	result, _, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: stdout.String()})
+	result, _, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: stderr.String()})
 
 	exitCode := int64(0)
 	if err != nil {
@@ -110,7 +110,7 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 		}
 	}
 
-	result, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: exitCode})
+	result, _, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: exitCode})
 
 	return result, nil
 }
@@ -176,9 +176,9 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 		if err := cmd.Wait(); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				result := core.NewHashMap()
-				result, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: finalStdout.String()})
-				result, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: finalStderr.String()})
-				result, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: int64(exitErr.ExitCode())})
+				result, _, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: finalStdout.String()})
+				result, _, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: finalStderr.String()})
+				result, _, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: int64(exitErr.ExitCode())})
 				return result, nil
 			}
 			return nil, fmt.Errorf("wait for command: %w", err)
@@ -186,9 +186,9 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 	}
 
 	result := core.NewHashMap()
-	result, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: finalStdout.String()})
-	result, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: finalStderr.String()})
-	result, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: 0})
+	result, _, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: finalStdout.String()})
+	result, _, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: finalStderr.String()})
+	result, _, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: 0})
 
 	return result, nil
 }

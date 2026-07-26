@@ -3,8 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math"
+	"math/bits"
 	"sort"
 	"strconv"
 )
@@ -689,21 +689,267 @@ type entry struct {
 	v  Value
 }
 
-// hashMapSmallLimit caps the sorted-slice form: Assoc/Set promote to the map
+// hashMapSmallLimit caps the sorted-slice form: Assoc/Set promote to the trie
 // form on the 9th distinct key. Frozen by BenchmarkHashMap_ScanVsMap — below
-// this size, a linear scan beats a Go map lookup.
+// this size, a linear scan beats a hashed lookup.
 const hashMapSmallLimit = 8
+
+// hashOfKey hashes a key with FNV-1a over fixed constants. The seed must not
+// vary per process: a randomized seed (hash/maphash) would give identical input
+// a different trie shape on every run, making failures unreproducible and
+// contradicting the determinism core-engine requires. The 64-to-32 fold mixes
+// the high half down, because the top levels of the trie discriminate on the
+// low bits.
+func hashOfKey(hk hashKey) uint32 {
+	const (
+		fnvOffset uint64 = 14695981039346656037
+		fnvPrime  uint64 = 1099511628211
+	)
+	h := fnvOffset
+	h = (h ^ uint64(hk.typ)) * fnvPrime
+	for n := hk.num; ; n >>= 8 {
+		h = (h ^ (n & 0xff)) * fnvPrime
+		if n < 0x100 {
+			break
+		}
+	}
+	for i := range len(hk.str) {
+		h = (h ^ uint64(hk.str[i])) * fnvPrime
+	}
+	return uint32(h ^ (h >> 32))
+}
+
+// hamtNode is one level of the persistent trie backing the large map form.
+// dataMap and nodeMap are disjoint: a slot holds either an entry or a child,
+// never both. Both slices are compacted, so slot f's payload lives at the
+// population count of the bits below it — len(entries) == OnesCount32(dataMap)
+// and len(children) == OnesCount32(nodeMap).
+//
+// It reuses Vector's trie geometry (vecBits/vecBranch) rather than declaring
+// its own copy of 5 and 32; two names for one number is how they drift apart.
+type hamtNode struct {
+	dataMap  uint32
+	nodeMap  uint32
+	entries  []entry
+	children []*hamtNode
+}
+
+// hamtNodeBytes approximates one node's allocation for the ledger, on the same
+// arch-independent basis as the Meter* constants.
+func hamtNodeBytes(n *hamtNode) int64 {
+	return MeterCollectionHeaderBytes +
+		int64(len(n.entries))*MeterHashMapEntryBytes +
+		int64(len(n.children))*MeterTrieChildBytes
+}
+
+// isCollision reports whether n stores its entries as a flat scanned list
+// because the trie ran out of hash bits to discriminate on. A node with
+// neither bitmap set holds nothing in the ordinary layout, so entries being
+// non-empty is unambiguous.
+func (n *hamtNode) isCollision() bool {
+	return n.dataMap == 0 && n.nodeMap == 0 && len(n.entries) > 0
+}
+
+func (n *hamtNode) clone() *hamtNode {
+	out := &hamtNode{dataMap: n.dataMap, nodeMap: n.nodeMap}
+	out.entries = append([]entry(nil), n.entries...)
+	out.children = append([]*hamtNode(nil), n.children...)
+	return out
+}
+
+func (n *hamtNode) get(hk hashKey, h uint32, shift uint) (Value, bool) {
+	if n.isCollision() {
+		for i := range n.entries {
+			if n.entries[i].hk == hk {
+				return n.entries[i].v, true
+			}
+		}
+		return nil, false
+	}
+	bit := uint32(1) << ((h >> shift) & (vecBranch - 1))
+	switch {
+	case n.dataMap&bit != 0:
+		e := n.entries[bits.OnesCount32(n.dataMap&(bit-1))]
+		if e.hk == hk {
+			return e.v, true
+		}
+		return nil, false
+	case n.nodeMap&bit != 0:
+		return n.children[bits.OnesCount32(n.nodeMap&(bit-1))].get(hk, h, shift+vecBits)
+	}
+	return nil, false
+}
+
+// mergeEntries builds the subtree holding two entries with distinct hash keys.
+// Past shift 32 there are no bits left to tell them apart — `h >> 35` on a
+// uint32 is 0 in Go, so descending further would recurse forever — and the
+// pair becomes a collision node.
+func mergeEntries(a entry, ha uint32, b entry, hb uint32, shift uint) *hamtNode {
+	if shift >= 32 {
+		return &hamtNode{entries: []entry{a, b}}
+	}
+	fa := (ha >> shift) & (vecBranch - 1)
+	fb := (hb >> shift) & (vecBranch - 1)
+	if fa == fb {
+		return &hamtNode{
+			nodeMap:  uint32(1) << fa,
+			children: []*hamtNode{mergeEntries(a, ha, b, hb, shift+vecBits)},
+		}
+	}
+	out := &hamtNode{dataMap: (uint32(1) << fa) | (uint32(1) << fb)}
+	if fa < fb {
+		out.entries = []entry{a, b}
+	} else {
+		out.entries = []entry{b, a}
+	}
+	return out
+}
+
+// assoc returns the node with e inserted, the bytes the insert allocated, and
+// whether e introduced a key the subtree did not already hold. Untouched
+// children are shared with the receiver; only the path down to e is copied.
+func (n *hamtNode) assoc(e entry, h uint32, shift uint) (*hamtNode, int64, bool) {
+	if n.isCollision() {
+		for i := range n.entries {
+			if n.entries[i].hk == e.hk {
+				out := &hamtNode{entries: append([]entry(nil), n.entries...)}
+				out.entries[i] = e
+				return out, hamtNodeBytes(out), false
+			}
+		}
+		out := &hamtNode{entries: append(append([]entry(nil), n.entries...), e)}
+		return out, hamtNodeBytes(out), true
+	}
+
+	bit := uint32(1) << ((h >> shift) & (vecBranch - 1))
+	switch {
+	case n.dataMap&bit != 0:
+		idx := bits.OnesCount32(n.dataMap & (bit - 1))
+		existing := n.entries[idx]
+		if existing.hk == e.hk {
+			out := n.clone()
+			out.entries[idx] = e
+			return out, hamtNodeBytes(out), false
+		}
+		child := mergeEntries(existing, hashOfKey(existing.hk), e, h, shift+vecBits)
+		cidx := bits.OnesCount32(n.nodeMap & (bit - 1))
+		out := &hamtNode{dataMap: n.dataMap &^ bit, nodeMap: n.nodeMap | bit}
+		out.entries = append(out.entries, n.entries[:idx]...)
+		out.entries = append(out.entries, n.entries[idx+1:]...)
+		out.children = append(out.children, n.children[:cidx]...)
+		out.children = append(out.children, child)
+		out.children = append(out.children, n.children[cidx:]...)
+		return out, hamtNodeBytes(out) + hamtNodeBytes(child), true
+	case n.nodeMap&bit != 0:
+		cidx := bits.OnesCount32(n.nodeMap & (bit - 1))
+		child, bytes, added := n.children[cidx].assoc(e, h, shift+vecBits)
+		out := n.clone()
+		out.children[cidx] = child
+		return out, bytes + hamtNodeBytes(out), added
+	default:
+		idx := bits.OnesCount32(n.dataMap & (bit - 1))
+		out := &hamtNode{dataMap: n.dataMap | bit, nodeMap: n.nodeMap, children: n.children}
+		out.entries = append(out.entries, n.entries[:idx]...)
+		out.entries = append(out.entries, e)
+		out.entries = append(out.entries, n.entries[idx:]...)
+		return out, hamtNodeBytes(out), true
+	}
+}
+
+// dissoc returns the node without hk, the bytes the rebuild allocated, and
+// whether hk was present. A nil node means the subtree is now empty and the
+// caller drops it, so repeated removal cannot leave dead nodes behind.
+func (n *hamtNode) dissoc(hk hashKey, h uint32, shift uint) (*hamtNode, int64, bool) {
+	if n.isCollision() {
+		for i := range n.entries {
+			if n.entries[i].hk != hk {
+				continue
+			}
+			if len(n.entries) == 1 {
+				return nil, 0, true
+			}
+			out := &hamtNode{}
+			out.entries = append(out.entries, n.entries[:i]...)
+			out.entries = append(out.entries, n.entries[i+1:]...)
+			return out, hamtNodeBytes(out), true
+		}
+		return n, 0, false
+	}
+
+	bit := uint32(1) << ((h >> shift) & (vecBranch - 1))
+	switch {
+	case n.dataMap&bit != 0:
+		idx := bits.OnesCount32(n.dataMap & (bit - 1))
+		if n.entries[idx].hk != hk {
+			return n, 0, false
+		}
+		if n.dataMap == bit && n.nodeMap == 0 {
+			return nil, 0, true
+		}
+		out := &hamtNode{dataMap: n.dataMap &^ bit, nodeMap: n.nodeMap, children: n.children}
+		out.entries = append(out.entries, n.entries[:idx]...)
+		out.entries = append(out.entries, n.entries[idx+1:]...)
+		return out, hamtNodeBytes(out), true
+	case n.nodeMap&bit != 0:
+		cidx := bits.OnesCount32(n.nodeMap & (bit - 1))
+		child, bytes, removed := n.children[cidx].dissoc(hk, h, shift+vecBits)
+		if !removed {
+			return n, 0, false
+		}
+		if child != nil {
+			out := n.clone()
+			out.children[cidx] = child
+			return out, bytes + hamtNodeBytes(out), true
+		}
+		if n.dataMap == 0 && n.nodeMap == bit {
+			return nil, 0, true
+		}
+		out := &hamtNode{dataMap: n.dataMap, nodeMap: n.nodeMap &^ bit, entries: n.entries}
+		out.children = append(out.children, n.children[:cidx]...)
+		out.children = append(out.children, n.children[cidx+1:]...)
+		return out, hamtNodeBytes(out), true
+	}
+	return n, 0, false
+}
+
+// each walks every entry in trie order — unsorted, for callers that need
+// membership rather than display order.
+func (n *hamtNode) each(fn func(e entry)) {
+	for i := range n.entries {
+		fn(n.entries[i])
+	}
+	for _, c := range n.children {
+		c.each(fn)
+	}
+}
 
 // HashMap — immutable associative map. Keys must be comparable (Nil, Bool, Int,
 // Float, String, Symbol, Keyword). Operations return new maps.
 //
-// Below hashMapSmallLimit distinct keys, entries holds them sorted by hashKey
-// and Get is a linear scan — cheap at this size and already iteration-order.
-// Past the limit, m takes over as storage. Promotion is one-way: a map that
-// shrinks back below the limit through Dissoc stays in map form.
+// It has three storage forms, exactly one of which is active.
+//
+// entries — at or below hashMapSmallLimit distinct keys: sorted by hashKey,
+// Get is a linear scan, cheap at this size and already in iteration order.
+//
+// m — a plain Go map, reached only by growing past the limit through the
+// mutable Set escape hatch. Set is the bulk-construction path (map literals,
+// hash-map, merge, OpMakeMap, json/decode), where an in-place map assignment
+// is O(1) and nothing is shared yet.
+//
+// root — a persistent trie, produced by Assoc and Dissoc. Copying one
+// root-to-leaf path and sharing the rest is what keeps a chained assoc linear
+// instead of quadratic. A map still in m form converts once, on its first
+// Assoc; from there the chain stays in trie form.
+//
+// Promotion is one-way in both steps: a map that shrinks back below the limit
+// through Dissoc stays in trie form.
+//
+// count tracks the entry total for the trie, because counting one is not O(1).
 type HashMap struct {
 	entries []entry
 	m       map[hashKey]entry
+	root    *hamtNode
+	count   int
 }
 
 func NewHashMap() *HashMap {
@@ -713,7 +959,7 @@ func NewHashMap() *HashMap {
 func (h *HashMap) Type() Keyword { return Keyword{V: "map"} }
 
 // find locates hk in the sorted small-form entries, or the index it would
-// need to be inserted at to keep entries sorted. Unused when h.m != nil.
+// need to be inserted at to keep entries sorted. Unused when h.root != nil.
 func (h *HashMap) find(hk hashKey) (int, bool) {
 	for i := range h.entries {
 		if h.entries[i].hk == hk {
@@ -727,6 +973,9 @@ func (h *HashMap) find(hk hashKey) (int, bool) {
 }
 
 func (h *HashMap) getByHashKey(hk hashKey) (Value, bool) {
+	if h.root != nil {
+		return h.root.get(hk, hashOfKey(hk), 0)
+	}
 	if h.m != nil {
 		e, ok := h.m[hk]
 		return e.v, ok
@@ -737,9 +986,13 @@ func (h *HashMap) getByHashKey(hk hashKey) (Value, bool) {
 	return nil, false
 }
 
-// eachRaw walks every entry in storage order — unsorted for the map form.
+// eachRaw walks every entry in storage order — unsorted for the trie form.
 // For callers like Equals that only need membership, not display order.
 func (h *HashMap) eachRaw(fn func(e entry)) {
+	if h.root != nil {
+		h.root.each(fn)
+		return
+	}
 	if h.m != nil {
 		for _, e := range h.m {
 			fn(e)
@@ -752,16 +1005,14 @@ func (h *HashMap) eachRaw(fn func(e entry)) {
 }
 
 // sortedEntries returns every entry in deterministic (typ, num, str) order.
-// The small form is already sorted and returned as-is; the map form re-sorts
+// The small form is already sorted and returned as-is; the trie form re-sorts
 // on each call, same cost as before the rewrite.
 func (h *HashMap) sortedEntries() []entry {
-	if h.m == nil {
+	if h.root == nil && h.m == nil {
 		return h.entries
 	}
-	entries := make([]entry, 0, len(h.m))
-	for _, e := range h.m {
-		entries = append(entries, e)
-	}
+	entries := make([]entry, 0, h.Len())
+	h.eachRaw(func(e entry) { entries = append(entries, e) })
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].hk.less(entries[j].hk)
 	})
@@ -772,59 +1023,106 @@ func (h *HashMap) String() string { return boundedString(h, 0) }
 
 func (h *HashMap) Equals(o Value) bool { return boundedEquals(h, o, 0) }
 
-// newMapFromEntries builds map-form storage from small-form entries plus one
-// more, used when Assoc/Set crosses hashMapSmallLimit.
-func newMapFromEntries(entries []entry, extra entry) map[hashKey]entry {
-	m := make(map[hashKey]entry, len(entries)+1)
-	for _, e := range entries {
-		m[e.hk] = e
+// newTrieFromEntries builds trie-form storage from small-form entries plus one
+// more, used when Assoc/Set crosses hashMapSmallLimit. Returns the root and the
+// bytes it allocated.
+func newTrieFromEntries(entries []entry, extra entry) (*hamtNode, int64) {
+	root := &hamtNode{}
+	var bytes int64
+	add := func(e entry) {
+		next, b, _ := root.assoc(e, hashOfKey(e.hk), 0)
+		root, bytes = next, bytes+b
 	}
-	m[extra.hk] = extra
-	return m
+	for _, e := range entries {
+		add(e)
+	}
+	add(extra)
+	return root, bytes
 }
 
-func (h *HashMap) Assoc(key, val Value) (*HashMap, error) {
+// trieFromBuildMap converts Set-built staging storage into trie form. Called
+// once, on the first Assoc or Dissoc after bulk construction: the builder path
+// stays O(1) per Set, and the persistent path gets structural sharing from
+// there on. The receiver is left untouched, so no map is mutated behind a
+// caller's back and concurrent readers of h are unaffected.
+func (h *HashMap) trieFromBuildMap() (*hamtNode, int64) {
+	root := &hamtNode{}
+	var bytes int64
+	for _, e := range h.m {
+		next, b, _ := root.assoc(e, hashOfKey(e.hk), 0)
+		root, bytes = next, bytes+b
+	}
+	return root, bytes
+}
+
+// Assoc returns the map with key bound to val, plus the bytes the update
+// allocated. In trie form only the path to the key is copied, so the charge is
+// bounded by the trie's depth rather than by the map's size — a caller
+// assoc'ing onto an already-large map is billed roughly the same as one
+// assoc'ing onto a small one.
+func (h *HashMap) Assoc(key, val Value) (*HashMap, int64, error) {
 	hk, err := toHashKey(key)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	e := entry{hk: hk, k: key, v: val}
-	if h.m != nil {
-		out := make(map[hashKey]entry, len(h.m)+1)
-		maps.Copy(out, h.m)
-		out[hk] = e
-		return &HashMap{m: out}, nil
+	if h.root == nil && h.m != nil {
+		root, bytes := h.trieFromBuildMap()
+		next, b, added := root.assoc(e, hashOfKey(hk), 0)
+		count := len(h.m)
+		if added {
+			count++
+		}
+		return &HashMap{root: next, count: count}, bytes + b, nil
+	}
+	if h.root != nil {
+		root, bytes, added := h.root.assoc(e, hashOfKey(hk), 0)
+		count := h.count
+		if added {
+			count++
+		}
+		return &HashMap{root: root, count: count}, bytes, nil
 	}
 	i, found := h.find(hk)
 	if found {
 		entries := make([]entry, len(h.entries))
 		copy(entries, h.entries)
 		entries[i] = e
-		return &HashMap{entries: entries}, nil
+		return &HashMap{entries: entries, count: len(entries)}, HashMapShallowBytes(len(entries)), nil
 	}
 	if len(h.entries) >= hashMapSmallLimit {
-		return &HashMap{m: newMapFromEntries(h.entries, e)}, nil
+		root, bytes := newTrieFromEntries(h.entries, e)
+		return &HashMap{root: root, count: len(h.entries) + 1}, bytes, nil
 	}
 	entries := make([]entry, len(h.entries)+1)
 	copy(entries, h.entries[:i])
 	entries[i] = e
 	copy(entries[i+1:], h.entries[i:])
-	return &HashMap{entries: entries}, nil
+	return &HashMap{entries: entries, count: len(entries)}, HashMapShallowBytes(len(entries)), nil
 }
 
-func (h *HashMap) Dissoc(key Value) (*HashMap, error) {
+// Dissoc returns the map without key, plus the bytes the update allocated.
+func (h *HashMap) Dissoc(key Value) (*HashMap, int64, error) {
 	hk, err := toHashKey(key)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	if h.m != nil {
-		out := make(map[hashKey]entry, len(h.m))
-		for k, e := range h.m {
-			if k != hk {
-				out[k] = e
-			}
+	if h.root == nil && h.m != nil {
+		root, bytes := h.trieFromBuildMap()
+		next, b, removed := root.dissoc(hk, hashOfKey(hk), 0)
+		count := len(h.m)
+		if removed {
+			count--
 		}
-		return &HashMap{m: out}, nil
+		return &HashMap{root: next, count: count}, bytes + b, nil
+	}
+	if h.root != nil {
+		root, bytes, removed := h.root.dissoc(hk, hashOfKey(hk), 0)
+		count := h.count
+		if removed {
+			count--
+		}
+		return &HashMap{root: root, count: count}, bytes, nil
 	}
 	entries := make([]entry, 0, len(h.entries))
 	for _, e := range h.entries {
@@ -832,7 +1130,7 @@ func (h *HashMap) Dissoc(key Value) (*HashMap, error) {
 			entries = append(entries, e)
 		}
 	}
-	return &HashMap{entries: entries}, nil
+	return &HashMap{entries: entries, count: len(entries)}, HashMapShallowBytes(len(entries)), nil
 }
 
 func (h *HashMap) Get(key Value) (Value, bool) {
@@ -848,6 +1146,9 @@ func (h *HashMap) Get(key Value) (Value, bool) {
 }
 
 func (h *HashMap) Len() int {
+	if h.root != nil {
+		return h.count
+	}
 	if h.m != nil {
 		return len(h.m)
 	}
@@ -858,12 +1159,29 @@ func (h *HashMap) Len() int {
 // building a fresh map before it is shared; callers holding a HashMap that may
 // already be referenced elsewhere must use the copy-on-write Assoc/Dissoc
 // instead to preserve immutability.
+//
+// Growing past hashMapSmallLimit it builds into a plain Go map, where an
+// insert is O(1) and nothing is shared yet — bulk construction is the reason
+// this method exists. Only a map already converted to trie form pays the
+// path-copying insert, which happens when a caller Sets after having derived
+// something through Assoc. Mutating trie nodes in place is not an option
+// there: they may be shared with the derived map, and telling that case apart
+// would need an ownership flag cleared on the receiver, which is a write to a
+// value shared across goroutines.
 func (h *HashMap) Set(key, val Value) error {
 	hk, err := toHashKey(key)
 	if err != nil {
 		return err
 	}
 	e := entry{hk: hk, k: key, v: val}
+	if h.root != nil {
+		root, _, added := h.root.assoc(e, hashOfKey(hk), 0)
+		h.root = root
+		if added {
+			h.count++
+		}
+		return nil
+	}
 	if h.m != nil {
 		h.m[hk] = e
 		return nil
@@ -874,7 +1192,12 @@ func (h *HashMap) Set(key, val Value) error {
 		return nil
 	}
 	if len(h.entries) >= hashMapSmallLimit {
-		h.m = newMapFromEntries(h.entries, e)
+		m := make(map[hashKey]entry, len(h.entries)+1)
+		for _, existing := range h.entries {
+			m[existing.hk] = existing
+		}
+		m[hk] = e
+		h.m = m
 		h.entries = nil
 		return nil
 	}
@@ -989,7 +1312,7 @@ func FromGoValue(v any) (Value, error) {
 			if ferr != nil {
 				return nil, ferr
 			}
-			m, err = m.Assoc(Keyword{V: k}, value)
+			m, _, err = m.Assoc(Keyword{V: k}, value)
 			if err != nil {
 				return nil, err
 			}

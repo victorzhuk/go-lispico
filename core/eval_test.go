@@ -564,7 +564,7 @@ func TestEval_Keyword_AsFunction(t *testing.T) {
 
 	// Set up a HashMap via def
 	m := NewHashMap()
-	m, _ = m.Assoc(Keyword{V: "name"}, String{V: "alice"})
+	m, _, _ = m.Assoc(Keyword{V: "name"}, String{V: "alice"})
 	env.Set("m", m)
 
 	got := evalStr(t, env, "(:name m)")
@@ -1069,7 +1069,7 @@ func TestEval_Keyword_WrongArity(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
 	env.Set("m", func() *HashMap {
-		m, _ := NewHashMap().Assoc(Keyword{V: "a"}, Int{V: 1})
+		m, _, _ := NewHashMap().Assoc(Keyword{V: "a"}, Int{V: 1})
 		return m
 	}())
 	if err := evalStrErr(env, "(:a m m)"); err == nil {

@@ -180,10 +180,10 @@ func (p *Plugin) stat(ctx context.Context, eval core.Evaluator, args []core.Valu
 	}
 
 	m := core.NewHashMap()
-	m, _ = m.Assoc(core.Keyword{V: "size"}, core.Int{V: info.Size()})
-	m, _ = m.Assoc(core.Keyword{V: "mtime"}, core.Int{V: info.ModTime().Unix()})
-	m, _ = m.Assoc(core.Keyword{V: "isdir"}, core.Bool{V: info.IsDir()})
-	m, _ = m.Assoc(core.Keyword{V: "mode"}, core.String{V: info.Mode().String()})
+	m, _, _ = m.Assoc(core.Keyword{V: "size"}, core.Int{V: info.Size()})
+	m, _, _ = m.Assoc(core.Keyword{V: "mtime"}, core.Int{V: info.ModTime().Unix()})
+	m, _, _ = m.Assoc(core.Keyword{V: "isdir"}, core.Bool{V: info.IsDir()})
+	m, _, _ = m.Assoc(core.Keyword{V: "mode"}, core.String{V: info.Mode().String()})
 
 	return m, nil
 }

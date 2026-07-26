@@ -277,7 +277,7 @@ func TestIntegration_Immutability(t *testing.T) {
 
 	// Assoc should not mutate original HashMap
 	m := NewHashMap()
-	m2, err := m.Assoc(Keyword{V: "x"}, Int{V: 1})
+	m2, _, err := m.Assoc(Keyword{V: "x"}, Int{V: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

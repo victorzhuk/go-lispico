@@ -128,8 +128,8 @@ func (p *Plugin) stream(ctx context.Context, eval core.Evaluator, args []core.Va
 		}
 
 		chunkMap := core.NewHashMap()
-		chunkMap, _ = chunkMap.Assoc(core.Keyword{V: "content"}, core.String{V: chunk.Content})
-		chunkMap, _ = chunkMap.Assoc(core.Keyword{V: "done"}, core.Bool{V: chunk.Done})
+		chunkMap, _, _ = chunkMap.Assoc(core.Keyword{V: "content"}, core.String{V: chunk.Content})
+		chunkMap, _, _ = chunkMap.Assoc(core.Keyword{V: "done"}, core.Bool{V: chunk.Done})
 
 		_, err := eval.Apply(ctx, handler, []core.Value{chunkMap}, env)
 		if err != nil {
@@ -290,8 +290,8 @@ func (p *Plugin) toolCall(ctx context.Context, eval core.Evaluator, args []core.
 	var results []core.Value
 	for _, tc := range resp.ToolCalls {
 		m := core.NewHashMap()
-		m, _ = m.Assoc(core.Keyword{V: "id"}, core.String{V: tc.ID})
-		m, _ = m.Assoc(core.Keyword{V: "name"}, core.String{V: tc.Name})
+		m, _, _ = m.Assoc(core.Keyword{V: "id"}, core.String{V: tc.ID})
+		m, _, _ = m.Assoc(core.Keyword{V: "name"}, core.String{V: tc.Name})
 
 		argsMap := core.NewHashMap()
 		for k, v := range tc.Args {
@@ -299,9 +299,9 @@ func (p *Plugin) toolCall(ctx context.Context, eval core.Evaluator, args []core.
 			if err != nil {
 				val = core.String{V: fmt.Sprintf("%v", v)}
 			}
-			argsMap, _ = argsMap.Assoc(core.Keyword{V: k}, val)
+			argsMap, _, _ = argsMap.Assoc(core.Keyword{V: k}, val)
 		}
-		m, _ = m.Assoc(core.Keyword{V: "args"}, argsMap)
+		m, _, _ = m.Assoc(core.Keyword{V: "args"}, argsMap)
 
 		results = append(results, m)
 	}

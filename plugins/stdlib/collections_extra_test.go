@@ -274,9 +274,10 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 		// is already above the shared-tail threshold, so extending it
 		// allocates one node, not a copy of the whole list — a 4096-byte
 		// budget no longer bounds that call. The collection-length check
-		// below covers them instead.
+		// below covers them instead. conj onto a map is excluded for the
+		// same reason: hugeMap is above the small-map limit, so Assoc
+		// copies one trie path rather than every entry.
 		{"conj vector", "conj", []core.Value{hugeVector, core.Int{V: 0}}},
-		{"conj map", "conj", []core.Value{hugeMap, core.Keyword{V: "extra"}, core.String{V: strings.Repeat("x", 128)}}},
 		{"merge", "merge", []core.Value{hugeMap, hugeMap}},
 	}
 	for _, tt := range tests {
@@ -297,6 +298,7 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 	}{
 		{"cons", "cons", []core.Value{core.Int{V: 0}, hugeList}},
 		{"conj list", "conj", []core.Value{hugeList, core.Int{V: 0}}},
+		{"conj map", "conj", []core.Value{hugeMap, core.Keyword{V: "extra"}, core.String{V: strings.Repeat("x", 128)}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fn := collectionGoFunc(t, lenLimitEnv, tt.builtin)

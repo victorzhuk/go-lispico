@@ -332,7 +332,7 @@ func BenchmarkHashMap_AssocChain(b *testing.B) {
 			for range b.N {
 				m := NewHashMap()
 				for j := range n {
-					m, _ = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+					m, _, _ = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
 				}
 			}
 		})
@@ -357,14 +357,17 @@ func BenchmarkHashMap_SetBuild(b *testing.B) {
 	}
 }
 
-// BenchmarkHashMap_GetLarge reads from the large form. ScanVsMap pins the
-// small-form boundary and says nothing about this; a trie descent is expected
-// to cost more than the single map lookup it replaces, so record it.
+// BenchmarkHashMap_GetLarge reads from the trie form. It builds through Assoc
+// rather than Set on purpose: Set builds into the Go staging map, so a
+// Set-built map would measure the form this benchmark is not about.
+// ScanVsMap pins the small-form boundary and says nothing about either.
 func BenchmarkHashMap_GetLarge(b *testing.B) {
 	for _, n := range []int{100, 1000, 10000} {
 		m := NewHashMap()
 		for j := range n {
-			if err := m.Set(Int{V: int64(j)}, Int{V: int64(j)}); err != nil {
+			var err error
+			m, _, err = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+			if err != nil {
 				b.Fatal(err)
 			}
 		}

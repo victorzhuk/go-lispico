@@ -40,6 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING**: `core.HashMap.Assoc` and `core.HashMap.Dissoc` now return
+  `(*HashMap, int64, error)` instead of `(*HashMap, error)`. The added value is
+  the bytes the update allocated, which the allocation ledger needs and only the
+  map itself can know — the same shape `List.Cons` and `Vector.Conj` already
+  use. Migration is mechanical: `m, err := m.Assoc(k, v)` becomes
+  `m, _, err := m.Assoc(k, v)`, and `m, _ = m.Assoc(k, v)` becomes
+  `m, _, _ = m.Assoc(k, v)`. No behavioral change to the returned map.
+- Threading a map through repeated `assoc`/`dissoc` (`(reduce assoc {} pairs)`,
+  `recur` carrying a growing map) is now linear rather than quadratic in both
+  allocated memory and charged allocation bytes. Above the small-map threshold
+  a map is a persistent trie, so an update copies one root-to-leaf path and
+  shares the rest instead of copying every entry. Under default limits a
+  chained `assoc` previously failed with a `ResourceLimitError` between 1440
+  and 1450 keys; it now completes past 40,000. Bulk construction (map literals,
+  `hash-map`, `merge`, `json/decode`) is unaffected — it builds through the
+  mutable `Set` path, which is unchanged. Iteration order, equality, printing
+  and the small-map representation are all unchanged.
 - Accumulating into `List` or `Vector` (`cons`/`conj`-heavy loops, `recur`
   carrying a growing collection) is now linear rather than quadratic in both
   allocated memory and charged allocation bytes. `List` stores a flat slice

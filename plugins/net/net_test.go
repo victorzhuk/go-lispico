@@ -72,8 +72,8 @@ func TestPlugin_Get(t *testing.T) {
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
 				qm := core.NewHashMap()
-				qm, _ = qm.Assoc(core.Keyword{V: "key"}, core.String{V: "test"})
-				m, _ = m.Assoc(core.Keyword{V: "query"}, qm)
+				qm, _, _ = qm.Assoc(core.Keyword{V: "key"}, core.String{V: "test"})
+				m, _, _ = m.Assoc(core.Keyword{V: "query"}, qm)
 				return m
 			}(),
 			wantStatus: 200,
@@ -89,8 +89,8 @@ func TestPlugin_Get(t *testing.T) {
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
 				hm := core.NewHashMap()
-				hm, _ = hm.Assoc(core.Keyword{V: "X-Custom"}, core.String{V: "test-value"})
-				m, _ = m.Assoc(core.Keyword{V: "headers"}, hm)
+				hm, _, _ = hm.Assoc(core.Keyword{V: "X-Custom"}, core.String{V: "test-value"})
+				m, _, _ = m.Assoc(core.Keyword{V: "headers"}, hm)
 				return m
 			}(),
 			wantStatus: 200,
@@ -167,7 +167,7 @@ func TestPlugin_Post(t *testing.T) {
 			},
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
-				m, _ = m.Assoc(core.Keyword{V: "body"}, core.String{V: "test data"})
+				m, _, _ = m.Assoc(core.Keyword{V: "body"}, core.String{V: "test data"})
 				return m
 			}(),
 			wantStatus: 201,
@@ -183,8 +183,8 @@ func TestPlugin_Post(t *testing.T) {
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
 				bodyMap := core.NewHashMap()
-				bodyMap, _ = bodyMap.Assoc(core.Keyword{V: "name"}, core.String{V: "test"})
-				m, _ = m.Assoc(core.Keyword{V: "body"}, bodyMap)
+				bodyMap, _, _ = bodyMap.Assoc(core.Keyword{V: "name"}, core.String{V: "test"})
+				m, _, _ = m.Assoc(core.Keyword{V: "body"}, bodyMap)
 				return m
 			}(),
 			wantStatus: 201,
@@ -254,7 +254,7 @@ func TestPlugin_Fetch(t *testing.T) {
 			},
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
-				m, _ = m.Assoc(core.Keyword{V: "method"}, core.String{V: "PUT"})
+				m, _, _ = m.Assoc(core.Keyword{V: "method"}, core.String{V: "PUT"})
 				return m
 			}(),
 			wantStatus: 200,
@@ -268,7 +268,7 @@ func TestPlugin_Fetch(t *testing.T) {
 			},
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
-				m, _ = m.Assoc(core.Keyword{V: "method"}, core.Keyword{V: "delete"})
+				m, _, _ = m.Assoc(core.Keyword{V: "method"}, core.Keyword{V: "delete"})
 				return m
 			}(),
 			wantStatus: 200,
@@ -282,7 +282,7 @@ func TestPlugin_Fetch(t *testing.T) {
 			},
 			opts: func() *core.HashMap {
 				m := core.NewHashMap()
-				m, _ = m.Assoc(core.Keyword{V: "method"}, core.String{V: "patch"})
+				m, _, _ = m.Assoc(core.Keyword{V: "method"}, core.String{V: "patch"})
 				return m
 			}(),
 			wantStatus: 200,
@@ -426,7 +426,7 @@ func TestPlugin_CustomTimeout(t *testing.T) {
 
 	p := New()
 	opts := core.NewHashMap()
-	opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 5000})
+	opts, _, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 5000})
 
 	result, err := p.get(context.Background(), nil, []core.Value{core.String{V: srv.URL}, opts}, nil)
 	require.NoError(t, err)
@@ -490,8 +490,8 @@ func TestPlugin_HeadersWithStringKeys(t *testing.T) {
 	p := New()
 	opts := core.NewHashMap()
 	hm := core.NewHashMap()
-	hm, _ = hm.Assoc(core.String{V: "X-Custom"}, core.String{V: "test-value"})
-	opts, _ = opts.Assoc(core.Keyword{V: "headers"}, hm)
+	hm, _, _ = hm.Assoc(core.String{V: "X-Custom"}, core.String{V: "test-value"})
+	opts, _, _ = opts.Assoc(core.Keyword{V: "headers"}, hm)
 
 	result, err := p.get(context.Background(), nil, []core.Value{core.String{V: srv.URL}, opts}, nil)
 	require.NoError(t, err)
@@ -513,8 +513,8 @@ func TestPlugin_QueryWithStringKeys(t *testing.T) {
 	p := New()
 	opts := core.NewHashMap()
 	qm := core.NewHashMap()
-	qm, _ = qm.Assoc(core.String{V: "key"}, core.String{V: "test"})
-	opts, _ = opts.Assoc(core.Keyword{V: "query"}, qm)
+	qm, _, _ = qm.Assoc(core.String{V: "key"}, core.String{V: "test"})
+	opts, _, _ = opts.Assoc(core.Keyword{V: "query"}, qm)
 
 	result, err := p.get(context.Background(), nil, []core.Value{core.String{V: srv.URL}, opts}, nil)
 	require.NoError(t, err)
@@ -587,11 +587,11 @@ func TestPlugin_ExistingContentTypeNotOverridden(t *testing.T) {
 	p := New()
 	opts := core.NewHashMap()
 	bodyMap := core.NewHashMap()
-	bodyMap, _ = bodyMap.Assoc(core.Keyword{V: "name"}, core.String{V: "test"})
-	opts, _ = opts.Assoc(core.Keyword{V: "body"}, bodyMap)
+	bodyMap, _, _ = bodyMap.Assoc(core.Keyword{V: "name"}, core.String{V: "test"})
+	opts, _, _ = opts.Assoc(core.Keyword{V: "body"}, bodyMap)
 	hm := core.NewHashMap()
-	hm, _ = hm.Assoc(core.Keyword{V: "Content-Type"}, core.String{V: "text/plain"})
-	opts, _ = opts.Assoc(core.Keyword{V: "headers"}, hm)
+	hm, _, _ = hm.Assoc(core.Keyword{V: "Content-Type"}, core.String{V: "text/plain"})
+	opts, _, _ = opts.Assoc(core.Keyword{V: "headers"}, hm)
 
 	result, err := p.post(context.Background(), nil, []core.Value{core.String{V: srv.URL}, opts}, nil)
 	require.NoError(t, err)

@@ -799,7 +799,7 @@ func TestDecodeHashMap_Immutability(t *testing.T) {
 	require.Equal(t, 2, m.Len())
 
 	t.Run("Assoc does not mutate original", func(t *testing.T) {
-		_, err := m.Assoc(core.Keyword{V: "c"}, core.Int{V: 3})
+		_, _, err := m.Assoc(core.Keyword{V: "c"}, core.Int{V: 3})
 		require.NoError(t, err)
 		assert.Equal(t, 2, m.Len(), "original len unchanged after Assoc")
 		_, found := m.Get(core.Keyword{V: "c"})
@@ -807,7 +807,7 @@ func TestDecodeHashMap_Immutability(t *testing.T) {
 	})
 
 	t.Run("Dissoc does not mutate original", func(t *testing.T) {
-		_, err := m.Dissoc(core.Keyword{V: "a"})
+		_, _, err := m.Dissoc(core.Keyword{V: "a"})
 		require.NoError(t, err)
 		assert.Equal(t, 2, m.Len(), "original len unchanged after Dissoc")
 		v, found := m.Get(core.Keyword{V: "a"})

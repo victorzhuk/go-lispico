@@ -388,20 +388,20 @@ func TestPlugin_CreateAndTransition(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
 	pendingOn := core.NewHashMap()
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
 	confirmedState := core.NewHashMap()
-	confirmedState, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-	states, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -423,16 +423,16 @@ func TestPlugin_Valid(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
 	pendingOn := core.NewHashMap()
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -455,20 +455,20 @@ func TestPlugin_Reset(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
 	pendingOn := core.NewHashMap()
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
 	confirmedState := core.NewHashMap()
-	confirmedState, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-	states, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -490,17 +490,17 @@ func TestPlugin_Reachable(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
 	pendingOn := core.NewHashMap()
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "cancel"}, core.Keyword{V: "cancelled"})
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "cancel"}, core.Keyword{V: "cancelled"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -522,14 +522,14 @@ func TestPlugin_StateMachine(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -558,8 +558,8 @@ func TestPlugin_List(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
-	def, _ = def.Assoc(core.Keyword{V: "states"}, core.NewHashMap())
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, core.NewHashMap())
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -605,20 +605,20 @@ func TestPlugin_Broadcast(t *testing.T) {
 	}
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
 	pendingOn := core.NewHashMap()
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
 	confirmedState := core.NewHashMap()
-	confirmedState, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-	states, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -802,22 +802,22 @@ func TestPlugin_Transition_WithGuardError(t *testing.T) {
 	}
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 	states := core.NewHashMap()
 	pendingState := core.NewHashMap()
 	pendingOn := core.NewHashMap()
-	pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.NewHashMap())
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.NewHashMap())
 	transitionMap, _ := pendingOn.Get(core.Keyword{V: "confirm"})
 	if tm, ok := transitionMap.(*core.HashMap); ok {
-		tm, _ = tm.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "confirmed"})
-		tm, _ = tm.Assoc(core.Keyword{V: "guard"}, guardLambda)
-		pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, tm)
+		tm, _, _ = tm.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "confirmed"})
+		tm, _, _ = tm.Assoc(core.Keyword{V: "guard"}, guardLambda)
+		pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, tm)
 	}
-	pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-	states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -1047,20 +1047,20 @@ func TestPlugin_Concurrent_MultipleMachines(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		def := core.NewHashMap()
-		def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+		def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
 
 		states := core.NewHashMap()
 		pendingState := core.NewHashMap()
 		pendingOn := core.NewHashMap()
-		pendingOn, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
-		pendingState, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
-		states, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+		pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+		pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+		states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
 		confirmedState := core.NewHashMap()
-		confirmedState, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-		states, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+		confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+		states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
 
-		def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+		def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 		_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: fmt.Sprintf("machine-%d", i)}, def}, env)
 		require.NoError(t, err)
@@ -1189,32 +1189,32 @@ func TestPlugin_Acceptance_FullWorkflow(t *testing.T) {
 	ctx := context.Background()
 
 	def := core.NewHashMap()
-	def, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "draft"})
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "draft"})
 
 	states := core.NewHashMap()
 
 	draftState := core.NewHashMap()
 	draftOn := core.NewHashMap()
-	draftOn, _ = draftOn.Assoc(core.Keyword{V: "submit"}, core.Keyword{V: "submitted"})
-	draftState, _ = draftState.Assoc(core.Keyword{V: "on"}, draftOn)
-	states, _ = states.Assoc(core.Keyword{V: "draft"}, draftState)
+	draftOn, _, _ = draftOn.Assoc(core.Keyword{V: "submit"}, core.Keyword{V: "submitted"})
+	draftState, _, _ = draftState.Assoc(core.Keyword{V: "on"}, draftOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "draft"}, draftState)
 
 	submittedState := core.NewHashMap()
 	submittedOn := core.NewHashMap()
-	submittedOn, _ = submittedOn.Assoc(core.Keyword{V: "approve"}, core.Keyword{V: "approved"})
-	submittedOn, _ = submittedOn.Assoc(core.Keyword{V: "reject"}, core.Keyword{V: "rejected"})
-	submittedState, _ = submittedState.Assoc(core.Keyword{V: "on"}, submittedOn)
-	states, _ = states.Assoc(core.Keyword{V: "submitted"}, submittedState)
+	submittedOn, _, _ = submittedOn.Assoc(core.Keyword{V: "approve"}, core.Keyword{V: "approved"})
+	submittedOn, _, _ = submittedOn.Assoc(core.Keyword{V: "reject"}, core.Keyword{V: "rejected"})
+	submittedState, _, _ = submittedState.Assoc(core.Keyword{V: "on"}, submittedOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "submitted"}, submittedState)
 
 	approvedState := core.NewHashMap()
-	approvedState, _ = approvedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-	states, _ = states.Assoc(core.Keyword{V: "approved"}, approvedState)
+	approvedState, _, _ = approvedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "approved"}, approvedState)
 
 	rejectedState := core.NewHashMap()
-	rejectedState, _ = rejectedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
-	states, _ = states.Assoc(core.Keyword{V: "rejected"}, rejectedState)
+	rejectedState, _, _ = rejectedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "rejected"}, rejectedState)
 
-	def, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "document"}, def}, env)
 	require.NoError(t, err)

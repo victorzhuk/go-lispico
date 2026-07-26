@@ -264,7 +264,7 @@ func TestHashMap(t *testing.T) {
 		t.Errorf("new map len = %d, want 0", m.Len())
 	}
 
-	m2, err := m.Assoc(Keyword{V: "a"}, Int{V: 1})
+	m2, _, err := m.Assoc(Keyword{V: "a"}, Int{V: 1})
 	if err != nil {
 		t.Fatalf("Assoc error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestHashMap(t *testing.T) {
 		t.Errorf("Get :a = %v, want 1", v)
 	}
 
-	m3, err := m2.Dissoc(Keyword{V: "a"})
+	m3, _, err := m2.Dissoc(Keyword{V: "a"})
 	if err != nil {
 		t.Fatalf("Dissoc error: %v", err)
 	}
@@ -297,17 +297,17 @@ func TestHashMap(t *testing.T) {
 func TestHashMap_Equality(t *testing.T) {
 	t.Parallel()
 	m1 := NewHashMap()
-	m1, _ = m1.Assoc(Keyword{V: "x"}, Int{V: 10})
+	m1, _, _ = m1.Assoc(Keyword{V: "x"}, Int{V: 10})
 
 	m2 := NewHashMap()
-	m2, _ = m2.Assoc(Keyword{V: "x"}, Int{V: 10})
+	m2, _, _ = m2.Assoc(Keyword{V: "x"}, Int{V: 10})
 
 	if !m1.Equals(m2) {
 		t.Error("maps with same content should be equal")
 	}
 
 	m3 := NewHashMap()
-	m3, _ = m3.Assoc(Keyword{V: "x"}, Int{V: 99})
+	m3, _, _ = m3.Assoc(Keyword{V: "x"}, Int{V: 99})
 	if m1.Equals(m3) {
 		t.Error("maps with different values should not be equal")
 	}
@@ -316,7 +316,7 @@ func TestHashMap_Equality(t *testing.T) {
 func TestHashMap_UnhashableKey(t *testing.T) {
 	t.Parallel()
 	m := NewHashMap()
-	_, err := m.Assoc(NewList([]Value{Int{V: 1}}), Int{V: 1})
+	_, _, err := m.Assoc(NewList([]Value{Int{V: 1}}), Int{V: 1})
 	if err == nil {
 		t.Error("Assoc with unhashable key should return error")
 	}
@@ -325,8 +325,8 @@ func TestHashMap_UnhashableKey(t *testing.T) {
 func TestHashMap_TypeDisambiguation(t *testing.T) {
 	t.Parallel()
 	m := NewHashMap()
-	m, _ = m.Assoc(Symbol{V: "true"}, Int{V: 1})
-	m, _ = m.Assoc(Bool{V: true}, Int{V: 2})
+	m, _, _ = m.Assoc(Symbol{V: "true"}, Int{V: 1})
+	m, _, _ = m.Assoc(Bool{V: true}, Int{V: 2})
 
 	v1, _ := m.Get(Symbol{V: "true"})
 	v2, _ := m.Get(Bool{V: true})
@@ -408,7 +408,7 @@ func TestEquals_CrossType(t *testing.T) {
 func TestHashMap_Dissoc_UnhashableKey(t *testing.T) {
 	t.Parallel()
 	m := NewHashMap()
-	_, err := m.Dissoc(NewList([]Value{Int{V: 1}}))
+	_, _, err := m.Dissoc(NewList([]Value{Int{V: 1}}))
 	if err == nil {
 		t.Error("Dissoc with unhashable key should error")
 	}
@@ -549,7 +549,7 @@ func TestHashMap_String(t *testing.T) {
 	if m.String() != "{}" {
 		t.Errorf("empty map String() = %q, want {}", m.String())
 	}
-	m, _ = m.Assoc(Keyword{V: "x"}, Int{V: 1})
+	m, _, _ = m.Assoc(Keyword{V: "x"}, Int{V: 1})
 	s := m.String()
 	if s != "{:x 1}" {
 		t.Errorf("map String() = %q, want {:x 1}", s)
@@ -559,8 +559,8 @@ func TestHashMap_String(t *testing.T) {
 func TestHashMap_Each(t *testing.T) {
 	t.Parallel()
 	m := NewHashMap()
-	m, _ = m.Assoc(Keyword{V: "a"}, Int{V: 10})
-	m, _ = m.Assoc(Keyword{V: "b"}, Int{V: 20})
+	m, _, _ = m.Assoc(Keyword{V: "a"}, Int{V: 10})
+	m, _, _ = m.Assoc(Keyword{V: "b"}, Int{V: 20})
 
 	sum := int64(0)
 	m.Each(func(_, v Value) {
@@ -595,7 +595,7 @@ func TestToGoValue_Collections(t *testing.T) {
 	}
 
 	hm := NewHashMap()
-	hm, _ = hm.Assoc(Keyword{V: "k"}, Int{V: 5})
+	hm, _, _ = hm.Assoc(Keyword{V: "k"}, Int{V: 5})
 	got3, err := ToGoValue(hm)
 	if err != nil {
 		t.Fatalf("ToGoValue(HashMap) error: %v", err)
@@ -611,7 +611,7 @@ func TestHashMap_HashableKeyTypes(t *testing.T) {
 	m := NewHashMap()
 
 	for _, key := range []Value{Nil{}, Float{V: 3.14}, Int{V: 99}, String{V: "s"}} {
-		m2, err := m.Assoc(key, Bool{V: true})
+		m2, _, err := m.Assoc(key, Bool{V: true})
 		if err != nil {
 			t.Errorf("Assoc(%v) error: %v", key, err)
 			continue

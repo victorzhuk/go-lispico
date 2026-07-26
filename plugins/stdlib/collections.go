@@ -346,15 +346,13 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				if len(args) != 3 {
 					return nil, fmt.Errorf("conj on map requires key and value")
 				}
-				res, err := c.Assoc(args[1], args[2])
+				res, allocated, err := c.Assoc(args[1], args[2])
 				if err != nil {
 					return nil, err
 				}
-				// See assoc's WHY comment below: HashMap has no persistent
-				// representation, so the map's own shallow size is a real
-				// per-call cost, not a metering bug — only the
-				// newly-inserted value needs a deep charge.
-				bytes := core.HashMapShallowBytes(res.Len()) + core.ValueDeepBytes(args[2])
+				// See assoc's WHY comment below: charge the path this call
+				// copied plus the inserted value, not the shared remainder.
+				bytes := allocated + core.ValueDeepBytes(args[2])
 				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[2]); err != nil {
 					return nil, err
 				}
@@ -433,23 +431,27 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			var bytes int64
 			for i := 1; i < len(args); i += 2 {
 				var err error
-				result, err = result.Assoc(args[i], args[i+1])
+				var allocated int64
+				result, allocated, err = result.Assoc(args[i], args[i+1])
 				if err != nil {
 					return nil, fmt.Errorf("assoc: %w", err)
 				}
-				// HashMap has no persistent representation past
-				// hashMapSmallLimit — Assoc's map-form branch does a real
-				// full copy every call (core/types.go), so charging the
-				// map's own shallow size here is honest, not a bug: it
-				// reflects that real per-call allocation. Only the
-				// newly-inserted value gets a deep charge — re-walking
-				// every existing entry's value on every call would
-				// double-bill substructure already charged when it was
-				// created.
-				bytes += core.HashMapShallowBytes(result.Len()) + core.ValueDeepBytes(args[i+1])
+				// Only what this call allocated: the copied path, plus the
+				// inserted value, which is new to the ledger. The rest of the
+				// map is shared with the argument and was charged when it was
+				// created — re-charging it would grow with the accumulated
+				// size and make a chained assoc quadratic.
+				bytes += allocated + core.ValueDeepBytes(args[i+1])
 			}
 
-			if err := chargeCollectionResult(ctx, env, "assoc", result, bytes); err != nil {
+			// Guarded like conj's: prepending a scalar cannot deepen the
+			// map, and CheckConstructionDepth walks (and sorts) every
+			// entry, which would be O(n log n) on every call.
+			inserted := make([]core.Value, 0, len(args)/2)
+			for i := 2; i < len(args); i += 2 {
+				inserted = append(inserted, args[i])
+			}
+			if err := chargeConsResult(ctx, env, "assoc", result, bytes, inserted...); err != nil {
 				return nil, err
 			}
 			return result, nil
@@ -566,12 +568,21 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			}
 
 			result := m
+			var bytes int64
 			for _, k := range args[1:] {
 				var err error
-				result, err = result.Dissoc(k)
+				var allocated int64
+				result, allocated, err = result.Dissoc(k)
 				if err != nil {
 					return nil, fmt.Errorf("dissoc: %w", err)
 				}
+				bytes += allocated
+			}
+
+			// No newElems: removing a key cannot deepen the map, so the
+			// construction-depth walk is skipped entirely.
+			if err := chargeConsResult(ctx, env, "dissoc", result, bytes); err != nil {
+				return nil, err
 			}
 			return result, nil
 		},

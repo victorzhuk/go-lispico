@@ -6,7 +6,7 @@ func TestEval_MapLiteralDeterministic(t *testing.T) {
 	t.Parallel()
 	// Two distinct key forms that evaluate to the same key: the result must be
 	// the same on every run, not dependent on Go's randomized map order.
-	want, _ := NewHashMap().Assoc(Keyword{V: "dup"}, Int{V: 2})
+	want, _, _ := NewHashMap().Assoc(Keyword{V: "dup"}, Int{V: 2})
 	for range 100 {
 		env := newTestEnv()
 		env.Set("x", Keyword{V: "dup"})
@@ -23,7 +23,7 @@ func TestHashMap_StringDeterministic(t *testing.T) {
 	m := NewHashMap()
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
 		var err error
-		m, err = m.Assoc(Keyword{V: k}, Int{V: 1})
+		m, _, err = m.Assoc(Keyword{V: k}, Int{V: 1})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -106,7 +106,7 @@ func TestExec_Run(t *testing.T) {
 
 	t.Run("timeout kills process", func(t *testing.T) {
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 100})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 100})
 
 		args := []core.Value{
 			core.String{V: "sleep"},
@@ -142,7 +142,7 @@ func TestExec_Run(t *testing.T) {
 
 	t.Run("working directory option", func(t *testing.T) {
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "dir"}, core.String{V: "/tmp"})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "dir"}, core.String{V: "/tmp"})
 
 		args := []core.Value{
 			core.String{V: "pwd"},
@@ -159,9 +159,9 @@ func TestExec_Run(t *testing.T) {
 
 	t.Run("environment variables option", func(t *testing.T) {
 		envMap := core.NewHashMap()
-		envMap, _ = envMap.Assoc(core.String{V: "MY_TEST_VAR"}, core.String{V: "test_value_123"})
+		envMap, _, _ = envMap.Assoc(core.String{V: "MY_TEST_VAR"}, core.String{V: "test_value_123"})
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "env"}, envMap)
+		opts, _, _ = opts.Assoc(core.Keyword{V: "env"}, envMap)
 
 		args := []core.Value{
 			core.String{V: "sh"},
@@ -202,7 +202,7 @@ func TestExec_Run(t *testing.T) {
 
 	t.Run("invalid timeout type", func(t *testing.T) {
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.String{V: "not-an-int"})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.String{V: "not-an-int"})
 		args := []core.Value{core.String{V: "echo"}, core.Vector{}, opts}
 		_, err := p.run(context.Background(), nil, args, env)
 		assert.Error(t, err)
@@ -210,7 +210,7 @@ func TestExec_Run(t *testing.T) {
 
 	t.Run("invalid dir type", func(t *testing.T) {
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "dir"}, core.Int{V: 123})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "dir"}, core.Int{V: 123})
 		args := []core.Value{core.String{V: "echo"}, core.Vector{}, opts}
 		_, err := p.run(context.Background(), nil, args, env)
 		assert.Error(t, err)
@@ -218,7 +218,7 @@ func TestExec_Run(t *testing.T) {
 
 	t.Run("invalid env type", func(t *testing.T) {
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "env"}, core.String{V: "not-a-map"})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "env"}, core.String{V: "not-a-map"})
 		args := []core.Value{core.String{V: "echo"}, core.Vector{}, opts}
 		_, err := p.run(context.Background(), nil, args, env)
 		assert.Error(t, err)
@@ -278,7 +278,7 @@ func TestExec_Pipe(t *testing.T) {
 			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "test"}}),
 		})
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 5000})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 5000})
 		args := []core.Value{commands, opts}
 
 		result, err := p.pipe(context.Background(), nil, args, env)
@@ -294,7 +294,7 @@ func TestExec_Pipe(t *testing.T) {
 			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "test"}}),
 		})
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.String{V: "not-an-int"})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.String{V: "not-an-int"})
 		args := []core.Value{commands, opts}
 
 		_, err := p.pipe(context.Background(), nil, args, env)
@@ -631,7 +631,7 @@ func TestExec_EnvIsolation(t *testing.T) {
 
 	t.Run("inherit-env opts into the host env", func(t *testing.T) {
 		opts := core.NewHashMap()
-		opts, _ = opts.Assoc(core.Keyword{V: "inherit-env"}, core.Bool{V: true})
+		opts, _, _ = opts.Assoc(core.Keyword{V: "inherit-env"}, core.Bool{V: true})
 		assert.Equal(t, "leaked\n", stdoutOf(opts))
 	})
 }
