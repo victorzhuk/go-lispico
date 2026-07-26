@@ -50,7 +50,13 @@ type stdlibTemplateLayer struct {
 }
 
 type stdlibTemplateRegistry struct {
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// layers is never pruned: a completed layer is process-scoped by design,
+	// since any engine may still attach it. Retention is bounded only by the
+	// number of distinct keys, so a template-routed plugin reporting a version
+	// that varies per build (a content hash, a timestamp) would strand one
+	// layer per version for the process lifetime. Every plugin shipped here
+	// reports a static version.
 	layers   map[stdlibTemplateKey]*stdlibTemplateLayer
 	disabled bool
 	// flight single-flights concurrent first builds of one key. Its lock is

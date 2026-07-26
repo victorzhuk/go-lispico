@@ -165,10 +165,12 @@ type dialectCache struct {
 
 // Memoized returns a copy of d whose resolve() table and Fingerprint() hash
 // are computed once, up front, and shared by every copy of the returned
-// value. It exists for process-wide stock dialect singletons (cl.Dialect,
-// clojure.Dialect), built once behind sync.OnceValue so the eager computation
-// below runs exactly once per process and is safely published to every
-// caller that follows. A hand-built custom dialect has no reason to call it.
+// value. The stock dialect singletons (cl.Dialect, clojure.Dialect) build
+// theirs behind sync.OnceValue, so the eager computation below runs exactly
+// once per process and is safely published to every caller that follows. A
+// hand-built dialect reused across several engines gains the same thing:
+// without it, every engine re-resolves the delta chain and re-hashes the
+// fingerprint.
 //
 // Every builder method clears the cache on the Dialect it returns, so
 // mutating a Memoized value (Add, Vocabulary, ...) always resolves and
