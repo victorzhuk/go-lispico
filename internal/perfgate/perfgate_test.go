@@ -254,3 +254,89 @@ func TestLoadTierConfig_UnknownTier(t *testing.T) {
 	_, err := LoadTierConfig(strings.NewReader(config))
 	require.Error(t, err)
 }
+
+// TestEvaluate_NonRegression_ImprovementPasses is the case a two-sided latency
+// bound got wrong: a release that makes a cell faster must not fail for it.
+// ADR 0008 rejected a standing improvement gate because it "punishes Evaluator
+// improvements", and a two-sided bound reintroduces exactly that.
+func TestEvaluate_NonRegression_ImprovementPasses(t *testing.T) {
+	t.Parallel()
+
+	for _, tier := range []Tier{TierEngineSensitive, TierDataDominated} {
+		cell := CellComparison{
+			Name:    "Goldset/twice-macro",
+			Latency: MetricResult{Old: 100, New: 72, DeltaPct: -28.36, Significant: true, N: 10},
+			Bytes:   MetricResult{Old: 64, New: 56, DeltaPct: -12.5, Significant: true, N: 10},
+			Allocs:  MetricResult{Old: 10, New: 8, DeltaPct: -20, Significant: true, N: 10},
+		}
+		res := Evaluate(cell, tier, ModeNonRegression)
+		assert.Equal(t, VerdictPass, res.Verdict, "tier %s: improvement must pass, got %s", tier, res.Reason)
+	}
+}
+
+// TestEvaluate_NonRegression_RegressionStillFails: the bound still bites in the
+// direction it exists for.
+func TestEvaluate_NonRegression_RegressionStillFails(t *testing.T) {
+	t.Parallel()
+
+	for _, tier := range []Tier{TierEngineSensitive, TierDataDominated} {
+		cell := CellComparison{
+			Name:    "Goldset/pipeline",
+			Latency: MetricResult{Old: 100, New: 112, DeltaPct: 12, Significant: true, N: 10},
+			Bytes:   MetricResult{Old: 64, New: 64, DeltaPct: 0, Significant: true, N: 10},
+			Allocs:  MetricResult{Old: 10, New: 10, DeltaPct: 0, Significant: true, N: 10},
+		}
+		res := Evaluate(cell, tier, ModeNonRegression)
+		assert.Equal(t, VerdictFail, res.Verdict, "tier %s: regression must fail", tier)
+	}
+}
+
+// TestEvaluate_NonRegression_BytesStillOneSided: a faster candidate that
+// allocates more still fails. Latency going one-sided must not soften the
+// byte and allocation checks, which were already non-increasing.
+func TestEvaluate_NonRegression_BytesStillOneSided(t *testing.T) {
+	t.Parallel()
+
+	cell := CellComparison{
+		Name:    "Goldset/pipeline",
+		Latency: MetricResult{Old: 100, New: 60, DeltaPct: -40, Significant: true, N: 10},
+		Bytes:   MetricResult{Old: 64, New: 80, DeltaPct: 25, Significant: true, N: 10},
+		Allocs:  MetricResult{Old: 10, New: 10, DeltaPct: 0, Significant: true, N: 10},
+	}
+	res := Evaluate(cell, TierDataDominated, ModeNonRegression)
+	assert.Equal(t, VerdictFail, res.Verdict)
+	assert.Contains(t, res.Reason, "bytes")
+}
+
+// TestEvaluate_FirstAuthorization_DataDominatedStaysTwoSided: comparing the two
+// evaluators of one commit, a data-dominated cost is expected to be
+// mode-invariant — the reason GoldsetParse/* cells carry this tier — so a move
+// in either direction is a finding.
+func TestEvaluate_FirstAuthorization_DataDominatedStaysTwoSided(t *testing.T) {
+	t.Parallel()
+
+	cell := CellComparison{
+		Name:    "GoldsetParse/rule-load",
+		Latency: MetricResult{Old: 100, New: 80, DeltaPct: -20, Significant: true, N: 10},
+		Bytes:   MetricResult{Old: 64, New: 64, DeltaPct: 0, Significant: true, N: 10},
+		Allocs:  MetricResult{Old: 10, New: 10, DeltaPct: 0, Significant: true, N: 10},
+	}
+	res := Evaluate(cell, TierDataDominated, ModeFirstAuthorization)
+	assert.Equal(t, VerdictFail, res.Verdict,
+		"a mode-invariant cost that moves between modes is a finding either way")
+}
+
+// TestEvaluate_Startup_NonRegressionImprovementPasses: a faster start is not a
+// regression either.
+func TestEvaluate_Startup_NonRegressionImprovementPasses(t *testing.T) {
+	t.Parallel()
+
+	cell := CellComparison{
+		Name:    "Goldset/rule-load",
+		Latency: MetricResult{Old: 0.01, New: 0.006, DeltaPct: -40, Significant: true, N: 10},
+		Bytes:   MetricResult{Old: 1 << 20, New: 1 << 20, DeltaPct: 0, Significant: true, N: 10},
+		Allocs:  MetricResult{Old: 10, New: 10, DeltaPct: 0, Significant: true, N: 10},
+	}
+	res := Evaluate(cell, TierStartup, ModeNonRegression)
+	assert.Equal(t, VerdictPass, res.Verdict, "got %s", res.Reason)
+}

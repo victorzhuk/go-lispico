@@ -97,9 +97,19 @@ const (
 	// engineSensitiveBytesImprovementPct is ADR 0008's engine-sensitive floor:
 	// at least 20% fewer allocated bytes.
 	engineSensitiveBytesImprovementPct = 20.0
-	// nonRegressionTolerancePct is ADR 0008's two-sided bound for
+	// nonRegressionTolerancePct is ADR 0008's 5% bound for
 	// data/output-dominated, concurrent, and startup cells, and for
 	// engine-sensitive cells once in non-regression mode.
+	//
+	// How it is applied depends on what the two runs are. Comparing the
+	// Evaluator and VM variants of one commit (first authorization), a
+	// data-dominated cost is expected to be mode-invariant, so movement in
+	// either direction is a finding and the bound is two-sided. Comparing two
+	// releases (non-regression), a faster candidate is the outcome the gate
+	// exists to allow, so the bound applies to regressions only — ADR 0008
+	// rejected a standing improvement gate precisely because it "punishes
+	// Evaluator improvements", and a two-sided latency bound reintroduces that
+	// by failing a release for getting faster.
 	nonRegressionTolerancePct = 5.0
 )
 
@@ -127,16 +137,25 @@ func Evaluate(cell CellComparison, tier Tier, mode Mode) Result {
 		if mode == ModeFirstAuthorization {
 			return evaluateEngineSensitiveImprovement(cell)
 		}
-		return evaluateWithinTolerance(cell, nonRegressionTolerancePct)
+		return evaluateNonRegression(cell, nonRegressionTolerancePct)
 	case TierDataDominated:
-		return evaluateWithinTolerance(cell, nonRegressionTolerancePct)
+		if mode == ModeFirstAuthorization {
+			// Same commit, two evaluators: this cost should not depend on the
+			// mode, so a move either way is worth failing on.
+			return evaluateWithinTolerance(cell, nonRegressionTolerancePct)
+		}
+		return evaluateNonRegression(cell, nonRegressionTolerancePct)
 	case TierConcurrent:
 		if !cell.RaceClean {
 			return Result{Verdict: VerdictFail, Reason: "race detector run was not clean for this cell"}
 		}
+		// Stays two-sided in both modes: this tier's timed metric may be a
+		// throughput figure, where larger is better, so a one-sided check
+		// cannot be written without first fixing the sign convention. Doing
+		// that is pointless while no cell is classified concurrent.
 		return evaluateWithinTolerance(cell, nonRegressionTolerancePct)
 	case TierStartup:
-		return evaluateStartup(cell)
+		return evaluateStartup(cell, mode)
 	default:
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf("unknown tier %q", tier)}
 	}
@@ -172,6 +191,29 @@ func evaluateEngineSensitiveImprovement(cell CellComparison) Result {
 	return Result{Verdict: VerdictPass}
 }
 
+// evaluateNonRegression fails a cell whose latency regressed past tolerancePct.
+// An improvement of any size passes: the cell is being judged against a
+// previous release, and a faster candidate is not a defect.
+func evaluateNonRegression(cell CellComparison, tolerancePct float64) Result {
+	if !cell.Latency.Significant {
+		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
+	}
+	if cell.Latency.DeltaPct > tolerancePct {
+		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
+			"latency regressed %.2f%%, exceeding the %.0f%% tolerance", cell.Latency.DeltaPct, tolerancePct)}
+	}
+	if r := nonIncreasing(cell.Bytes, "bytes"); r.Verdict != VerdictPass {
+		return r
+	}
+	if r := nonIncreasing(cell.Allocs, "allocs"); r.Verdict != VerdictPass {
+		return r
+	}
+	return Result{Verdict: VerdictPass}
+}
+
+// evaluateWithinTolerance fails a cell whose latency moved past tolerancePct in
+// either direction. Used where the two runs are expected to measure the same
+// cost, so any movement is a finding.
 func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
 	if !cell.Latency.Significant {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
@@ -189,7 +231,7 @@ func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
 	return Result{Verdict: VerdictPass}
 }
 
-func evaluateStartup(cell CellComparison) Result {
+func evaluateStartup(cell CellComparison, mode Mode) Result {
 	// ADR 0008's "at most 1 ms and 256 KiB absolute overhead" is ambiguous
 	// between an absolute New value under the floor (what's implemented
 	// below) and an absolute delta (New-Old) under the floor. Worth an
@@ -198,6 +240,10 @@ func evaluateStartup(cell CellComparison) Result {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
 	}
 	withinTolerance := math.Abs(cell.Latency.DeltaPct) <= nonRegressionTolerancePct
+	if mode == ModeNonRegression {
+		// Against a previous release, only a slower start is a regression.
+		withinTolerance = cell.Latency.DeltaPct <= nonRegressionTolerancePct
+	}
 	withinAbsoluteBound := cell.Latency.New <= startupMaxLatency.Seconds() && cell.Bytes.New <= startupMaxBytes
 	if !withinTolerance && !withinAbsoluteBound {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(

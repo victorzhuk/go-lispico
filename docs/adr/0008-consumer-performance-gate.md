@@ -23,6 +23,8 @@ This ADR is the single owner of the numbers; the PRD and glossary reference them
 - Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing, race detector clean in the separate untimed run.
 - Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone.
 
+"Within 5%" above is a bound on regression, matching this section's opening rule that no cell may *regress* beyond its tier's budget: a candidate that is faster than its baseline passes at any margin. Reading it as a two-sided band would fail a release for making the engine faster, which is the outcome this ADR rejects below under a standing improvement gate. Two exceptions, both because the two runs are then expected to measure the same cost rather than two releases. First, comparing the Evaluator and VM variants of one commit at first authorization, a data/output-dominated cost is mode-invariant by classification, so movement either way is a finding. Second, the concurrent tier's timed figure may be a throughput measure, where larger is better, so its bound stays two-sided until that sign convention is stated.
+
 Note (resolved-binding cells): the per-chunk global-read site cache adds one
 8-byte atomic pointer to every `Chunk`. A cell that recompiles a fresh chunk on
 every eval (only `twice-macro`, whose `defmacro` bumps the macro epoch) therefore
