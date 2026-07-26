@@ -297,6 +297,16 @@ bump SHALL be reclaimed, and the cache SHALL enforce the Engine's configured
 chunk-cache-size ceiling, so a long-lived Engine that evaluates many distinct
 sources or repeatedly redefines macros stays within its memory budget.
 
+Binding a macro name to a definition indistinguishable from the one already bound
+there SHALL NOT count as a redefinition for invalidation: no cached expansion can
+differ, so no entry is affected. Indistinguishable means the same name, the same
+defining environment, the same parameters and variadic tail, and an equal body.
+The comparison SHALL fail closed — where equality cannot be decided, including a
+body deeper than the structural-depth bound, the binding SHALL be treated as a
+redefinition and invalidate as before. Correctness outranks reuse here: serving a
+stale expansion is a defect, recompiling something that need not be recompiled is
+only a cost.
+
 Additionally, plugin-load compilation SHALL be reusable across Engines within a
 process: loading identical plugin source under an identical dialect fingerprint
 into a second Engine SHALL NOT repeat macro expansion and compilation, provided
@@ -311,10 +321,20 @@ SHALL leak between Engines through the shared artifacts.
 - **WHEN** the same source is evaluated twice on one Engine under the VM
 - **THEN** the second evaluation SHALL not recompile and SHALL return the same result
 
+#### Scenario: Re-evaluating a source that defines a macro reuses its chunks
+
+- **WHEN** a source containing a `defmacro` is evaluated repeatedly on one Engine under the VM, with the macro's definition unchanged between evaluations
+- **THEN** the cache epoch SHALL be the same after every evaluation as after the first, and no form in that source SHALL be recompiled
+
 #### Scenario: Macro redefinition invalidates
 
 - **WHEN** source using macro `m` is evaluated, `m` is redefined, and the same source is evaluated again
 - **THEN** the second evaluation SHALL reflect the new definition of `m`
+
+#### Scenario: An identical body in a different scope still invalidates
+
+- **WHEN** a macro name is rebound to a body equal to its current one but closing over a different defining environment
+- **THEN** the binding SHALL invalidate as a redefinition, since the expansion it produces may differ
 
 #### Scenario: Cache does not grow without bound
 
