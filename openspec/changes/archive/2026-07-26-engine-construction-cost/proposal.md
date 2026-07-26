@@ -31,10 +31,22 @@ no observable behavior.
 
 **The lazy-materialization bookkeeping is built eagerly.** `installLazyLayer`
 and its chain are 26.5% cumulative — `newStdlibLazyEngineState` alone eagerly
-allocates three maps and stores an empty slice into an `atomic.Value`. An
-engine that never loads a template-routed plugin pays all of it and uses none
-of it. The same nil-until-first-use treatment already applied to `nameLocks`
-in `engine-startup-template-sharing` applies here.
+allocates three maps. An engine that never loads a template-routed plugin pays
+for all three and uses none. The same nil-until-first-use treatment already
+applied to `nameLocks` in `engine-startup-template-sharing` applies here.
+
+Only the three maps are removable. The constructor's
+`activeList.Store([]stdlibTemplateKey(nil))` costs zero marginal allocations —
+a nil slice boxed into an interface points at `runtime.zerobase` — and it must
+stay regardless: `activeKeys` type-asserts `Load().([]stdlibTemplateKey)`
+without the comma-ok form, so a never-stored `atomic.Value` panics, and
+`installLazyLayer` runs on every engine whether or not a plugin is ever loaded.
+So the realistic saving is 3.5 (logger) + 3 (maps) = 6.5 of 24, landing near
+17.5 allocations rather than the 16.5 a four-map reading would predict.
+
+The `installLazyLayer` chain's remaining allocation is `core.Env.SetLazyLayer`
+boxing its argument for an `atomic.Pointer` store. It lives in `core/` and is
+out of scope here; task 5.2 names it so it is not silently dropped.
 
 For yagel this is the per-task engine cost, paid on every construction whether
 or not the task loads a plugin or evaluates anything.
