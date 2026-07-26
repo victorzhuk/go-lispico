@@ -931,25 +931,34 @@ func (n *hamtNode) each(fn func(e entry)) {
 // entries — at or below hashMapSmallLimit distinct keys: sorted by hashKey,
 // Get is a linear scan, cheap at this size and already in iteration order.
 //
-// m — a plain Go map, reached only by growing past the limit through the
+// large.m — a plain Go map, reached only by growing past the limit through the
 // mutable Set escape hatch. Set is the bulk-construction path (map literals,
 // hash-map, merge, OpMakeMap, json/decode), where an in-place map assignment
 // is O(1) and nothing is shared yet.
 //
-// root — a persistent trie, produced by Assoc and Dissoc. Copying one
+// large.root — a persistent trie, produced by Assoc and Dissoc. Copying one
 // root-to-leaf path and sharing the rest is what keeps a chained assoc linear
-// instead of quadratic. A map still in m form converts once, on its first
-// Assoc; from there the chain stays in trie form.
+// instead of quadratic. A map still in large.m form converts once, on its
+// first Assoc; from there the chain stays in trie form.
 //
-// Promotion is one-way in both steps: a map that shrinks back below the limit
+// Promotion is one-way at both steps: a map that shrinks back below the limit
 // through Dissoc stays in trie form.
 //
-// count tracks the entry total for the trie, because counting one is not O(1).
+// The large-form state sits behind one pointer rather than inline so that a
+// small map — the overwhelmingly common shape, and the only one the gold set
+// builds — stays exactly as wide as it was before the trie existed. Inlining
+// the fields cost every map literal 16 bytes it never reads.
 type HashMap struct {
 	entries []entry
-	m       map[hashKey]entry
-	root    *hamtNode
-	count   int
+	large   *largeMap
+}
+
+// largeMap holds whichever large form is active. count tracks the entry total
+// for the trie, because counting one is not O(1).
+type largeMap struct {
+	m     map[hashKey]entry
+	root  *hamtNode
+	count int
 }
 
 func NewHashMap() *HashMap {
@@ -973,11 +982,11 @@ func (h *HashMap) find(hk hashKey) (int, bool) {
 }
 
 func (h *HashMap) getByHashKey(hk hashKey) (Value, bool) {
-	if h.root != nil {
-		return h.root.get(hk, hashOfKey(hk), 0)
-	}
-	if h.m != nil {
-		e, ok := h.m[hk]
+	if h.large != nil {
+		if h.large.root != nil {
+			return h.large.root.get(hk, hashOfKey(hk), 0)
+		}
+		e, ok := h.large.m[hk]
 		return e.v, ok
 	}
 	if i, ok := h.find(hk); ok {
@@ -989,12 +998,12 @@ func (h *HashMap) getByHashKey(hk hashKey) (Value, bool) {
 // eachRaw walks every entry in storage order — unsorted for the trie form.
 // For callers like Equals that only need membership, not display order.
 func (h *HashMap) eachRaw(fn func(e entry)) {
-	if h.root != nil {
-		h.root.each(fn)
-		return
-	}
-	if h.m != nil {
-		for _, e := range h.m {
+	if h.large != nil {
+		if h.large.root != nil {
+			h.large.root.each(fn)
+			return
+		}
+		for _, e := range h.large.m {
 			fn(e)
 		}
 		return
@@ -1008,7 +1017,7 @@ func (h *HashMap) eachRaw(fn func(e entry)) {
 // The small form is already sorted and returned as-is; the trie form re-sorts
 // on each call, same cost as before the rewrite.
 func (h *HashMap) sortedEntries() []entry {
-	if h.root == nil && h.m == nil {
+	if h.large == nil {
 		return h.entries
 	}
 	entries := make([]entry, 0, h.Len())
@@ -1048,11 +1057,16 @@ func newTrieFromEntries(entries []entry, extra entry) (*hamtNode, int64) {
 func (h *HashMap) trieFromBuildMap() (*hamtNode, int64) {
 	root := &hamtNode{}
 	var bytes int64
-	for _, e := range h.m {
+	for _, e := range h.large.m {
 		next, b, _ := root.assoc(e, hashOfKey(e.hk), 0)
 		root, bytes = next, bytes+b
 	}
 	return root, bytes
+}
+
+// newTrie wraps trie storage as a large-form map.
+func newTrie(root *hamtNode, count int) *HashMap {
+	return &HashMap{large: &largeMap{root: root, count: count}}
 }
 
 // Assoc returns the map with key bound to val, plus the bytes the update
@@ -1066,39 +1080,35 @@ func (h *HashMap) Assoc(key, val Value) (*HashMap, int64, error) {
 		return nil, 0, err
 	}
 	e := entry{hk: hk, k: key, v: val}
-	if h.root == nil && h.m != nil {
-		root, bytes := h.trieFromBuildMap()
+	if h.large != nil {
+		root, bytes := h.large.root, int64(0)
+		count := h.large.count
+		if root == nil {
+			root, bytes = h.trieFromBuildMap()
+			count = len(h.large.m)
+		}
 		next, b, added := root.assoc(e, hashOfKey(hk), 0)
-		count := len(h.m)
 		if added {
 			count++
 		}
-		return &HashMap{root: next, count: count}, bytes + b, nil
-	}
-	if h.root != nil {
-		root, bytes, added := h.root.assoc(e, hashOfKey(hk), 0)
-		count := h.count
-		if added {
-			count++
-		}
-		return &HashMap{root: root, count: count}, bytes, nil
+		return newTrie(next, count), bytes + b, nil
 	}
 	i, found := h.find(hk)
 	if found {
 		entries := make([]entry, len(h.entries))
 		copy(entries, h.entries)
 		entries[i] = e
-		return &HashMap{entries: entries, count: len(entries)}, HashMapShallowBytes(len(entries)), nil
+		return &HashMap{entries: entries}, HashMapShallowBytes(len(entries)), nil
 	}
 	if len(h.entries) >= hashMapSmallLimit {
 		root, bytes := newTrieFromEntries(h.entries, e)
-		return &HashMap{root: root, count: len(h.entries) + 1}, bytes, nil
+		return newTrie(root, len(h.entries)+1), bytes, nil
 	}
 	entries := make([]entry, len(h.entries)+1)
 	copy(entries, h.entries[:i])
 	entries[i] = e
 	copy(entries[i+1:], h.entries[i:])
-	return &HashMap{entries: entries, count: len(entries)}, HashMapShallowBytes(len(entries)), nil
+	return &HashMap{entries: entries}, HashMapShallowBytes(len(entries)), nil
 }
 
 // Dissoc returns the map without key, plus the bytes the update allocated.
@@ -1107,22 +1117,18 @@ func (h *HashMap) Dissoc(key Value) (*HashMap, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if h.root == nil && h.m != nil {
-		root, bytes := h.trieFromBuildMap()
+	if h.large != nil {
+		root, bytes := h.large.root, int64(0)
+		count := h.large.count
+		if root == nil {
+			root, bytes = h.trieFromBuildMap()
+			count = len(h.large.m)
+		}
 		next, b, removed := root.dissoc(hk, hashOfKey(hk), 0)
-		count := len(h.m)
 		if removed {
 			count--
 		}
-		return &HashMap{root: next, count: count}, bytes + b, nil
-	}
-	if h.root != nil {
-		root, bytes, removed := h.root.dissoc(hk, hashOfKey(hk), 0)
-		count := h.count
-		if removed {
-			count--
-		}
-		return &HashMap{root: root, count: count}, bytes, nil
+		return newTrie(next, count), bytes + b, nil
 	}
 	entries := make([]entry, 0, len(h.entries))
 	for _, e := range h.entries {
@@ -1130,7 +1136,7 @@ func (h *HashMap) Dissoc(key Value) (*HashMap, int64, error) {
 			entries = append(entries, e)
 		}
 	}
-	return &HashMap{entries: entries, count: len(entries)}, HashMapShallowBytes(len(entries)), nil
+	return &HashMap{entries: entries}, HashMapShallowBytes(len(entries)), nil
 }
 
 func (h *HashMap) Get(key Value) (Value, bool) {
@@ -1146,11 +1152,11 @@ func (h *HashMap) Get(key Value) (Value, bool) {
 }
 
 func (h *HashMap) Len() int {
-	if h.root != nil {
-		return h.count
-	}
-	if h.m != nil {
-		return len(h.m)
+	if h.large != nil {
+		if h.large.root != nil {
+			return h.large.count
+		}
+		return len(h.large.m)
 	}
 	return len(h.entries)
 }
@@ -1174,16 +1180,16 @@ func (h *HashMap) Set(key, val Value) error {
 		return err
 	}
 	e := entry{hk: hk, k: key, v: val}
-	if h.root != nil {
-		root, _, added := h.root.assoc(e, hashOfKey(hk), 0)
-		h.root = root
-		if added {
-			h.count++
+	if h.large != nil {
+		if h.large.root != nil {
+			root, _, added := h.large.root.assoc(e, hashOfKey(hk), 0)
+			h.large.root = root
+			if added {
+				h.large.count++
+			}
+			return nil
 		}
-		return nil
-	}
-	if h.m != nil {
-		h.m[hk] = e
+		h.large.m[hk] = e
 		return nil
 	}
 	i, found := h.find(hk)
@@ -1197,7 +1203,7 @@ func (h *HashMap) Set(key, val Value) error {
 			m[existing.hk] = existing
 		}
 		m[hk] = e
-		h.m = m
+		h.large = &largeMap{m: m}
 		h.entries = nil
 		return nil
 	}

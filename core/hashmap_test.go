@@ -92,7 +92,7 @@ func TestHashMap_PromotionBoundary(t *testing.T) {
 			t.Fatalf("Assoc(%d) error: %v", i, err)
 		}
 	}
-	if m.root != nil {
+	if m.large != nil {
 		t.Fatal("map at the limit should still be in small form")
 	}
 
@@ -100,13 +100,13 @@ func TestHashMap_PromotionBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assoc(9th key) error: %v", err)
 	}
-	if m9.root == nil {
+	if m9.large == nil {
 		t.Fatal("the 9th distinct key should promote to map form")
 	}
 	if m9.Len() != hashMapSmallLimit+1 {
 		t.Fatalf("Len() = %d, want %d", m9.Len(), hashMapSmallLimit+1)
 	}
-	if m.root != nil || m.Len() != hashMapSmallLimit {
+	if m.large != nil || m.Len() != hashMapSmallLimit {
 		t.Fatal("Assoc must not mutate the receiver while promoting")
 	}
 
@@ -114,7 +114,7 @@ func TestHashMap_PromotionBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dissoc error: %v", err)
 	}
-	if shrunk.root == nil {
+	if shrunk.large == nil {
 		t.Fatal("dropping below the limit must not demote back to small form")
 	}
 	if shrunk.Len() != hashMapSmallLimit {
@@ -158,7 +158,7 @@ func TestHashMap_Equals_RepresentationBlind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if small.root != nil {
+	if small.large != nil {
 		t.Fatal("expected small form")
 	}
 
@@ -170,7 +170,7 @@ func TestHashMap_Equals_RepresentationBlind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if promoted.root == nil {
+	if promoted.large == nil {
 		t.Fatal("expected promoted form after 9 keys")
 	}
 	for _, k := range keys[5:] {
@@ -180,7 +180,7 @@ func TestHashMap_Equals_RepresentationBlind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if promoted.root == nil {
+	if promoted.large == nil {
 		t.Fatal("dropping below the limit must not demote (hysteresis)")
 	}
 	if promoted.Len() != 5 {
@@ -235,7 +235,7 @@ func TestHashMap_Immutability(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if m.root == nil {
+		if m.large == nil {
 			t.Fatal("expected promoted form")
 		}
 		before := m.Len()
@@ -411,7 +411,7 @@ func TestHashMap_HashCollisions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if m.root == nil {
+	if m.large == nil || m.large.root == nil {
 		t.Fatal("expected trie form")
 	}
 
