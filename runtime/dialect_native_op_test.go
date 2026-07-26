@@ -85,13 +85,13 @@ func TestDialectNativeOp_CL_CanonicalUnaffected(t *testing.T) {
 // Lisp-2 must hit the same native fast path as under Clojure, not fall back
 // to GoFunc dispatch through the function cell.
 //
-// "add" is defined with (def ... (fn ...)), not defun: defun binds only the
-// function cell under Lisp-2, and Engine.Call resolves a callee name through
-// the value cell only — a defun'd function is unreachable from Call at all
-// (a separate, pre-existing gap, not this fix's concern). def binds the value
-// cell, so Call can find "add"; its body's "+" still resolves through the
-// function cell exactly as any other Lisp-2 call head does, exercising the
-// same native-op path this fix targets.
+// "add" is defined with (def ... (fn ...)), not defun: def binds the value
+// cell, defun the function cell. Engine.Call resolves the function cell
+// first and falls back to the value cell (mirroring resolveHead's
+// head-position order, core/eval.go), so either binding reaches "add"; its
+// body's "+" still resolves through the function cell exactly as any other
+// Lisp-2 call head does, exercising the same native-op path this fix
+// targets.
 func TestDialectNativeOp_CL_NoGoFuncDispatch(t *testing.T) {
 	if raceEnabled {
 		t.Skip("alloc counts are unreliable under the race detector")

@@ -25,13 +25,7 @@ func (e *engineImpl) Func(name string) (*Fn, error) {
 	env := e.rootEnv
 	e.mu.RUnlock()
 
-	var cell *core.Cell
-	var ok bool
-	if e.config.dialect.IsLisp2() {
-		cell, ok = env.FuncCell(name)
-	} else {
-		cell, ok = env.Cell(name)
-	}
+	cell, ok := e.resolveFuncCell(env, name)
 	if !ok {
 		return nil, fmt.Errorf("undefined function: %s", name)
 	}

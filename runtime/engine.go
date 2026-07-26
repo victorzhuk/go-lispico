@@ -74,6 +74,7 @@ type engineImpl struct {
 	watchCtx          context.Context
 	watchCancel       context.CancelFunc
 	stats             *Stats
+	callCache         callCache
 	bindings          map[string]map[string]struct{} // per-plugin names to delete on unload/reload; lazy-init in Use
 	evalCallbacks     []func(EvalEvent)
 	pluginCallbacks   []func(PluginCallEvent)

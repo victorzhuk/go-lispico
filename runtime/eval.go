@@ -667,14 +667,28 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 	env := e.rootEnv
 	e.mu.RUnlock()
 
-	fn, ok := env.Get(name)
-	counter := e.stats.counterFor(name)
-	if !ok {
-		counter.Add(1)
-		if e.callbacksActive.Load() {
-			e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: 0})
+	entry := e.callCache.lookup(name, env)
+	var fn core.Value
+	var live bool
+	if entry != nil {
+		fn, live, _ = env.ReadCell(entry.cell)
+	}
+	if entry == nil || !live {
+		// A cache hit whose cell has since gone tombstoned is not
+		// necessarily undefined: under Lisp-2 a different, still-live cell
+		// (the value-cell fallback) may now be the right answer, exactly as
+		// fresh resolution would find. Drop the dead entry and re-resolve in
+		// full before giving up.
+		if entry != nil {
+			e.callCache.drop(name)
 		}
-		return nil, fmt.Errorf("undefined function: %s", name)
+		var ok bool
+		if entry, ok = e.resolveCallEntry(env, name); !ok {
+			return nil, e.reportUndefinedCall(name, e.stats.counterFor(name))
+		}
+		if fn, live, _ = env.ReadCell(entry.cell); !live {
+			return nil, e.reportUndefinedCall(name, entry.counter)
+		}
 	}
 	if be := e.bytecodeEvaluator; be != nil {
 		v := be.vmPool.Get().(*vm.VM)
@@ -689,9 +703,20 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 			}
 			be.vmPool.Put(v)
 		}()
-		return e.callBoundary(ctx, name, fn, env, counter, args, v)
+		return e.callBoundary(ctx, name, fn, env, entry.counter, args, v)
 	}
-	return e.callBoundary(ctx, name, fn, env, counter, args, nil)
+	return e.callBoundary(ctx, name, fn, env, entry.counter, args, nil)
+}
+
+// reportUndefinedCall is Call's single undefined-function tail: bump the
+// counter, fire the undefined-callback event, and return the error string
+// both the cache-miss and cache-hit-but-tombstoned paths report identically.
+func (e *engineImpl) reportUndefinedCall(name string, counter *atomic.Int64) error {
+	counter.Add(1)
+	if e.callbacksActive.Load() {
+		e.firePluginCallbacks(PluginCallEvent{Function: name, Duration: 0})
+	}
+	return fmt.Errorf("undefined function: %s", name)
 }
 
 // callBoundary is the unified Engine.Call fast path: it arms timing, dispatches

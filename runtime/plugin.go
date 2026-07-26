@@ -60,6 +60,7 @@ func (e *engineImpl) removePluginBindings(name string) {
 	}
 	for n := range e.bindings[name] {
 		e.rootEnv.Delete(n)
+		e.callCache.drop(n)
 	}
 	delete(e.bindings, name)
 	e.rootEnv.BumpMacroEpoch()
