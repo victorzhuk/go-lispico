@@ -256,3 +256,27 @@ func TestPublishedEntries_AllocsZeroOnCompleteLayer(t *testing.T) {
 	})
 	assert.Equal(t, float64(0), allocs, "attach read path must allocate zero for a complete layer")
 }
+
+// TestNewStdlibLazyEngineState_NoBookkeepingUntilFirstWrite pins task 3.1: an
+// engine that never loads a template-routed plugin must never allocate the
+// active/installed/tombstoned maps — only activate, recordInstall, and
+// TombstoneForDelete create them, on their own first write.
+func TestNewStdlibLazyEngineState_NoBookkeepingUntilFirstWrite(t *testing.T) {
+	t.Parallel()
+
+	s := newStdlibLazyEngineState()
+	assert.Nil(t, s.active)
+	assert.Nil(t, s.installed)
+	assert.Nil(t, s.tombstoned)
+
+	// The scenario is about a whole engine, not the constructor in isolation:
+	// installLazyLayer runs on every New, so an engine that loads no plugin
+	// must still reach Close with none of the three maps allocated.
+	eng, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	state := eng.(*engineImpl).lazyMaterializer.state
+	assert.Nil(t, state.active)
+	assert.Nil(t, state.installed)
+	assert.Nil(t, state.tombstoned)
+	require.NoError(t, eng.Close())
+}

@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -144,6 +146,88 @@ func TestNew_NilLogger(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, eng)
 	assert.NoError(t, eng.Close())
+}
+
+// TestNew_NilLoggerSharesProcessWideLogger pins task 2.1: every engine built
+// with a nil logger gets the same *slog.Logger instance rather than one
+// built per engine.
+func TestNew_NilLoggerSharesProcessWideLogger(t *testing.T) {
+	t.Parallel()
+
+	engA, err := New(nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engA.Close() })
+
+	engB, err := New(nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engB.Close() })
+
+	implA, ok := engA.(*engineImpl)
+	require.True(t, ok)
+	implB, ok := engB.(*engineImpl)
+	require.True(t, ok)
+
+	assert.Same(t, discardLogger, implA.logger)
+	assert.Same(t, implA.logger, implB.logger)
+}
+
+// TestNew_NilLoggerAllocsBudget pins task 2.1: New(nil)+Close() must not
+// construct a discard logger per engine. The warm-up call settles any
+// process-wide first-touch cost (e.g. discardLogger's own initialization)
+// outside the measured loop. The budget is a ceiling, matching the other
+// allocation tests in this package: it catches a reintroduced per-engine
+// logger without failing when an unrelated construction site gets cheaper.
+func TestNew_NilLoggerAllocsBudget(t *testing.T) {
+	if raceEnabled {
+		t.Skip("alloc counts are unreliable under the race detector")
+	}
+
+	warm, err := New(nil)
+	require.NoError(t, err)
+	require.NoError(t, warm.Close())
+
+	allocs := testing.AllocsPerRun(200, func() {
+		eng, err := New(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = eng.Close()
+	})
+	assert.LessOrEqual(t, allocs, float64(17), "engine construction+close alloc budget regressed, got %v", allocs)
+}
+
+// TestNew_DistinctLoggersStayIndependent pins task 2.3: an explicitly passed
+// logger is used exactly as supplied, and two engines given distinct loggers
+// never cross-emit into each other's sink.
+func TestNew_DistinctLoggersStayIndependent(t *testing.T) {
+	t.Parallel()
+
+	var bufA, bufB bytes.Buffer
+	logA := slog.New(slog.NewTextHandler(&bufA, nil))
+	logB := slog.New(slog.NewTextHandler(&bufB, nil))
+
+	engA, err := New(logA)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engA.Close() })
+
+	engB, err := New(logB)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = engB.Close() })
+
+	implA, ok := engA.(*engineImpl)
+	require.True(t, ok)
+	implB, ok := engB.(*engineImpl)
+	require.True(t, ok)
+	assert.Same(t, logA, implA.logger, "an explicit logger must never be replaced by the shared discard logger")
+	assert.Same(t, logB, implB.logger)
+
+	implA.logger.Info("marker-from-a")
+	implB.logger.Info("marker-from-b")
+
+	assert.Contains(t, bufA.String(), "marker-from-a")
+	assert.NotContains(t, bufA.String(), "marker-from-b")
+	assert.Contains(t, bufB.String(), "marker-from-b")
+	assert.NotContains(t, bufB.String(), "marker-from-a")
 }
 
 func TestClose_NoWatcher(t *testing.T) {

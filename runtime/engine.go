@@ -219,6 +219,16 @@ func WithDialect(d core.Dialect) EngineOption {
 	}
 }
 
+// discardLogger backs every engine constructed with a nil logger. It has no
+// per-engine state and slog.Logger is safe for concurrent use, so sharing
+// one instance across engines is indistinguishable from each engine building
+// its own; slog.DiscardHandler.Enabled always reports false, so calls on a
+// default-logger engine skip attribute formatting instead of building and
+// discarding it. Nothing may reassign engineImpl.logger after construction
+// (the only writes are here and at the assignment below) or this sharing
+// would leak between engines.
+var discardLogger = slog.New(slog.DiscardHandler)
+
 // New creates an Engine. log may be nil, in which case logging is discarded.
 //
 // Default evaluator is the bytecode VM with per-form tree-walker fallback on
@@ -248,7 +258,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	if log == nil {
-		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+		log = discardLogger
 	}
 
 	rootEnv := core.NewEnvWithRetainedLimits(nil, int64(cfg.limits.MaxRetainedBytesPerEnv), int64(cfg.limits.MaxRetainedSlotsPerEnv))

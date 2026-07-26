@@ -84,7 +84,11 @@ var stdlibLazyTemplateRegistry = &stdlibTemplateRegistry{
 // were explicitly deleted (a delete must never resurrect a deferred name,
 // matching eager behavior where Delete removes the binding for good).
 type stdlibLazyEngineState struct {
-	mu           sync.Mutex
+	mu sync.Mutex
+	// active, installed, and tombstoned are nil until their first write
+	// (activate, recordInstall, TombstoneForDelete respectively) — an engine
+	// that never loads a template-routed plugin never allocates them. Reads
+	// and deletes need no guard: both are legal on a nil map in Go.
 	active       map[string]string // pluginName -> pluginVersion, the plugins currently attached on this engine
 	activeList   atomic.Value      // []stdlibTemplateKey snapshot of active, rebuilt on activate/deactivate; read on the miss path without allocation
 	installed    map[string]struct{}
@@ -103,11 +107,12 @@ type stdlibLazyEngineState struct {
 }
 
 func newStdlibLazyEngineState() *stdlibLazyEngineState {
-	s := &stdlibLazyEngineState{
-		active:     make(map[string]string),
-		installed:  make(map[string]struct{}),
-		tombstoned: make(map[string]struct{}),
-	}
+	s := &stdlibLazyEngineState{}
+	// activeKeys does Load().([]stdlibTemplateKey) with no comma-ok, and
+	// installLazyLayer runs on every engine, so even a zero-plugin engine
+	// reaches that read; a never-stored atomic.Value panics on the nil
+	// interface. A nil slice boxed into an interface points at
+	// runtime.zerobase, so this store costs no allocation.
 	s.activeList.Store([]stdlibTemplateKey(nil))
 	return s
 }
@@ -406,6 +411,9 @@ func (m *stdlibLazyMaterializer) recordInstall(pluginName, name string) {
 	if _, ok := m.state.installed[name]; ok {
 		return
 	}
+	if m.state.installed == nil {
+		m.state.installed = make(map[string]struct{})
+	}
 	m.state.installed[name] = struct{}{}
 	m.state.materialized++
 }
@@ -476,6 +484,9 @@ func (m *stdlibLazyMaterializer) TombstoneForDelete(env *core.Env, name string) 
 		return
 	}
 	m.state.mu.Lock()
+	if m.state.tombstoned == nil {
+		m.state.tombstoned = make(map[string]struct{})
+	}
 	m.state.tombstoned[name] = struct{}{}
 	delete(m.state.installed, name)
 	m.state.mu.Unlock()
@@ -580,6 +591,9 @@ func (m *stdlibLazyMaterializer) activate(pluginName, pluginVersion string, name
 	}
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
+	if m.state.active == nil {
+		m.state.active = make(map[string]string)
+	}
 	m.state.active[pluginName] = pluginVersion
 	m.state.rebuildActiveList(m.dialectFP)
 	for name := range names {

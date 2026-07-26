@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -411,6 +412,80 @@ func TestLazyMaterialize_ConcurrentDependentNames(t *testing.T) {
 	// get-in + its transitive first-touches (reduce, get) materialize once each.
 	assert.LessOrEqual(t, impl.lazyMaterializer.MaterializeCount(), 4,
 		"dependent names must materialize at most once each")
+}
+
+// TestLazyMaterialize_ConcurrentActivateFirstWrite races the first write to
+// a fresh engine's nil state.active map. Use/ReloadPlugin serialize activate
+// through engine.mu, so in practice one engine never calls it concurrently;
+// this drives the materializer directly to prove the nil-map guard itself
+// holds under -race, independent of that serialization.
+func TestLazyMaterialize_ConcurrentActivateFirstWrite(t *testing.T) {
+	t.Parallel()
+
+	const goroutines = 64
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	impl := eng.(*engineImpl)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(i int) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("activate panicked: %v", r)
+				}
+			}()
+			impl.lazyMaterializer.activate(fmt.Sprintf("plugin-%d", i), "v1", nil)
+		}(i)
+	}
+	wg.Wait()
+
+	impl.lazyMaterializer.state.mu.Lock()
+	defer impl.lazyMaterializer.state.mu.Unlock()
+	assert.Len(t, impl.lazyMaterializer.state.active, goroutines)
+	for i := range goroutines {
+		assert.Equal(t, "v1", impl.lazyMaterializer.state.active[fmt.Sprintf("plugin-%d", i)])
+	}
+}
+
+// TestLazyMaterialize_ConcurrentTombstoneFirstWrite races the first write to
+// a fresh engine's nil state.tombstoned map the same way env.Delete would,
+// but concurrently and directly, since env.Delete on one engine has no
+// analogous serialized caller to rely on either.
+func TestLazyMaterialize_ConcurrentTombstoneFirstWrite(t *testing.T) {
+	t.Parallel()
+
+	const goroutines = 64
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	impl := eng.(*engineImpl)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(i int) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("TombstoneForDelete panicked: %v", r)
+				}
+			}()
+			impl.lazyMaterializer.TombstoneForDelete(impl.rootEnv, fmt.Sprintf("name-%d", i))
+		}(i)
+	}
+	wg.Wait()
+
+	impl.lazyMaterializer.state.mu.Lock()
+	defer impl.lazyMaterializer.state.mu.Unlock()
+	assert.Len(t, impl.lazyMaterializer.state.tombstoned, goroutines)
+	for i := range goroutines {
+		_, ok := impl.lazyMaterializer.state.tombstoned[fmt.Sprintf("name-%d", i)]
+		assert.True(t, ok, "name-%d must be tombstoned", i)
+	}
 }
 
 // TestLazyMaterialize_EquivalenceOnVsOff_CL runs the on/off equivalence
