@@ -339,18 +339,13 @@ func (be *bytecodeEvaluator) applyOnVM(v *vm.VM, ctx context.Context, fn core.Va
 func (be *bytecodeEvaluator) CollectionLimit() int        { return be.maxCollectionLen }
 func (be *bytecodeEvaluator) ConstructionDepthLimit() int { return be.maxStructuralDepth }
 
-// EvalCached evaluates form with caching: macro-expands, checks the chunk cache
-// runs via a pooled VM.
+// EvalCached evaluates form with caching: checks the chunk cache, macro-expands
+// and compiles only on a miss, then runs via a pooled VM.
 func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash sourceHash, formIndex int) (core.Value, error) {
 	ctx = be.evalResourceContext(ctx)
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
-	expanded, err := be.macro.MacroExpand(ctx, form, env)
-	if err != nil {
-		return nil, fmt.Errorf("macro expand: %w", err)
-	}
-
 	key := cacheKey{
 		sourceHash: sourceHash,
 		formIndex:  formIndex,
@@ -363,6 +358,15 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 	be.mu.Unlock()
 
 	if !hit {
+		// Expand only on a miss. A cached chunk was compiled from the
+		// expansion, so re-expanding to reach it is work whose result is
+		// thrown away — and an expander with side effects would re-run
+		// them. Expansion is compile-time, not per-evaluation.
+		expanded, err := be.macro.MacroExpand(ctx, form, env)
+		if err != nil {
+			return nil, fmt.Errorf("macro expand: %w", err)
+		}
+
 		currentEpoch := be.globals.MacroEpoch()
 		be.mu.Lock()
 		be.flushCacheEpochLocked(currentEpoch)

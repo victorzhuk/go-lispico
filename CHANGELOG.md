@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A macro is now expanded once per compiled chunk rather than once per
+  evaluation. `EvalCached` expanded before consulting the chunk cache, so a
+  cache hit skipped compilation but re-expanded anyway and discarded the
+  result. **This is observable**: a macro whose expander body has side effects
+  ran them on every evaluation and now runs them once per compilation, which is
+  what Common Lisp and Clojure do and what the chunk-cache requirement already
+  specified. Every gold-set cell got cheaper — `twice-macro` −16.2% allocs/op,
+  `counter-closure` −7.3%, `rule-load` −6.4%, geomean −2.2%.
 - **BREAKING**: `core.HashMap.Assoc` and `core.HashMap.Dissoc` now return
   `(*HashMap, int64, error)` instead of `(*HashMap, error)`. The added value is
   the bytes the update allocated, which the allocation ledger needs and only the

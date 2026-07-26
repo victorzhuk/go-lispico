@@ -465,3 +465,36 @@ func TestCache_ChangedMacroBodyInvalidates(t *testing.T) {
 
 	assert.NotEqual(t, before, epochOf(t, e), "a changed macro body must invalidate")
 }
+
+// TestCache_HitSkipsMacroExpansion pins that a cache hit skips expansion, by
+// counting how often a macro's expander body actually runs. Expansion is
+// compile-time work: the cached chunk already embeds its result, so re-running
+// it per evaluation was wasted, and observably so for an expander with side
+// effects. Before this was fixed the count climbed 1, 2, 3, 4 across four
+// evaluations of one unchanged source.
+func TestCache_HitSkipsMacroExpansion(t *testing.T) {
+	e, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	defer e.Close()
+	bindBuiltin(t, e, "+")
+
+	var expansions int
+	require.NoError(t, e.Bind("tick", core.GoFunc{
+		Name: "tick",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			expansions++
+			return args[0], nil
+		},
+	}))
+
+	_, err = e.Eval(context.Background(), "def", "(defmacro m (x) (tick x))")
+	require.NoError(t, err)
+
+	for i := range 4 {
+		_, err = e.Eval(context.Background(), "use", "(m 1)")
+		require.NoError(t, err)
+		require.Equal(t, 1, expansions,
+			"after eval #%d the expander had run %d times; a cache hit must not re-expand",
+			i+1, expansions)
+	}
+}
