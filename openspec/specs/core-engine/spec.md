@@ -156,6 +156,18 @@ allocate O(1) objects. Promotion between the small and large representations
 SHALL be semantically invisible: equality, iteration order rules, printing, and
 immutability are identical at both representations.
 
+Above the small-map threshold an immutable update SHALL NOT copy the whole map:
+`Assoc` and `Dissoc` SHALL share the untouched majority of the structure with the
+receiver, so that the storage a single update allocates is bounded by the depth of
+the structure rather than by its entry count, and extending a map n times costs
+O(n log n) in total rather than O(n²). The receiver SHALL be unaffected by an
+update derived from it.
+
+The hash backing that structure SHALL be derived from fixed constants rather than
+a per-process random seed. A randomized seed would make the structure's shape, and
+anything derived from it, differ across restarts for identical input, which
+contradicts the determinism this requirement states.
+
 #### Scenario: Small-map operations are allocation-bounded
 
 - **WHEN** a map literal with at most the threshold number of keys is built, read with `Get`, extended with `Assoc`, and iterated
@@ -175,6 +187,21 @@ immutability are identical at both representations.
 
 - **WHEN** the same map value is iterated or printed repeatedly, at either representation
 - **THEN** the order SHALL be identical on every iteration and identical across both evaluators
+
+#### Scenario: Extending a large map does not copy it
+
+- **WHEN** a map above the small-map threshold is extended by `Assoc` at sizes spanning two orders of magnitude
+- **THEN** the bytes and allocations a single call charges SHALL stay bounded as the map grows rather than rising in proportion to its entry count, and the receiver SHALL remain unchanged and independently readable
+
+#### Scenario: Colliding keys stay retrievable
+
+- **WHEN** a large map holds distinct keys whose hashes agree in every bit position the structure discriminates on
+- **THEN** each key SHALL resolve to its own value, `Dissoc` of one SHALL leave the others intact, and `Len` SHALL count them separately
+
+#### Scenario: Structure shape does not vary across processes
+
+- **WHEN** the same sequence of map operations runs in separate processes
+- **THEN** the resulting map SHALL print identically and iterate identically in every run
 
 ### Requirement: Terminal errors are not catchable
 
