@@ -144,6 +144,33 @@ func TestVM_OpConst(t *testing.T) {
 	}
 }
 
+func TestVM_OpConstCharged(t *testing.T) {
+	folded := core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}})
+	charge := core.VectorShallowBytes(2)
+	chunk := &Chunk{
+		Name:         "test",
+		Constants:    []core.Value{folded},
+		ConstCharges: map[int]int64{0: charge},
+		Code: []Instruction{
+			Encode(OpConstCharged, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+
+	v := New(core.NewEnv(nil))
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.True(t, result.Equals(folded), "got %v", result)
+
+	v = New(core.NewEnv(nil))
+	v.SetResourceLimits(0, int(charge-1))
+	_, err = v.Run(context.Background(), chunk)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
 func TestVM_OpGetGlobal(t *testing.T) {
 	env := core.NewEnv(nil)
 	env.Set("x", core.Int{V: 100})

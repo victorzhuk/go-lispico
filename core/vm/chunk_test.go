@@ -100,15 +100,17 @@ func TestChunkPatchJump(t *testing.T) {
 func TestChunkCopyTreeFreshSites(t *testing.T) {
 	sym := core.Symbol{V: "x"}
 	sub := &Chunk{
-		Name:      "<fn>",
-		Code:      []Instruction{Encode(OpGetGlobal, 0), Encode(OpReturn, 0)},
-		Constants: []core.Value{sym},
+		Name:         "<fn>",
+		Code:         []Instruction{Encode(OpGetGlobal, 0), Encode(OpReturn, 0)},
+		Constants:    []core.Value{sym},
+		ConstCharges: map[int]int64{0: 32},
 	}
 	root := &Chunk{
-		Name:      "<top>",
-		Code:      []Instruction{Encode(OpGetGlobal, 0), Encode(OpClosure, 0), Encode(OpReturn, 0)},
-		Constants: []core.Value{sym},
-		SubChunks: []*Chunk{sub},
+		Name:         "<top>",
+		Code:         []Instruction{Encode(OpGetGlobal, 0), Encode(OpClosure, 0), Encode(OpReturn, 0)},
+		Constants:    []core.Value{sym},
+		ConstCharges: map[int]int64{0: 64},
+		SubChunks:    []*Chunk{sub},
 	}
 	root.EnsureSites()
 	sub.EnsureSites()
@@ -135,6 +137,9 @@ func TestChunkCopyTreeFreshSites(t *testing.T) {
 	if &copied.Constants[0] != &root.Constants[0] {
 		t.Fatal("constant slice not shared")
 	}
+	if copied.ConstCharges[0] != root.ConstCharges[0] {
+		t.Fatal("const charge table not copied")
+	}
 	if copied.site(0) == nil {
 		t.Fatal("root site table missing")
 	}
@@ -146,6 +151,9 @@ func TestChunkCopyTreeFreshSites(t *testing.T) {
 	}
 	if copied.SubChunks[0].site(0).entry.Load() != nil {
 		t.Fatal("subchunk site entry copied")
+	}
+	if copied.SubChunks[0].ConstCharges[0] != sub.ConstCharges[0] {
+		t.Fatal("subchunk const charge table not copied")
 	}
 	if root.site(0).entry.Load() == nil {
 		t.Fatal("source root site entry cleared")

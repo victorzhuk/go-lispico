@@ -10,6 +10,7 @@ func TestOpcodeString(t *testing.T) {
 		expected string
 	}{
 		{OpConst, "CONST"},
+		{OpConstCharged, "CONST_CHARGED"},
 		{OpGetGlobal, "GET_GLOBAL"},
 		{OpSetGlobal, "SET_GLOBAL"},
 		{OpGetLocal, "GET_LOCAL"},

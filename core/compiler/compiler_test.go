@@ -12,6 +12,22 @@ import (
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
+func requireFoldedLiteral(t *testing.T, chunk *vm.Chunk, depth int, want core.Value, charge int64) {
+	t.Helper()
+
+	require.Len(t, chunk.Code, 3)
+	assert.Equal(t, vm.OpStructEnter, chunk.Code[0].Op())
+	assert.Equal(t, depth, chunk.Code[0].A())
+	assert.Equal(t, vm.OpConstCharged, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpStructLeave, chunk.Code[2].Op())
+	assert.Equal(t, depth, chunk.Code[2].A())
+
+	idx := chunk.Code[1].A()
+	require.True(t, want.Equals(chunk.Constants[idx]), "got %v, want %v", chunk.Constants[idx], want)
+	require.Contains(t, chunk.ConstCharges, idx)
+	assert.Equal(t, charge, chunk.ConstCharges[idx])
+}
+
 func TestCompiler_Nil(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(core.Nil{}))
@@ -119,14 +135,15 @@ func TestCompiler_Vector(t *testing.T) {
 	require.NoError(t, c.Compile(vec))
 
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 6)
-	assert.Equal(t, vm.OpStructEnter, chunk.Code[0].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[3].Op())
-	assert.Equal(t, vm.OpMakeVector, chunk.Code[4].Op())
-	assert.Equal(t, 3, chunk.Code[4].A())
-	assert.Equal(t, vm.OpStructLeave, chunk.Code[5].Op())
+	requireFoldedLiteral(t, chunk, 1, vec, core.VectorShallowBytes(3))
+}
+
+func TestCompiler_FoldedVectorStackEffect(t *testing.T) {
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(core.NewVector([]core.Value{core.Keyword{V: "x"}})))
+	c.MarkCaptures()
+
+	assert.Equal(t, 1, c.Chunk().MaxStack)
 }
 
 func TestCompiler_List_Empty(t *testing.T) {
@@ -154,6 +171,35 @@ func TestCompiler_List_Literal(t *testing.T) {
 	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
 	assert.Equal(t, vm.OpCall, chunk.Code[3].Op())
 	assert.Equal(t, 2, chunk.Code[3].A())
+}
+
+func TestCompiler_QuoteConstantListStaysPlainConst(t *testing.T) {
+	c := NewCompiler("test")
+	lst := core.NewList([]core.Value{
+		core.Int{V: 1},
+		core.Int{V: 2},
+	})
+	form := core.NewList([]core.Value{core.Symbol{V: "quote"}, lst})
+	require.NoError(t, c.Compile(form))
+
+	// Quote must not fold to a charged constant: the tree-walker's
+	// evalQuote returns the datum with no construction charge, so the VM
+	// charges nothing either or the ledger diverges across evaluators.
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
+	assert.Empty(t, chunk.ConstCharges)
+}
+
+func TestCompiler_QuoteSymbolListDoesNotFold(t *testing.T) {
+	c := NewCompiler("test")
+	lst := core.NewList([]core.Value{core.Symbol{V: "x"}})
+	form := core.NewList([]core.Value{core.Symbol{V: "quote"}, lst})
+	require.NoError(t, c.Compile(form))
+
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
 }
 
 func TestCompiler_If(t *testing.T) {
@@ -1003,15 +1049,36 @@ func TestCompiler_HashMap(t *testing.T) {
 
 	require.NoError(t, c.Compile(hm))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 7)
+	requireFoldedLiteral(t, chunk, 1, hm, core.HashMapShallowBytes(2))
+}
+
+func TestCompiler_NestedConstantMapFoldsAsOne(t *testing.T) {
+	c := NewCompiler("test")
+	tools := core.NewVector([]core.Value{core.Keyword{V: "read"}, core.Keyword{V: "grep"}})
+	hm := core.NewHashMap()
+	require.NoError(t, hm.Set(core.Keyword{V: "model"}, core.Keyword{V: "large"}))
+	require.NoError(t, hm.Set(core.Keyword{V: "tools"}, tools))
+
+	require.NoError(t, c.Compile(hm))
+
+	requireFoldedLiteral(t, c.Chunk(), 2, hm, core.HashMapShallowBytes(2)+core.VectorShallowBytes(2))
+}
+
+func TestCompiler_MixedHashMapUsesConstructionPath(t *testing.T) {
+	c := NewCompiler("test")
+	hm := core.NewHashMap()
+	require.NoError(t, hm.Set(core.Keyword{V: "model"}, core.Symbol{V: "m"}))
+
+	require.NoError(t, c.Compile(hm))
+
+	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 5)
 	assert.Equal(t, vm.OpStructEnter, chunk.Code[0].Op())
 	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[3].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[4].Op())
-	assert.Equal(t, vm.OpMakeMap, chunk.Code[5].Op())
-	assert.Equal(t, 2, chunk.Code[5].A())
-	assert.Equal(t, vm.OpStructLeave, chunk.Code[6].Op())
+	assert.Equal(t, vm.OpGetGlobal, chunk.Code[2].Op())
+	assert.Equal(t, vm.OpMakeMap, chunk.Code[3].Op())
+	assert.Equal(t, 1, chunk.Code[3].A())
+	assert.Equal(t, vm.OpStructLeave, chunk.Code[4].Op())
 }
 
 func TestCompiler_CaptureAnalysis_Uncaptured(t *testing.T) {

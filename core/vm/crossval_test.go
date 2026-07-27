@@ -112,6 +112,7 @@ func TestVMVsTreeWalker(t *testing.T) {
 		{"vector literal", "[1 2 3]"},
 		{"list literal", "'(1 2 3)"},
 		{"hashmap literal", "{:a 1 :b 2}"},
+		{"fn returning nested constant literal", "((fn [] {:model :large :tools [:read :grep]}))"},
 		{"fn invocation", "((fn [x] (+ x 1)) 5)"},
 		{"fn def and call", "(def add (fn [a b] (+ a b))) (add 3 4)"},
 		{"def", "(def x 42) x"},

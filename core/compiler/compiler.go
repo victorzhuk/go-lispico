@@ -155,6 +155,9 @@ func (c *Compiler) Compile(form core.Value) error {
 		}
 
 	case core.Vector:
+		if ok, err := c.compileConstantCollection(f, false); ok || err != nil {
+			return err
+		}
 		c.emit(vm.OpStructEnter, 1)
 		items := f.ToSlice()
 		for _, item := range items {
@@ -165,6 +168,9 @@ func (c *Compiler) Compile(form core.Value) error {
 		c.emit(vm.OpMakeVector, len(items))
 		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
+		if ok, err := c.compileConstantCollection(f, false); ok || err != nil {
+			return err
+		}
 		c.emit(vm.OpStructEnter, 1)
 		var pairs [][2]core.Value
 		f.Each(func(k, v core.Value) {
@@ -257,6 +263,9 @@ func (c *Compiler) compileList(f core.List) error {
 				if len(items) < 2 {
 					return compileErrf("quote: missing value")
 				}
+				// Quote must stay a plain OpConst: the tree-walker's evalQuote
+				// returns the datum with no construction charge or depth check,
+				// so charging here would diverge the ledger across evaluators.
 				c.emit(vm.OpConst, c.chunk.AddConstant(items[1]))
 				return nil
 			case "cond":
@@ -1104,6 +1113,9 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 				}
 			}
 		}
+		if ok, err := c.compileConstantCollection(val, true); ok || err != nil {
+			return err
+		}
 		if d := literalDepth(val, 0); d < 0 {
 			return core.NewResourceLimitError("compile depth limit exceeded")
 		}
@@ -1117,6 +1129,9 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 		c.emit(vm.OpMakeList, len(items))
 		c.emit(vm.OpStructLeave, 1)
 	case core.Vector:
+		if ok, err := c.compileConstantCollection(val, true); ok || err != nil {
+			return err
+		}
 		if d := literalDepth(val, 0); d < 0 {
 			return core.NewResourceLimitError("compile depth limit exceeded")
 		}
@@ -1130,6 +1145,9 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 		c.emit(vm.OpMakeVector, len(items))
 		c.emit(vm.OpStructLeave, 1)
 	case *core.HashMap:
+		if ok, err := c.compileConstantCollection(val, true); ok || err != nil {
+			return err
+		}
 		d := literalDepth(val, 0)
 		if d < 0 {
 			return core.NewResourceLimitError("compile depth limit exceeded")
@@ -1141,6 +1159,92 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 		c.emit(vm.OpConst, c.chunk.AddConstant(val))
 	}
 	return nil
+}
+
+func (c *Compiler) compileConstantCollection(v core.Value, allowLists bool) (bool, error) {
+	if !constantCollectionCandidate(v, allowLists) {
+		return false, nil
+	}
+	folded, charge, ok, err := foldCompileTimeConstant(v, allowLists)
+	if err != nil || !ok {
+		return ok, err
+	}
+	d := literalDepth(folded, 0)
+	if d < 0 {
+		return true, core.NewResourceLimitError("compile depth limit exceeded")
+	}
+	c.emit(vm.OpStructEnter, d)
+	c.emit(vm.OpConstCharged, c.chunk.AddChargedConstant(folded, charge))
+	c.emit(vm.OpStructLeave, d)
+	return true, c.err
+}
+
+func constantCollectionCandidate(v core.Value, allowLists bool) bool {
+	switch v.(type) {
+	case core.Vector, *core.HashMap:
+		return true
+	case core.List:
+		return allowLists
+	default:
+		return false
+	}
+}
+
+func foldCompileTimeConstant(v core.Value, allowLists bool) (core.Value, int64, bool, error) {
+	switch val := v.(type) {
+	case core.Nil, core.Bool, core.Int, core.Float, core.String, core.Keyword:
+		return val, 0, true, nil
+	case core.List:
+		if !allowLists {
+			return nil, 0, false, nil
+		}
+		items := val.ToSlice()
+		folded := make([]core.Value, len(items))
+		charge := core.ListShallowBytes(len(items))
+		for i, item := range items {
+			v, itemCharge, ok, err := foldCompileTimeConstant(item, allowLists)
+			if err != nil || !ok {
+				return nil, 0, ok, err
+			}
+			folded[i] = v
+			charge += itemCharge
+		}
+		return core.NewList(folded), charge, true, nil
+	case core.Vector:
+		items := val.ToSlice()
+		folded := make([]core.Value, len(items))
+		charge := core.VectorShallowBytes(len(items))
+		for i, item := range items {
+			v, itemCharge, ok, err := foldCompileTimeConstant(item, allowLists)
+			if err != nil || !ok {
+				return nil, 0, ok, err
+			}
+			folded[i] = v
+			charge += itemCharge
+		}
+		return core.NewVector(folded), charge, true, nil
+	case *core.HashMap:
+		pairs := val.Pairs()
+		folded := core.NewHashMap()
+		charge := core.HashMapShallowBytes(len(pairs))
+		for _, pair := range pairs {
+			k, keyCharge, ok, err := foldCompileTimeConstant(pair[0], allowLists)
+			if err != nil || !ok {
+				return nil, 0, ok, err
+			}
+			v, valueCharge, ok, err := foldCompileTimeConstant(pair[1], allowLists)
+			if err != nil || !ok {
+				return nil, 0, ok, err
+			}
+			if err := folded.Set(k, v); err != nil {
+				return nil, 0, false, err
+			}
+			charge += keyCharge + valueCharge
+		}
+		return folded, charge, true, nil
+	default:
+		return nil, 0, false, nil
+	}
 }
 
 func literalDepth(v core.Value, depth int) int {

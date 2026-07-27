@@ -61,6 +61,8 @@ type Chunk struct {
 	NodeCount int
 	// Constants is the chunk's constant pool, indexed by AddConstant.
 	Constants []core.Value
+	// ConstCharges stores the allocation charge for constants loaded by OpConstCharged.
+	ConstCharges map[int]int64
 	// SubChunks holds chunks for closures compiled within this one, indexed
 	// by the operand of their OpClosure instruction.
 	SubChunks []*Chunk
@@ -135,19 +137,20 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 		return nil
 	}
 	out := &Chunk{
-		Name:       c.Name,
-		Arity:      c.Arity,
-		Variadic:   c.Variadic,
-		Locals:     c.Locals,
-		MaxStack:   c.MaxStack,
-		LocalNames: c.LocalNames,
-		Captured:   c.Captured,
-		Caps:       c.Caps,
-		Code:       c.Code,
-		DeepBytes:  c.DeepBytes,
-		NodeCount:  c.NodeCount,
-		Constants:  c.Constants,
-		Truthiness: c.Truthiness,
+		Name:         c.Name,
+		Arity:        c.Arity,
+		Variadic:     c.Variadic,
+		Locals:       c.Locals,
+		MaxStack:     c.MaxStack,
+		LocalNames:   c.LocalNames,
+		Captured:     c.Captured,
+		Caps:         c.Caps,
+		Code:         c.Code,
+		DeepBytes:    c.DeepBytes,
+		NodeCount:    c.NodeCount,
+		Constants:    c.Constants,
+		ConstCharges: c.ConstCharges,
+		Truthiness:   c.Truthiness,
 	}
 	if len(c.SubChunks) > 0 {
 		out.SubChunks = make([]*Chunk, len(c.SubChunks))
@@ -210,6 +213,16 @@ func (c *Chunk) AddConstant(v core.Value) int {
 	}
 	c.Constants = append(c.Constants, v)
 	return len(c.Constants) - 1
+}
+
+// AddChargedConstant interns v and records its OpConstCharged allocation charge.
+func (c *Chunk) AddChargedConstant(v core.Value, charge int64) int {
+	idx := c.AddConstant(v)
+	if c.ConstCharges == nil {
+		c.ConstCharges = map[int]int64{}
+	}
+	c.ConstCharges[idx] = charge
+	return idx
 }
 
 // Emit appends an instruction encoding op and a to the chunk's code,
@@ -282,6 +295,13 @@ func (c *Chunk) Validate() error {
 		case OpConst:
 			if a < 0 || a >= len(c.Constants) {
 				return bytecodeErrorf("%s: constant index %d out of range", op, a)
+			}
+		case OpConstCharged:
+			if a < 0 || a >= len(c.Constants) {
+				return bytecodeErrorf("%s: constant index %d out of range", op, a)
+			}
+			if _, ok := c.ConstCharges[a]; !ok {
+				return bytecodeErrorf("%s: constant %d has no charge", op, a)
 			}
 		case OpGetGlobal, OpSetGlobal, OpSetLexical, OpGetFunc, OpSetFunc,
 			OpFreezeNative, OpFreezeNativeFunc:

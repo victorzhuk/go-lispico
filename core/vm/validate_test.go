@@ -24,6 +24,19 @@ func TestChunkValidate_RejectsMalformed(t *testing.T) {
 			},
 		},
 		{
+			name: "OpConstCharged out-of-range constant index",
+			chunk: &vm.Chunk{
+				Code: []vm.Instruction{vm.Encode(vm.OpConstCharged, 0)},
+			},
+		},
+		{
+			name: "OpConstCharged missing charge",
+			chunk: &vm.Chunk{
+				Code:      []vm.Instruction{vm.Encode(vm.OpConstCharged, 0), vm.Encode(vm.OpReturn, 0)},
+				Constants: []core.Value{core.Int{V: 1}},
+			},
+		},
+		{
 			name: "OpGetGlobal out-of-range constant index",
 			chunk: &vm.Chunk{
 				Code: []vm.Instruction{vm.Encode(vm.OpGetGlobal, 0)},
@@ -225,12 +238,14 @@ func TestChunkValidate_AcceptsWellFormed(t *testing.T) {
 		Code:     []vm.Instruction{vm.Encode(vm.OpGetLocal, 0), vm.Encode(vm.OpReturn, 0)},
 	}
 	chunk := &vm.Chunk{
-		Locals:    1,
-		MaxStack:  2,
-		SubChunks: []*vm.Chunk{sub},
-		Constants: []core.Value{core.Symbol{V: "x"}, core.Int{V: 42}},
+		Locals:       1,
+		MaxStack:     2,
+		SubChunks:    []*vm.Chunk{sub},
+		Constants:    []core.Value{core.Symbol{V: "x"}, core.Int{V: 42}},
+		ConstCharges: map[int]int64{1: 8},
 		Code: []vm.Instruction{
 			vm.Encode(vm.OpConst, 1),
+			vm.Encode(vm.OpConstCharged, 1),
 			vm.Encode(vm.OpSetLocal, 0),
 			vm.Encode(vm.OpGetLocal, 0),
 			vm.Encode(vm.OpJumpIfFalse, 1),

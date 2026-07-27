@@ -9,6 +9,9 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
 	"github.com/victorzhuk/go-lispico/core/vm"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // buildLetSource returns `(let [v0 0 v1 1 ... v(n-1) (n-1)] (+ v0 v1 ...))` —
@@ -885,8 +888,10 @@ func TestFoldedConstantLiteral_Disassembly(t *testing.T) {
 (def rule (fn [] {:model :large :tools [:read :grep]}))
 (rule)`
 
-	forms, _ := core.Read(src)
-	chunks, _ := compiler.CompileAll(forms)
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
 
 	var logChunkCode func(*vm.Chunk)
 	logChunkCode = func(chunk *vm.Chunk) {
@@ -898,7 +903,14 @@ func TestFoldedConstantLiteral_Disassembly(t *testing.T) {
 		}
 	}
 
-	for _, chunk := range chunks {
-		logChunkCode(chunk)
+	require.NotEmpty(t, chunks)
+	require.NotEmpty(t, chunks[0].SubChunks)
+	fnBody := chunks[0].SubChunks[0]
+	logChunkCode(chunks[0])
+
+	var ops []vm.Opcode
+	for _, instr := range fnBody.Code {
+		ops = append(ops, instr.Op())
 	}
+	assert.Equal(t, []vm.Opcode{vm.OpStructEnter, vm.OpConstCharged, vm.OpStructLeave, vm.OpReturn}, ops)
 }

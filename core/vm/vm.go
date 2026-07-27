@@ -762,6 +762,13 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 		case OpConst:
 			vm.push(chunk.Constants[instr.A()])
 
+		case OpConstCharged:
+			idx := instr.A()
+			vm.push(chunk.Constants[idx])
+			if err := vm.chargeAllocBytes(chunk.ConstCharges[idx]); err != nil {
+				return nil, err
+			}
+
 		case OpGetLocal:
 			slot := base + instr.A()
 			if slot < 0 || slot >= len(vm.stack) {

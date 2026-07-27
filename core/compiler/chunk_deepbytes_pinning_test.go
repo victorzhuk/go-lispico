@@ -43,3 +43,15 @@ func TestChunkDeepBytes_FlatVsSharedRepresentationIdentical(t *testing.T) {
 	require.Equal(t, flatBytes, sharedBytes, "chunk.DeepBytes must not depend on List's internal representation")
 	require.Greater(t, flatBytes, int64(0))
 }
+
+func TestFoldedConstant_RetainedChargeIncludesCollection(t *testing.T) {
+	folded := core.NewVector([]core.Value{
+		core.Keyword{V: "read"},
+		core.Keyword{V: "grep"},
+	})
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(folded))
+	c.MarkCaptures()
+
+	require.GreaterOrEqual(t, c.Chunk().DeepBytes, core.ValueDeepBytes(folded))
+}

@@ -9,6 +9,7 @@ type Opcode uint8
 // stack and, where noted, the operand A encoded alongside it.
 const (
 	OpConst Opcode = iota
+	OpConstCharged
 	OpGetGlobal
 	OpSetGlobal
 	OpSetLexical
@@ -65,6 +66,7 @@ const (
 
 var opNames = [...]string{
 	OpConst:            "CONST",
+	OpConstCharged:     "CONST_CHARGED",
 	OpGetGlobal:        "GET_GLOBAL",
 	OpSetGlobal:        "SET_GLOBAL",
 	OpSetLexical:       "SET_LEXICAL",
