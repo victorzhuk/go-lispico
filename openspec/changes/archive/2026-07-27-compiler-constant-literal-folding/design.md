@@ -28,22 +28,46 @@ parity; follow it. The charge is one integer add against a precomputed
 amount — nanoseconds — while the win (no map/vector rebuild, no depth walk,
 no GC pressure) is preserved intact.
 
+The same parity argument cuts the other way for `quote`: the tree-walker's
+`evalQuote` returns the datum with no construction charge or depth check, and
+the VM already compiled quoted collections to a plain `OpConst`. Quoted
+literals therefore keep the plain `OpConst` emission — folding them to a
+charged constant would charge the VM where the tree-walker charges nothing.
+Quasiquote is different: the tree-walker constructs (and charges for)
+quasiquoted collections, so all-constant quasiquote templates fold to the
+charged constant like plain literal syntax.
+
 Mechanism: constants gain an optional side table `constCharges[constIdx] →
-{deepBytes, depth}` populated only for folded collection literals. Emission
+constructionBytes` populated only for folded collection literals. Emission
 uses a distinct opcode (`OpConstCharged` or an equivalent fused form) so the
 plain `OpConst` hot path pays nothing new. `Validate()` must cover the new
 opcode's constant index and side-table presence — the validation-completeness
 lesson from `vm-dispatch-loop-tightening` applies verbatim.
 
+The precomputed charge is the construction-skeleton bytes — the recursive sum
+of `core.ListShallowBytes`/`core.VectorShallowBytes`/`core.HashMapShallowBytes`
+over the literal's containers, scalar leaves uncharged — because that is what
+the per-execution construction path charges on both evaluators
+(`chargeAllocBytes(core.VectorShallowBytes(n))` etc. in the VM,
+`st.chargeAllocBytes(VectorShallowBytes(n))` in the tree-walker). Charging
+`ValueDeepBytes` instead would add scalar leaf bytes the construction path
+never charges, breaking ledger parity for programs near `MaxAllocationBytes`.
+
 ### Depth stays enforced, O(1)
 
 `checkConstructionDepth` today walks the built value per call. The folded
-value's depth is computed once at compile; execution compares the stored
-depth against the running VM's `maxStructuralDepth`. Storing depth (not
-checking at compile) keeps the chunk correct even if it is ever shared across
-engines with different limits — the process-level chunk tier
-(`stdlib-startup-cache`, and `engine-startup-template-sharing` if it lands)
-already exists, so bake no engine config into the chunk.
+literal's depth is computed once at compile and carried by an
+`OpStructEnter(d)`/`OpStructLeave(d)` wrap around the charged-constant
+instruction — the shipped quasiquote-HashMap precedent
+(compiler.go:1132-1139). The existing `OpStructEnter` gate adds `d` to the
+running VM's cumulative structural-depth counter and compares against the
+running engine's `maxStructuralDepth`, raising the same terminal
+`ResourceLimitError`; this stays correct when a folded literal nests inside
+non-folded construction, where an own-depth comparison would diverge.
+Enforcing at execution (not at compile) keeps the chunk correct even if it is
+ever shared across engines with different limits — the process-level chunk
+tier (`stdlib-startup-cache`, and `engine-startup-template-sharing` if it
+lands) already exists, so bake no engine config into the chunk.
 
 ## Alternatives considered
 

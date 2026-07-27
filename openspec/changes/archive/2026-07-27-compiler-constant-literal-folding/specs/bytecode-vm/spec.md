@@ -14,11 +14,11 @@ execution SHALL return the shared constant value; this is unobservable
 in-language because the value is immutable and comparison is by `Equals`.
 
 Resource enforcement SHALL be preserved by precomputation, not skipped: the
-folded constant's deep bytes and structural depth SHALL be computed once at
-compile time, and each execution SHALL charge the per-evaluation allocation
-ledger by the precomputed bytes and check the precomputed depth against the
-running engine's `MaxStructuralDepth` in O(1), raising the same terminal
-`ResourceLimitError` as the construction path. The allocation ledger SHALL
+folded constant's construction charge and structural depth SHALL be computed
+once at compile time, and each execution SHALL charge the per-evaluation
+allocation ledger by the precomputed bytes and check the precomputed depth
+against the running engine's `MaxStructuralDepth` in O(1), raising the same
+terminal `ResourceLimitError` as the construction path. The allocation ledger SHALL
 therefore observe the same charges under the bytecode VM as under the
 tree-walking evaluator for the same program. No engine-specific limit SHALL
 be baked into the compiled chunk. The folded constant SHALL be covered by the
