@@ -74,6 +74,44 @@ func TestLazyMaterialize_ConcurrentFirstTouch(t *testing.T) {
 		"materialize count must be exactly 1 across concurrent first-touches")
 }
 
+// TestLazyMaterialize_ConcurrentRootEnvGet covers the embedder's resolution
+// path rather than the evaluator's: concurrent Env.Get on the root env must
+// materialize a deferred stdlib name, never report it missing. The sibling
+// first-touch tests all resolve through eng.Eval, so they cannot see a miss
+// that only the Env.Get -> LookupAndMaterialize path produces.
+func TestLazyMaterialize_ConcurrentRootEnvGet(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	require.NoError(t, eng.Use(stdlib.New()))
+
+	root := eng.RootEnv()
+	names := []string{"empty?", "assoc", "first", "count", "rest"}
+
+	var lost atomic.Int64
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 500 {
+				for _, name := range names {
+					if _, ok := root.Get(name); !ok {
+						lost.Add(1)
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if n := lost.Load(); n != 0 {
+		t.Fatalf("concurrent Env.Get reported a deferred stdlib name missing %d times", n)
+	}
+}
+
 func TestLazyMaterialize_DisjointNamesInParallel(t *testing.T) {
 	t.Parallel()
 

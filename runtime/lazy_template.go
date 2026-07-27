@@ -305,7 +305,7 @@ func (m *stdlibLazyMaterializer) LookupAndMaterialize(env *core.Env, name string
 	}
 	if _, live := m.state.installed[name]; live {
 		m.state.mu.Unlock()
-		v, canon, ok := env.GetCanonical(name)
+		v, ok, canon := env.GetCanonical(name)
 		if ok {
 			return v, true, canon
 		}
@@ -333,7 +333,7 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 	_, live := m.state.installed[entry.name]
 	m.state.mu.Unlock()
 	if live {
-		v, canon, ok := env.GetCanonical(entry.name)
+		v, ok, canon := env.GetCanonical(entry.name)
 		if ok {
 			return v, true, canon
 		}

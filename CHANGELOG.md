@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A deferred stdlib name is no longer reported missing when several goroutines
+  resolve it at once. Both already-installed fast paths in the lazy
+  materializer destructured `Env.GetCanonical`, which returns
+  `(value, found, canonical)`, as `(value, canonical, found)` — so the "found"
+  test actually read the canonical flag, and every non-canonical builtin
+  (`empty?`, `assoc`, `first`, `count`, `rest`, …) resolved as absent whenever
+  a concurrent goroutine had already materialized it. Embedders resolving
+  through `Env.Get`/`GetCanonical` saw nondeterministic
+  `UndefinedError: undefined: <name>` for names the same env returns on the
+  next call; the evaluator's own resolution path was unaffected, which is why
+  the existing first-touch tests could not see it.
+
 ## [0.9.0] - 2026-07-27
 
 ### Added

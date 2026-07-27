@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -659,6 +660,59 @@ func TestEnv_ConcurrentSetGet(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestEnv_ConcurrentSetDoesNotHideOtherBindings pins what an embedder relies
+// on when one goroutine binds into a scope while others resolve names out of
+// it: binding one name must never make an unrelated, already-live binding
+// unobservable to a concurrent Get. TestEnv_ConcurrentSetGet above churns a
+// single name and tolerates a miss on it, so it cannot see this.
+func TestEnv_ConcurrentSetDoesNotHideOtherBindings(t *testing.T) {
+	t.Parallel()
+	env := NewEnv(nil)
+
+	resolved := []string{"empty?", "assoc", "first", "count", "rest"}
+	for _, name := range resolved {
+		if err := env.Set(name, String{V: name}); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	var lost atomic.Int64
+	var wg sync.WaitGroup
+
+	for w := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 500 {
+				if err := env.Set("churn", String{V: fmt.Sprintf("w%d-%d", w, i)}); err != nil {
+					t.Errorf("writer %d: %v", w, err)
+					return
+				}
+			}
+		}()
+	}
+
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 500 {
+				for _, name := range resolved {
+					if _, ok := env.Get(name); !ok {
+						lost.Add(1)
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if n := lost.Load(); n != 0 {
+		t.Fatalf("a concurrent Set hid a live binding from Get %d times", n)
+	}
 }
 
 func TestEnv_Get_ZeroAllocs(t *testing.T) {
