@@ -106,6 +106,7 @@ type VM struct {
 	maxAllocBytes int64
 	reductions    int64
 	allocBytes    int64
+	pendingAlloc  int64
 	// ownStructDepth is the VM's private structural-depth counter. structDepth
 	// points here until a re-entrant GoFunc dispatch adopts a shared counter
 	// (see reentrantCtx); Reset restores the pointer and zeroes this back out.
@@ -237,6 +238,7 @@ func (vm *VM) reset() {
 	vm.allocBytes = 0
 	vm.budget = 0
 	vm.flushedBudget = 0
+	vm.pendingAlloc = 0
 }
 
 // Reset clears the VM state (stacks, frames, handlers, depth) so the
@@ -262,6 +264,7 @@ func (vm *VM) Reset() {
 	vm.allocBytes = 0
 	vm.budget = 0
 	vm.flushedBudget = 0
+	vm.pendingAlloc = 0
 }
 
 // ResetIncremental clears only the dirtiable cross-call state left behind by a
@@ -301,6 +304,7 @@ func (vm *VM) ResetIncremental() error {
 	vm.allocBytes = 0
 	vm.budget = 0
 	vm.flushedBudget = 0
+	vm.pendingAlloc = 0
 	return nil
 }
 
@@ -333,6 +337,7 @@ func (vm *VM) SetEvalMeter(m core.EvalMeter) {
 	vm.reductions = 0
 	vm.allocBytes = 0
 	vm.flushedBudget = vm.budget
+	vm.pendingAlloc = 0
 }
 
 func (vm *VM) SetResourceLimits(maxReductions, maxAllocBytes int) {
@@ -348,6 +353,7 @@ func (vm *VM) SetResourceLimits(maxReductions, maxAllocBytes int) {
 	vm.reductions = 0
 	vm.allocBytes = 0
 	vm.flushedBudget = vm.budget
+	vm.pendingAlloc = 0
 }
 
 func (vm *VM) chargeReductions(n int64) error {
@@ -376,6 +382,25 @@ func (vm *VM) flushConsumedReductions() error {
 	return vm.chargeReductions(int64(used))
 }
 
+func (vm *VM) pendingAllocBytes(n int64) {
+	if n > 0 {
+		vm.pendingAlloc += n
+	}
+}
+
+func (vm *VM) pendingValue(v core.Value) {
+	vm.pendingAllocBytes(core.ValueShallowBytes(v))
+}
+
+func (vm *VM) flushPendingAllocBytes() error {
+	n := vm.pendingAlloc
+	if n <= 0 {
+		return nil
+	}
+	vm.pendingAlloc = 0
+	return vm.chargeAllocBytes(n)
+}
+
 func (vm *VM) chargeAllocBytes(n int64) error {
 	if n <= 0 {
 		return nil
@@ -391,10 +416,6 @@ func (vm *VM) chargeAllocBytes(n int64) error {
 		return core.NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", vm.maxAllocBytes))
 	}
 	return nil
-}
-
-func (vm *VM) chargeValue(v core.Value) error {
-	return vm.chargeAllocBytes(core.ValueShallowBytes(v))
 }
 
 func (vm *VM) meterSnapshot() core.EvalMeterSnapshot {
@@ -461,6 +482,9 @@ func resolveReentrantDeadline(ctx context.Context, timeout time.Duration) time.T
 // already materialized, so the live check must run first.
 func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	if err := vm.flushConsumedReductions(); err != nil {
+		return nil, err
+	}
+	if err := vm.flushPendingAllocBytes(); err != nil {
 		return nil, err
 	}
 	if vm.reentryCtx != nil {
@@ -653,7 +677,8 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		// ChargeGoFuncResultBytes skips this fallback — see
 		// core.ChargeGoFuncResultBytes for why.
 		if !charged {
-			if err := vm.chargeValue(result); err != nil {
+			vm.pendingValue(result)
+			if err := vm.flushPendingAllocBytes(); err != nil {
 				return nil, err
 			}
 		}
@@ -695,6 +720,9 @@ func (vm *VM) pollCancel(ctx context.Context) error {
 	if err := vm.flushConsumedReductions(); err != nil {
 		return err
 	}
+	if err := vm.flushPendingAllocBytes(); err != nil {
+		return err
+	}
 	vm.budget = checkInterval
 	vm.flushedBudget = checkInterval
 	if !vm.deadlineArmed {
@@ -731,10 +759,25 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 // empties, returning the result of that frame's terminating OpReturn.
 // Callers must have already pushed the frame to execute (and, for a call,
 // its callee + args below it on vm.stack) — see Run and apply.
-func (vm *VM) run(ctx context.Context) (core.Value, error) {
+func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 	chunk, code, ip, base, env, caps, truthy := vm.reloadFrame()
 	vm.budget = checkInterval
 	vm.flushedBudget = checkInterval
+	vm.pendingAlloc = 0
+	// On any non-nil error exit, settle pending ledger charges before the error is
+	// observable. A flush-induced ResourceLimitError overrides the original error
+	// because the pending charges originated from instructions that executed before
+	// the faulting one, so under per-instruction charging the limit error would have
+	// fired first; this keeps meter accounting identical to per-instruction charging.
+	defer func() {
+		if err == nil {
+			return
+		}
+		if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+			result = nil
+			err = flushErr
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("vm: %w", err)
 	}
@@ -765,9 +808,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 		case OpConstCharged:
 			idx := instr.A()
 			vm.push(chunk.Constants[idx])
-			if err := vm.chargeAllocBytes(chunk.ConstCharges[idx]); err != nil {
-				return nil, err
-			}
+			vm.pendingAllocBytes(chunk.ConstCharges[idx])
 
 		case OpGetLocal:
 			slot := base + instr.A()
@@ -964,6 +1005,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), false); err != nil {
 				if core.IsTerminalEvalError(err) {
+					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+						err = flushErr
+					}
 					vm.Reset()
 					return nil, err
 				}
@@ -977,6 +1021,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), true); err != nil {
 				if core.IsTerminalEvalError(err) {
+					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+						err = flushErr
+					}
 					vm.Reset()
 					return nil, err
 				}
@@ -1005,6 +1052,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 				if err := vm.flushConsumedReductions(); err != nil {
 					return nil, err
 				}
+				if err := vm.flushPendingAllocBytes(); err != nil {
+					return nil, err
+				}
 				return result, nil
 			}
 			vm.push(result)
@@ -1021,9 +1071,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err := vm.checkConstructionDepth(res); err != nil {
 				return nil, err
 			}
-			if err := vm.chargeAllocBytes(core.ListShallowBytes(n)); err != nil {
-				return nil, err
-			}
+			vm.pendingAllocBytes(core.ListShallowBytes(n))
 			vm.stack = vm.stack[:len(vm.stack)-n]
 			vm.push(res)
 		case OpMakeVector:
@@ -1037,9 +1085,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err := vm.checkConstructionDepth(res); err != nil {
 				return nil, err
 			}
-			if err := vm.chargeAllocBytes(core.VectorShallowBytes(n)); err != nil {
-				return nil, err
-			}
+			vm.pendingAllocBytes(core.VectorShallowBytes(n))
 			vm.stack = vm.stack[:len(vm.stack)-n]
 			vm.push(res)
 
@@ -1059,9 +1105,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			if err := vm.checkConstructionDepth(hm); err != nil {
 				return nil, err
 			}
-			if err := vm.chargeAllocBytes(core.HashMapShallowBytes(pairCount)); err != nil {
-				return nil, err
-			}
+			vm.pendingAllocBytes(core.HashMapShallowBytes(pairCount))
 			vm.stack = vm.stack[:len(vm.stack)-n]
 			vm.push(hm)
 
@@ -1082,9 +1126,7 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 
 		case OpClosure:
 			sub := chunk.SubChunks[instr.A()]
-			if err := vm.chargeAllocBytes(core.ClosureShallowBytes(len(sub.Caps))); err != nil {
-				return nil, err
-			}
+			vm.pendingAllocBytes(core.ClosureShallowBytes(len(sub.Caps)))
 			var subCaps []*cellBox
 			if len(sub.Caps) > 0 {
 				subCaps = make([]*cellBox, len(sub.Caps))
@@ -1133,6 +1175,9 @@ func (vm *VM) run(ctx context.Context) (core.Value, error) {
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.dispatchNativeOp(ctx, env, instr.Op(), instr.A()); err != nil {
 				if core.IsTerminalEvalError(err) {
+					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+						err = flushErr
+					}
 					vm.Reset()
 					return nil, err
 				}
@@ -1213,9 +1258,7 @@ func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
 		}
 	}
 
-	if err := vm.chargeAllocBytes(core.MeterScalarBytes); err != nil {
-		return err
-	}
+	vm.pendingAllocBytes(core.MeterScalarBytes)
 	vm.stack = vm.stack[:d]
 	vm.push(result)
 	return nil
@@ -1651,6 +1694,9 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		if len(vm.frames) > 0 {
 			frameEnv = vm.frames[len(vm.frames)-1].env
 		}
+		if err := vm.flushPendingAllocBytes(); err != nil {
+			return err
+		}
 		reCtx, err := vm.reentrantCtx(ctx)
 		if err != nil {
 			return err
@@ -1673,9 +1719,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		// ChargeGoFuncResultBytes skips this fallback — see
 		// core.ChargeGoFuncResultBytes for why.
 		if !charged {
-			if err := vm.chargeValue(result); err != nil {
-				return err
-			}
+			vm.pendingValue(result)
 		}
 		vm.stack = vm.stack[:len(vm.stack)-argc-1]
 		vm.push(result)

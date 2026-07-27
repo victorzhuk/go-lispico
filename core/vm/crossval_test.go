@@ -540,6 +540,105 @@ func runTerminalErrorNotCaught(t *testing.T, src string, newRun func() (context.
 	require.True(t, core.IsTerminalEvalError(vmErr), "vm returned non-terminal error %T: %v", vmErr, vmErr)
 }
 
+func TestBatchedAlloc_GoFuncSettlement(t *testing.T) {
+	t.Parallel()
+
+	const src = `(do (+ 1 2) (+ 3 4) (snapshot))`
+	want := core.Int{V: 2 * core.MeterScalarBytes}
+
+	treeResult, treeErr := runBatchedAllocSnapshotProgram(t, false, src, nil)
+	require.NoError(t, treeErr)
+	vmResult, vmErr := runBatchedAllocSnapshotProgram(t, true, src, nil)
+	require.NoError(t, vmErr)
+
+	assert.True(t, treeResult.Equals(want), "tree-walker result %v", treeResult)
+	assert.True(t, vmResult.Equals(want), "VM result %v", vmResult)
+	assert.True(t, vmResult.Equals(treeResult), "VM result %v != tree-walker result %v", vmResult, treeResult)
+}
+
+func TestBatchedAlloc_ErrorUnwindSettlement(t *testing.T) {
+	t.Parallel()
+
+	const src = `(do (+ 1 2) (+ 3 4) (boom))`
+	var treeSnapshot, vmSnapshot int64
+
+	_, treeErr := runBatchedAllocSnapshotProgram(t, false, src, func(n int64) error {
+		treeSnapshot = n
+		return core.NewResourceLimitError("boom")
+	})
+	_, vmErr := runBatchedAllocSnapshotProgram(t, true, src, func(n int64) error {
+		vmSnapshot = n
+		return core.NewResourceLimitError("boom")
+	})
+
+	treeLerr := requireConstChargedResourceLimit(t, treeErr)
+	vmLerr := requireConstChargedResourceLimit(t, vmErr)
+	assert.Equal(t, treeLerr.Code, vmLerr.Code)
+	assert.Equal(t, treeLerr.Message, vmLerr.Message)
+	assert.Equal(t, int64(2*core.MeterScalarBytes), treeSnapshot)
+	assert.Equal(t, treeSnapshot, vmSnapshot)
+}
+
+func runBatchedAllocSnapshotProgram(t *testing.T, bytecode bool, src string, boom func(int64) error) (core.Value, error) {
+	t.Helper()
+
+	forms, err := core.Read(src)
+	require.NoError(t, err, "read source")
+
+	env := newBatchedAllocEnv(t)
+	snapshot := func(ctx context.Context) int64 {
+		return core.EvalMeterFrom(ctx).Snapshot().AllocationBytes
+	}
+	snapshotFn := core.GoFunc{
+		Name: "snapshot",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Int{V: snapshot(ctx)}, nil
+		},
+	}
+	require.NoError(t, env.Set("snapshot", snapshotFn))
+	require.NoError(t, env.SetFunc("snapshot", snapshotFn))
+	if boom != nil {
+		fn := core.GoFunc{
+			Name: "boom",
+			Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+				n := snapshot(ctx)
+				if err := boom(n); err != nil {
+					return nil, err
+				}
+				return core.Nil{}, nil
+			},
+		}
+		require.NoError(t, env.Set("boom", fn))
+		require.NoError(t, env.SetFunc("boom", fn))
+	}
+
+	ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, 1_000_000)
+	if !bytecode {
+		eval := core.NewEvaluator()
+		var result core.Value = core.Nil{}
+		for _, form := range forms {
+			result, err = eval.Eval(ctx, form, env)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
+	}
+
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err, "compile")
+	v := vm.New(env)
+	var result core.Value = core.Nil{}
+	for _, chunk := range chunks {
+		v.SetEvalMeter(core.EvalMeterFrom(ctx))
+		result, err = v.Run(ctx, chunk)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
 func TestVMVsTreeWalker_TerminalErrorNotCaught(t *testing.T) {
 	t.Parallel()
 

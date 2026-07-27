@@ -1,7 +1,9 @@
 package vm_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -90,6 +92,165 @@ func TestConstCharged_SharingReturnsSameHashMap(t *testing.T) {
 	// Sharing is by design: immutable values, no in-language identity primitive;
 	// quasiquoted HashMaps already share this behavior.
 	assert.Same(t, firstMap, secondMap)
+}
+
+func TestBatchedAlloc_CrossvalMaxAllocationBytes(t *testing.T) {
+	t.Parallel()
+
+	limit := int(core.MeterScalarBytes * 10)
+	src := batchedAllocLoopSource(128)
+
+	_, treeErr := evalBatchedAllocTree(t, src, limit)
+	_, vmErr := evalBatchedAllocVM(t, src, limit)
+
+	treeLerr := requireConstChargedResourceLimit(t, treeErr)
+	vmLerr := requireConstChargedResourceLimit(t, vmErr)
+	assert.Equal(t, treeLerr.Code, vmLerr.Code)
+	assert.Equal(t, treeLerr.Message, vmLerr.Message)
+}
+
+func TestBatchedAlloc_MeterAccountingByteIdentical(t *testing.T) {
+	t.Parallel()
+
+	const scalarOps = 17
+	meter := &recordingEvalMeter{}
+	ctx := core.WithEvalResourceLimits(core.WithEvalMeter(t.Context(), meter), 1_000_000, 1_000_000)
+	top, err := core.StartEval(ctx)
+	require.NoError(t, err)
+
+	env := newBatchedAllocEnv(t)
+	chunk := batchedScalarOpsChunk(scalarOps)
+	v := vm.New(env)
+	v.SetEvalMeter(core.EvalMeterFrom(ctx))
+	got, runErr := v.Run(ctx, chunk)
+	finishErr := core.FinishEval(ctx, top)
+
+	require.NoError(t, runErr)
+	require.NoError(t, finishErr)
+	require.True(t, core.Int{V: 3}.Equals(got), "got %v", got)
+	assert.Equal(t, int64(scalarOps)*core.MeterScalarBytes, meter.leasedAlloc-meter.returnedAlloc)
+}
+
+type recordingEvalMeter struct {
+	leasedRed     int64
+	leasedAlloc   int64
+	returnedRed   int64
+	returnedAlloc int64
+}
+
+func (m *recordingEvalMeter) LeaseEval(reductions, allocBytes int64) (int64, int64, error) {
+	m.leasedRed += reductions
+	m.leasedAlloc += allocBytes
+	return reductions, allocBytes, nil
+}
+
+func (m *recordingEvalMeter) ReturnEval(reductions, allocBytes int64) {
+	m.returnedRed += reductions
+	m.returnedAlloc += allocBytes
+}
+
+func (m *recordingEvalMeter) ChargeRetained(_, _ int64) error { return nil }
+
+func (m *recordingEvalMeter) ReleaseRetained(_, _ int64) {}
+
+func batchedAllocLoopSource(iterations int) string {
+	return fmt.Sprintf(`(loop [i 0 acc 0] (if (< i %d) (recur (+ i 1) (+ acc 1)) acc))`, iterations)
+}
+
+func evalBatchedAllocTree(t *testing.T, src string, maxAllocationBytes int) (core.Value, error) {
+	t.Helper()
+
+	forms := readConstChargedForms(t, src)
+	env := newBatchedAllocEnv(t)
+	eval := core.NewEvaluator()
+	ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, maxAllocationBytes)
+	var result core.Value = core.Nil{}
+	var err error
+	for _, form := range forms {
+		result, err = eval.Eval(ctx, form, env)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func evalBatchedAllocVM(t *testing.T, src string, maxAllocationBytes int) (core.Value, error) {
+	t.Helper()
+
+	forms := readConstChargedForms(t, src)
+	chunks, err := compiler.CompileAll(forms)
+	require.NoError(t, err)
+
+	env := newBatchedAllocEnv(t)
+	ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, maxAllocationBytes)
+	v := vm.New(env)
+	var result core.Value = core.Nil{}
+	for _, chunk := range chunks {
+		v.SetEvalMeter(core.EvalMeterFrom(ctx))
+		result, err = v.Run(ctx, chunk)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func newBatchedAllocEnv(t *testing.T) *core.Env {
+	t.Helper()
+
+	env := core.NewEnv(nil)
+	add := core.GoFunc{
+		Name: "+",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			var sum int64
+			for _, arg := range args {
+				sum += arg.(core.Int).V
+			}
+			return core.Int{V: sum}, nil
+		},
+	}
+	lt := core.GoFunc{
+		Name: "<",
+		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Bool{V: args[0].(core.Int).V < args[1].(core.Int).V}, nil
+		},
+	}
+	require.NoError(t, env.SetCanonical("+", add))
+	require.NoError(t, env.SetFuncCanonical("+", add))
+	require.NoError(t, env.SetCanonical("<", lt))
+	require.NoError(t, env.SetFuncCanonical("<", lt))
+	return env
+}
+
+func batchedScalarOpsChunk(scalarOps int) *vm.Chunk {
+	code := make([]vm.Instruction, 0, scalarOps*5+1)
+	for i := range scalarOps {
+		if i > 0 {
+			code = append(code, vm.Encode(vm.OpPop, 0))
+		}
+		code = append(
+			code,
+			vm.Encode(vm.OpFreezeNative, 0),
+			vm.Encode(vm.OpConst, 1),
+			vm.Encode(vm.OpConst, 2),
+			vm.Encode(vm.OpAdd, 2),
+		)
+	}
+	code = append(code, vm.Encode(vm.OpReturn, 0))
+
+	chunk := &vm.Chunk{
+		Name:     "batched-scalar-ops",
+		MaxStack: 3,
+		Constants: []core.Value{
+			core.Symbol{V: "+"},
+			core.Int{V: 1},
+			core.Int{V: 2},
+		},
+		Code: code,
+	}
+	chunk.EnsureSites()
+	return chunk
 }
 
 func runConstChargedProgram(t *testing.T, bytecode bool, limits lispicoruntime.ResourceLimits, body string) error {
