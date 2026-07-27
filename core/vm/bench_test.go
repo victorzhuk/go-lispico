@@ -849,3 +849,56 @@ func BenchmarkAccumulate1000_TreeWalker(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkFoldedConstantLiteral(b *testing.B) {
+	src := `
+(def rule (fn [] {:model :large :tools [:read :grep]}))
+(rule)`
+
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+	if len(chunks) == 0 {
+		b.Fatal("no chunks compiled for benchmark source")
+	}
+
+	env := newBenchEnv()
+	v := vm.New(env)
+	for _, chunk := range chunks[:len(chunks)-1] {
+		if _, err := v.Run(context.Background(), chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	benchChunk := chunks[len(chunks)-1]
+	for range b.N {
+		if _, err := v.Run(context.Background(), benchChunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestFoldedConstantLiteral_Disassembly(t *testing.T) {
+	src := `
+(def rule (fn [] {:model :large :tools [:read :grep]}))
+(rule)`
+
+	forms, _ := core.Read(src)
+	chunks, _ := compiler.CompileAll(forms)
+
+	var logChunkCode func(*vm.Chunk)
+	logChunkCode = func(chunk *vm.Chunk) {
+		for _, instr := range chunk.Code {
+			t.Logf("%s", instr.String())
+		}
+		for _, sub := range chunk.SubChunks {
+			logChunkCode(sub)
+		}
+	}
+
+	for _, chunk := range chunks {
+		logChunkCode(chunk)
+	}
+}
