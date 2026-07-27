@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"sync/atomic"
 	"time"
 )
@@ -134,37 +135,120 @@ func (st *evalState) callCounter() *atomic.Int64 {
 // lazyEvalStateCtx wraps a parent context and materializes an evalState on demand
 // only when the state key is read. This avoids allocations on non-re-entrant GoFunc
 // dispatch while preserving shared state across re-entrant evaluator calls.
+//
+// Two mutually exclusive field regimes coexist here, selected by whether
+// resolveDeadline is nil: AdoptEvalStateWithMeter sets deadline eagerly at
+// build time and never touches resolveDeadline/timeout; the VM reentrant
+// path (AdoptReentrantEvalState/RearmReentrantEvalState) leaves deadline
+// zero and resolves lazily through resolveDeadline+timeout instead (see
+// Value). Only the reentrant regime is ever rearmed in place on an existing
+// wrapper, which is why its fields are atomic: a GoFunc can stash this ctx
+// somewhere a goroutine other than the one performing the rearm reads it
+// from, and a plain field mutated concurrently with a plain field read is a
+// data race regardless of how the generation check on the side is guarded.
 type lazyEvalStateCtx struct {
 	context.Context
-	deadline      time.Time
+	deadline time.Time
+	// resolveDeadline, when set, computes the deadline lazily from timeout
+	// at first observation (see Value) instead of using the eager deadline
+	// above — the VM reentrant path uses this so a GoFunc that never reads
+	// its ctx's eval state costs no clock read. It must not close over any
+	// per-VM mutable field: Value can run on a goroutine other than the one
+	// that owns the VM, so the callback takes timeout as a plain argument
+	// instead of reading a *VM field itself.
+	resolveDeadline func(context.Context, time.Duration) time.Time
+	// timeout backs resolveDeadline, in nanoseconds. Atomic for the same
+	// reason as maxReductions et al. below.
+	timeout       atomic.Int64
 	counter       atomic.Int64
 	callCounter   atomic.Int64
 	state         atomic.Pointer[evalState]
-	maxReductions int64
-	maxAllocBytes int64
-	reductions    int64
-	allocBytes    int64
+	maxReductions atomic.Int64
+	maxAllocBytes atomic.Int64
+	reductions    atomic.Int64
+	allocBytes    atomic.Int64
+	// genPtr, when set, points at the owning VM's run-generation counter: a
+	// wrapper retained past the run that built or last rearmed it (gen no
+	// longer matches genPtr's live value) reads back as carrying no
+	// evaluation state instead of leaking that run's counters — see live().
+	// Nil for wrappers built outside a VM's reentrant boundary
+	// (AdoptEvalStateWithMeter), which stay live for their whole lifetime.
+	genPtr *atomic.Uint64
+	gen    atomic.Uint64
+	// parentComparable caches whether Context's dynamic type is safe to
+	// compare with ==, checked once via reflect at build time: two interface
+	// values panic on == only when both hold the same non-comparable
+	// dynamic type, and comparing on every reentrant dispatch would risk
+	// exactly that. false means an outer-ctx match can never be confirmed
+	// safely, so this wrapper is never reused across runs.
+	parentComparable bool
+}
+
+// live reports whether c is still stamped for its VM's currently-executing
+// run. Always true for a wrapper with no genPtr (built outside a VM's
+// reentrant boundary), which never goes stale.
+//
+// gen is always the LAST field RearmReentrantEvalState writes, after every
+// other rearmed field. Go's atomic operations are sequentially consistent,
+// so a reader that observes the new gen here is guaranteed to also observe
+// every write that preceded it in the rearming goroutine's program order —
+// this is what makes reading the other (also atomic, but otherwise
+// unsynchronized) fields below safe once live reports true.
+func (c *lazyEvalStateCtx) live() bool {
+	return c.genPtr == nil || c.gen.Load() == c.genPtr.Load()
 }
 
 // Value returns either the current eval state or the parent context value.
+// A stale wrapper (see live) falls through to the parent unconditionally: it
+// must not hand out a materialized evalState from a run that has already
+// ended, nor build a fresh one seeded from counters that run left behind.
+//
+// live() only rules out a wrapper already stale at entry — it says nothing
+// about a rearm landing on THIS wrapper while this call is still reading it.
+// observedGen anchors a seqlock-style read: every point below that hands
+// back a state (cached or freshly built) re-checks gen against it first, so
+// a rearm anywhere in between is caught before its fields leak into a
+// published evalState, or before an already-published one from a
+// generation this call never observed is handed out as if it were current.
+// On mismatch the caller gets the same fallback as a wrapper stale at
+// entry — never a torn read or another generation's state.
 func (c *lazyEvalStateCtx) Value(key any) any {
 	if _, ok := key.(evalStateKey); ok {
+		if !c.live() {
+			return c.Context.Value(key)
+		}
 		if existing, ok := c.Context.Value(key).(*evalState); ok {
 			return existing
 		}
 
+		observedGen := c.gen.Load()
+		stale := func() bool { return c.gen.Load() != observedGen }
+
 		if st := c.state.Load(); st != nil {
+			if stale() {
+				return c.Context.Value(key)
+			}
 			return st
 		}
-		st := newEvalStateWithLimits(c.maxReductions, c.maxAllocBytes)
-		st.deadline = c.deadline
+		st := newEvalStateWithLimits(c.maxReductions.Load(), c.maxAllocBytes.Load())
+		deadline := c.deadline
+		if c.resolveDeadline != nil {
+			deadline = c.resolveDeadline(c.Context, time.Duration(c.timeout.Load()))
+		}
+		st.deadline = deadline
 		st.shared = &c.counter
 		st.sharedCallDepth = &c.callCounter
-		st.reductions.Store(c.reductions)
-		st.allocBytes.Store(c.allocBytes)
+		st.reductions.Store(c.reductions.Load())
+		st.allocBytes.Store(c.allocBytes.Load())
 		st.attachMeter(sessionMeterFromContext(c.Context))
+		if stale() {
+			return c.Context.Value(key)
+		}
 		if c.state.CompareAndSwap(nil, st) {
 			return st
+		}
+		if stale() {
+			return c.Context.Value(key)
 		}
 		return c.state.Load()
 	}
@@ -263,7 +347,7 @@ func EvalStructCounter(ctx context.Context) *atomic.Int64 {
 // EvalCallCounter returns the shared call-depth atomic from the eval state in
 // ctx. Returns a private zero-valued atomic when ctx has no eval state.
 func EvalCallCounter(ctx context.Context) *atomic.Int64 {
-	if w, ok := ctx.(*lazyEvalStateCtx); ok {
+	if w, ok := ctx.(*lazyEvalStateCtx); ok && w.live() {
 		return &w.callCounter
 	}
 	return evalStateFrom(ctx).callCounter()
@@ -317,10 +401,163 @@ func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, structSeed
 	if len(callSeed) > 0 {
 		callDepth = callSeed[0]
 	}
-	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline, maxReductions: maxReductions, maxAllocBytes: maxAllocBytes, reductions: snap.Reductions, allocBytes: snap.AllocationBytes}
+	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline}
+	w.maxReductions.Store(maxReductions)
+	w.maxAllocBytes.Store(maxAllocBytes)
+	w.reductions.Store(snap.Reductions)
+	w.allocBytes.Store(snap.AllocationBytes)
 	w.counter.Store(structSeed)
 	w.callCounter.Store(callDepth)
 	return w, &w.counter, EvalMeter{}
+}
+
+// AdoptReentrantEvalState is AdoptEvalStateWithMeter's VM-facing sibling: it
+// defers deadline resolution to first observation instead of resolving it at
+// build time (resolveDeadline runs only if a callee actually reads ctx's
+// eval state, so a GoFunc that never touches it costs no clock read), and
+// stamps the returned wrapper against gen so a copy retained past its run's
+// end fails safe instead of leaking that run's counters. resolveDeadline
+// must not close over VM state — see the field doc on lazyEvalStateCtx.
+// See RearmReentrantEvalState to reuse the returned ctx across a later run,
+// and ReentrantEvalStateLive for the other reuse guard.
+func AdoptReentrantEvalState(ctx context.Context, timeout time.Duration, resolveDeadline func(context.Context, time.Duration) time.Time, structSeed, callSeed int64, snap EvalMeterSnapshot, gen *atomic.Uint64) (context.Context, *atomic.Int64, EvalMeter) {
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		if callSeed > 0 {
+			counter := st.callCounter()
+			counter.CompareAndSwap(0, callSeed)
+		}
+		return ctx, st.counter(), EvalMeter{st: st}
+	}
+
+	w := &lazyEvalStateCtx{
+		Context:          ctx,
+		resolveDeadline:  resolveDeadline,
+		genPtr:           gen,
+		parentComparable: ctxComparable(ctx),
+	}
+	w.timeout.Store(int64(timeout))
+	w.maxReductions.Store(normalizeEvalLimit(snap.MaxReductions, DefaultMaxReductions))
+	w.maxAllocBytes.Store(normalizeEvalLimit(snap.MaxAllocationBytes, DefaultMaxAllocationBytes))
+	w.reductions.Store(snap.Reductions)
+	w.allocBytes.Store(snap.AllocationBytes)
+	w.counter.Store(structSeed)
+	w.callCounter.Store(callSeed)
+	if gen != nil {
+		w.gen.Store(gen.Load())
+	}
+	return w, &w.counter, EvalMeter{}
+}
+
+// RearmReentrantEvalState reuses retained — a ctx previously built by
+// AdoptReentrantEvalState for the same VM — as the ctx of a new top-level
+// run, when ctx (this dispatch's outer ctx) is the exact one retained was
+// built from: resets its counters, re-seeds resource limits and timeout,
+// drops any evalState materialized by the run that just ended (so it cannot
+// keep serving reads once reused), and restamps the generation live last —
+// see live's doc for why the order matters. ok is false, and retained is
+// left untouched, when retained is not such a wrapper, or its outer ctx
+// does not match ctx (checked only when that outer ctx was proven
+// comparable at build time: two context.Context values panic on == when
+// both hold the same non-comparable dynamic type). Callers must only call
+// this when ReentrantEvalStateLive(retained) is false — rearming a wrapper
+// still live for the current run would wipe out state a GoFunc dispatched
+// earlier this run may already have materialized.
+func RearmReentrantEvalState(retained, ctx context.Context, structSeed, callSeed int64, snap EvalMeterSnapshot, timeout time.Duration) (structDepth *atomic.Int64, ok bool) {
+	w, isWrapper := retained.(*lazyEvalStateCtx)
+	if !isWrapper || !w.parentComparable || w.Context != ctx {
+		return nil, false
+	}
+	w.counter.Store(structSeed)
+	w.callCounter.Store(callSeed)
+	w.maxReductions.Store(normalizeEvalLimit(snap.MaxReductions, DefaultMaxReductions))
+	w.maxAllocBytes.Store(normalizeEvalLimit(snap.MaxAllocationBytes, DefaultMaxAllocationBytes))
+	w.reductions.Store(snap.Reductions)
+	w.allocBytes.Store(snap.AllocationBytes)
+	w.timeout.Store(int64(timeout))
+	w.state.Store(nil)
+	if w.genPtr != nil {
+		w.gen.Store(w.genPtr.Load())
+	}
+	return &w.counter, true
+}
+
+// ReentrantEvalStateLive reports whether ctx (built by AdoptReentrantEvalState
+// or refreshed by RearmReentrantEvalState) is still stamped for its VM's
+// currently-executing run — the fast path for a dispatch that already holds
+// the run's live reentrant ctx and needs no rearm.
+func ReentrantEvalStateLive(ctx context.Context) bool {
+	w, ok := ctx.(*lazyEvalStateCtx)
+	return ok && w.live()
+}
+
+// ctxComparable reports whether ctx's dynamic type is safe to compare with
+// ==, checked once so a hot reentrant-dispatch path never needs to.
+//
+// reflect's own Comparable is not enough: it reports true for a struct
+// holding an interface-typed field, yet == on two such values panics at
+// runtime when that field holds a slice, map or func on both sides. An
+// embedder can pass any context.Context, including a by-value struct with an
+// `any` field, so the reuse check needs a stricter test than Comparable to
+// keep the no-panic guarantee. Answering false only costs one wrapper
+// allocation — reuse is an optimization, never a correctness requirement.
+func ctxComparable(ctx context.Context) bool {
+	return comparableKind(reflect.TypeOf(ctx), 0)
+}
+
+// maxCtxComparableDepth bounds the field walk below. Context types are
+// shallow in practice; a type nested deeper than this is treated as unsafe
+// rather than walked further.
+const maxCtxComparableDepth = 8
+
+// comparableKind reports whether == on two t values can never panic. Pointer
+// and channel comparisons are word comparisons regardless of what they point
+// at; structs and arrays are safe only when every field or element is, which
+// is what keeps context.Background() and context.TODO() (structs wrapping an
+// empty struct) on the reuse fast path while excluding anything carrying an
+// interface.
+func comparableKind(t reflect.Type, depth int) bool {
+	if t == nil || depth > maxCtxComparableDepth {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.String, reflect.Pointer, reflect.Chan, reflect.UnsafePointer:
+		return true
+	case reflect.Array:
+		return comparableKind(t.Elem(), depth+1)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if !comparableKind(t.Field(i).Type, depth+1) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// ResolveDeadlineBound computes the effective absolute deadline for an
+// engine timeout duration as of now, honoring a tighter caller-supplied ctx
+// deadline: a caller deadline that is not looser than now+timeout suppresses
+// the engine bound entirely (the caller's own ctx cancellation already
+// covers it), returning the zero Time. The single implementation of this
+// comparison — core/vm's VM.armDeadline and a reentrant ctx's own lazy
+// deadline resolution both call it, so the two can never diverge even though
+// they may run on different goroutines and observe different "now" instants.
+func ResolveDeadlineBound(ctx context.Context, timeout time.Duration, now time.Time) time.Time {
+	if timeout <= 0 {
+		return time.Time{}
+	}
+	bound := now.Add(timeout)
+	if d, ok := ctx.Deadline(); ok && !d.After(bound) {
+		return time.Time{}
+	}
+	return bound
 }
 
 // HasEvalState reports whether ctx already carries evaluation state from an

@@ -275,6 +275,15 @@ func TestCallReentrancy_LazyEvalStateConcurrentMaterialization(t *testing.T) {
 	}
 }
 
+// TestCallReentrancy_StashedLazyCtxSurvivesPooledVMReuse proves a reentrant
+// ctx a GoFunc stashes outside its call does not leak a later run's state
+// back to the stashing code. Engine.Call pools VMs, and a pooled VM now
+// reuses its reentrant ctx wrapper in place across runs when the outer ctx
+// is unchanged (both calls below share the same context.Background()) — the
+// allocation that reuse avoids. The stashed handle is that same wrapper
+// object, so once the "mutate" run ends it reads back as carrying no
+// evaluation state: a private zero-valued counter and a zero deadline, never
+// the live run's counters.
 func TestCallReentrancy_StashedLazyCtxSurvivesPooledVMReuse(t *testing.T) {
 	t.Parallel()
 
@@ -315,12 +324,12 @@ func TestCallReentrancy_StashedLazyCtxSurvivesPooledVMReuse(t *testing.T) {
 
 	stashedCounter := core.EvalStructCounter(stashed)
 	stashedDeadline := core.EvalDeadlineFrom(stashed)
-	require.NotZero(t, stashedDeadline)
+	assert.Zero(t, stashedDeadline)
 	assert.NotSame(t, liveCounter, stashedCounter)
 	assert.Equal(t, int64(0), stashedCounter.Load())
 	assert.Equal(t, int64(7), liveCounter.Load())
 
 	liveCounter.Add(11)
 	assert.Equal(t, int64(0), stashedCounter.Load())
-	assert.Equal(t, stashedDeadline, core.EvalDeadlineFrom(stashed))
+	assert.Zero(t, core.EvalDeadlineFrom(stashed))
 }

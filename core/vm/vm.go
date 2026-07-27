@@ -111,11 +111,30 @@ type VM struct {
 	// (see reentrantCtx); Reset restores the pointer and zeroes this back out.
 	ownStructDepth atomic.Int64
 	ownCallDepth   atomic.Int64
-	// reentryCtx is per-invocation scratch (like budget), reset each run: the
-	// ctx adopted for re-entrant GoFunc calls once one occurs, so repeated
-	// callbacks within the same run share one evalState instead of adopting
-	// afresh each time. Never a stored request context.
+	// reentryCtx is the ctx adopted for re-entrant GoFunc/Lambda calls once
+	// one occurs, so repeated callbacks within a run share one evalState
+	// instead of adopting afresh each time. Unlike budget it survives across
+	// runs — reset/Reset/ResetIncremental no longer clear it — because
+	// reentrantCtx reuses and rearms it in place when the outer ctx matches,
+	// which is where the per-call wrapper allocation this field exists to
+	// avoid would otherwise land. runGen is what makes that safe: see runGen
+	// and reentrantCtx. Never a stored request context.
 	reentryCtx context.Context
+	// runGen counts top-level runs on this VM instance: bumped once, at the
+	// end of every top-level Run/ApplyPooled that leaves reentryCtx non-nil
+	// (see bumpRunGenIfWrapped). reset/Reset/ResetIncremental do NOT bump it
+	// — any wrapper still set at that point was already invalidated by the
+	// exit bump of the run that built or last rearmed it, and every wrapper
+	// build happens strictly inside the dynamic extent of a Run/ApplyPooled
+	// call, so that single bump point is sufficient. reentryCtx is stamped
+	// with the value live when it was built or last rearmed, so a copy a
+	// GoFunc retains past its run's end (e.g. stashes in a closure) reads
+	// back as carrying no evaluation state instead of a finished run's
+	// counters — see core.ReentrantEvalStateLive. Gating the bump on
+	// reentryCtx != nil keeps it a no-op for the GoFunc/Lambda-free fast path
+	// that never builds a wrapper at all. atomic.Uint64: a retained ctx can
+	// be read from a goroutine other than the one that reused/rearmed it.
+	runGen atomic.Uint64
 }
 
 // VMOption configures a VM created by New.
@@ -185,6 +204,17 @@ func (vm *VM) checkConstructionDepth(v core.Value) error {
 	return nil
 }
 
+// bumpRunGenIfWrapped advances runGen, invalidating reentryCtx for any run
+// that reuses or reads it from now on. Gated on reentryCtx != nil: a VM whose
+// body never dispatches a GoFunc/Lambda never builds a wrapper, and runGen is
+// unobservable without one, so this keeps the atomic RMW off that path
+// entirely instead of paying it on every top-level call.
+func (vm *VM) bumpRunGenIfWrapped() {
+	if vm.reentryCtx != nil {
+		vm.runGen.Add(1)
+	}
+}
+
 func (vm *VM) stackSize() int  { return len(vm.stack) }
 func (vm *VM) frameCount() int { return len(vm.frames) }
 func (vm *VM) reset() {
@@ -196,7 +226,6 @@ func (vm *VM) reset() {
 	vm.ownStructDepth.Store(0)
 	vm.callDepth = &vm.ownCallDepth
 	vm.ownCallDepth.Store(0)
-	vm.reentryCtx = nil
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0
@@ -222,7 +251,6 @@ func (vm *VM) Reset() {
 	vm.ownStructDepth.Store(0)
 	vm.callDepth = &vm.ownCallDepth
 	vm.ownCallDepth.Store(0)
-	vm.reentryCtx = nil
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0
@@ -238,7 +266,7 @@ func (vm *VM) Reset() {
 
 // ResetIncremental clears only the dirtiable cross-call state left behind by a
 // successful call (a GoFunc dispatch that adopted a shared structural-depth
-// counter and deadline via reentrantCtx/AdoptEvalState) without re-truncating
+// counter and deadline via reentrantCtx/AdoptReentrantEvalState) without re-truncating
 // the stacks, frames, handlers, freezeStack and depth that the run/apply loop
 // already restored on a clean top-level exit. Used by stateful handle paths
 // (PinnedFn) that own a private VM and want the steady-state allocation cost
@@ -263,7 +291,6 @@ func (vm *VM) ResetIncremental() error {
 	vm.structDepth = &vm.ownStructDepth
 	vm.ownCallDepth.Store(0)
 	vm.callDepth = &vm.ownCallDepth
-	vm.reentryCtx = nil
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
@@ -403,27 +430,50 @@ func (vm *VM) armDeadline(ctx context.Context) {
 		return
 	}
 	vm.deadlineArmed = true
-	bound := nowFunc().Add(vm.timeout)
-	if d, ok := ctx.Deadline(); ok && !d.After(bound) {
-		return
-	}
-	vm.deadline = bound
+	vm.deadline = core.ResolveDeadlineBound(ctx, vm.timeout, nowFunc())
 }
 
-// reentrantCtx lazily builds (once per run) a context carrying an evalState that
-// shares the VM's structural-depth counter and deadline, so a GoFunc that calls
-// back into the evaluator enforces the same resource budget across the
+// resolveReentrantDeadline is the reentrant ctx's deadline-resolution
+// callback (see lazyEvalStateCtx.resolveDeadline). It is a plain top-level
+// function, not a method closing over *VM, deliberately: Value can invoke it
+// from a goroutine other than the one that owns the VM (a GoFunc that
+// stashed this ctx, read from a background goroutine), so it must not touch
+// any VM field — timeout arrives as a parameter, a snapshot the VM copied
+// into the wrapper itself while still on its own goroutine (see
+// reentrantCtx). Being a bare function, passing it costs no closure
+// allocation either, on the build path or if ever passed again.
+func resolveReentrantDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	return core.ResolveDeadlineBound(ctx, timeout, nowFunc())
+}
+
+// reentrantCtx lazily builds or reuses a context carrying an evalState that
+// shares the VM's structural-depth counter and deadline, so a GoFunc that
+// calls back into the evaluator enforces the same resource budget across the
 // boundary. Only reached on a real GoFunc dispatch — the native-op fast path
 // never calls it.
+//
+// reentryCtx now outlives the run that built it (see the field doc), so a
+// retained ctx can be in one of three states here: still live for the
+// current run (return as-is, exactly like the old per-run cache), stale but
+// built from the same outer ctx (rearm it in place for this run instead of
+// allocating), or neither (build fresh). Rearming an already-live wrapper
+// would wipe out state a GoFunc dispatched earlier this same run may have
+// already materialized, so the live check must run first.
 func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	if err := vm.flushConsumedReductions(); err != nil {
 		return nil, err
 	}
 	if vm.reentryCtx != nil {
-		return vm.reentryCtx, nil
+		if core.ReentrantEvalStateLive(vm.reentryCtx) {
+			return vm.reentryCtx, nil
+		}
+		if structCounter, ok := core.RearmReentrantEvalState(vm.reentryCtx, ctx, vm.structDepth.Load(), vm.callDepth.Load(), vm.meterSnapshot(), vm.timeout); ok {
+			vm.structDepth = structCounter
+			vm.callDepth = core.EvalCallCounter(vm.reentryCtx)
+			return vm.reentryCtx, nil
+		}
 	}
-	vm.armDeadline(ctx)
-	adopted, structCounter, meter := core.AdoptEvalStateWithMeter(ctx, vm.deadline, vm.structDepth.Load(), vm.meterSnapshot(), vm.callDepth.Load())
+	adopted, structCounter, meter := core.AdoptReentrantEvalState(ctx, vm.timeout, resolveReentrantDeadline, vm.structDepth.Load(), vm.callDepth.Load(), vm.meterSnapshot(), &vm.runGen)
 	vm.structDepth = structCounter
 	vm.callDepth = core.EvalCallCounter(adopted)
 	if meter.Valid() {
@@ -510,6 +560,9 @@ func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *c
 // resets) before calling ApplyPooled, and MUST NOT reuse this VM concurrently.
 // For fresh-isolation semantics use Apply instead.
 func (v *VM) ApplyPooled(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
+	// See Run's matching defer: this is the other top-level exit reentryCtx
+	// can be built or rearmed under.
+	defer v.bumpRunGenIfWrapped()
 	counter := v.callDepth
 	if counter == nil {
 		counter = &v.ownCallDepth
@@ -659,6 +712,11 @@ func (vm *VM) pollCancel(ctx context.Context) error {
 // Run pushes a new frame for chunk and executes it to completion, returning
 // the result of its top-level OpReturn.
 func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
+	// A reentryCtx stamped during this run must read back as stale the
+	// instant the run returns, whether it exits cleanly or via the Reset
+	// below on a terminal error — Reset itself no longer bumps runGen, so
+	// this is reentryCtx's sole invalidation point (see bumpRunGenIfWrapped).
+	defer vm.bumpRunGenIfWrapped()
 	base := len(vm.stack)
 	vm.frames = append(vm.frames, Frame{chunk: chunk, base: base, env: vm.globals})
 	vm.growStack(base, chunk.MaxStack)

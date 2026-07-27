@@ -165,12 +165,24 @@ func (m EvalMeter) ChargeReductions(n int64) error {
 	return m.st.chargeReductions(n)
 }
 
+// EvalMeterIfMaterialized never forces materialization (see BeginGoFuncDispatch),
+// so a live() pass here says only that the wrapper had not gone stale at
+// entry — a rearm can still land between that check and the state.Load()
+// below and hand back a LATER generation's already-materialized state. The
+// observedGen re-check after the load catches exactly that: it does not
+// detect tearing (a single pointer load cannot tear), only "this pointer no
+// longer belongs to the generation live() just confirmed."
 func EvalMeterIfMaterialized(ctx context.Context) EvalMeter {
 	if w, ok := ctx.(*lazyEvalStateCtx); ok {
-		if st := w.state.Load(); st != nil {
-			return EvalMeter{st: st}
+		if !w.live() {
+			return EvalMeter{}
 		}
-		return EvalMeter{}
+		observedGen := w.gen.Load()
+		st := w.state.Load()
+		if st == nil || w.gen.Load() != observedGen {
+			return EvalMeter{}
+		}
+		return EvalMeter{st: st}
 	}
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
 		return EvalMeter{st: st}
@@ -213,12 +225,14 @@ func ChargeGoFuncResultBytes(ctx context.Context, n int64) error {
 // element-lambda's charge for map's own result already being billed.
 //
 // Uses EvalMeterIfMaterialized, not evalStateFrom: forcing a lazily-wrapped
-// context (AdoptEvalStateWithMeter) to materialize its evalState here would
-// allocate one for every GoFunc dispatch, including callees that never
-// touch resource limits at all — exactly the laziness
-// TestCall_GoFuncDispatchKeepsEvalStateLazy guards. A callee that does
-// charge something materializes the state itself, and EndGoFuncDispatch
-// picks that up.
+// context (the VM's reentrant ctx, built by AdoptReentrantEvalState and
+// rearmed by RearmReentrantEvalState — AdoptEvalStateWithMeter shares the
+// same lazy shape but no production call site reaches here through it
+// anymore) to materialize its evalState here would allocate one for every
+// GoFunc dispatch, including callees that never touch resource limits at
+// all — exactly the laziness TestCall_GoFuncDispatchKeepsEvalStateLazy
+// guards. A callee that does charge something materializes the state
+// itself, and EndGoFuncDispatch picks that up.
 func BeginGoFuncDispatch(ctx context.Context) bool {
 	st := EvalMeterIfMaterialized(ctx).st
 	if st == nil {
