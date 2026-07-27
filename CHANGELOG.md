@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-27
+
 ### Added
 
 - `runtime.Engine.Func(name)` returns a reusable `*runtime.Fn` handle for
@@ -112,6 +114,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The per-engine bytecode chunk cache now evicts deterministically by LRU across
   entry, deep-byte, and expanded-node ceilings. Chunks larger than any cache
   ceiling run uncached without failing evaluation.
+- A `Vector`, `HashMap`, or list literal whose elements are all compile-time
+  constants now compiles to a single shared chunk constant instead of per-call
+  element pushes plus an `OpMake*`. A function returning literal config
+  (`(fn [] {:model :large :tools [:read :grep]})`) allocates nothing per call:
+  336 B/op and 5 allocs/op → 0 and 0, ~210ns → ~63ns on
+  `BenchmarkFoldedConstantLiteral`. Allocation-ledger charges and structural
+  depth are precomputed at compile time and applied when the constant loads, so
+  a program that trips `MaxAllocationBytes` or `MaxStructuralDepth` still trips
+  it identically under both evaluators. **Observable to Go embedders**: repeated
+  evaluations return the same value rather than equal fresh ones — unobservable
+  in-language, visible to a host comparing pointers.
+- The context wrapper handed to dispatched `GoFunc`s is now VM-owned storage
+  reused across runs rather than rebuilt on every top-level `Call`, and its
+  deadline is resolved on first observation instead of at dispatch, so a body
+  whose host functions never read one reads no clock. `Engine_CallBytecode`
+  drops from 128 B/op and 2 allocs to 32 B/op and 1; every host-callback and
+  rule call sheds the wrapper. Bodies that dispatch no `GoFunc` are unchanged.
+- Engine construction and plugin loading now share completed plugin template
+  layers across engines, memoize stock dialect resolution and fingerprinting,
+  and create the per-engine plugin bookkeeping maps on first write. A
+  default-logger engine resolves to one process-wide discard handler that
+  reports itself disabled, so it no longer formats attributes it drops.
+  `Engine_Creation` 5.49µs → 741ns with 75 → 17 allocs/op, `Use/lazy`
+  244 → 32 allocs/op, `Startup/cache-warm` 356 → 135 allocs/op.
+- Repeated `Engine.Call` with the same name resolves through a cached handle
+  instead of re-resolving the binding: `Engine_CallBytecodeCanonical`
+  158.1ns → 144.9ns (−8.35%).
+- A top-level `defmacro` now compiles instead of deferring to the tree-walker,
+  so a source that defines macros no longer splits across evaluators form by
+  form: `twice-macro` 57 → 50 allocs/op (−12.28%).
 
 ### Fixed
 
@@ -427,7 +459,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.8.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/victorzhuk/go-lispico/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/victorzhuk/go-lispico/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/victorzhuk/go-lispico/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/victorzhuk/go-lispico/compare/v0.5.0...v0.6.0

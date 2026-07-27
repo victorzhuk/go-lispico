@@ -125,16 +125,22 @@ Environments form a chain for lexical scoping:
 
 ```go
 type Env struct {
-    parent   *Env
-    bindings map[Symbol]Value
-    mu       sync.RWMutex
+    mu     sync.RWMutex
+    parent *Env
+    vars   map[string]*Cell
+    funcs  map[string]*Cell // function cell; nil until first SetFunc (Lisp-2 only)
+    // + retained-capacity counters, macro epoch, lazy plugin layer
 }
 ```
 
 Each environment:
 
-- Holds bindings for its scope
+- Holds bindings for its scope, each in a `*Cell`, so a closure or a cached
+  chunk keeps one binding alive instead of pinning the whole scope
 - Has optional parent for lookup chain
+- Carries a second, function-cell namespace used only by Lisp-2 dialects
+- Tracks its own retained bytes and slots (ADR 0012), released only by
+  `Rebuild()`
 - Is thread-safe with RWMutex
 
 #### Reader
@@ -156,6 +162,14 @@ Supports:
 
 1. **Bytecode VM** (`vm/`): compiled execution — the default path
 2. **Tree-walking** (`eval.go`): direct AST traversal for forms that do not compile in the VM
+
+The compiler folds a `Vector`, `HashMap`, or list literal whose elements are
+(recursively) all compile-time constants into one prebuilt value in the chunk's
+constant pool, loaded by a charge-carrying constant reference instead of element
+pushes plus `OpMakeVector`/`OpMakeMap`/`OpMakeList`. Sharing one instance across
+executions is sound for the same reason promotion is: the values are immutable
+and compared structurally. Literals containing a symbol or a nested call compile
+unchanged.
 
 Tail-call optimization is explicit: `loop`/`recur` iterate without growing the Go
 stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
@@ -359,7 +373,11 @@ shared by BOTH the tree-walker and the bytecode VM and stays continuous across
 evaluator callbacks (`map`/`filter`/`reduce` invoke `eval.Apply`, and VM
 `GoFunc` re-entry adopts the same ledger). Enforcement is lazy — only
 structure that is actually evaluated/executed is counted, so a dead-branch
-over-limit literal is not rejected and the two evaluators agree. `range` caps
+over-limit literal is not rejected and the two evaluators agree. A folded
+all-constant literal carries its deep bytes and structural depth computed once
+at compile time, so loading it charges the ledger and checks the depth ceiling
+in O(1) without re-walking the value — the charge model is identical to the
+tree-walker's, only the walk is gone. `range` caps
 its result length (`MaxCollectionLen`) and checks `ctx` cooperatively; the
 per-engine bytecode chunk cache is bounded by entry, deep-byte, and
 expanded-node ceilings (`MaxCacheEntries`, `MaxCacheBytes`, `MaxCacheNodes`) and

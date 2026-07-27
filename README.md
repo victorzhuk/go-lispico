@@ -166,6 +166,13 @@ register its own IO primitives, so the pure-computation plugins (`stdlib`,
 
 `runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (namely a `defmacro` nested inside a larger form, and `unquote-splicing`).
 
+A `Vector`, `HashMap`, or list literal whose elements are all compile-time
+constants is folded into a single shared chunk constant, so a function returning
+literal config allocates nothing per call. The folded value is shared across
+evaluations: in-language this is invisible (values are immutable and compared by
+`Equals`), but a Go embedder comparing pointers will see the same instance
+instead of equal fresh ones.
+
 Evaluator control:
 
 - `runtime.WithTreeWalker()` — force tree-walk-only execution (rollback).
