@@ -37,6 +37,11 @@ callbacks SHALL keep firing with durations as today.
 - **WHEN** `Call` repeatedly invokes a compiled function whose body dispatches a `GoFunc`, passing the same outer context every time
 - **THEN** the evaluation-state wrapper SHALL be allocated at most once for that context and reused across the calls, and steady-state per-call allocations SHALL be limited to argument/result value representation
 
+#### Scenario: Re-entrant body shares one evaluation-state
+
+- **WHEN** a compiled function whose body dispatches a `GoFunc` that re-enters the evaluator is invoked through `Call`
+- **THEN** at most one evaluation-state value SHALL be allocated for that `Call` and reused for its remainder, and the `GoFunc`'s re-entry SHALL enforce the same structural-depth and deadline budget as the enclosing `Call`
+
 #### Scenario: Nested Call shares the enclosing resource budget
 
 - **WHEN** a `GoFunc` invoked during a `Call` itself invokes `Call` on the same engine, forwarding the context it received
