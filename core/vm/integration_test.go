@@ -400,7 +400,6 @@ func TestCompileAndRun_WhenUnless(t *testing.T) {
 		expected core.Value
 	}{
 		{"when true", "(when true 1 2)", core.Int{V: 2}},
-		{"unless false", "(unless false 1 2)", core.Int{V: 2}},
 	}
 
 	for _, tt := range tests {

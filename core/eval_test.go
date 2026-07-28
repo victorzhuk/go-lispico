@@ -202,6 +202,14 @@ func TestEval_Cond_Else(t *testing.T) {
 	}
 }
 
+func TestEval_Cond_BareElseSymbolIsNotElse(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	if err := evalStrErr(env, `(cond (false 1) (else 99))`); err == nil {
+		t.Error("bare else symbol should not mark an else clause; else is unresolved")
+	}
+}
+
 func TestEval_When_True(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
@@ -217,24 +225,6 @@ func TestEval_When_False(t *testing.T) {
 	got := evalStr(t, env, "(when false 42)")
 	if !got.Equals(Nil{}) {
 		t.Errorf("(when false 42) = %v, want nil", got)
-	}
-}
-
-func TestEval_Unless_True(t *testing.T) {
-	t.Parallel()
-	env := newTestEnv()
-	got := evalStr(t, env, "(unless true 42)")
-	if !got.Equals(Nil{}) {
-		t.Errorf("(unless true 42) = %v, want nil", got)
-	}
-}
-
-func TestEval_Unless_False(t *testing.T) {
-	t.Parallel()
-	env := newTestEnv()
-	got := evalStr(t, env, "(unless false 42)")
-	if !got.Equals(Int{V: 42}) {
-		t.Errorf("(unless false 42) = %v, want 42", got)
 	}
 }
 
@@ -266,11 +256,18 @@ func TestEval_Let(t *testing.T) {
 		t.Errorf("nested list-form let = %v, want 1", got)
 	}
 
-	// let bindings are evaluated in parent env — parallel, not sequential
+	// let binds sequentially: a later init sees the earlier sibling binding
 	env.Set("a", Int{V: 10})
-	got = evalStr(t, env, "(let [a 1 b a] b)") // b should see parent a=10
-	if !got.Equals(Int{V: 10}) {
-		t.Errorf("let parallel binding: b = %v, want 10 (parent a)", got)
+	got = evalStr(t, env, "(let [a 1 b a] b)") // b sees sibling a=1, not parent a=10
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("let sequential binding: b = %v, want 1 (sibling a)", got)
+	}
+
+	env2 := newTestEnv()
+	env2.Set("x", Int{V: 99})
+	got = evalStr(t, env2, "(let [x 1 y x] y)") // y sees sibling x=1, not outer x=99
+	if !got.Equals(Int{V: 1}) {
+		t.Errorf("let sequential binding: y = %v, want 1 (sibling x)", got)
 	}
 }
 
@@ -534,6 +531,25 @@ func TestEval_TryCatch_NoError(t *testing.T) {
 	got := evalStr(t, env, `(try 42 (catch e e))`)
 	if !got.Equals(Int{V: 42}) {
 		t.Errorf("try without error = %v, want 42", got)
+	}
+}
+
+func TestEval_TryCatch_BindsThrownValue(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, `(try (throw {:code :denied}) (catch e (:code e)))`)
+	if !got.Equals(Keyword{V: "denied"}) {
+		t.Errorf("catch should bind the thrown map, got %v (%T)", got, got)
+	}
+}
+
+func TestEval_TryCatch_EngineErrorBindsMessage(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv()
+	got := evalStr(t, env, `(try (missing-fn) (catch e e))`)
+	s, ok := got.(String)
+	if !ok || s.V == "" {
+		t.Errorf("engine error should bind its message string, got %v (%T)", got, got)
 	}
 }
 
@@ -911,11 +927,11 @@ func TestEval_WhenErrors(t *testing.T) {
 	}
 }
 
-func TestEval_UnlessErrors(t *testing.T) {
+func TestEval_UnlessIsNotSpecialForm(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
-	if err := evalStrErr(env, "(unless)"); err == nil {
-		t.Error("unless with no args should error")
+	if err := evalStrErr(env, "(unless false 1)"); err == nil {
+		t.Error("unless should fail as an unresolved symbol")
 	}
 }
 
@@ -1119,7 +1135,7 @@ func TestEval_MacroExpand_SpecialFormHead(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv()
 	e := NewEvaluator()
-	form, _ := ReadOne("(unless false 42)")
+	form, _ := ReadOne("(when false 42)")
 	expanded, err := e.MacroExpand(context.Background(), form, env)
 	if err != nil {
 		t.Fatalf("MacroExpand error: %v", err)
@@ -1136,11 +1152,11 @@ func TestEval_MacroExpand_Lisp2FunctionCellWinsOverSpecialForm(t *testing.T) {
 		t.Fatalf("NewEvaluatorWithDialect: %v", err)
 	}
 	env := NewEnv(nil)
-	macro := Macro{Name: "unless", Params: []Symbol{{V: "x"}}, Body: []Value{Int{V: 99}}, Env: env}
-	if err := env.SetFunc("unless", macro); err != nil {
+	macro := Macro{Name: "when", Params: []Symbol{{V: "x"}}, Body: []Value{Int{V: 99}}, Env: env}
+	if err := env.SetFunc("when", macro); err != nil {
 		t.Fatalf("SetFunc: %v", err)
 	}
-	form, _ := ReadOne("(unless true)")
+	form, _ := ReadOne("(when true)")
 	expanded, err := e.MacroExpand(context.Background(), form, env)
 	if err != nil {
 		t.Fatalf("MacroExpand error: %v", err)
@@ -1330,15 +1346,23 @@ func TestMacroRebindIsIdentical(t *testing.T) {
 	}{
 		{"identical", base, true},
 		{"different defining scope", Macro{Name: "m", Params: base.Params, Body: body, Env: other}, false},
-		{"different body", Macro{Name: "m", Params: base.Params, Env: env,
-			Body: []Value{NewList([]Value{Symbol{V: "quote"}, Symbol{V: "y"}})}}, false},
+		{"different body", Macro{
+			Name: "m", Params: base.Params, Env: env,
+			Body: []Value{NewList([]Value{Symbol{V: "quote"}, Symbol{V: "y"}})},
+		}, false},
 		{"different params", Macro{Name: "m", Params: []Symbol{{V: "y"}}, Body: body, Env: env}, false},
-		{"different variadic", Macro{Name: "m", Params: base.Params, Body: body, Env: env,
-			Variadic: Symbol{V: "rest"}}, false},
-		{"extra body form", Macro{Name: "m", Params: base.Params, Env: env,
-			Body: append(append([]Value{}, body...), Symbol{V: "z"})}, false},
-		{"body too deep to compare", Macro{Name: "m", Params: base.Params, Env: env,
-			Body: []Value{deep}}, false},
+		{"different variadic", Macro{
+			Name: "m", Params: base.Params, Body: body, Env: env,
+			Variadic: Symbol{V: "rest"},
+		}, false},
+		{"extra body form", Macro{
+			Name: "m", Params: base.Params, Env: env,
+			Body: append(append([]Value{}, body...), Symbol{V: "z"}),
+		}, false},
+		{"body too deep to compare", Macro{
+			Name: "m", Params: base.Params, Env: env,
+			Body: []Value{deep},
+		}, false},
 		{"unbound name", Macro{Name: "absent", Params: base.Params, Body: body, Env: env}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

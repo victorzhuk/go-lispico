@@ -174,7 +174,6 @@ func TestCL_ConditionalTruthiness_Evaluators(t *testing.T) {
 		{name: "if predicate false", src: "(if (= 1 2) :a :b)", want: core.Keyword{V: "b"}},
 		{name: "if false", src: "(if false :a :b)", want: core.Keyword{V: "b"}},
 		{name: "when predicate false", src: "(when (= 1 2) :x)", want: core.Nil{}},
-		{name: "unless predicate false", src: "(unless (= 1 2) :x)", want: core.Keyword{V: "x"}},
 		{name: "cond predicate false", src: "(cond ((= 1 2) :a) (:else :b))", want: core.Keyword{V: "b"}},
 		{name: "and predicate false", src: "(and (= 1 2) :x)", want: core.Bool{V: false}},
 		{name: "or predicate false", src: "(or (= 1 2) :y)", want: core.Keyword{V: "y"}},

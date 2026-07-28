@@ -386,8 +386,7 @@ func TestChunkValidate_AcceptsCompilerOutput(t *testing.T) {
 		`[1 2 3]`,
 		`{:a 1 :b 2}`,
 		`(when (> 1 0) 1 2 3)`,
-		`(unless (> 0 1) 1 2 3)`,
-		`(cond ((< 1 0) 1) ((> 1 0) 2) (else 3))`,
+		`(cond ((< 1 0) 1) ((> 1 0) 2) (:else 3))`,
 		`(and 1 2 3)`,
 		`(or false nil 3)`,
 	}

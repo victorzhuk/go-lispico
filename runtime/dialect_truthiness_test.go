@@ -33,7 +33,6 @@ func TestDialect_Truthiness_AllConditionalForms(t *testing.T) {
 		want core.Value
 	}{
 		{"when", "(when false :yes)", core.Nil{}},
-		{"unless", "(unless false :yes)", core.Keyword{V: "yes"}},
 		{"cond", "(cond (false :a) (true :b))", core.Keyword{V: "b"}},
 		{"and", "(and false :y)", core.Bool{V: false}},
 		{"or", "(or false :y)", core.Keyword{V: "y"}},

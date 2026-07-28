@@ -195,7 +195,7 @@ func TestBytecodeRuntime_ThrowNonString(t *testing.T) {
 	ctx := context.Background()
 	result, err := eng.Eval(ctx, "throw-int", "(try (throw 42) (catch e e))")
 	require.NoError(t, err)
-	assert.True(t, result.Equals(core.String{V: "42"}), "non-string throw coerced to string, got %v", result)
+	assert.True(t, result.Equals(core.Int{V: 42}), "non-string throw bound as-is, got %v (%T)", result, result)
 }
 
 func TestBytecodeRuntime_EmptyBodyFn(t *testing.T) {
@@ -222,7 +222,7 @@ func TestBytecodeRuntime_EmptyBodyDefn(t *testing.T) {
 	require.Error(t, err, "empty-body defn should error, not panic")
 }
 
-func TestBytecodeRuntime_WhenUnlessValuePosition(t *testing.T) {
+func TestBytecodeRuntime_WhenValuePosition(t *testing.T) {
 	t.Parallel()
 
 	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
@@ -239,11 +239,7 @@ func TestBytecodeRuntime_WhenUnlessValuePosition(t *testing.T) {
 		{"when false in let", "(let [x (when false 1)] x)", core.Nil{}},
 		{"when false in do", "(do (when false 1))", core.Nil{}},
 		{"when false in fn body", "((fn [] (when false 1)))", core.Nil{}},
-		{"unless true in let", "(let [x (unless true 1)] x)", core.Nil{}},
-		{"unless true in do", "(do (unless true 1))", core.Nil{}},
-		{"unless true in fn body", "((fn [] (unless true 1)))", core.Nil{}},
 		{"when true yields body", "(let [x (when true 7)] x)", core.Int{V: 7}},
-		{"unless false yields body", "(let [x (unless false 7)] x)", core.Int{V: 7}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

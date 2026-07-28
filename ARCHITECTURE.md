@@ -193,7 +193,6 @@ bounded by the configured max eval depth.
 | `quasiquote` | Template quoting      |
 | `set!`       | Mutate variable       |
 | `when`       | Conditional with body |
-| `unless`     | Negated conditional   |
 | `cond`       | Multi-way conditional |
 | `loop`       | Loop with recur       |
 | `recur`      | Tail recursion        |

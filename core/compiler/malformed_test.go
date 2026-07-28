@@ -28,7 +28,6 @@ func TestCompiler_MalformedForms(t *testing.T) {
 		{"not no args", mlist("not")},
 		{"not two args", mlist("not", core.Int{V: 1}, core.Int{V: 2})},
 		{"when no args", mlist("when")},
-		{"unless no args", mlist("unless")},
 		{"fn no args", mlist("fn")},
 		{"fn non-vector params", mlist("fn", core.Int{V: 42})},
 		{"set! one arg", mlist("set!", msym("x"))},

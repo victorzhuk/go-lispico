@@ -11,14 +11,14 @@ import (
 	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
-// Defect-family cross-validation corpus. Families 1-3 (when/unless value
+// Defect-family cross-validation corpus. Families 1-3 (when value
 // positions, set! lexical-owner, try/catch locals) extend the slice-A tables
-// (TestVMVsTreeWalker_WhenUnlessValuePosition / _SetLexical / _SetUndefined /
+// (TestVMVsTreeWalker_WhenValuePosition / _SetLexical / _SetUndefined /
 // _TryCatchLocals) with distinct syntactic positions; family 4 covers
 // malformed-form error parity between the bytecode compiler and the
 // tree-walker.
 
-func TestVMVsTreeWalker_WhenUnless_NestedPositions(t *testing.T) {
+func TestVMVsTreeWalker_When_NestedPositions(t *testing.T) {
 	t.Parallel()
 
 	env := newCrossValEnv()
@@ -27,8 +27,6 @@ func TestVMVsTreeWalker_WhenUnless_NestedPositions(t *testing.T) {
 		src  string
 	}{
 		{"when false as if cond", "(if (when false 1) 2 3)"},
-		{"unless true nested in when", "(when true (unless true 1))"},
-		{"unless false value drives if", "(if (unless false 7) 1 0)"},
 		{"when value bound and summed", "(let [x (when true 9)] (+ x 1))"},
 		{"when false discarded in do", "(do 5 (when false 1))"},
 	}
@@ -157,11 +155,11 @@ func TestVMVsTreeWalker_KeywordApplication_ArityError(t *testing.T) {
 	}
 }
 
-// Family 6: kernel `let` binds in parallel — every init resolves in the scope
-// enclosing the `let`, never in a sibling binding — while `let*` stays
-// sequential. Both modes must match the pinned expected value, not merely each
-// other; a shared wrong answer would still be a defect.
-func TestVMVsTreeWalker_LetParallelBindingScope(t *testing.T) {
+// Family 6: kernel `let` binds sequentially — a later init sees the earlier
+// sibling binding, exactly as `let*` does. Both modes must match the pinned
+// expected value, not merely each other; a shared wrong answer would still be
+// a defect.
+func TestVMVsTreeWalker_LetSequentialBindingScope(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -169,7 +167,7 @@ func TestVMVsTreeWalker_LetParallelBindingScope(t *testing.T) {
 		src      string
 		expected core.Value
 	}{
-		{"let sibling resolves enclosing", "(def a 10) (let [a 1 b a] b)", core.Int{V: 10}},
+		{"let sibling resolves earlier", "(def a 10) (let [a 1 b a] b)", core.Int{V: 1}},
 		{"let* sibling resolves earlier", "(def a 10) (let* [a 1 b a] b)", core.Int{V: 1}},
 	}
 	for _, tc := range cases {
@@ -220,7 +218,6 @@ func TestVMVsTreeWalker_MalformedFormParity(t *testing.T) {
 		{"if cond only", "(if x)"},
 		{"let no args", "(let)"},
 		{"when no args", "(when)"},
-		{"unless no args", "(unless)"},
 		{"fn no args", "(fn)"},
 		{"fn non-vector params", "(fn 42)"},
 		{"set! one arg", "(set! x)"},

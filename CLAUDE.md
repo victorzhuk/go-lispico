@@ -104,7 +104,7 @@ Only `nil` and `false` are falsy. Everything else is truthy.
 
 ## Special Forms
 
-22 special forms: `if`, `def`, `defn`, `defmacro`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `unless`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`, `not`.
+21 special forms: `if`, `def`, `defn`, `defmacro`, `fn`, `let`, `let*`, `do`, `quote`, `quasiquote`, `set!`, `when`, `cond`, `loop`, `recur`, `try`, `catch`, `throw`, `and`, `or`, `not`.
 
 These are the kernel names. Under the default CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
 

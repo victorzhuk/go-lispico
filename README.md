@@ -6,7 +6,7 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 
 - **Zero dependencies** in core package (stdlib only)
 - **13 built-in types**: Nil, Bool, Int, Float, String, Symbol, Keyword, List, Vector, HashMap, GoFunc, Lambda, Macro
-- **22 special forms**: if, def, defn, defmacro, fn, let, let*, do, quote, quasiquote, set!, when, unless, cond, loop, recur, try, catch, throw, and, or, not
+- **21 special forms**: if, def, defn, defmacro, fn, let, let*, do, quote, quasiquote, set!, when, cond, loop, recur, try, catch, throw, and, or, not
 
   The names above are the kernel special-form names. Under the default
   CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.

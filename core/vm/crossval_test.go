@@ -117,7 +117,6 @@ func TestVMVsTreeWalker(t *testing.T) {
 		{"fn def and call", "(def add (fn [a b] (+ a b))) (add 3 4)"},
 		{"def", "(def x 42) x"},
 		{"when true", "(when true 1 2)"},
-		{"unless false", "(unless false 1 2)"},
 		{"quote", "'(a b c)"},
 		{"set!", "(def x 1) (set! x 42) x"},
 		{"comparison", "(< 1 2)"},
@@ -702,7 +701,7 @@ func TestVMVsTreeWalker_TerminalErrorNotCaught(t *testing.T) {
 	})
 }
 
-func TestVMVsTreeWalker_WhenUnlessValuePosition(t *testing.T) {
+func TestVMVsTreeWalker_WhenValuePosition(t *testing.T) {
 	t.Parallel()
 
 	env := newCrossValEnv()
@@ -713,11 +712,7 @@ func TestVMVsTreeWalker_WhenUnlessValuePosition(t *testing.T) {
 		{"when false in let", "(let [x (when false 1)] x)"},
 		{"when false in do", "(do (when false 1))"},
 		{"when false in fn body", "((fn [] (when false 1)))"},
-		{"unless true in let", "(let [x (unless true 1)] x)"},
-		{"unless true in do", "(do (unless true 1))"},
-		{"unless true in fn body", "((fn [] (unless true 1)))"},
 		{"when true yields body", "(let [x (when true 7)] x)"},
-		{"unless false yields body", "(let [x (unless false 7)] x)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -866,7 +861,7 @@ func TestVMVsTreeWalker_NonStringThrow(t *testing.T) {
 	treeEval := core.NewEvaluator()
 	treeResult, err := treeEval.Eval(context.Background(), forms[0], treeEnv)
 	require.NoError(t, err, "tree-walker eval")
-	assert.True(t, treeResult.Equals(core.String{V: "42"}), "tree-walker: expected String(42), got %v (%T)", treeResult, treeResult)
+	assert.True(t, treeResult.Equals(core.Int{V: 42}), "tree-walker: expected Int(42), got %v (%T)", treeResult, treeResult)
 
 	vmEnv := newCrossValEnv()
 	chunks, err := compiler.CompileAll(forms)
@@ -875,7 +870,7 @@ func TestVMVsTreeWalker_NonStringThrow(t *testing.T) {
 	v := vm.New(vmEnv)
 	vmResult, err := v.Run(context.Background(), chunks[0])
 	require.NoError(t, err, "vm run")
-	assert.True(t, vmResult.Equals(core.String{V: "42"}), "vm: expected String(42), got %v (%T)", vmResult, vmResult)
+	assert.True(t, vmResult.Equals(core.Int{V: 42}), "vm: expected Int(42), got %v (%T)", vmResult, vmResult)
 
 	assert.True(t, vmResult.Equals(treeResult),
 		"VM result %v (%T) != tree-walker result %v (%T)",

@@ -330,7 +330,7 @@ func TestStrings_SplitJoin(t *testing.T) {
 	})
 
 	t.Run("join", func(t *testing.T) {
-		result := eval(t, env, `(string/join (list "a" "b" "c") "-")`)
+		result := eval(t, env, `(string/join "-" (list "a" "b" "c"))`)
 		expected := core.String{V: "a-b-c"}
 		if !result.Equals(expected) {
 			t.Errorf("expected %v, got %v", expected, result)

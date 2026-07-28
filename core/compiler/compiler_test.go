@@ -629,22 +629,6 @@ func TestCompiler_When(t *testing.T) {
 	assert.Equal(t, vm.OpNil, chunk.Code[6].Op())
 }
 
-func TestCompiler_Unless(t *testing.T) {
-	c := NewCompiler("test")
-	form := core.NewList([]core.Value{
-		core.Symbol{V: "unless"},
-		core.Bool{V: false},
-		core.Int{V: 1},
-	})
-	require.NoError(t, c.Compile(form))
-	chunk := c.Chunk()
-	assert.Equal(t, vm.OpFalse, chunk.Code[0].Op())
-	assert.Equal(t, vm.OpJumpIfFalse, chunk.Code[1].Op())
-	assert.Equal(t, vm.OpNil, chunk.Code[2].Op())
-	assert.Equal(t, vm.OpJump, chunk.Code[3].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[4].Op())
-}
-
 func TestCompiler_When_SkippedNil(t *testing.T) {
 	c := NewCompiler("test")
 	form := core.NewList([]core.Value{
@@ -662,25 +646,6 @@ func TestCompiler_When_SkippedNil(t *testing.T) {
 	}
 	assert.Contains(t, ops, vm.OpNil,
 		"false when must emit OpNil on the skipped path; got %v", ops)
-}
-
-func TestCompiler_Unless_SkippedNil(t *testing.T) {
-	c := NewCompiler("test")
-	form := core.NewList([]core.Value{
-		core.Symbol{V: "unless"},
-		core.Bool{V: true},
-		core.Int{V: 1},
-		core.Int{V: 2},
-	})
-	require.NoError(t, c.Compile(form))
-
-	chunk := c.Chunk()
-	var ops []vm.Opcode
-	for _, instr := range chunk.Code {
-		ops = append(ops, instr.Op())
-	}
-	assert.Contains(t, ops, vm.OpNil,
-		"true unless must emit OpNil on the skipped path; got %v", ops)
 }
 
 func TestCompiler_Recur(t *testing.T) {
