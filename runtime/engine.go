@@ -160,11 +160,11 @@ const (
 	defaultMaxStructuralDepth     = 1024
 	defaultMaxCollectionLen       = 10_000_000
 	defaultMaxCacheEntries        = 4096
-	defaultMaxCacheBytes          = 64 * 1024 * 1024
+	defaultMaxCacheBytes          = 64 << 20
 	defaultMaxCacheNodes          = 1_000_000
 	defaultMaxReductions          = 10_000_000
-	defaultMaxAllocationBytes     = 64 * 1024 * 1024
-	defaultMaxRetainedBytesPerEnv = 32 * 1024 * 1024
+	defaultMaxAllocationBytes     = 64 << 20
+	defaultMaxRetainedBytesPerEnv = 32 << 20
 	defaultMaxRetainedSlotsPerEnv = 100_000
 )
 
