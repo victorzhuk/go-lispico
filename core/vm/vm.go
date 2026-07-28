@@ -98,6 +98,14 @@ type VM struct {
 	deadline      time.Time
 	timeout       time.Duration
 	deadlineArmed bool
+	// deadlineClockPolls counts down the pollCancel checkpoints remaining
+	// before the deadline's wall clock is read again. Zero means "read due
+	// now": that keeps the zero value (fresh VM, or just after Reset) reading
+	// on the first poll exactly like before this cadence gate existed, then
+	// resets to deadlineClockCadence-1 so the next read is that many polls
+	// out. ctx.Err() is unaffected — it stays checked on every poll
+	// regardless of this counter's phase.
+	deadlineClockPolls int
 	// budget counts instructions until the next batched cancellation check.
 	budget        int
 	flushedBudget int
@@ -231,6 +239,7 @@ func (vm *VM) reset() {
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
+	vm.deadlineClockPolls = 0
 	vm.meter = core.EvalMeter{}
 	vm.maxReductions = 0
 	vm.maxAllocBytes = 0
@@ -257,6 +266,7 @@ func (vm *VM) Reset() {
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
+	vm.deadlineClockPolls = 0
 	vm.meter = core.EvalMeter{}
 	vm.maxReductions = 0
 	vm.maxAllocBytes = 0
@@ -297,6 +307,7 @@ func (vm *VM) ResetIncremental() error {
 	vm.deadline = time.Time{}
 	vm.timeout = 0
 	vm.deadlineArmed = false
+	vm.deadlineClockPolls = 0
 	vm.meter = core.EvalMeter{}
 	vm.maxReductions = 0
 	vm.maxAllocBytes = 0
@@ -319,6 +330,7 @@ func (vm *VM) SetGlobals(env *core.Env) {
 func (vm *VM) SetDeadline(t time.Time) {
 	vm.deadline = t
 	vm.deadlineArmed = true
+	vm.deadlineClockPolls = 0
 }
 
 // SetTimeout sets the lazy engine timeout. The deadline is armed at the first
@@ -327,6 +339,7 @@ func (vm *VM) SetTimeout(d time.Duration) {
 	vm.deadline = time.Time{}
 	vm.timeout = d
 	vm.deadlineArmed = false
+	vm.deadlineClockPolls = 0
 }
 
 func (vm *VM) SetEvalMeter(m core.EvalMeter) {
@@ -573,6 +586,8 @@ func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *c
 	fresh.deadline = v.deadline
 	fresh.timeout = v.timeout
 	fresh.deadlineArmed = v.deadlineArmed
+	// deadlineClockPolls is deliberately not copied: New's zero value already
+	// means "due now", so fresh's first poll reads the clock immediately.
 	fresh.meter = v.meter
 	fresh.maxReductions = v.maxReductions
 	fresh.maxAllocBytes = v.maxAllocBytes
@@ -713,9 +728,20 @@ func keywordArityError(got int) *core.LispicoError {
 // before the first check, then every checkInterval thereafter.
 const checkInterval = 128
 
+// deadlineClockCadence bounds how many pollCancel checkpoints elapse between
+// wall-clock reads once an engine deadline is armed: after each read, the
+// next one is deadlineClockCadence-1 polls out, so worst-case overrun
+// detection lands within deadlineClockCadence checkpoint intervals of the
+// true deadline instead of within one. The first poll after arming always
+// reads (see deadlineClockPolls), matching today's latency for a deadline
+// that is already past by the time the run starts.
+const deadlineClockCadence = 8
+
 // pollCancel checks the engine deadline and ctx for cancellation, resetting
 // vm.budget for the next batch. Errors are wrapped with the "vm: " prefix so
-// errors.Is(err, context.DeadlineExceeded/Canceled) still holds.
+// errors.Is(err, context.DeadlineExceeded/Canceled) still holds. The deadline
+// compare reads the wall clock only once every deadlineClockCadence polls
+// (see deadlineClockPolls); ctx.Err() is checked unconditionally every call.
 func (vm *VM) pollCancel(ctx context.Context) error {
 	if err := vm.flushConsumedReductions(); err != nil {
 		return err
@@ -728,8 +754,16 @@ func (vm *VM) pollCancel(ctx context.Context) error {
 	if !vm.deadlineArmed {
 		vm.armDeadline(ctx)
 	}
-	if !vm.deadline.IsZero() && !time.Now().Before(vm.deadline) {
-		return fmt.Errorf("vm: %w", context.DeadlineExceeded)
+	if !vm.deadline.IsZero() {
+		if vm.deadlineClockPolls == 0 {
+			expired := !nowFunc().Before(vm.deadline)
+			vm.deadlineClockPolls = deadlineClockCadence - 1
+			if expired {
+				return fmt.Errorf("vm: %w", context.DeadlineExceeded)
+			}
+		} else {
+			vm.deadlineClockPolls--
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("vm: %w", err)
