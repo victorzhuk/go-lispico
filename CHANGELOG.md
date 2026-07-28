@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-28
+
+### Changed
+
+- **Breaking:** `let` binds sequentially. A later init expression sees the
+  bindings established before it in the same form — `(let [x 1 y x] y)`
+  yields `1` even with an outer `x` bound to `99` — on the tree-walker and
+  the bytecode VM (`compileLet` registers each local before compiling the
+  next init). `let*` stays registered with the same semantics.
+- **Breaking:** `cond` else clauses are marked by the `:else` keyword only.
+  A clause headed by the bare symbol `else` is now an ordinary test
+  expression, in both the evaluator (`isCondElse`) and the compiler
+  (`isElse`). Clojure has never recognized bare `else`.
+- **Breaking:** `string/join` takes the separator first:
+  `(string/join "-" ["a" "b"])` yields `"a-b"`. The previous `(coll sep)`
+  order type-errors: the separator must be a string.
+- **Breaking:** `catch` binds the originally thrown value instead of its
+  `%v`-stringified text — `(try (throw {:code :denied}) (catch e (:code e)))`
+  yields `:denied` on both evaluators. Only errors that did not come from
+  `throw` (engine errors returned by primitives) still bind their message
+  string. The VM's `OpThrow` delivers the raw value to the handler;
+  `coerceThrow` is gone.
+
+### Removed
+
+- **Breaking:** the `unless` special form. `(unless ...)` now resolves as an
+  ordinary call and fails as an unresolved symbol under every dialect,
+  including the Common Lisp dialect, which loses it with the kernel — no CL
+  adapter is provided. Negate with `(when (not ...) ...)` or define a macro.
+  The kernel table drops to 21 special forms.
+
 ## [0.9.1] - 2026-07-27
 
 ### Fixed
