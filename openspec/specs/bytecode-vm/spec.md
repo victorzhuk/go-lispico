@@ -203,6 +203,33 @@ value. Canonical status SHALL be determined through the operator's resolved
 binding, not re-derived by a per-execution environment walk, and a canonical
 operator SHALL take the native path on every execution — not intermittently.
 
+In addition, the compiler MAY fuse a native operator's canonicality-freeze
+and its two operands into a single instruction when both operands are a
+local slot or a compile-time constant (local×local or local×const; an
+arbitrary sub-expression operand — "stack×stack" — is out of scope, since it
+can execute code and rebind the operator mid-evaluation, which the freeze
+protocol exists to prevent):
+
+- a native comparison whose boolean result feeds a conditional branch, and
+  a native arithmetic op, SHALL both be emittable this way — one fused
+  instruction that resolves the operator, reads both operands, and pushes
+  the single result the unfused sequence would have produced. The
+  conditional branch (or whatever consumes an arithmetic result) SHALL
+  remain a separate, ordinary instruction, emitted exactly as it is today:
+  a rebind to a VM-compiled closure pushes a new call frame and returns
+  asynchronously, so no single instruction can both compute a result and
+  branch on one that may not exist until a later frame returns.
+
+A fused instruction SHALL preserve, bit-for-bit, the semantics of the
+sequence it replaces: the same canonicality freeze point, the same
+non-canonical fallback (including a fallback callee that is itself a
+VM-compiled closure), the same numeric edge behavior (division by zero,
+float promotion), and the same allocation-ledger charge as the unfused fused
+native op. Shapes not covered by a fusion SHALL compile exactly as before.
+Chunk validation SHALL verify every fused instruction's operand indices
+before the chunk runs, preserving the validated-chunk invariant that the
+dispatch loop performs no per-instruction bounds checks.
+
 #### Scenario: Hot loop avoids builtin dispatch
 
 - **WHEN** a `loop` body evaluates `(+ acc 1)` under the VM
@@ -247,6 +274,26 @@ operator SHALL take the native path on every execution — not intermittently.
 
 - **WHEN** a recursive function's body applies canonical `+`, `-`, and `<` across nested self-calls under the VM
 - **THEN** every application SHALL execute as a native opcode, with no fallback to `GoFunc` dispatch for canonical bindings
+
+#### Scenario: Fused compare matches unfused semantics
+
+- **WHEN** `(if (< n 2) a b)` executes with `<` canonical, and separately after `<` has been rebound to a builtin, a tree-walker closure, and a VM-compiled closure
+- **THEN** the result SHALL be identical to the tree-walker in every case — the fused instruction takes the native path only under the same conditions the unfused sequence would, and the trailing conditional branch consumes whichever result the fused instruction or its fallback call eventually produced
+
+#### Scenario: Fused arithmetic matches unfused semantics
+
+- **WHEN** `(- n 1)` compiles to a fused local/const instruction and executes, including division-by-zero and float-operand edge cases for the other arithmetic ops
+- **THEN** results and errors SHALL be identical to the unfused native-op sequence, and the allocation ledger SHALL be charged identically
+
+#### Scenario: Validation covers fused operands
+
+- **WHEN** a chunk containing fused instructions with out-of-range slot, constant, or operator-site operands is loaded
+- **THEN** `Validate` SHALL reject it before execution
+
+#### Scenario: Uncovered shapes compile as before
+
+- **WHEN** an operand of a native comparison or arithmetic op is neither a local slot nor a compile-time constant (a nested call or other sub-expression)
+- **THEN** the compiler SHALL emit the existing unfused sequence unchanged
 
 ### Requirement: Slot-resident locals
 
