@@ -282,8 +282,6 @@ func (c *Compiler) compileList(f core.List) error {
 				return c.compileSet(items[1:])
 			case "when":
 				return c.compileWhen(items[1:])
-			case "unless":
-				return c.compileUnless(items[1:])
 			case "loop":
 				return c.compileLoop(items[1:])
 			case "recur":
@@ -431,16 +429,12 @@ func (c *Compiler) compileLet(args []core.Value) error {
 	}
 	c.depth++
 	base := len(c.locals)
-	// Parallel binding: compile every init before registering any local, so an
-	// init resolves names in the enclosing scope, not in a sibling binding.
-	for i, binding := range bindings {
+	for _, binding := range bindings {
 		if err := c.Compile(binding.Value); err != nil {
 			return err
 		}
-		c.emitBind(base + i)
-	}
-	for _, binding := range bindings {
 		c.addLocal(binding.Name.V)
+		c.emitBind(len(c.locals) - 1)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -519,27 +513,6 @@ func (c *Compiler) compileWhen(args []core.Value) error {
 	jumpEnd := c.emitJump(vm.OpJump)
 	c.chunk.PatchJump(jumpFalse)
 	c.emit(vm.OpNil, 0)
-	c.chunk.PatchJump(jumpEnd)
-	return nil
-}
-
-func (c *Compiler) compileUnless(args []core.Value) error {
-	if c.err != nil {
-		return c.err
-	}
-	if len(args) == 0 {
-		return compileErrf("unless: missing condition")
-	}
-	if err := c.Compile(args[0]); err != nil {
-		return err
-	}
-	jumpFalse := c.emitJump(vm.OpJumpIfFalse)
-	c.emit(vm.OpNil, 0)
-	jumpEnd := c.emitJump(vm.OpJump)
-	c.chunk.PatchJump(jumpFalse)
-	if err := c.compileDo(args[1:]); err != nil {
-		return err
-	}
 	c.chunk.PatchJump(jumpEnd)
 	return nil
 }
@@ -914,13 +887,8 @@ func chunkDeepBytes(chunk *vm.Chunk) int64 {
 }
 
 func isElse(v core.Value) bool {
-	switch x := v.(type) {
-	case core.Symbol:
-		return x.V == "else" || x.V == ":else"
-	case core.Keyword:
-		return x.V == "else"
-	}
-	return false
+	kw, ok := v.(core.Keyword)
+	return ok && kw.V == "else"
 }
 
 // compileDefmacro emits a macro definition. Unlike a function, a macro's body

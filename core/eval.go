@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -1276,13 +1277,8 @@ func evalIf(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 }
 
 func isCondElse(v Value) bool {
-	switch x := v.(type) {
-	case Symbol:
-		return x.V == "else" || x.V == ":else"
-	case Keyword:
-		return x.V == "else"
-	}
-	return false
+	kw, ok := v.(Keyword)
+	return ok && kw.V == "else"
 }
 
 func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
@@ -1321,20 +1317,6 @@ func evalWhen(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	return e.evalBody(ctx, args[1:], env)
 }
 
-func evalUnless(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
-	if len(args) < 2 {
-		return nil, evalErrorf("unless requires at least 2 arguments")
-	}
-	cond, err := e.Eval(ctx, args[0], env)
-	if err != nil {
-		return nil, err
-	}
-	if e.truthy(cond) {
-		return Nil{}, nil
-	}
-	return e.evalBody(ctx, args[1:], env)
-}
-
 func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) < 2 {
 		return nil, evalErrorf("let requires at least 2 arguments")
@@ -1345,7 +1327,7 @@ func evalLet(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	}
 	child := env.Child()
 	for _, binding := range bindings {
-		val, err := e.Eval(ctx, binding.Value, env)
+		val, err := e.Eval(ctx, binding.Value, child)
 		if err != nil {
 			return nil, err
 		}
@@ -1870,8 +1852,15 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 			return nil, err
 		}
 		catchEnv := env.Child()
-		if err := catchEnv.Set(errSym.V, String{V: err.Error()}); err != nil {
-			return nil, err
+		var te *throwError
+		if errors.As(err, &te) {
+			if err := catchEnv.Set(errSym.V, te.value); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := catchEnv.Set(errSym.V, String{V: err.Error()}); err != nil {
+				return nil, err
+			}
 		}
 		return e.evalBody(ctx, items[bodyStart:], catchEnv)
 	}

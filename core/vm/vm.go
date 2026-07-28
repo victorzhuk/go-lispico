@@ -1166,7 +1166,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				return nil, err
 			}
 			vm.frames[len(vm.frames)-1].ip = ip
-			if !vm.throw(coerceThrow(value)) {
+			if !vm.throw(value) {
 				return nil, core.NewTypeError("handler", core.Nil{})
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
@@ -1745,15 +1745,6 @@ func toFloat(name string, v core.Value) (float64, error) {
 	default:
 		return 0, fmt.Errorf("%s: expected number, got %T", name, v)
 	}
-}
-
-// coerceThrow mirrors the tree-walker's throw/catch coercion (evalThrow in
-// formatted with %v, so catch binds the same core.String under both evaluators.
-func coerceThrow(value core.Value) core.String {
-	if s, ok := value.(core.String); ok {
-		return core.String{V: s.V}
-	}
-	return core.String{V: fmt.Sprintf("%v", value)}
 }
 
 // throw unwinds the VM to the nearest active exception handler and leaves

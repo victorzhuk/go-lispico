@@ -60,11 +60,11 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, fmt.Errorf("string/join: requires 2 arguments")
 			}
 
-			coll := args[0]
-			sep, ok := args[1].(core.String)
+			sep, ok := args[0].(core.String)
 			if !ok {
 				return nil, fmt.Errorf("string/join: separator must be string")
 			}
+			coll := args[1]
 
 			var parts []string
 			switch c := coll.(type) {

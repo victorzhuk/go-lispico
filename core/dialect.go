@@ -27,7 +27,6 @@ func init() {
 		"if":         evalIf,
 		"cond":       evalCond,
 		"when":       evalWhen,
-		"unless":     evalUnless,
 		"let":        evalLet,
 		"let*":       evalLetStar,
 		"do":         evalDo,
