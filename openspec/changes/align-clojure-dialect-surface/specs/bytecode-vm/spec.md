@@ -83,7 +83,7 @@ previous local layout.
 - **WHEN** `Engine.Call` invokes a function repeatedly on one engine running the VM
 - **THEN** each call SHALL run on a reset, reused VM from the pool rather than a freshly allocated machine, and SHALL return the same result the tree-walker would
 
-#### Scenario: Skipped when produces nil
+#### Scenario: Skipped when/unless produces nil
 
 - **WHEN** a false-test `when` appears in a value position — a `let` binding, a `do` body, or a function body
 - **THEN** the expression SHALL yield `nil` with the stack balanced, matching the tree-walker
