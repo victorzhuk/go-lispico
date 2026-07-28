@@ -724,12 +724,15 @@ func TestCompiler_NativeOpAdd(t *testing.T) {
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpFreezeNative, chunk.Code[0].Op(), "head must be OpFreezeNative")
-	assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
-	assert.Equal(t, vm.OpConst, chunk.Code[2].Op())
-	assert.Equal(t, vm.OpAdd, chunk.Code[3].Op())
-	assert.Equal(t, 2, chunk.Code[3].A(), "OpAdd operand = arg count (fn already consumed)")
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	fo := chunk.Fused[0]
+	assert.Equal(t, vm.OpAdd, fo.Op)
+	assert.Equal(t, vm.OperandConst, fo.AKind)
+	assert.Equal(t, vm.OperandConst, fo.BKind)
+	assert.Equal(t, core.Int{V: 1}, chunk.Constants[fo.A])
+	assert.Equal(t, core.Int{V: 2}, chunk.Constants[fo.B])
 }
 
 func TestCompiler_NativeOpSub(t *testing.T) {
@@ -741,9 +744,10 @@ func TestCompiler_NativeOpSub(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpFreezeNative, chunk.Code[0].Op())
-	assert.Equal(t, vm.OpSub, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpSub, chunk.Fused[0].Op)
 }
 
 func TestCompiler_NativeOpMul(t *testing.T) {
@@ -755,8 +759,10 @@ func TestCompiler_NativeOpMul(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpMul, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpMul, chunk.Fused[0].Op)
 }
 
 func TestCompiler_NativeOpDiv(t *testing.T) {
@@ -768,10 +774,17 @@ func TestCompiler_NativeOpDiv(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpDiv, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpDiv, chunk.Fused[0].Op)
 }
 
+// TestCompiler_NativeOpAdd/_Sub/_Mul/_Div/_Lt/_Gt/_Le/_Ge/_Eq use two Int
+// constants, the eligible shape for OpFusedNativeOp: both operands collapse
+// into the chunk's Fused side table instead of separate
+// FREEZE_NATIVE/CONST/CONST/<op> instructions. TestCompiler_NativeOp_Unfused
+// pins the non-eligible shape these no longer cover.
 func TestCompiler_NativeOpLt(t *testing.T) {
 	form := core.NewList([]core.Value{
 		core.Symbol{V: "<"},
@@ -781,8 +794,15 @@ func TestCompiler_NativeOpLt(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpLt, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	fo := chunk.Fused[0]
+	assert.Equal(t, vm.OpLt, fo.Op)
+	assert.Equal(t, vm.OperandConst, fo.AKind)
+	assert.Equal(t, vm.OperandConst, fo.BKind)
+	assert.Equal(t, core.Int{V: 1}, chunk.Constants[fo.A])
+	assert.Equal(t, core.Int{V: 2}, chunk.Constants[fo.B])
 }
 
 func TestCompiler_NativeOpGt(t *testing.T) {
@@ -794,8 +814,10 @@ func TestCompiler_NativeOpGt(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpGt, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpGt, chunk.Fused[0].Op)
 }
 
 func TestCompiler_NativeOpLe(t *testing.T) {
@@ -807,8 +829,10 @@ func TestCompiler_NativeOpLe(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpLe, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpLe, chunk.Fused[0].Op)
 }
 
 func TestCompiler_NativeOpGe(t *testing.T) {
@@ -820,8 +844,10 @@ func TestCompiler_NativeOpGe(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
-	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpGe, chunk.Code[3].Op())
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpGe, chunk.Fused[0].Op)
 }
 
 func TestCompiler_NativeOpEq(t *testing.T) {
@@ -833,8 +859,31 @@ func TestCompiler_NativeOpEq(t *testing.T) {
 	c := NewCompiler("test")
 	require.NoError(t, c.Compile(form))
 	chunk := c.Chunk()
+	require.Len(t, chunk.Code, 1)
+	assert.Equal(t, vm.OpFusedNativeOp, chunk.Code[0].Op())
+	require.Len(t, chunk.Fused, 1)
+	assert.Equal(t, vm.OpEq, chunk.Fused[0].Op)
+}
+
+// TestCompiler_NativeOp_Unfused pins the freeze-based shape for a comparison
+// whose operands are neither locals nor scalar constants (two globals here),
+// the case OpFusedNativeOp does not cover.
+func TestCompiler_NativeOp_Unfused(t *testing.T) {
+	form := core.NewList([]core.Value{
+		core.Symbol{V: "<"},
+		core.Symbol{V: "a"},
+		core.Symbol{V: "b"},
+	})
+	c := NewCompiler("test")
+	require.NoError(t, c.Compile(form))
+	chunk := c.Chunk()
 	require.Len(t, chunk.Code, 4)
-	assert.Equal(t, vm.OpEq, chunk.Code[3].Op())
+	assert.Equal(t, vm.OpFreezeNative, chunk.Code[0].Op(), "head must be OpFreezeNative")
+	assert.Equal(t, vm.OpGetGlobal, chunk.Code[1].Op())
+	assert.Equal(t, vm.OpGetGlobal, chunk.Code[2].Op())
+	assert.Equal(t, vm.OpLt, chunk.Code[3].Op())
+	assert.Equal(t, 2, chunk.Code[3].A())
+	assert.Empty(t, chunk.Fused)
 }
 
 func TestCompiler_NativeOp_ShadowedByLet(t *testing.T) {
@@ -881,14 +930,8 @@ func TestCompiler_NativeOp_NotShadowed(t *testing.T) {
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
-	hasAdd := false
-	for _, instr := range chunk.Code {
-		if instr.Op() == vm.OpAdd {
-			hasAdd = true
-			break
-		}
-	}
-	assert.True(t, hasAdd, "expected OpAdd when + is not locally shadowed")
+	require.Len(t, chunk.Fused, 1, "expected + to fuse when not locally shadowed")
+	assert.Equal(t, vm.OpAdd, chunk.Fused[0].Op)
 }
 
 func TestCompiler_NativeOp_ShadowedByEnclosingFn(t *testing.T) {
@@ -1031,14 +1074,8 @@ func TestCompiler_NativeOp_DialectRebindStillNative(t *testing.T) {
 	require.NoError(t, c.Compile(form))
 
 	chunk := c.Chunk()
-	hasAdd := false
-	for _, instr := range chunk.Code {
-		if instr.Op() == vm.OpAdd {
-			hasAdd = true
-			break
-		}
-	}
-	assert.True(t, hasAdd, "value-cell def of + doesn't touch the function cell; head still compiles to OpAdd")
+	require.Len(t, chunk.Fused, 1, "value-cell def of + doesn't touch the function cell; head still fuses")
+	assert.Equal(t, vm.OpAdd, chunk.Fused[0].Op)
 }
 
 func TestCompiler_HashMap(t *testing.T) {
@@ -1300,10 +1337,13 @@ func TestCompiler_CellEmission_CapturedSlot(t *testing.T) {
 }
 
 // TestCompiler_CellEmission_UncapturedSlotUntouched proves slots no closure
-// references keep the plain local opcodes byte-for-byte.
+// references keep the plain local opcodes byte-for-byte. Uses (list x y)
+// rather than (+ x y): a native op over two locals now fuses into
+// OpFusedNativeOp, which reads its operands directly and never emits
+// OpGetLocal at all — the wrong vehicle for probing finalize's rewrite pass.
 func TestCompiler_CellEmission_UncapturedSlotUntouched(t *testing.T) {
 	c := NewCompiler("test")
-	forms, err := core.Read("(let [x 1 y 2] (+ x y))")
+	forms, err := core.Read("(let [x 1 y 2] (list x y))")
 	require.NoError(t, err)
 	require.NoError(t, c.Compile(forms[0]))
 	c.Chunk().Emit(vm.OpReturn, 0)

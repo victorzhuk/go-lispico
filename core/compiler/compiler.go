@@ -696,24 +696,87 @@ func (c *Compiler) compileCall(items []core.Value) error {
 // compileNativeOp emits a zero-stack-effect head freeze, then each argument, then
 // the fused native opcode. Lisp-2 freezes the function cell; Lisp-1 freezes the
 // value cell. The VM dispatches natively only when that frozen head was canonical.
+//
+// A 2-arg comparison or arithmetic op whose operands are both a local or a
+// scalar constant instead collapses the whole shape into one
+// OpFusedNativeOp — see fuseNativeOp.
 func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
 	if c.err != nil {
 		return c.err
 	}
 	sym := items[0].(core.Symbol)
+	args := items[1:]
+	if ok, err := c.fuseNativeOp(sym, op, args); ok || err != nil {
+		return err
+	}
+
 	if c.dialect != nil && c.dialect.IsLisp2() {
 		c.emit(vm.OpFreezeNativeFunc, c.chunk.AddConstant(sym))
 	} else {
 		c.emit(vm.OpFreezeNative, c.chunk.AddConstant(sym))
 	}
 
-	for _, arg := range items[1:] {
+	for _, arg := range args {
 		if err := c.Compile(arg); err != nil {
 			return err
 		}
 	}
-	c.emit(op, len(items[1:]))
+	c.emit(op, len(args))
 	return nil
+}
+
+// fuseNativeOp emits a single OpFusedNativeOp for a 2-arg comparison or
+// arithmetic op whose operands are both either a local or a scalar constant,
+// in place of compileNativeOp's usual freeze+operand+operand+op sequence.
+// Reports ok == false for any shape it doesn't cover — N-ary forms, or an
+// operand that's neither a local nor a scalar constant — leaving the caller
+// to fall through to that unfused emission unchanged. op is always one of
+// the 9 native opcodes here: compileCall's only caller resolves it via
+// nativeOp(canonicalName) before reaching compileNativeOp, which is
+// fuseNativeOp's only caller.
+func (c *Compiler) fuseNativeOp(sym core.Symbol, op vm.Opcode, args []core.Value) (ok bool, err error) {
+	if len(args) != 2 {
+		return false, nil
+	}
+	aKind, aIdx, ok := c.fusedOperand(args[0])
+	if !ok {
+		return false, nil
+	}
+	bKind, bIdx, ok := c.fusedOperand(args[1])
+	if !ok {
+		return false, nil
+	}
+	idx := len(c.chunk.Fused)
+	c.chunk.Fused = append(c.chunk.Fused, vm.FusedOp{
+		Op:    op,
+		Sym:   c.chunk.AddConstant(sym),
+		Func:  c.dialect != nil && c.dialect.IsLisp2(),
+		AKind: aKind,
+		A:     aIdx,
+		BKind: bKind,
+		B:     bIdx,
+	})
+	c.emit(vm.OpFusedNativeOp, idx)
+	return true, c.err
+}
+
+// fusedOperand reports whether v is eligible as a FusedOp operand: a local
+// slot (an ancestor-captured free variable resolves through OpGetCap
+// instead, a different address space than a stack slot, so it's not
+// eligible here) or a scalar constant.
+func (c *Compiler) fusedOperand(v core.Value) (vm.OperandKind, int, bool) {
+	if sym, isSym := v.(core.Symbol); isSym {
+		if idx := c.resolveLocal(sym.V); idx >= 0 {
+			return vm.OperandLocal, idx, true
+		}
+		return 0, 0, false
+	}
+	switch v.(type) {
+	case core.Int, core.Float, core.String, core.Keyword, core.Bool, core.Nil:
+		return vm.OperandConst, c.chunk.AddConstant(v), true
+	default:
+		return 0, 0, false
+	}
 }
 
 func (c *Compiler) resolveLocal(name string) int {
@@ -836,7 +899,7 @@ func chunkDeepBytes(chunk *vm.Chunk) int64 {
 	if chunk == nil {
 		return 0
 	}
-	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + core.ValueSlotsBytes(len(chunk.Constants))
+	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + int64(len(chunk.Fused))*core.MeterFusedOpBytes + core.ValueSlotsBytes(len(chunk.Constants))
 	for _, name := range chunk.LocalNames {
 		bytes += core.StringShallowBytes(len(name))
 	}

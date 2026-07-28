@@ -1186,6 +1186,22 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				}
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+
+		case OpFusedNativeOp:
+			vm.frames[len(vm.frames)-1].ip = ip
+			if err := vm.dispatchFusedNativeOp(ctx, chunk, env, base, ip, instr.A()); err != nil {
+				if core.IsTerminalEvalError(err) {
+					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+						err = flushErr
+					}
+					vm.Reset()
+					return nil, err
+				}
+				if !vm.throw(core.String{V: err.Error()}) {
+					return nil, err
+				}
+			}
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 		}
 	}
 }
@@ -1262,6 +1278,99 @@ func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
 	vm.stack = vm.stack[:d]
 	vm.push(result)
 	return nil
+}
+
+// dispatchFusedNativeOp resolves a fused comparison's operator and both
+// operands and either executes it directly (canonical operator) or falls
+// back to a real call (a rebind) — the counterpart of dispatchNativeOp for
+// the collapsed FREEZE_NATIVE+operand+operand+op shape. base and ip are the
+// current frame's base and instruction pointer (already advanced past this
+// instruction), so chunk.site(ip-1) keys the cache to this instruction, same
+// as OpGetGlobal/OpFreezeNative.
+func (vm *VM) dispatchFusedNativeOp(ctx context.Context, chunk *Chunk, env *core.Env, base, ip, idx int) error {
+	fo := &chunk.Fused[idx]
+	sym := chunk.Constants[fo.Sym].(core.Symbol)
+
+	var val core.Value
+	var canon, ok bool
+	if fo.Func {
+		val, ok, canon = env.GetFuncCanonical(sym.V)
+	} else {
+		val, canon, ok = vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
+	}
+	if !ok {
+		return core.NewUndefinedError(sym.V)
+	}
+
+	a, err := vm.readFusedOperand(base, fo.AKind, fo.A, chunk)
+	if err != nil {
+		return err
+	}
+	b, err := vm.readFusedOperand(base, fo.BKind, fo.B, chunk)
+	if err != nil {
+		return err
+	}
+
+	if canon {
+		result, err := vm.execFusedNative(fo.Op, a, b, env)
+		if err != nil {
+			return err
+		}
+		vm.pendingAllocBytes(core.MeterScalarBytes)
+		vm.push(result)
+		return nil
+	}
+
+	// Rebind to a non-canonical value: splice it under the resolved operands
+	// and dispatch through the normal call path. When val is a *Closure,
+	// vm.call pushes a new frame and returns before that frame runs — the
+	// caller's unconditional reloadFrame() picks up the pushed frame, and the
+	// real trailing instruction (whatever consumes this fused op's result)
+	// naturally waits however many run-loop iterations it takes for that
+	// frame's OpReturn to leave the result on the stack.
+	vm.push(val)
+	vm.push(a)
+	vm.push(b)
+	return vm.call(ctx, 2, false)
+}
+
+// readFusedOperand resolves one FusedOp operand: a constant-pool value, or a
+// local stack slot's value. The *cellBox unwrap is load-bearing: fusion
+// eligibility is decided once, at compile time, before finalize's capture
+// rewrite pass runs, and that rewrite never touches OpFusedNativeOp's operand
+// descriptors (they're not OpGetLocal/OpSetLocal instructions) — so a local
+// later captured by a sibling closure still reads through its cellBox here.
+func (vm *VM) readFusedOperand(base int, kind OperandKind, a int, chunk *Chunk) (core.Value, error) {
+	if kind == OperandConst {
+		return chunk.Constants[a], nil
+	}
+	slot := base + a
+	if slot < 0 || slot >= len(vm.stack) {
+		return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("local slot %d out of range", a)}
+	}
+	if box, isCell := vm.stack[slot].(*cellBox); isCell {
+		return box.v, nil
+	}
+	return vm.stack[slot], nil
+}
+
+// execFusedNative evaluates op over two already-resolved operands, reusing
+// nativeInt2's fast path and execNative's general-case fallback unchanged —
+// the only difference from execNativeFastFused is that its operands never
+// sat on the value stack to begin with.
+func (vm *VM) execFusedNative(op Opcode, a, b core.Value, env *core.Env) (core.Value, error) {
+	if ai, aOK := a.(core.Int); aOK {
+		if bi, bOK := b.(core.Int); bOK {
+			if result, handled := nativeInt2(op, ai, bi); handled {
+				return result, nil
+			}
+		}
+	}
+	eval := vm.eval
+	if eval == nil {
+		eval = core.NewEvaluator()
+	}
+	return execNative(eval, op, []core.Value{a, b}, env)
 }
 
 // nativeInt2 handles the two-argument, both-Int shape of op without the

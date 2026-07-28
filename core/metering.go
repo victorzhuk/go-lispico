@@ -25,6 +25,9 @@ const (
 	MeterTrieChildBytes   int64 = 8
 	MeterInstructionBytes int64 = 4
 	MeterReaderNodeBytes  int64 = 32
+	// MeterFusedOpBytes sizes one chunk.Fused entry (FusedOp) for the compile-time
+	// allocation ledger — fixed per ADR 0011, never unsafe.Sizeof.
+	MeterFusedOpBytes int64 = 40
 )
 
 const (

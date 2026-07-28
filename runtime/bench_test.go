@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
@@ -377,6 +378,36 @@ func BenchmarkEngine_CallBytecodeCanonical(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = eng.Call(context.Background(), "add", core.Int{V: 1}, core.Int{V: 2})
+	}
+}
+
+// BenchmarkEngine_FibonacciCL measures recursive fib under the shipped
+// default dialect (Common Lisp, Lisp-2) with real stdlib canonical
+// arithmetic — every other fib/Call benchmark in this repo runs under
+// clojure.Dialect() (Lisp-1), which runtime.New() does not default to.
+func BenchmarkEngine_FibonacciCL(b *testing.B) {
+	eng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close()
+	if err := eng.Use(stdlib.New()); err != nil {
+		b.Fatal(err)
+	}
+
+	_, err = eng.Eval(context.Background(), "setup", `
+(defun fib (n)
+  (if (< n 2)
+    n
+    (+ (fib (- n 1)) (fib (- n 2)))))`)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = eng.Call(context.Background(), "fib", core.Int{V: 15})
 	}
 }
 

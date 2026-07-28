@@ -62,6 +62,12 @@ const (
 	// with OpSetGlobal and OpSetFunc.
 	OpDefMacro
 	OpDefMacroFunc
+
+	// OpFusedNativeOp collapses a FREEZE_NATIVE(_FUNC) + operand + operand +
+	// native-op sequence into one instruction, for the 2-arg local/const
+	// comparison or arithmetic shape (see FusedOp). A is an index into the
+	// chunk's Fused side table.
+	OpFusedNativeOp
 )
 
 var opNames = [...]string{
@@ -112,6 +118,7 @@ var opNames = [...]string{
 	OpSetCap:           "SET_CAP",
 	OpDefMacro:         "DEF_MACRO",
 	OpDefMacroFunc:     "DEF_MACRO_FUNC",
+	OpFusedNativeOp:    "FUSED_NATIVE",
 }
 
 // String implements fmt.Stringer.

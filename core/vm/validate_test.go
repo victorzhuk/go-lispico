@@ -204,6 +204,52 @@ func TestChunkValidate_RejectsMalformed(t *testing.T) {
 			},
 		},
 		{
+			name: "OpFusedNativeOp fused index out of range",
+			chunk: &vm.Chunk{
+				Code: []vm.Instruction{vm.Encode(vm.OpFusedNativeOp, 0), vm.Encode(vm.OpReturn, 0)},
+			},
+		},
+		{
+			name: "OpFusedNativeOp Sym out of range",
+			chunk: &vm.Chunk{
+				Code: []vm.Instruction{vm.Encode(vm.OpFusedNativeOp, 0), vm.Encode(vm.OpReturn, 0)},
+				Fused: []vm.FusedOp{
+					{Op: vm.OpLt, Sym: 5, AKind: vm.OperandConst, BKind: vm.OperandConst},
+				},
+			},
+		},
+		{
+			name: "OpFusedNativeOp Sym non-symbol constant",
+			chunk: &vm.Chunk{
+				Code:      []vm.Instruction{vm.Encode(vm.OpFusedNativeOp, 0), vm.Encode(vm.OpReturn, 0)},
+				Constants: []core.Value{core.Int{V: 1}},
+				Fused: []vm.FusedOp{
+					{Op: vm.OpLt, Sym: 0, AKind: vm.OperandConst, BKind: vm.OperandConst},
+				},
+			},
+		},
+		{
+			name: "OpFusedNativeOp local operand exceeds MaxStack",
+			chunk: &vm.Chunk{
+				Code:      []vm.Instruction{vm.Encode(vm.OpFusedNativeOp, 0), vm.Encode(vm.OpReturn, 0)},
+				MaxStack:  2,
+				Constants: []core.Value{core.Symbol{V: "<"}},
+				Fused: []vm.FusedOp{
+					{Op: vm.OpLt, Sym: 0, AKind: vm.OperandLocal, A: 3, BKind: vm.OperandConst, B: 0},
+				},
+			},
+		},
+		{
+			name: "OpFusedNativeOp const operand out of range",
+			chunk: &vm.Chunk{
+				Code:      []vm.Instruction{vm.Encode(vm.OpFusedNativeOp, 0), vm.Encode(vm.OpReturn, 0)},
+				Constants: []core.Value{core.Symbol{V: "<"}},
+				Fused: []vm.FusedOp{
+					{Op: vm.OpLt, Sym: 0, AKind: vm.OperandConst, A: 0, BKind: vm.OperandConst, B: 99},
+				},
+			},
+		},
+		{
 			name: "falls off the end (non-terminal last instruction)",
 			chunk: &vm.Chunk{
 				Code:      []vm.Instruction{vm.Encode(vm.OpConst, 0)},
@@ -298,6 +344,27 @@ func TestChunkValidate_AcceptsWellFormedCells(t *testing.T) {
 	}
 }
 
+func TestChunkValidate_AcceptsFusedNativeOp(t *testing.T) {
+	t.Parallel()
+
+	chunk := &vm.Chunk{
+		Locals:    1,
+		MaxStack:  1,
+		Constants: []core.Value{core.Symbol{V: "<"}, core.Int{V: 2}},
+		Fused: []vm.FusedOp{
+			{Op: vm.OpLt, Sym: 0, AKind: vm.OperandLocal, A: 0, BKind: vm.OperandConst, B: 1},
+		},
+		Code: []vm.Instruction{
+			vm.Encode(vm.OpFusedNativeOp, 0),
+			vm.Encode(vm.OpReturn, 0),
+		},
+	}
+
+	if err := chunk.Validate(); err != nil {
+		t.Fatalf("expected well-formed fused chunk to validate, got %v", err)
+	}
+}
+
 // Validate must never reject bytecode the compiler itself produces — every
 // construction path that reaches Run calls it first.
 func TestChunkValidate_AcceptsCompilerOutput(t *testing.T) {
@@ -306,6 +373,7 @@ func TestChunkValidate_AcceptsCompilerOutput(t *testing.T) {
 	sources := []string{
 		`(+ 1 2 3)`,
 		`(if (< 1 2) "yes" "no")`,
+		`(def f (fn [n] (< n 10)))`,
 		`(let [x 1 y 2] (+ x y))`,
 		`(let* [x 1 y (+ x 1)] (* x y))`,
 		`(def f (fn [n] (if (< n 2) n (+ (f (- n 1)) (f (- n 2))))))`,

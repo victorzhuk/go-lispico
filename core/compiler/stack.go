@@ -55,6 +55,8 @@ func stackDelta(op vm.Opcode, a int) int {
 		return 1 - a
 	case vm.OpMakeMap:
 		return 1 - 2*a
+	case vm.OpFusedNativeOp:
+		return 1
 	default:
 		return 0
 	}

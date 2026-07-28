@@ -2190,3 +2190,415 @@ func expandMacrosDeepForCrossVal(t *testing.T, expander macroExpander, env *core
 		return expanded
 	}
 }
+
+// TestVMVsTreeWalker_FusedComparisonOps covers OpFusedNativeOp's canonical
+// fast path for each fusable operator, under both namespace dialects — n is a
+// local (fn param) and 2 is a scalar constant, the shape compileNativeOp
+// collapses into a single instruction.
+func TestVMVsTreeWalker_FusedComparisonOps(t *testing.T) {
+	t.Parallel()
+
+	ops := []string{"<", ">", "<=", ">=", "="}
+	dialects := []struct {
+		name    string
+		dialect core.Dialect
+		src     func(op string) string
+	}{
+		{"lisp1", clojure.Dialect(), func(op string) string {
+			return fmt.Sprintf("(def f (fn [n] (%s n 2))) (list (f 1) (f 2) (f 5))", op)
+		}},
+		{"lisp2", cl.Dialect(), func(op string) string {
+			return fmt.Sprintf("(defun f (n) (%s n 2)) (list (f 1) (f 2) (f 5))", op)
+		}},
+	}
+
+	for _, dl := range dialects {
+		for _, op := range ops {
+			t.Run(dl.name+"/"+op, func(t *testing.T) {
+				t.Parallel()
+				treeResult, vmResult := runCaptureCell(t, dl.dialect, dl.src(op))
+				assert.True(t, vmResult.Equals(treeResult),
+					"op %s dialect %s: VM %v != tree-walker %v", op, dl.name, vmResult, treeResult)
+			})
+		}
+	}
+}
+
+// fusedIfSrc returns `(def f (fn (n) (if (< n 2) :small :big))) (f 1)` in the
+// param-list syntax dialect.Read accepts — CL disables bracket vectors.
+func fusedIfSrc(dialect core.Dialect) string {
+	if dialect.IsLisp2() {
+		return "(defun f (n) (if (< n 2) :small :big)) (f 1)"
+	}
+	return "(def f (fn [n] (if (< n 2) :small :big))) (f 1)"
+}
+
+// runFusedRebind compiles+runs src on the VM and evaluates it on the
+// tree-walker, both against an env with sym rebound to replace (in both the
+// value and, under Lisp-2, the function cell) — so a rebind to a value
+// neither evaluator would naturally produce by compiling ordinary source
+// (a hand-built core.GoFunc or core.Lambda) is still cross-validated against
+// the tree-walker's own dispatch on the identical value, not just asserted
+// against a hardcoded literal.
+func runFusedRebind(t *testing.T, dialect core.Dialect, src, sym string, replace core.Value) (treeResult, vmResult core.Value) {
+	t.Helper()
+
+	forms, err := dialect.Read(src)
+	require.NoError(t, err, "read source")
+
+	treeEval, err := core.NewEvaluatorWithDialect(dialect)
+	require.NoError(t, err, "new evaluator with dialect")
+	treeEnv := stdlibEnv()
+	bridgeLisp2(dialect, treeEnv)
+	require.NoError(t, treeEnv.Set(sym, replace))
+	if dialect.IsLisp2() {
+		require.NoError(t, treeEnv.SetFunc(sym, replace))
+	}
+	for _, form := range forms {
+		treeResult, err = treeEval.Eval(context.Background(), form, treeEnv)
+		require.NoError(t, err, "tree-walker eval")
+	}
+
+	comp := compiler.NewCompilerWithDialect("<top>", &dialect)
+	for _, form := range forms {
+		require.NoError(t, comp.Compile(form), "compile")
+	}
+	comp.Chunk().Emit(vm.OpReturn, 0)
+	comp.Chunk().EnsureSites()
+	comp.MarkCaptures()
+	require.NoError(t, comp.Chunk().Validate(), "validate")
+
+	vmEnv := stdlibEnv()
+	bridgeLisp2(dialect, vmEnv)
+	require.NoError(t, vmEnv.Set(sym, replace))
+	if dialect.IsLisp2() {
+		require.NoError(t, vmEnv.SetFunc(sym, replace))
+	}
+	v := vm.New(vmEnv)
+	vmResult, err = v.Run(context.Background(), comp.Chunk())
+	require.NoError(t, err, "vm run")
+	return treeResult, vmResult
+}
+
+// TestVMVsTreeWalker_FusedNativeOp_RebindGoFunc proves a rebind of a fusable
+// operator to a plain core.GoFunc still dispatches through it (the
+// dispatchFusedNativeOp non-canonical branch), rather than through the
+// fast path, under both dialects — and that the VM agrees with the
+// tree-walker on that same rebound value, not merely a hardcoded literal.
+func TestVMVsTreeWalker_FusedNativeOp_RebindGoFunc(t *testing.T) {
+	t.Parallel()
+
+	marker := core.GoFunc{
+		Name: "marker",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			return core.Keyword{V: "marker"}, nil
+		},
+	}
+
+	dialects := []struct {
+		name    string
+		dialect core.Dialect
+	}{
+		{"lisp1", clojure.Dialect()},
+		{"lisp2", cl.Dialect()},
+	}
+
+	for _, dl := range dialects {
+		t.Run(dl.name, func(t *testing.T) {
+			t.Parallel()
+			treeResult, vmResult := runFusedRebind(t, dl.dialect, fusedIfSrc(dl.dialect), "<", marker)
+			assert.Equal(t, core.Keyword{V: "small"}, treeResult, ":marker is truthy, so a rebind to a GoFunc must still drive the if")
+			assert.Equal(t, treeResult, vmResult, "vm must agree with the tree-walker on the same GoFunc rebind")
+		})
+	}
+}
+
+// TestVMVsTreeWalker_FusedNativeOp_RebindLambda mirrors RebindGoFunc for a
+// rebind to a tree-walker core.Lambda value — the VM never produces this
+// representation itself, only the tree-walker does, so it must be injected
+// directly rather than compiled from source.
+func TestVMVsTreeWalker_FusedNativeOp_RebindLambda(t *testing.T) {
+	t.Parallel()
+
+	marker := core.Lambda{
+		Params: []core.Symbol{{V: "a"}, {V: "b"}},
+		Body:   []core.Value{core.Keyword{V: "marker"}},
+		Env:    core.NewEnv(nil),
+	}
+
+	dialects := []struct {
+		name    string
+		dialect core.Dialect
+	}{
+		{"lisp1", clojure.Dialect()},
+		{"lisp2", cl.Dialect()},
+	}
+
+	for _, dl := range dialects {
+		t.Run(dl.name, func(t *testing.T) {
+			t.Parallel()
+			treeResult, vmResult := runFusedRebind(t, dl.dialect, fusedIfSrc(dl.dialect), "<", marker)
+			assert.Equal(t, core.Keyword{V: "small"}, treeResult, ":marker is truthy, so a rebind to a Lambda must still drive the if")
+			assert.Equal(t, treeResult, vmResult, "vm must agree with the tree-walker on the same Lambda rebind")
+		})
+	}
+}
+
+// TestVMVsTreeWalker_FusedNativeOp_RebindClosure is the discriminating
+// rebind case: `<` rebound, in Lisp source, to a fn compiled by the VM into a
+// *Closure. Calling it from dispatchFusedNativeOp's non-canonical branch
+// pushes a new call frame and returns asynchronously (core/vm/vm.go's call
+// dispatch) — a single instruction cannot both compute a result and branch
+// on one that doesn't exist yet, which is why the fused opcode only ever
+// covers the operator+operands, never the trailing branch. Both evaluators
+// run the SAME source, so each produces its own natural rebind
+// representation (Lambda for the tree-walker, *Closure for the VM) — proving
+// the VM's async path agrees with the tree-walker's synchronous one on the
+// same program, not merely that a hand-built value dispatches correctly.
+func TestVMVsTreeWalker_FusedNativeOp_RebindClosure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+		src     string
+	}{
+		{
+			name:    "lisp1",
+			dialect: clojure.Dialect(),
+			src: `
+(def < (fn [a b] :marker))
+(def f (fn [n] (if (< n 2) :small :big)))
+(f 1)`,
+		},
+		{
+			name:    "lisp2",
+			dialect: cl.Dialect(),
+			src: `
+(defun < (a b) :marker)
+(defun f (n) (if (< n 2) :small :big))
+(f 1)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			treeResult, vmResult := runCaptureCell(t, tt.dialect, tt.src)
+			assert.Equal(t, core.Keyword{V: "small"}, treeResult, "tree-walker: :marker is truthy")
+			assert.Equal(t, core.Keyword{V: "small"}, vmResult, "vm: :marker is truthy, rebind to *Closure must still drive the if")
+		})
+	}
+}
+
+// TestVMVsTreeWalker_FusedNativeOp_CapturedOperandMutatedBySibling proves the
+// *cellBox unwrap in readFusedOperand: x is a fused operand's local slot, but
+// it's also captured by a sibling closure (mutate) that boxes it, so by the
+// time the fused comparison reads x it holds a *cellBox, not a raw value.
+// finalize's capture rewrite pass only ever touches OpGetLocal/OpSetLocal,
+// never OpFusedNativeOp's operand descriptors, so without the unwrap this
+// would read the box pointer instead of the mutated int.
+func TestVMVsTreeWalker_FusedNativeOp_CapturedOperandMutatedBySibling(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+		src     string
+	}{
+		{
+			name:    "lisp1",
+			dialect: clojure.Dialect(),
+			src: `
+(def result
+  (let [x 1]
+    (def mutate (fn [] (set! x 99)))
+    (mutate)
+    (= x 99)))
+result`,
+		},
+		{
+			name:    "lisp2",
+			dialect: cl.Dialect(),
+			src: `
+(def result
+  (let ((x 1))
+    (defun mutate () (setq x 99))
+    (mutate)
+    (= x 99)))
+result`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			treeResult, vmResult := runCaptureCell(t, tt.dialect, tt.src)
+			// (= x 99) is true only if the mutation was actually observed —
+			// unlike (< x 100), which passes for both the pre-mutation (1) and
+			// post-mutation (99) value and so cannot catch a stale cellBox read.
+			assert.Equal(t, core.Bool{V: true}, treeResult, "tree-walker: mutated x equals 99")
+			assert.Equal(t, core.Bool{V: true}, vmResult, "vm: fused read must observe the sibling closure's mutation through the cellBox, not a stale pre-mutation value")
+		})
+	}
+}
+
+// TestVMVsTreeWalker_FusedArithmeticOps mirrors
+// TestVMVsTreeWalker_FusedComparisonOps for the four arithmetic ops: one
+// canonical fast-path case per op, local×const and local×local, both
+// dialects.
+func TestVMVsTreeWalker_FusedArithmeticOps(t *testing.T) {
+	t.Parallel()
+
+	ops := []string{"+", "-", "*", "/"}
+	dialects := []struct {
+		name    string
+		dialect core.Dialect
+	}{
+		{"lisp1", clojure.Dialect()},
+		{"lisp2", cl.Dialect()},
+	}
+	shapes := []struct {
+		name string
+		src  func(dialect core.Dialect, op string) string
+	}{
+		{"local-const", func(dialect core.Dialect, op string) string {
+			if dialect.IsLisp2() {
+				return fmt.Sprintf("(defun f (n) (%s n 3)) (list (f 4) (f 10))", op)
+			}
+			return fmt.Sprintf("(def f (fn [n] (%s n 3))) (list (f 4) (f 10))", op)
+		}},
+		{"local-local", func(dialect core.Dialect, op string) string {
+			if dialect.IsLisp2() {
+				return fmt.Sprintf("(defun f (a b) (%s a b)) (list (f 4 3) (f 10 5))", op)
+			}
+			return fmt.Sprintf("(def f (fn [a b] (%s a b))) (list (f 4 3) (f 10 5))", op)
+		}},
+	}
+
+	for _, dl := range dialects {
+		for _, op := range ops {
+			for _, sh := range shapes {
+				t.Run(dl.name+"/"+op+"/"+sh.name, func(t *testing.T) {
+					t.Parallel()
+					treeResult, vmResult := runCaptureCell(t, dl.dialect, sh.src(dl.dialect, op))
+					assert.True(t, vmResult.Equals(treeResult),
+						"op %s dialect %s shape %s: VM %v != tree-walker %v", op, dl.name, sh.name, vmResult, treeResult)
+				})
+			}
+		}
+	}
+}
+
+// TestVMVsTreeWalker_FusedArithmeticOp_DivisionByZero proves a fused
+// local/const division by zero produces the same error as the unfused path:
+// dispatchFusedNativeOp's canonical branch reuses execFusedNative, which
+// falls through to the same execNative/nativeDiv the unfused dispatch does,
+// so the error must match byte-for-byte, both dialects.
+func TestVMVsTreeWalker_FusedArithmeticOp_DivisionByZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+		src     string
+	}{
+		{"lisp1", clojure.Dialect(), "(def f (fn [n] (/ n 0))) (f 5)"},
+		{"lisp2", cl.Dialect(), "(defun f (n) (/ n 0)) (f 5)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			forms, err := core.Read(tt.src)
+			require.NoError(t, err, "read source")
+
+			treeEval, err := core.NewEvaluatorWithDialect(tt.dialect)
+			require.NoError(t, err, "new evaluator with dialect")
+			treeEnv := stdlibEnv()
+			bridgeLisp2(tt.dialect, treeEnv)
+			var treeErr error
+			for _, form := range forms {
+				_, treeErr = treeEval.Eval(context.Background(), form, treeEnv)
+			}
+			require.Error(t, treeErr, "tree-walker should error on division by zero")
+
+			comp := compiler.NewCompilerWithDialect("<top>", &tt.dialect)
+			for _, form := range forms {
+				require.NoError(t, comp.Compile(form), "compile")
+			}
+			comp.Chunk().Emit(vm.OpReturn, 0)
+			comp.Chunk().EnsureSites()
+			comp.MarkCaptures()
+			require.NoError(t, comp.Chunk().Validate(), "validate")
+
+			vmEnv := stdlibEnv()
+			bridgeLisp2(tt.dialect, vmEnv)
+			v := vm.New(vmEnv)
+			_, vmErr := v.Run(context.Background(), comp.Chunk())
+			require.Error(t, vmErr, "vm should error on division by zero")
+
+			assert.Equal(t, treeErr.Error(), vmErr.Error(),
+				"fused local/const division by zero must match the unfused path's error")
+		})
+	}
+}
+
+// TestVMVsTreeWalker_FusedArithmeticOp_FloatPromotion proves a fused operand
+// that resolves to a Float, in either operand position, promotes the same
+// way the unfused N-ary nativeAdd does — nativeInt2's Int-only fast path
+// reports unhandled and falls through to execNative unchanged.
+func TestVMVsTreeWalker_FusedArithmeticOp_FloatPromotion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+		src     string
+	}{
+		{"lisp1 forward", clojure.Dialect(), "(def f (fn [n] (+ n 2.5))) (f 1)"},
+		{"lisp1 reverse", clojure.Dialect(), "(def f (fn [n] (+ 2.5 n))) (f 1)"},
+		{"lisp2 forward", cl.Dialect(), "(defun f (n) (+ n 2.5)) (f 1)"},
+		{"lisp2 reverse", cl.Dialect(), "(defun f (n) (+ 2.5 n)) (f 1)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			treeResult, vmResult := runCaptureCell(t, tt.dialect, tt.src)
+			assert.True(t, vmResult.Equals(treeResult),
+				"VM %v (%T) != tree-walker %v (%T)", vmResult, vmResult, treeResult, treeResult)
+		})
+	}
+}
+
+// TestVMVsTreeWalker_FusedArithmeticOp_IntOverflow proves fused +/-/* wrap
+// int64 the same way addInt2/subInt2/mulInt2 document: neither special-cases
+// overflow, relying on Go's wrapping arithmetic, and the fused path must not
+// diverge from that.
+func TestVMVsTreeWalker_FusedArithmeticOp_IntOverflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		dialect core.Dialect
+		src     string
+	}{
+		{"lisp1 add MaxInt64", clojure.Dialect(), "(def f (fn [n] (+ n 1))) (f 9223372036854775807)"},
+		{"lisp1 sub MinInt64", clojure.Dialect(), "(def f (fn [n] (- n 1))) (f -9223372036854775808)"},
+		{"lisp1 mul MaxInt64", clojure.Dialect(), "(def f (fn [n] (* n 2))) (f 9223372036854775807)"},
+		{"lisp2 add MaxInt64", cl.Dialect(), "(defun f (n) (+ n 1)) (f 9223372036854775807)"},
+		{"lisp2 sub MinInt64", cl.Dialect(), "(defun f (n) (- n 1)) (f -9223372036854775808)"},
+		{"lisp2 mul MaxInt64", cl.Dialect(), "(defun f (n) (* n 2)) (f 9223372036854775807)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			treeResult, vmResult := runCaptureCell(t, tt.dialect, tt.src)
+			assert.True(t, vmResult.Equals(treeResult),
+				"VM %v (%T) != tree-walker %v (%T)", vmResult, vmResult, treeResult, treeResult)
+		})
+	}
+}

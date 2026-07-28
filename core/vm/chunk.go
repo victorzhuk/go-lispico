@@ -27,6 +27,28 @@ func (i Instruction) String() string {
 	return fmt.Sprintf("%-16s %d", i.Op(), i.A())
 }
 
+// OperandKind identifies where a FusedOp operand comes from.
+type OperandKind uint8
+
+const (
+	OperandLocal OperandKind = iota
+	OperandConst
+)
+
+// FusedOp describes one FREEZE_NATIVE(_FUNC) + operand + operand + <op>
+// sequence collapsed into a single OpFusedNativeOp instruction. Func selects
+// which cell the operator symbol resolves through — mirrors
+// compileNativeOp's own OpFreezeNative vs OpFreezeNativeFunc choice (Lisp-1
+// value cell vs Lisp-2 function cell). AKind/BKind determine whether A/B is
+// a local stack slot or a constant-pool index.
+type FusedOp struct {
+	Op           Opcode
+	Sym          int
+	Func         bool
+	AKind, BKind OperandKind
+	A, B         int
+}
+
 // Chunk is a compiled unit of bytecode: one function body (or top-level
 // form), its constant pool, and any nested closures compiled from it.
 type Chunk struct {
@@ -66,6 +88,9 @@ type Chunk struct {
 	// SubChunks holds chunks for closures compiled within this one, indexed
 	// by the operand of their OpClosure instruction.
 	SubChunks []*Chunk
+	// Fused holds the operand/operator descriptors OpFusedNativeOp
+	// instructions index into, one entry per fused instruction.
+	Fused []FusedOp
 	// Truthiness is the dialect's truthiness predicate for conditional opcodes.
 	// When nil, core.IsTruthy (nil+false falsy) is used.
 	Truthiness func(core.Value) bool
@@ -146,6 +171,7 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 		Captured:     c.Captured,
 		Caps:         c.Caps,
 		Code:         c.Code,
+		Fused:        c.Fused,
 		DeepBytes:    c.DeepBytes,
 		NodeCount:    c.NodeCount,
 		Constants:    c.Constants,
@@ -165,7 +191,10 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 // buildSites scans Code for OpGetGlobal and OpFreezeNative reads, assigning one
 // shared entry per distinct symbol (constant index) so repeated reads of the same
 // global reuse a single cached resolution. Native function-cell reads emit via
-// OpFreezeNativeFunc and keep no site.
+// OpFreezeNativeFunc and keep no site. OpFusedNativeOp keys on its FusedOp's Sym
+// (the operator's constant index), not its own instruction operand (that indexes
+// Fused, a different space) — and only when Func is false, matching
+// OpFreezeNativeFunc's no-site treatment for the Lisp-2 function-cell path.
 func (c *Chunk) buildSites() *siteTable {
 	idx := make([]int32, len(c.Code))
 	for i := range idx {
@@ -174,10 +203,19 @@ func (c *Chunk) buildSites() *siteTable {
 	bySym := map[int32]int32{}
 	var entries []siteCache
 	for ip, inst := range c.Code {
-		if inst.Op() != OpGetGlobal && inst.Op() != OpFreezeNative {
+		var constIdx int32
+		switch inst.Op() {
+		case OpGetGlobal, OpFreezeNative:
+			constIdx = int32(inst.A())
+		case OpFusedNativeOp:
+			a := inst.A()
+			if a < 0 || a >= len(c.Fused) || c.Fused[a].Func {
+				continue
+			}
+			constIdx = int32(c.Fused[a].Sym)
+		default:
 			continue
 		}
-		constIdx := int32(inst.A())
 		si, ok := bySym[constIdx]
 		if !ok {
 			si = int32(len(entries))
@@ -338,6 +376,34 @@ func (c *Chunk) Validate() error {
 			}
 			if _, ok := c.Constants[a].(core.Macro); !ok {
 				return bytecodeErrorf("%s: constant %d is not a macro", op, a)
+			}
+		case OpFusedNativeOp:
+			if a < 0 || a >= len(c.Fused) {
+				return bytecodeErrorf("%s: fused index %d out of range", op, a)
+			}
+			fo := c.Fused[a]
+			if fo.Sym < 0 || fo.Sym >= len(c.Constants) {
+				return bytecodeErrorf("%s: fused %d: constant index %d out of range", op, a, fo.Sym)
+			}
+			if _, ok := c.Constants[fo.Sym].(core.Symbol); !ok {
+				return bytecodeErrorf("%s: fused %d: constant %d is not a symbol", op, a, fo.Sym)
+			}
+			for _, operand := range []struct {
+				kind OperandKind
+				v    int
+			}{{fo.AKind, fo.A}, {fo.BKind, fo.B}} {
+				switch operand.kind {
+				case OperandLocal:
+					if operand.v < 0 || operand.v >= c.MaxStack {
+						return bytecodeErrorf("%s: fused %d: local slot %d out of range", op, a, operand.v)
+					}
+				case OperandConst:
+					if operand.v < 0 || operand.v >= len(c.Constants) {
+						return bytecodeErrorf("%s: fused %d: constant index %d out of range", op, a, operand.v)
+					}
+				default:
+					return bytecodeErrorf("%s: fused %d: unknown operand kind %d", op, a, operand.kind)
+				}
 			}
 		case OpClosure:
 			if a < 0 || a >= len(c.SubChunks) {
