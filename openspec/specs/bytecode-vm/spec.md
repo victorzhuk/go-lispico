@@ -25,7 +25,7 @@ evaluation so no state leaks between them. Applying a closure through
 synthesizing a per-call wrapper chunk.
 
 Every compiled expression SHALL leave exactly one result on the stack; a
-non-executed `when` or `unless` body SHALL produce `nil`. Definition and mutation
+non-executed `when` body SHALL produce `nil`. Definition and mutation
 SHALL have distinct semantics: a definition writes to the current scope, while
 `set!` updates the scope that already owns the binding and SHALL return a typed
 error when no binding exists; locals resolved to slots keep slot mutation. A catch
@@ -42,6 +42,11 @@ previous local layout.
 
 - **WHEN** the VM evaluates a form it compiles
 - **THEN** the result SHALL equal the tree-walking evaluator's result for the same form and environment, including the runtime type of a value bound by `catch`
+
+#### Scenario: let compiles sequentially
+
+- **WHEN** the VM compiles `(let [x 1 y x] y)` with an outer `x` bound to `99`
+- **THEN** each init SHALL see the locals bound before it in the same form, and the result SHALL be `1`, matching the tree-walker
 
 #### Scenario: Unsupported form defers to the tree-walker
 
@@ -85,7 +90,7 @@ previous local layout.
 
 #### Scenario: Skipped when/unless produces nil
 
-- **WHEN** a false-test `when` or true-test `unless` appears in a value position — a `let` binding, a `do` body, or a function body
+- **WHEN** a false-test `when` appears in a value position — a `let` binding, a `do` body, or a function body
 - **THEN** the expression SHALL yield `nil` with the stack balanced, matching the tree-walker
 
 #### Scenario: set! mutates the lexical owner
