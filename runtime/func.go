@@ -17,19 +17,23 @@ type Fn struct {
 	name    string
 	cell    *core.Cell
 	counter *atomic.Int64
+	value   core.Value
+	cellVer uint64
 }
 
-// Func returns a reusable handle to name's current root binding cell.
+// Func returns a reusable handle to name's current root binding cell. The
+// cell's {value, version} snapshot is captured coherently now (under the env
+// lock via Env.ReadCellSnapshot): Call serves it lock-free while the cell's
+// atomic version still matches and re-reads under the lock on any mismatch.
 func (e *engineImpl) Func(name string) (*Fn, error) {
-	e.mu.RLock()
-	env := e.rootEnv
-	e.mu.RUnlock()
+	env := e.rootEnvPtr.Load()
 
 	cell, ok := e.resolveFuncCell(env, name)
 	if !ok {
 		return nil, fmt.Errorf("undefined function: %s", name)
 	}
-	return &Fn{engine: e, name: name, cell: cell, counter: e.stats.counterFor(name)}, nil
+	value, _, _, ver := env.ReadCellSnapshot(cell)
+	return &Fn{engine: e, name: name, cell: cell, counter: e.stats.counterFor(name), value: value, cellVer: ver}, nil
 }
 
 // PinnedFn is a single-owner, zero-allocation handle to a named function in
@@ -78,6 +82,8 @@ type PinnedFn struct {
 	counter *atomic.Int64
 	vm      *vm.VM
 	inUse   atomic.Bool
+	value   core.Value
+	cellVer uint64
 }
 
 // Pin returns a single-owner PinnedFn for name's current root binding cell.
@@ -110,17 +116,20 @@ func (f *Fn) Pin() *PinnedFn {
 		cell:    f.cell,
 		counter: f.counter,
 		vm:      v,
+		value:   f.value,
+		cellVer: f.cellVer,
 	}
 }
 
 // Call invokes the function currently stored in the handle's binding cell.
 //
-// On the WithBytecode() path Call acquires a VM from the engine's pool,
-// resets it, and returns it after the apply completes — concurrent callers
-// share the pool, so a single Fn is safe for concurrent use across
-// goroutines. The cell read happens under the engine's read lock so a
-// concurrent Bind that swaps the binding is observed atomically with the
-// undefined-function path below.
+// On the WithBytecode() path concurrent callers share the engine's VM pool,
+// so a single Fn is safe for concurrent use across goroutines. On a
+// fast-condition engine with a plain context Call takes the same lean shape
+// Engine.Call does: the engine's private VM slot (pool fallback under
+// contention), the lock-free versioned cell read, and a single recover-defer
+// boundary with no eval-state or callback bookkeeping. Any other condition
+// keeps the pool VM and the general boundary.
 func (f *Fn) Call(ctx context.Context, args ...core.Value) (result core.Value, err error) {
 	select {
 	case <-ctx.Done():
@@ -128,11 +137,16 @@ func (f *Fn) Call(ctx context.Context, args ...core.Value) (result core.Value, e
 	default:
 	}
 
-	f.engine.mu.RLock()
-	env := f.engine.rootEnv
-	f.engine.mu.RUnlock()
+	fast := f.engine.fastPath.Load() && !core.HasEvalState(ctx) && !core.HasEvalMeter(ctx)
+	env := f.engine.rootEnvPtr.Load()
 
-	fn, live, _ := env.ReadCell(f.cell)
+	var fn core.Value
+	live := f.cell.Version() == f.cellVer && f.value != nil
+	if live {
+		fn = f.value
+	} else {
+		fn, live, _ = env.ReadCell(f.cell)
+	}
 	if !live {
 		f.counter.Add(1)
 		if f.engine.callbacksActive.Load() {
@@ -141,6 +155,10 @@ func (f *Fn) Call(ctx context.Context, args ...core.Value) (result core.Value, e
 		return nil, fmt.Errorf("undefined function: %s", f.name)
 	}
 	if be := f.engine.bytecodeEvaluator; be != nil {
+		if fast {
+			v, slot := f.engine.acquireCallVM(be)
+			return f.engine.callBoundaryLean(ctx, f.name, fn, env, f.counter, args, v, be, slot)
+		}
 		v := be.vmPool.Get().(*vm.VM)
 		v.Reset()
 		defer func() {
@@ -153,17 +171,20 @@ func (f *Fn) Call(ctx context.Context, args ...core.Value) (result core.Value, e
 			}
 			be.vmPool.Put(v)
 		}()
-		return f.engine.callBoundary(ctx, f.name, fn, env, f.counter, args, v)
+		return f.engine.callBoundary(ctx, f.name, fn, env, f.counter, args, v, false)
 	}
-	return f.engine.callBoundary(ctx, f.name, fn, env, f.counter, args, nil)
+	return f.engine.callBoundary(ctx, f.name, fn, env, f.counter, args, nil, false)
 }
 
 // Call invokes the function currently stored in the handle's binding cell,
 // reusing the private VM the handle was constructed with. The preamble
-// (ctx check, rootEnv read, ReadCell live-check, counter bump on undefined,
+// (ctx check, rootEnv read, cell live-check, counter bump on undefined,
 // undefined-callback) is byte-identical to Fn.Call so both handle types
 // observe the same observable contract — only the VM acquisition and reset
-// strategy differ.
+// strategy differ. On a fast-condition engine with a plain context the cell
+// is read through the lock-free versioned snapshot and the boundary is a
+// single recover-defer: no eval-state chain, no clock reads, no callback
+// probes. Any other condition keeps the general boundary.
 //
 // Concurrent entry returns a typed *core.LispicoError with
 // Code == core.CodeConcurrentUse; the offending second caller observes no
@@ -177,9 +198,46 @@ func (f *Fn) Call(ctx context.Context, args ...core.Value) (result core.Value, e
 // the panic value is wrapped in a typed LispicoError that returns to the
 // caller. The handle stays usable; the next Call succeeds.
 func (p *PinnedFn) Call(ctx context.Context, args ...core.Value) (result core.Value, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	if !p.inUse.CompareAndSwap(false, true) {
 		return nil, core.NewConcurrentUseError(p.name)
 	}
+
+	fast := p.engine.fastPath.Load() && !core.HasEvalState(ctx) && !core.HasEvalMeter(ctx)
+	if fast {
+		defer func() {
+			if r := recover(); r != nil {
+				result = nil
+				err = core.NewPanicError(p.name, r)
+			}
+			if err != nil {
+				p.vm.Reset()
+			} else if resetErr := p.vm.ResetIncremental(); resetErr != nil {
+				p.vm.Reset()
+			}
+			p.counter.Add(1)
+			p.inUse.Store(false)
+		}()
+
+		env := p.engine.rootEnvPtr.Load()
+		var fn core.Value
+		live := p.cell.Version() == p.cellVer && p.value != nil
+		if live {
+			fn = p.value
+		} else {
+			fn, live, _ = env.ReadCell(p.cell)
+		}
+		if !live {
+			return nil, fmt.Errorf("undefined function: %s", p.name)
+		}
+		return p.engine.bytecodeEvaluator.applyOnVM(p.vm, ctx, fn, args, env, p.engine.config.timeout)
+	}
+
 	defer func() {
 		r := recover()
 		if r != nil {
@@ -195,17 +253,14 @@ func (p *PinnedFn) Call(ctx context.Context, args ...core.Value) (result core.Va
 		p.inUse.Store(false)
 	}()
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
+	env := p.engine.rootEnvPtr.Load()
+	var fn core.Value
+	live := p.cell.Version() == p.cellVer && p.value != nil
+	if live {
+		fn = p.value
+	} else {
+		fn, live, _ = env.ReadCell(p.cell)
 	}
-
-	p.engine.mu.RLock()
-	env := p.engine.rootEnv
-	p.engine.mu.RUnlock()
-
-	fn, live, _ := env.ReadCell(p.cell)
 	if !live {
 		p.counter.Add(1)
 		if p.engine.callbacksActive.Load() {
@@ -213,5 +268,5 @@ func (p *PinnedFn) Call(ctx context.Context, args ...core.Value) (result core.Va
 		}
 		return nil, fmt.Errorf("undefined function: %s", p.name)
 	}
-	return p.engine.callBoundary(ctx, p.name, fn, env, p.counter, args, p.vm)
+	return p.engine.callBoundary(ctx, p.name, fn, env, p.counter, args, p.vm, false)
 }

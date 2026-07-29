@@ -19,6 +19,13 @@ import (
 
 var nowFunc = time.Now
 
+// vmSlotLeaseProbe, when non-nil, is invoked on every lean-path VM slot
+// claim attempt with whether the engine's private VM was claimed (true) or
+// the caller fell back to the pool (false). Test hook only — production
+// leaves it nil, so the steady path pays one predictable nil check. Tests
+// must publish it before starting goroutines and restore it after they join.
+var vmSlotLeaseProbe func(claimed bool)
+
 type macroExpander interface {
 	MacroExpand(ctx context.Context, form core.Value, env *core.Env) (core.Value, error)
 }
@@ -663,15 +670,34 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 	default:
 	}
 
-	e.mu.RLock()
-	env := e.rootEnv
-	e.mu.RUnlock()
+	// The lean-boundary condition is derived ONCE here and threaded down:
+	// callBoundary/applyOnVM never re-probe it on the fast path.
+	fast := e.fastPath.Load() && !core.HasEvalState(ctx) && !core.HasEvalMeter(ctx)
+
+	var env *core.Env
+	if fast {
+		env = e.rootEnvPtr.Load()
+	} else {
+		e.mu.RLock()
+		env = e.rootEnv
+		e.mu.RUnlock()
+	}
 
 	entry := e.callCache.lookup(name, env)
 	var fn core.Value
 	var live bool
 	if entry != nil {
-		fn, live, _ = env.ReadCell(entry.cell)
+		if fast {
+			// Lock-free versioned read: every cell mutation bumps version
+			// under the env write lock, so a match proves the cached value
+			// is still live. Mismatch (redefinition, tombstone, hot-reload)
+			// falls through to the locked re-read below.
+			if entry.cell.Version() == entry.cellVer && entry.value != nil {
+				fn, live = entry.value, true
+			}
+		} else {
+			fn, live, _ = env.ReadCell(entry.cell)
+		}
 	}
 	if entry == nil || !live {
 		// A cache hit whose cell has since gone tombstoned is not
@@ -691,6 +717,10 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 		}
 	}
 	if be := e.bytecodeEvaluator; be != nil {
+		if fast {
+			v, slot := e.acquireCallVM(be)
+			return e.callBoundaryLean(ctx, name, fn, env, entry.counter, args, v, be, slot)
+		}
 		v := be.vmPool.Get().(*vm.VM)
 		v.Reset()
 		defer func() {
@@ -703,9 +733,9 @@ func (e *engineImpl) Call(ctx context.Context, name string, args ...core.Value) 
 			}
 			be.vmPool.Put(v)
 		}()
-		return e.callBoundary(ctx, name, fn, env, entry.counter, args, v)
+		return e.callBoundary(ctx, name, fn, env, entry.counter, args, v, false)
 	}
-	return e.callBoundary(ctx, name, fn, env, entry.counter, args, nil)
+	return e.callBoundary(ctx, name, fn, env, entry.counter, args, nil, false)
 }
 
 // reportUndefinedCall is Call's single undefined-function tail: bump the
@@ -725,8 +755,8 @@ func (e *engineImpl) reportUndefinedCall(name string, counter *atomic.Int64) err
 // acquired VM for Engine.Call and Fn.Call, or a private handle-owned VM for
 // PinnedFn.Call — so the per-call VM lifecycle stays in the caller and a
 // single apply step is shared across every entry point.
-func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM) (result core.Value, err error) {
-	needsEvalState := core.HasEvalState(ctx) || core.HasEvalMeter(ctx) || e.config.engineMeter != nil
+func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM, fast bool) (result core.Value, err error) {
+	needsEvalState := !fast && (core.HasEvalState(ctx) || core.HasEvalMeter(ctx) || e.config.engineMeter != nil)
 	if needsEvalState {
 		ctx = e.evalResourceContext(ctx)
 		var top bool
@@ -742,7 +772,7 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 		}()
 	}
 
-	active := e.callbacksActive.Load()
+	active := !fast && e.callbacksActive.Load()
 	var start time.Time
 	if active {
 		start = nowFunc()
@@ -778,6 +808,68 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 		}
 	}
 	return result, err
+}
+
+// callBoundaryLean is the lean spine for fast-condition calls: one
+// recover-defer covering VM release, panic→NewPanicError, and the stats
+// bump. No StartEval/FinishEval, no clock reads, no callbacks — the fast
+// flag guarantees none are attached and the entry check guarantees the
+// context carries no eval state or meter, so applyOnVM takes its plain
+// timeout/limits arm exactly as the general path would.
+func (e *engineImpl) callBoundaryLean(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM, be *bytecodeEvaluator, slot bool) (result core.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = core.NewPanicError(name, r)
+		}
+		e.releaseCallVM(v, be, slot, err)
+		counter.Add(1)
+	}()
+	return be.applyOnVM(v, ctx, fn, args, env, e.config.timeout)
+}
+
+// acquireCallVM claims the engine's private VM slot for a lean call; when
+// the slot is busy (concurrent Call in flight) the caller falls back to a
+// fully-reset pool VM. Mirrors PinnedFn's CAS inUse claim.
+func (e *engineImpl) acquireCallVM(be *bytecodeEvaluator) (v *vm.VM, slot bool) {
+	if e.vmSlotInUse.CompareAndSwap(false, true) {
+		if e.vmSlot == nil {
+			e.vmSlot = vm.New(be.globals, vm.WithMaxDepth(be.maxDepth), vm.WithEvaluator(be), vm.WithMaxStructuralDepth(be.maxStructuralDepth))
+		}
+		if probe := vmSlotLeaseProbe; probe != nil {
+			probe(true)
+		}
+		return e.vmSlot, true
+	}
+	if probe := vmSlotLeaseProbe; probe != nil {
+		probe(false)
+	}
+	v = be.vmPool.Get().(*vm.VM)
+	v.Reset()
+	return v, false
+}
+
+// releaseCallVM returns a lean-call VM: a clean exit from the engine slot
+// keeps only the incremental reset (the run/apply loop already restored the
+// stacks), while an error or panic — or any invariant violation — gets a
+// full Reset before release. An invariant violation falls back to a full
+// Reset without surfacing an error: the call already succeeded, unlike
+// PinnedFn, whose handle contract reports it via NewVMStateError. Pool VMs
+// always return fully reset on error, matching the general path.
+func (e *engineImpl) releaseCallVM(v *vm.VM, be *bytecodeEvaluator, slot bool, callErr error) {
+	if !slot {
+		if callErr != nil {
+			v.Reset()
+		}
+		be.vmPool.Put(v)
+		return
+	}
+	if callErr != nil {
+		v.Reset()
+	} else if resetErr := v.ResetIncremental(); resetErr != nil {
+		v.Reset()
+	}
+	e.vmSlotInUse.Store(false)
 }
 
 func (e *engineImpl) Bind(name string, v core.Value) error {
