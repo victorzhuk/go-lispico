@@ -115,11 +115,15 @@ type VM struct {
 	reductions    int64
 	allocBytes    int64
 	pendingAlloc  int64
-	// ownStructDepth is the VM's private structural-depth counter. structDepth
-	// points here until a re-entrant GoFunc dispatch adopts a shared counter
-	// (see reentrantCtx); Reset restores the pointer and zeroes this back out.
+	// Private counters use plain values; atomic fields only select private mode.
+	// Reentrant calls replace their pointers with shared atomic counters.
 	ownStructDepth atomic.Int64
-	ownCallDepth   atomic.Int64
+	structDepthVal int64
+	// ownCallDepth / callDepthVal follow the same dual-counter pattern for call
+	// depth: callDepth points here by default; callDepthVal is the plain-field
+	// fast path when callDepth == &ownCallDepth.
+	ownCallDepth atomic.Int64
+	callDepthVal int64
 	// reentryCtx is the ctx adopted for re-entrant GoFunc/Lambda calls once
 	// one occurs, so repeated callbacks within a run share one evalState
 	// instead of adopting afresh each time. Unlike budget it survives across
@@ -232,9 +236,9 @@ func (vm *VM) reset() {
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
 	vm.structDepth = &vm.ownStructDepth
-	vm.ownStructDepth.Store(0)
+	vm.structDepthVal = 0
 	vm.callDepth = &vm.ownCallDepth
-	vm.ownCallDepth.Store(0)
+	vm.callDepthVal = 0
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0
@@ -259,9 +263,9 @@ func (vm *VM) Reset() {
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
 	vm.structDepth = &vm.ownStructDepth
-	vm.ownStructDepth.Store(0)
+	vm.structDepthVal = 0
 	vm.callDepth = &vm.ownCallDepth
-	vm.ownCallDepth.Store(0)
+	vm.callDepthVal = 0
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0
@@ -300,9 +304,9 @@ func (vm *VM) ResetIncremental() error {
 		vm.Reset()
 		return fmt.Errorf("vm: ResetIncremental invariant violated (stack len=%d, want 0)", l)
 	}
-	vm.ownStructDepth.Store(0)
+	vm.structDepthVal = 0
 	vm.structDepth = &vm.ownStructDepth
-	vm.ownCallDepth.Store(0)
+	vm.callDepthVal = 0
 	vm.callDepth = &vm.ownCallDepth
 	vm.deadline = time.Time{}
 	vm.timeout = 0
@@ -504,13 +508,13 @@ func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 		if core.ReentrantEvalStateLive(vm.reentryCtx) {
 			return vm.reentryCtx, nil
 		}
-		if structCounter, ok := core.RearmReentrantEvalState(vm.reentryCtx, ctx, vm.structDepth.Load(), vm.callDepth.Load(), vm.meterSnapshot(), vm.timeout); ok {
+		if structCounter, ok := core.RearmReentrantEvalState(vm.reentryCtx, ctx, vm.structDepthLoad(), vm.callDepthLoad(), vm.meterSnapshot(), vm.timeout); ok {
 			vm.structDepth = structCounter
 			vm.callDepth = core.EvalCallCounter(vm.reentryCtx)
 			return vm.reentryCtx, nil
 		}
 	}
-	adopted, structCounter, meter := core.AdoptReentrantEvalState(ctx, vm.timeout, resolveReentrantDeadline, vm.structDepth.Load(), vm.callDepth.Load(), vm.meterSnapshot(), &vm.runGen)
+	adopted, structCounter, meter := core.AdoptReentrantEvalState(ctx, vm.timeout, resolveReentrantDeadline, vm.structDepthLoad(), vm.callDepthLoad(), vm.meterSnapshot(), &vm.runGen)
 	vm.structDepth = structCounter
 	vm.callDepth = core.EvalCallCounter(adopted)
 	if meter.Valid() {
@@ -563,6 +567,44 @@ func (vm *VM) pushFreeze(depth int, op Opcode, val core.Value) {
 	vm.freezeStack = append(vm.freezeStack, freezeRec{depth: depth, op: op, val: val})
 }
 
+func (vm *VM) callDepthAdd(delta int64) int64 {
+	if vm.callDepth == &vm.ownCallDepth {
+		vm.callDepthVal += delta
+		return vm.callDepthVal
+	}
+	return vm.callDepth.Add(delta)
+}
+
+func (vm *VM) callDepthLoad() int64 {
+	if vm.callDepth == &vm.ownCallDepth {
+		return vm.callDepthVal
+	}
+	return vm.callDepth.Load()
+}
+
+func (vm *VM) structDepthAdd(delta int64) int64 {
+	if vm.structDepth == &vm.ownStructDepth {
+		vm.structDepthVal += delta
+		return vm.structDepthVal
+	}
+	return vm.structDepth.Add(delta)
+}
+
+func (vm *VM) structDepthLoad() int64 {
+	if vm.structDepth == &vm.ownStructDepth {
+		return vm.structDepthVal
+	}
+	return vm.structDepth.Load()
+}
+
+func (vm *VM) structDepthStore(val int64) {
+	if vm.structDepth == &vm.ownStructDepth {
+		vm.structDepthVal = val
+	} else {
+		vm.structDepth.Store(val)
+	}
+}
+
 func (vm *VM) pop() (core.Value, error) {
 	if len(vm.stack) == 0 {
 		return nil, &core.LispicoError{Code: "BytecodeError", Message: "stack underflow"}
@@ -582,7 +624,12 @@ func (vm *VM) peek() (core.Value, error) {
 // Apply calls fn with args in a fresh isolated VM and returns the result.
 // The receiver is used only for configuration (globals, max depth, evaluator).
 func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth), WithStructuralDepthCounter(v.structDepth), WithCallDepthCounter(core.EvalCallCounter(ctx)))
+	// Private live depth is not addressable by another VM.
+	var depthCtr *atomic.Int64
+	if v.structDepth != &v.ownStructDepth {
+		depthCtr = v.structDepth
+	}
+	fresh := New(env, WithMaxDepth(v.maxDepth), WithEvaluator(v.eval), WithMaxStructuralDepth(v.maxStructuralDepth), WithStructuralDepthCounter(depthCtr), WithCallDepthCounter(core.EvalCallCounter(ctx)))
 	fresh.deadline = v.deadline
 	fresh.timeout = v.timeout
 	fresh.deadlineArmed = v.deadlineArmed
@@ -599,16 +646,19 @@ func (v *VM) Apply(ctx context.Context, fn core.Value, args []core.Value, env *c
 // resets) before calling ApplyPooled, and MUST NOT reuse this VM concurrently.
 // For fresh-isolation semantics use Apply instead.
 func (v *VM) ApplyPooled(ctx context.Context, fn core.Value, args []core.Value, env *core.Env) (core.Value, error) {
-	// See Run's matching defer: this is the other top-level exit reentryCtx
-	// can be built or rearmed under.
-	defer v.bumpRunGenIfWrapped()
-	counter := v.callDepth
-	if counter == nil {
-		counter = &v.ownCallDepth
-		v.callDepth = counter
+	reentryWasNil := v.reentryCtx == nil
+	defer func() {
+		if reentryWasNil && v.reentryCtx != nil {
+			v.runGen.Add(1)
+		} else if !reentryWasNil {
+			v.bumpRunGenIfWrapped()
+		}
+	}()
+	if v.callDepth == nil {
+		v.callDepth = &v.ownCallDepth
 	}
-	sharedDepth := counter.Add(1)
-	defer counter.Add(-1)
+	sharedDepth := v.callDepthAdd(1)
+	defer v.callDepthAdd(-1)
 	if v.maxDepth > 0 && (int64(v.depth) >= int64(v.maxDepth) || sharedDepth > int64(v.maxDepth)) {
 		return nil, &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 	}
@@ -778,7 +828,14 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	// instant the run returns, whether it exits cleanly or via the Reset
 	// below on a terminal error — Reset itself no longer bumps runGen, so
 	// this is reentryCtx's sole invalidation point (see bumpRunGenIfWrapped).
-	defer vm.bumpRunGenIfWrapped()
+	reentryWasNil := vm.reentryCtx == nil
+	defer func() {
+		if reentryWasNil && vm.reentryCtx != nil {
+			vm.runGen.Add(1)
+		} else if !reentryWasNil {
+			vm.bumpRunGenIfWrapped()
+		}
+	}()
 	base := len(vm.stack)
 	vm.frames = append(vm.frames, Frame{chunk: chunk, base: base, env: vm.globals})
 	vm.growStack(base, chunk.MaxStack)
@@ -1048,11 +1105,16 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			} else if newFrame := &vm.frames[len(vm.frames)-1]; newFrame.chunk == chunk {
+				ip, base, env, caps = newFrame.ip, newFrame.base, newFrame.env, newFrame.caps
+			} else {
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpTailCall:
 			vm.frames[len(vm.frames)-1].ip = ip
+			oldChunk := chunk
 			if err := vm.call(ctx, instr.A(), true); err != nil {
 				if core.IsTerminalEvalError(err) {
 					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
@@ -1064,8 +1126,12 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			} else if newFrame := &vm.frames[len(vm.frames)-1]; newFrame.chunk == oldChunk {
+				ip, base, env, caps = newFrame.ip, newFrame.base, newFrame.env, newFrame.caps
+			} else {
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpReturn:
 			result, err := vm.pop()
@@ -1092,7 +1158,11 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				return result, nil
 			}
 			vm.push(result)
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			if resumed := &vm.frames[len(vm.frames)-1]; resumed.chunk == chunk {
+				ip, base, env, caps = resumed.ip, resumed.base, resumed.env, resumed.caps
+			} else {
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			}
 
 		case OpMakeList:
 			n := instr.A()
@@ -1145,9 +1215,9 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 
 		case OpStructEnter:
 			n := instr.A()
-			vm.structDepth.Add(int64(n))
-			if vm.maxStructuralDepth > 0 && int(vm.structDepth.Load()) > vm.maxStructuralDepth {
-				vm.structDepth.Add(-int64(n))
+			sd := vm.structDepthAdd(int64(n))
+			if vm.maxStructuralDepth > 0 && int(sd) > vm.maxStructuralDepth {
+				vm.structDepthAdd(-int64(n))
 				return nil, &core.LispicoError{
 					Code:    core.CodeResourceLimit,
 					Message: fmt.Sprintf("structural depth limit %d exceeded", vm.maxStructuralDepth),
@@ -1156,7 +1226,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 
 		case OpStructLeave:
 			n := instr.A()
-			vm.structDepth.Add(-int64(n))
+			vm.structDepthAdd(-int64(n))
 
 		case OpClosure:
 			sub := chunk.SubChunks[instr.A()]
@@ -1189,7 +1259,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			ip = instr.A()
 
 		case OpSetupTry:
-			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), freezeDepth: len(vm.freezeStack), structDepth: vm.structDepth.Load()})
+			vm.handlers = append(vm.handlers, handler{addr: instr.A(), frameDepth: len(vm.frames), stackDepth: len(vm.stack), freezeDepth: len(vm.freezeStack), structDepth: vm.structDepthLoad()})
 		case OpPopTry:
 			if len(vm.handlers) > 0 {
 				vm.handlers = vm.handlers[:len(vm.handlers)-1]
@@ -1792,7 +1862,7 @@ func (vm *VM) throw(value core.Value) bool {
 	}
 	h := vm.handlers[len(vm.handlers)-1]
 	vm.handlers = vm.handlers[:len(vm.handlers)-1]
-	vm.structDepth.Store(h.structDepth)
+	vm.structDepthStore(h.structDepth)
 	for len(vm.frames) > h.frameDepth {
 		f := &vm.frames[len(vm.frames)-1]
 		if f.isClosure && vm.depth > 0 {
@@ -1905,10 +1975,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				return core.NewArityError(f.Chunk.Arity, argc)
 			}
 		}
-		sharedDepth := int64(0)
-		if vm.callDepth != nil {
-			sharedDepth = vm.callDepth.Load()
-		}
+		sharedDepth := vm.callDepthLoad()
 		if vm.maxDepth > 0 && (int64(vm.depth) >= int64(vm.maxDepth) || (sharedDepth > 0 && sharedDepth+int64(vm.depth) >= int64(vm.maxDepth))) {
 			return &core.LispicoError{Code: "EvalError", Message: "maximum call depth exceeded"}
 		}

@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1993,7 +1994,7 @@ func TestVM_ThrowCaughtInTry_RestoresStructDepth(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Equals(core.String{V: "caught"}))
 
-	assert.Equal(t, int64(0), v.structDepth.Load(), "structDepth must be restored to its pre-try value after a caught throw")
+	assert.Equal(t, int64(0), v.structDepthLoad(), "structDepth must be restored to its pre-try value after a caught throw")
 }
 
 // vectorLiteralChunk builds a chunk equivalent to (vector 1): a balanced
@@ -2195,4 +2196,43 @@ func TestVM_RebuildPreservesLiveSiteCacheAndInvalidatesDropped(t *testing.T) {
 	v.Reset()
 	_, err = v.Run(ctx, chunkDropped)
 	require.Error(t, err, "dropped binding must error after Rebuild")
+}
+
+func TestVM_SharedCallDepthPropagatesAcrossGoFuncBoundary(t *testing.T) {
+	t.Parallel()
+
+	var sharedCounter atomic.Int64
+	maxDepth := 2
+
+	env := core.NewEnv(nil)
+	var theVM *VM
+
+	innerFn := core.GoFunc{
+		Name: "inner",
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Int{V: 1}, nil
+		},
+	}
+	midFn := core.GoFunc{
+		Name: "mid",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, e *core.Env) (core.Value, error) {
+			return theVM.ApplyPooled(ctx, innerFn, nil, e)
+		},
+	}
+	outerFn := core.GoFunc{
+		Name: "outer",
+		Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, e *core.Env) (core.Value, error) {
+			return theVM.ApplyPooled(ctx, midFn, nil, e)
+		},
+	}
+
+	ctx := context.Background()
+	theVM = New(
+		env,
+		WithMaxDepth(maxDepth),
+		WithCallDepthCounter(&sharedCounter),
+	)
+	_, err := theVM.ApplyPooled(ctx, outerFn, nil, env)
+	require.Error(t, err, "shared depth must propagate through GoFunc boundary to trip maxDepth")
+	assert.Contains(t, err.Error(), "maximum call depth exceeded")
 }
