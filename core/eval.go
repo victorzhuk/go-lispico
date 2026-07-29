@@ -168,6 +168,19 @@ type lazyEvalStateCtx struct {
 	maxAllocBytes atomic.Int64
 	reductions    atomic.Int64
 	allocBytes    atomic.Int64
+	// lastRawMaxReductions/lastRawMaxAllocBytes/lastTimeoutNs remember the
+	// raw inputs the wrapper was last armed with, so RearmReentrantEvalState
+	// can compare them against the incoming request with plain loads and
+	// skip the normalizeEvalLimit calls plus the maxReductions/
+	// maxAllocBytes/timeout stores when nothing changed — the steady
+	// repeated-Call shape. Plain fields under a single-writer invariant:
+	// only the rearming goroutine reads or writes them (Value and every
+	// foreign-goroutine accessor read the atomic fields above instead), and
+	// gen — the publication readers synchronize on — is stored after them,
+	// same as every other rearmed field.
+	lastRawMaxReductions int64
+	lastRawMaxAllocBytes int64
+	lastTimeoutNs        int64
 	// genPtr, when set, points at the owning VM's run-generation counter: a
 	// wrapper retained past the run that built or last rearmed it (gen no
 	// longer matches genPtr's live value) reads back as carrying no
@@ -421,6 +434,9 @@ func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, structSeed
 // must not close over VM state — see the field doc on lazyEvalStateCtx.
 // See RearmReentrantEvalState to reuse the returned ctx across a later run,
 // and ReentrantEvalStateLive for the other reuse guard.
+// It also seeds the remembered-config fields (limits, timeout) that
+// RearmReentrantEvalState compares against, so the first rearm after a
+// build can take the same-config fast path.
 func AdoptReentrantEvalState(ctx context.Context, timeout time.Duration, resolveDeadline func(context.Context, time.Duration) time.Time, structSeed, callSeed int64, snap EvalMeterSnapshot, gen *atomic.Uint64) (context.Context, *atomic.Int64, EvalMeter) {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
 		if callSeed > 0 {
@@ -443,6 +459,9 @@ func AdoptReentrantEvalState(ctx context.Context, timeout time.Duration, resolve
 	w.allocBytes.Store(snap.AllocationBytes)
 	w.counter.Store(structSeed)
 	w.callCounter.Store(callSeed)
+	w.lastRawMaxReductions = snap.MaxReductions
+	w.lastRawMaxAllocBytes = snap.MaxAllocationBytes
+	w.lastTimeoutNs = int64(timeout)
 	if gen != nil {
 		w.gen.Store(gen.Load())
 	}
@@ -463,19 +482,54 @@ func AdoptReentrantEvalState(ctx context.Context, timeout time.Duration, resolve
 // this when ReentrantEvalStateLive(retained) is false — rearming a wrapper
 // still live for the current run would wipe out state a GoFunc dispatched
 // earlier this run may already have materialized.
+//
+// The rearm is proportional to what changed: the wrapper remembers the raw
+// configuration it was last armed with (limit inputs, timeout), and a
+// request carrying the same configuration skips the normalizeEvalLimit
+// calls and the config stores. Depth seeds are elided by comparing the
+// actual atomic counter to the incoming seed — a run mutates counters
+// during execution, so only the live atomic value proves whether a store
+// is needed; a remembered seed alone cannot. The per-run meter seeds
+// (reductions/allocBytes) are elided by the same live-atomic comparison,
+// and exactly so: Value copies them into a materialized evalState and
+// nothing mutates the wrapper's copy mid-run, so the live atomic is the
+// last-armed seed. The materialized-state
+// drop is gated on presence, and the generation stamp is written last.
+// Any configuration difference takes the full rearm. Either way the
+// observable result is exactly what a full rearm would have installed.
+// The remembered config values are plain fields under a single-writer
+// invariant — see their doc on lazyEvalStateCtx.
 func RearmReentrantEvalState(retained, ctx context.Context, structSeed, callSeed int64, snap EvalMeterSnapshot, timeout time.Duration) (structDepth *atomic.Int64, ok bool) {
 	w, isWrapper := retained.(*lazyEvalStateCtx)
 	if !isWrapper || !w.parentComparable || w.Context != ctx {
 		return nil, false
 	}
-	w.counter.Store(structSeed)
-	w.callCounter.Store(callSeed)
-	w.maxReductions.Store(normalizeEvalLimit(snap.MaxReductions, DefaultMaxReductions))
-	w.maxAllocBytes.Store(normalizeEvalLimit(snap.MaxAllocationBytes, DefaultMaxAllocationBytes))
-	w.reductions.Store(snap.Reductions)
-	w.allocBytes.Store(snap.AllocationBytes)
-	w.timeout.Store(int64(timeout))
-	w.state.Store(nil)
+	sameConfig := w.lastRawMaxReductions == snap.MaxReductions &&
+		w.lastRawMaxAllocBytes == snap.MaxAllocationBytes &&
+		w.lastTimeoutNs == int64(timeout)
+	if !sameConfig {
+		w.maxReductions.Store(normalizeEvalLimit(snap.MaxReductions, DefaultMaxReductions))
+		w.maxAllocBytes.Store(normalizeEvalLimit(snap.MaxAllocationBytes, DefaultMaxAllocationBytes))
+		w.timeout.Store(int64(timeout))
+		w.lastRawMaxReductions = snap.MaxReductions
+		w.lastRawMaxAllocBytes = snap.MaxAllocationBytes
+		w.lastTimeoutNs = int64(timeout)
+	}
+	if w.counter.Load() != structSeed {
+		w.counter.Store(structSeed)
+	}
+	if w.callCounter.Load() != callSeed {
+		w.callCounter.Store(callSeed)
+	}
+	if w.reductions.Load() != snap.Reductions {
+		w.reductions.Store(snap.Reductions)
+	}
+	if w.allocBytes.Load() != snap.AllocationBytes {
+		w.allocBytes.Store(snap.AllocationBytes)
+	}
+	if w.state.Load() != nil {
+		w.state.Store(nil)
+	}
 	if w.genPtr != nil {
 		w.gen.Store(w.genPtr.Load())
 	}
