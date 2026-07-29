@@ -59,3 +59,7 @@
       vm-call-frame-fast-path is in), Callback/Rule improved, fib control
       flat. Update the harness-facing docs only after the release-runner
       gate confirms.
+  Local composed evidence (2026-07-29, n=8, this box): CallBytecodePlain
+  119.7ns median, PinnedFnCall 120.8-122.8ns, CallBytecode −24%,
+  Callback rows −9..−14%, fib control flat. The ≤110ns bar remains for
+  the release runner — local perfgate is not evaluable here.

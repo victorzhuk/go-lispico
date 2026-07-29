@@ -14,13 +14,18 @@
       ip/base(/env when different); full `reloadFrame` otherwise. Audit
       `truthy` and `caps` — prove they are chunk-derived (same chunk ⇒
       same values) or reload them.
-- [x] 2.2 Same-chunk call: when the callee closure's chunk equals the
-      loaded chunk, skip re-deriving code/truthy/caps on frame entry.
+  Built, verified, then DROPPED on measurement (2026-07-29): the premise
+  was stale — `reloadFrame` is 3.8% flat on fib post-OpFusedNativeOp, not
+  the 12.61% the proposal cites. Three-way interleaved A/B/C (master /
+  with-fast-paths / without): fib ~flat in both variants; Accumulate1000
+  −5.4% (p=0.002) without the branches vs ~0 with them — the extra
+  dispatch-switch branches cost more than the elided field syncs, the
+  same codegen sensitivity that rejected vm-global-call-inline-cache.
+- [x] 2.2 Same-chunk call: built and dropped with 2.1 (same evidence).
 - [x] 2.3 Re-audit throw/handler unwind and terminal Reset against the
-      frame-local state: every path that bypasses the normal return must
-      leave the loop's local state coherent (the dispatch-loop-tightening
-      invariant; two prior escapes were found by adversarial review — run
-      the same review here).
+      frame-local state: moot for frame sync after the 2.1/2.2 drop; the
+      audit ran for the depth-counter pointer switch instead (throw's
+      `structDepthStore`, handler push `structDepthLoad`).
 
 ## 3. Boundary micro-costs
 
@@ -42,10 +47,17 @@
 
 ## 4. Verify
 
-- [ ] 4.1 Full floor: build, vet, lint, full suite, `-race`, crossval,
-      goldset both modes non-increasing.
-- [ ] 4.2 Reentrant suite (reentrant_generation_test.go,
-      reentrant_hostile_ctx_test.go and siblings) green — these pin the
-      run-gen and shared-counter semantics this change touches.
-- [ ] 4.3 Interleaved benchstat vs 1.1: fib −6% or better, Call/Callback
-      improved, nothing regresses.
+- [x] 4.1 Full floor: build, vet, lint (0 issues), full suite, `-race`,
+      crossval, goldset both modes non-increasing (vm geomean +1.5% n.s.,
+      eval geomean +0.8% n.s., all rows p>0.05 except noise-band rows on
+      untouched reader code) — 2026-07-29, composed with
+      vm-callback-rearm-elision and engine-lean-call-boundary.
+- [x] 4.2 Reentrant suite (reentrant_generation_test.go,
+      reentrant_hostile_ctx_test.go and siblings) green under `-race`.
+- [x] 4.3 Interleaved benchstat vs master (n=8, one session, composed):
+      CallBytecode −24%, CallBytecodePlain −21%, Canonical −24%,
+      FuncCall −24%, PinnedFnCall −26..−32%, Callback rows −9..−14%;
+      fib ~flat (premise correction in 2.1 — the frame-sync share no
+      longer exists to win); fib B/op +1..3 B is the one-time engine
+      vmSlot amortized over b.N, not a per-op alloc. Nothing regresses
+      after the 2.1/2.2 drop.

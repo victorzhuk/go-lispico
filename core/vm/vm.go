@@ -1105,16 +1105,11 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
-			} else if newFrame := &vm.frames[len(vm.frames)-1]; newFrame.chunk == chunk {
-				ip, base, env, caps = newFrame.ip, newFrame.base, newFrame.env, newFrame.caps
-			} else {
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 			}
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpTailCall:
 			vm.frames[len(vm.frames)-1].ip = ip
-			oldChunk := chunk
 			if err := vm.call(ctx, instr.A(), true); err != nil {
 				if core.IsTerminalEvalError(err) {
 					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
@@ -1126,12 +1121,8 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if !vm.throw(core.String{V: err.Error()}) {
 					return nil, err
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
-			} else if newFrame := &vm.frames[len(vm.frames)-1]; newFrame.chunk == oldChunk {
-				ip, base, env, caps = newFrame.ip, newFrame.base, newFrame.env, newFrame.caps
-			} else {
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 			}
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpReturn:
 			result, err := vm.pop()
@@ -1158,11 +1149,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				return result, nil
 			}
 			vm.push(result)
-			if resumed := &vm.frames[len(vm.frames)-1]; resumed.chunk == chunk {
-				ip, base, env, caps = resumed.ip, resumed.base, resumed.env, resumed.caps
-			} else {
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
-			}
+			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
 		case OpMakeList:
 			n := instr.A()
