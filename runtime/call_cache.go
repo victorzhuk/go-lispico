@@ -15,25 +15,31 @@ const maxCallCacheEntries = 1024
 
 // callCacheEntry is a name's resolved cell cached by Engine.Call. It holds
 // the same counter Fn/PinnedFn would resolve via Stats.counterFor, so
-// attribution stays exact whether a call hits the cache or not.
+// attribution stays exact whether a call hits the cache or not. value and
+// cellVer are the cell snapshot captured coherently at publish time (under
+// the env lock via Env.ReadCellSnapshot): the lean path re-reads only the
+// cell's atomic version and serves value while it still matches, skipping
+// the per-call env RLock; any mismatch falls back to locked re-resolution.
 type callCacheEntry struct {
 	env     *core.Env
 	gen     uint64
 	cell    *core.Cell
 	counter *atomic.Int64
+	value   core.Value
+	cellVer uint64
 }
 
 // callCache is engineImpl's per-engine name→cell cache for Engine.Call.
 // Env.Rebuild is the only operation that changes which cell a name resolves
 // to, and it bumps Env.NameGen, so a hit is valid only while entry.env and
-// entry.gen still match the live root env. Unlike the VM's site cache
-// (core/vm/chunk.go siteEntry), an entry here does NOT also guard on
-// cell.Version(): Call never serves a cached value, only a cached cell
-// pointer, and re-reads that cell's current value through Env.ReadCell on
-// every call — so there is no stale value to protect against, only a stale
-// cell identity, which NameGen already covers. Redefinition, deletion,
-// unload, and hot-reload all mutate a cell in place and stay correct through
-// Env.ReadCell without any invalidation hook.
+// entry.gen still match the live root env. The cached {value, cellVer} pair
+// is guarded by the cell's atomic mutation version: every cell mutation
+// bumps version under the env write lock, so a lock-free version match
+// proves the cached value is still the cell's live value — the same
+// versioned-snapshot contract the VM site cache (core/vm/chunk.go siteEntry)
+// relies on. Redefinition, deletion, unload, and hot-reload all mutate a
+// cell in place, bumping version, so a stale value can never be served: the
+// version check fails and the call re-resolves through Env.ReadCell.
 type callCache struct {
 	entries atomic.Pointer[map[string]*callCacheEntry]
 }
@@ -142,13 +148,22 @@ func (e *engineImpl) resolveCallCell(env *core.Env, name string) (cell *core.Cel
 // while pointing at a cell Rebuild permanently tombstoned. Reading gen first
 // means any mutation overlapping the resolve leaves the stored generation
 // stale instead, which only costs a spurious miss.
+//
+// The published entry carries a coherent {value, version} snapshot of the
+// cell taken under the env lock, so the lean call path can serve cached
+// hits by re-reading only the cell's atomic version.
 func (e *engineImpl) resolveCallEntry(env *core.Env, name string) (*callCacheEntry, bool) {
 	gen := env.NameGen()
 	cell, cacheable, ok := e.resolveCallCell(env, name)
 	if !ok {
 		return nil, false
 	}
+	value, live, _, ver := env.ReadCellSnapshot(cell)
 	entry := &callCacheEntry{env: env, gen: gen, cell: cell, counter: e.stats.counterFor(name)}
+	if live {
+		entry.value = value
+		entry.cellVer = ver
+	}
 	if cacheable {
 		e.callCache.store(name, entry)
 	}

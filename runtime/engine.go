@@ -12,6 +12,7 @@ import (
 
 	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
 // Engine is the public API for the Lispico interpreter.
@@ -79,8 +80,26 @@ type engineImpl struct {
 	evalCallbacks     []func(EvalEvent)
 	pluginCallbacks   []func(PluginCallEvent)
 	callbacksActive   atomic.Bool // one-way: no unregister API, so once true it stays true
-	lazyMaterializer  *stdlibLazyMaterializer
-	loadingPlugin     string // plugin whose Init is running inside Use/ReloadPlugin; template registrations are attributed to it
+	// fastPath precomputes the lean-boundary condition: bytecode evaluator,
+	// no engine meter, no callbacks. Read once per call at entry; recomputed
+	// under e.mu at the only mutation sites (callback registration). The
+	// bytecode evaluator and engine meter are immutable after New, so the
+	// flag can only ever flip true→false.
+	fastPath atomic.Bool
+	// rootEnvPtr mirrors rootEnv for lock-free reads on the call hot path.
+	// rootEnv is assigned exactly once in New and never swapped — Rebuild and
+	// hot-reload mutate the env's contents in place, preserving its identity —
+	// so the snapshot never needs refreshing after construction.
+	rootEnvPtr atomic.Pointer[core.Env]
+	// vmSlot is a per-engine VM claimed via vmSlotInUse (CAS) on the lean
+	// path, mirroring PinnedFn's private-VM shape; losers fall back to the
+	// bytecode pool. Built lazily on the first claim (under CAS ownership,
+	// so the init is race-free and New pays nothing); nil on tree-walker
+	// engines and until the first lean call.
+	vmSlot           *vm.VM
+	vmSlotInUse      atomic.Bool
+	lazyMaterializer *stdlibLazyMaterializer
+	loadingPlugin    string // plugin whose Init is running inside Use/ReloadPlugin; template registrations are attributed to it
 }
 
 type engineConfig struct {
@@ -279,6 +298,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		config:   cfg,
 		stats:    newStats(),
 	}
+	e.rootEnvPtr.Store(rootEnv)
 
 	if cfg.bytecode {
 		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect, cfg.engineMeter)
@@ -294,6 +314,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	if cfg.engineMeter != nil {
 		rootEnv.SetRetainedMeter(cfg.engineMeter)
 	}
+	e.fastPath.Store(e.bytecodeEvaluator != nil && cfg.engineMeter == nil)
 	// root env. With no template registered its miss-path consult is a no-op.
 	installLazyLayer(e)
 
@@ -348,6 +369,7 @@ func (e *engineImpl) Stats() EngineStats {
 func (e *engineImpl) OnEval(fn func(EvalEvent)) {
 	e.mu.Lock()
 	e.evalCallbacks = append(e.evalCallbacks, fn)
+	e.recomputeFastPathLocked()
 	e.mu.Unlock()
 	e.callbacksActive.Store(true)
 }
@@ -355,8 +377,20 @@ func (e *engineImpl) OnEval(fn func(EvalEvent)) {
 func (e *engineImpl) OnPluginCall(fn func(PluginCallEvent)) {
 	e.mu.Lock()
 	e.pluginCallbacks = append(e.pluginCallbacks, fn)
+	e.recomputeFastPathLocked()
 	e.mu.Unlock()
 	e.callbacksActive.Store(true)
+}
+
+// recomputeFastPathLocked refreshes the lean-boundary condition under e.mu.
+// Callback registration is the only runtime mutation site: the bytecode
+// evaluator and engine meter are immutable after New. The callback slices
+// are the source of truth here — callbacksActive is stored only after the
+// lock is released, so reading it under the lock would miss the in-flight
+// registration.
+func (e *engineImpl) recomputeFastPathLocked() {
+	noCallbacks := len(e.evalCallbacks) == 0 && len(e.pluginCallbacks) == 0
+	e.fastPath.Store(e.bytecodeEvaluator != nil && e.config.engineMeter == nil && noCallbacks)
 }
 
 func (e *engineImpl) fireEvalCallbacks(event EvalEvent) {
