@@ -1513,6 +1513,25 @@ func TestVM_CachedSiteReflectsDelete(t *testing.T) {
 	}
 }
 
+// TestVMVsTreeWalker_Lisp2RecursiveHeadRebindMidRun proves a Lisp-2
+// recursive call resolving its head through the function-namespace site
+// cache observes a mid-run defun redefinition identically to the
+// tree-walker: the redefined body — not the recursive one warmed into the
+// site on the first call — is what the next call to the same name runs.
+func TestVMVsTreeWalker_Lisp2RecursiveHeadRebindMidRun(t *testing.T) {
+	t.Parallel()
+
+	src := `
+(defun f (n) (if (< n 1) 0 (+ n (f (- n 1)))))
+(f 5)
+(defun f (n) 999)
+(f 5)
+`
+	treeResult, vmResult := runCaptureCell(t, cl.Dialect(), src)
+	assert.True(t, vmResult.Equals(treeResult), "VM %v (%T) != tree-walker %v (%T)", vmResult, vmResult, treeResult, treeResult)
+	assert.Equal(t, core.Int{V: 999}, vmResult, "the redefined f must be observed on the next call")
+}
+
 // TestVM_MultipleNativeOpSitesResolveConsistently proves that several native
 // op call sites for the same operator symbol within one chunk each resolve
 // their own site independently, without cross-site interference.

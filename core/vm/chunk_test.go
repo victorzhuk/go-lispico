@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"testing"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -160,5 +161,58 @@ func TestChunkCopyTreeFreshSites(t *testing.T) {
 	}
 	if sub.site(0).entry.Load() == nil {
 		t.Fatal("source subchunk site entry cleared")
+	}
+}
+
+// TestChunkCopyTreeFreshSites_FuncSiteCrossEngineIsolation proves two engines
+// running per-engine copies of the same source chunk, each binding "f" to a
+// different value in the function namespace, never observe each other's
+// cached resolution.
+func TestChunkCopyTreeFreshSites_FuncSiteCrossEngineIsolation(t *testing.T) {
+	sym := core.Symbol{V: "f"}
+	source := &Chunk{
+		Name:      "<top>",
+		Code:      []Instruction{Encode(OpGetFunc, 0), Encode(OpReturn, 0)},
+		Constants: []core.Value{sym},
+	}
+	source.EnsureSites()
+
+	envA := core.NewEnv(nil)
+	envA.SetFunc("f", core.Int{V: 1})
+	chunkA := source.CopyTreeFreshSites()
+	vmA := New(envA)
+	resultA, err := vmA.Run(context.Background(), chunkA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resultA.Equals(core.Int{V: 1}) {
+		t.Fatalf("engine A: got %v, want 1", resultA)
+	}
+
+	envB := core.NewEnv(nil)
+	envB.SetFunc("f", core.Int{V: 2})
+	chunkB := source.CopyTreeFreshSites()
+	vmB := New(envB)
+	resultB, err := vmB.Run(context.Background(), chunkB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resultB.Equals(core.Int{V: 2}) {
+		t.Fatalf("engine B: got %v, want 2", resultB)
+	}
+
+	entryA := chunkA.site(0).entry.Load()
+	entryB := chunkB.site(0).entry.Load()
+	if entryA == nil || entryB == nil {
+		t.Fatal("expected both per-engine sites to warm up during their run")
+	}
+	if entryA == entryB {
+		t.Fatal("per-engine copies must not share a site entry")
+	}
+	if !entryA.val.Equals(core.Int{V: 1}) || !entryB.val.Equals(core.Int{V: 2}) {
+		t.Fatalf("cross-engine leakage: entryA=%v entryB=%v", entryA.val, entryB.val)
+	}
+	if source.site(0).entry.Load() != nil {
+		t.Fatal("shared source chunk's site must stay unpublished")
 	}
 }

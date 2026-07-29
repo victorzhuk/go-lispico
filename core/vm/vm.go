@@ -1042,7 +1042,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 
 		case OpGetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
-			v, found, _ := env.GetFuncCanonical(sym.V)
+			v, _, found := vm.resolveFuncValue(chunk.site(ip-1), env, sym)
 			if !found {
 				return nil, core.NewUndefinedError(sym.V)
 			}
@@ -1050,7 +1050,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 
 		case OpFreezeNativeFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
-			v, found, canon := env.GetFuncCanonical(sym.V)
+			v, canon, found := vm.resolveFuncValue(chunk.site(ip-1), env, sym)
 			if !found {
 				return nil, core.NewUndefinedError(sym.V)
 			}
@@ -1374,10 +1374,12 @@ func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
 // dispatchFusedNativeOp resolves a fused comparison's operator and both
 // operands and either executes it directly (canonical operator) or falls
 // back to a real call (a rebind) — the counterpart of dispatchNativeOp for
-// the collapsed FREEZE_NATIVE+operand+operand+op shape. base and ip are the
-// current frame's base and instruction pointer (already advanced past this
-// instruction), so chunk.site(ip-1) keys the cache to this instruction, same
-// as OpGetGlobal/OpFreezeNative.
+// the collapsed FREEZE_NATIVE(_FUNC)+operand+operand+op shape. base and ip are
+// the current frame's base and instruction pointer (already advanced past
+// this instruction), so chunk.site(ip-1) keys the cache to this instruction,
+// same as OpGetGlobal/OpFreezeNative/OpGetFunc/OpFreezeNativeFunc — fo.Func
+// picks which namespace's resolver, and hence which of the two site-keyed
+// entries, this instruction reads.
 func (vm *VM) dispatchFusedNativeOp(ctx context.Context, chunk *Chunk, env *core.Env, base, ip, idx int) error {
 	fo := &chunk.Fused[idx]
 	sym := chunk.Constants[fo.Sym].(core.Symbol)
@@ -1385,7 +1387,7 @@ func (vm *VM) dispatchFusedNativeOp(ctx context.Context, chunk *Chunk, env *core
 	var val core.Value
 	var canon, ok bool
 	if fo.Func {
-		val, ok, canon = env.GetFuncCanonical(sym.V)
+		val, canon, ok = vm.resolveFuncValue(chunk.site(ip-1), env, sym)
 	} else {
 		val, canon, ok = vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
 	}
@@ -1545,6 +1547,40 @@ func (vm *VM) resolveGlobalValue(site *siteCache, env *core.Env, sym core.Symbol
 		}
 	}
 	v, found, canon := env.GetCanonical(sym.V)
+	return v, canon, found
+}
+
+// resolveFuncValue is resolveGlobalValue for the Lisp-2 function namespace:
+// same guard, same locked-read-without-republish fallback on a version
+// mismatch, same publish-only-live-root-cells-on-a-miss rule — substituting
+// FuncCellLocal for CellLocal and GetFuncCanonical for GetCanonical.
+func (vm *VM) resolveFuncValue(site *siteCache, env *core.Env, sym core.Symbol) (val core.Value, canonical bool, ok bool) {
+	if site != nil {
+		if entry := site.entry.Load(); entry != nil && entry.env == env {
+			gen := env.NameGen()
+			ver := entry.cell.Version()
+			if entry.gen == gen && ver == entry.ver {
+				return entry.val, entry.canonical, true
+			}
+			if ver != entry.ver {
+				if v, live, canon := entry.env.ReadCell(entry.cell); live {
+					return v, canon, true
+				}
+				v, found, canon := env.GetFuncCanonical(sym.V)
+				return v, canon, found
+			}
+		}
+		if env == vm.globals {
+			if cell, found := env.FuncCellLocal(sym.V); found {
+				v, live, canon, ver := env.ReadCellSnapshot(cell)
+				if live {
+					site.entry.Store(&siteEntry{env: env, gen: env.NameGen(), cell: cell, val: v, canonical: canon, ver: ver})
+					return v, canon, true
+				}
+			}
+		}
+	}
+	v, found, canon := env.GetFuncCanonical(sym.V)
 	return v, canon, found
 }
 

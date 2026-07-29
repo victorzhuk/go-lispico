@@ -188,39 +188,50 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 	return out
 }
 
-// buildSites scans Code for OpGetGlobal and OpFreezeNative reads, assigning one
-// shared entry per distinct symbol (constant index) so repeated reads of the same
-// global reuse a single cached resolution. Native function-cell reads emit via
-// OpFreezeNativeFunc and keep no site. OpFusedNativeOp keys on its FusedOp's Sym
-// (the operator's constant index), not its own instruction operand (that indexes
-// Fused, a different space) — and only when Func is false, matching
-// OpFreezeNativeFunc's no-site treatment for the Lisp-2 function-cell path.
+// siteSym identifies a bySym bucket during buildSites: a constant-pool symbol
+// index plus which namespace it resolves in. Under Lisp-2 the same interned
+// symbol owns distinct value and function cells, so the two namespaces must
+// never share a site — sharing one would silently serve the wrong namespace's
+// value at a fused or frozen read.
+type siteSym struct {
+	constIdx int32
+	isFunc   bool
+}
+
+// buildSites scans Code for OpGetGlobal, OpFreezeNative, OpGetFunc, and
+// OpFreezeNativeFunc reads, assigning one shared entry per distinct (symbol,
+// namespace) pair so repeated reads of the same global or function head reuse
+// a single cached resolution. OpFusedNativeOp keys on its FusedOp's Sym (the
+// operator's constant index) and Func flag, not its own instruction operand
+// (that indexes Fused, a different space).
 func (c *Chunk) buildSites() *siteTable {
 	idx := make([]int32, len(c.Code))
 	for i := range idx {
 		idx[i] = -1
 	}
-	bySym := map[int32]int32{}
+	bySym := map[siteSym]int32{}
 	var entries []siteCache
 	for ip, inst := range c.Code {
-		var constIdx int32
+		var key siteSym
 		switch inst.Op() {
 		case OpGetGlobal, OpFreezeNative:
-			constIdx = int32(inst.A())
+			key = siteSym{constIdx: int32(inst.A())}
+		case OpGetFunc, OpFreezeNativeFunc:
+			key = siteSym{constIdx: int32(inst.A()), isFunc: true}
 		case OpFusedNativeOp:
 			a := inst.A()
-			if a < 0 || a >= len(c.Fused) || c.Fused[a].Func {
+			if a < 0 || a >= len(c.Fused) {
 				continue
 			}
-			constIdx = int32(c.Fused[a].Sym)
+			key = siteSym{constIdx: int32(c.Fused[a].Sym), isFunc: c.Fused[a].Func}
 		default:
 			continue
 		}
-		si, ok := bySym[constIdx]
+		si, ok := bySym[key]
 		if !ok {
 			si = int32(len(entries))
-			entries = append(entries, siteCache{constIdx: constIdx})
-			bySym[constIdx] = si
+			entries = append(entries, siteCache{constIdx: key.constIdx})
+			bySym[key] = si
 		}
 		idx[ip] = si
 	}

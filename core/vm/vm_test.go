@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -2235,4 +2236,405 @@ func TestVM_SharedCallDepthPropagatesAcrossGoFuncBoundary(t *testing.T) {
 	_, err := theVM.ApplyPooled(ctx, outerFn, nil, env)
 	require.Error(t, err, "shared depth must propagate through GoFunc boundary to trip maxDepth")
 	assert.Contains(t, err.Error(), "maximum call depth exceeded")
+}
+
+// TestVM_FuncSite_SameSymbolDifferentNamespaceValuesDoNotCollide proves the
+// value and function namespaces never share a site even when they key off the
+// same constant-pool symbol index: "f" is bound to different values in each
+// namespace, and each of the two chunk sites must resolve its own.
+func TestVM_FuncSite_SameSymbolDifferentNamespaceValuesDoNotCollide(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.Set("f", core.Int{V: 1})
+	env.SetFunc("f", core.Int{V: 2})
+
+	sym := core.Symbol{V: "f"}
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{sym},
+		Code: []Instruction{
+			Encode(OpGetGlobal, 0),
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 2}, result, "top of stack after both pushes is the function-namespace read")
+
+	valueSite := chunk.site(0)
+	funcSite := chunk.site(1)
+	require.NotNil(t, valueSite)
+	require.NotNil(t, funcSite)
+	assert.NotSame(t, valueSite, funcSite, "value and function reads of the same symbol must not share a site")
+
+	valGot, _, ok := v.resolveGlobalValue(valueSite, env, sym)
+	require.True(t, ok)
+	assert.Equal(t, core.Int{V: 1}, valGot)
+
+	funcGot, _, ok := v.resolveFuncValue(funcSite, env, sym)
+	require.True(t, ok)
+	assert.Equal(t, core.Int{V: 2}, funcGot)
+}
+
+func TestVM_FuncSite_SnapshotHitZeroAllocs(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.SetFunc("f", core.Int{V: 1})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	site := chunk.site(0)
+	require.NotNil(t, site)
+	require.NotNil(t, site.entry.Load())
+
+	sym := core.Symbol{V: "f"}
+	var got core.Value
+	var canonical, ok bool
+	allocs := testing.AllocsPerRun(1000, func() {
+		got, canonical, ok = v.resolveFuncValue(site, env, sym)
+	})
+	require.True(t, ok)
+	require.False(t, canonical)
+	assert.Equal(t, core.Int{V: 1}, got)
+	if allocs != 0 {
+		t.Fatalf("stable func site hit allocated %.1f times per run, want 0", allocs)
+	}
+}
+
+func TestVM_FuncSite_VersionMismatchReadsCellWithoutRepublish(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.SetFunc("f", core.Int{V: 1})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+
+	env.SetFunc("f", core.Int{V: 2})
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 2}, result)
+	assert.Same(t, firstEntry, chunk.site(0).entry.Load())
+}
+
+func TestVM_FuncSite_VersionMismatchDeleteDoesNotRepublish(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.SetFunc("f", core.Int{V: 1})
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	_, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+
+	env.Delete("f")
+	v.Reset()
+	_, err = v.Run(context.Background(), chunk)
+	require.Error(t, err)
+	assert.Same(t, firstEntry, chunk.site(0).entry.Load())
+}
+
+func TestVM_FuncSite_DoesNotPublishTombstone(t *testing.T) {
+	env := core.NewEnv(nil)
+	env.SetFunc("f", core.Int{V: 1})
+	env.Delete("f")
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	_, err := v.Run(context.Background(), chunk)
+	require.Error(t, err)
+	assert.Nil(t, chunk.site(0).entry.Load())
+}
+
+// TestVM_FuncSite_ReResolvesAfterGenerationBump proves a new-name bind into
+// the resolution env bumps its generation counter, forcing a func site to
+// republish a fresh entry on its next hit rather than trusting the stale one
+// — even though re-resolution lands back on the same cell for the unrelated
+// name. The bump comes from a VALUE-namespace bind (SetFunc itself never
+// bumps NameGen), proving the generation counter is shared across both
+// namespaces of the same env.
+func TestVM_FuncSite_ReResolvesAfterGenerationBump(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.SetFunc("f", core.Int{V: 1})
+
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetFunc, 0),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "f"}}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+
+	env.Set("z", core.Int{V: 99}) // new value-namespace name — bumps NameGen
+
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	secondEntry := chunk.site(0).entry.Load()
+	if secondEntry == firstEntry {
+		t.Error("expected the func site to republish a new entry after the generation bump")
+	}
+	if secondEntry.cell != firstEntry.cell {
+		t.Error("re-resolution should still land on the same underlying cell for f")
+	}
+}
+
+// TestVM_FuncSite_CanonicalFlipObserved exercises the real sequence the
+// engine's canonical-operator bridge produces (SetFuncCanonical, then a
+// defun-style SetFunc clears it, then SetFuncCanonical re-marks it) through
+// OpFreezeNativeFunc + OpAdd, so a stale canonical flag would change which
+// code path runs (native opcode vs a real GoFunc call), not just a returned
+// bool.
+func TestVM_FuncSite_CanonicalFlipObserved(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	env := core.NewEnv(nil)
+	plusFn := core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+		calls++
+		return core.Int{V: 999}, nil
+	}}
+	require.NoError(t, env.SetFuncCanonical("+", plusFn))
+
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "+"}, core.Int{V: 1}, core.Int{V: 2}},
+		Code: []Instruction{
+			Encode(OpFreezeNativeFunc, 0),
+			Encode(OpConst, 1),
+			Encode(OpConst, 2),
+			Encode(OpAdd, 2),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 3}, result)
+	assert.Equal(t, 0, calls, "canonical + must take the native fast path")
+
+	require.NoError(t, env.SetFunc("+", plusFn))
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 999}, result)
+	assert.Equal(t, 1, calls, "a defun-style rebind clears canonical — the GoFunc must be called")
+
+	require.NoError(t, env.SetFuncCanonical("+", plusFn))
+	calls = 0
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 3}, result)
+	assert.Equal(t, 0, calls, "re-marking canonical must take the native fast path again")
+}
+
+// TestVM_FuncSite_NeverPublishesParentOwnedCell proves a resolution through a
+// non-global (child) env returns the correct value but never publishes: the
+// VM's site cache only caches depth-0 (globals-owned) resolutions, since a
+// name owned by an ancestor scope could later be shadowed by a new local
+// binding.
+func TestVM_FuncSite_NeverPublishesParentOwnedCell(t *testing.T) {
+	t.Parallel()
+
+	root := core.NewEnv(nil)
+	child := core.NewEnv(root)
+	child.SetFunc("f", core.Int{V: 7})
+
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+	site := chunk.site(0)
+	require.NotNil(t, site)
+
+	v := New(root)
+	got, _, ok := v.resolveFuncValue(site, child, core.Symbol{V: "f"})
+	require.True(t, ok)
+	assert.Equal(t, core.Int{V: 7}, got)
+	assert.Nil(t, site.entry.Load(), "resolution through a non-global env must never publish")
+}
+
+// TestVM_FuncSite_RebuildDropThenRebindReturnsFreshValueWithoutRepublish
+// covers Delete + Rebuild (drops the dead cell, bumps NameGen) followed by a
+// SetFunc that allocates a genuinely new *Cell for the same name (SetFunc
+// itself does not bump NameGen). resolveFuncValue's version-mismatch branch
+// returns unconditionally once entered — see resolveFuncValue — so a cell
+// identity change alone, observed through the stale cached cell pointer,
+// never republishes on this run: the correct fresh value is still returned,
+// via the ordinary chain-walk fallback, but the entry is left exactly as it
+// was before the drop. This is the behavior resolveGlobalValue itself has
+// today for the same sequence — mirroring it faithfully carries the
+// limitation over rather than inventing a fix for it.
+func TestVM_FuncSite_RebuildDropThenRebindReturnsFreshValueWithoutRepublish(t *testing.T) {
+	t.Parallel()
+
+	env := core.NewEnv(nil)
+	env.SetFunc("f", core.Int{V: 1})
+
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	v := New(env)
+	result, err := v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 1}, result)
+	firstEntry := chunk.site(0).entry.Load()
+	require.NotNil(t, firstEntry)
+	firstCell, ok := env.FuncCellLocal("f")
+	require.True(t, ok)
+
+	env.Delete("f")
+	env.Rebuild()
+	env.SetFunc("f", core.Int{V: 2})
+
+	newCell, ok := env.FuncCellLocal("f")
+	require.True(t, ok)
+	require.NotSame(t, firstCell, newCell, "SetFunc after Rebuild must allocate a genuinely fresh cell")
+
+	v.Reset()
+	result, err = v.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	assert.Equal(t, core.Int{V: 2}, result, "the fresh cell's value must be observed even without a republish")
+	assert.Same(t, firstEntry, chunk.site(0).entry.Load(), "the version-mismatch branch returns before Store — no republish on a single post-drop run")
+}
+
+// TestVM_FuncSite_ConcurrentSetFuncStormRace exercises the site cache under
+// concurrent SetFunc writers racing readers that run a chunk resolving the
+// same head. Correctness under -race is the point; each reader also checks
+// that every returned value actually came from some writer's sequence, never
+// a torn or fabricated one.
+func TestVM_FuncSite_ConcurrentSetFuncStormRace(t *testing.T) {
+	const writers = 4
+	const iterations = 2000
+
+	env := core.NewEnv(nil)
+	require.NoError(t, env.SetFunc("f", core.Int{V: -1}))
+
+	chunk := &Chunk{
+		Name:      "test",
+		Constants: []core.Value{core.Symbol{V: "f"}},
+		Code: []Instruction{
+			Encode(OpGetFunc, 0),
+			Encode(OpReturn, 0),
+		},
+	}
+	chunk.EnsureSites()
+
+	stop := make(chan struct{})
+	var badResults atomic.Int64
+
+	var readersWG sync.WaitGroup
+	for range 4 {
+		readersWG.Add(1)
+		go func() {
+			defer readersWG.Done()
+			v := New(env)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				v.Reset()
+				result, err := v.Run(context.Background(), chunk)
+				if err != nil {
+					badResults.Add(1)
+					continue
+				}
+				n, ok := result.(core.Int)
+				if !ok || (n.V != -1 && (n.V < 0 || n.V >= int64(writers*iterations))) {
+					badResults.Add(1)
+				}
+			}
+		}()
+	}
+
+	var writersWG sync.WaitGroup
+	for w := range writers {
+		writersWG.Add(1)
+		go func(w int) {
+			defer writersWG.Done()
+			for i := range iterations {
+				val := int64(w*iterations + i)
+				if err := env.SetFunc("f", core.Int{V: val}); err != nil {
+					t.Errorf("SetFunc: %v", err)
+				}
+			}
+		}(w)
+	}
+
+	writersWG.Wait()
+	close(stop)
+	readersWG.Wait()
+
+	assert.Equal(t, int64(0), badResults.Load(), "reader observed a value that was never written")
 }
