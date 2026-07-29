@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redundant stores, cutting callback round-trip cost ~9-14%.
 - VM-private depth counters use plain fields instead of atomics until a
   re-entrant dispatch shares them with an evaluation state.
+- Function-name resolution on a Lisp-2 dialect (the default Common Lisp
+  dialect) is cached per call site, the same way value-name resolution
+  already was. Recursive Common Lisp workloads run roughly 30% faster;
+  Clojure-dialect workloads are unaffected. Redefinition, deletion, and
+  hot-reload remain immediately visible through a cached site.
 
 ## [0.10.0] - 2026-07-28
 
