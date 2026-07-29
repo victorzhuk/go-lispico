@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Engine.Call`, `Fn.Call`, and `PinnedFn.Call` on a bytecode engine with no
+  engine meter, no callbacks, and a plain context take a lean boundary: a
+  per-engine claimable VM (pool fallback under contention), a lock-free
+  versioned read of the cached callee cell, and a single recover-defer —
+  roughly 20-35% faster per call on the reference benchmarks. Behavior is
+  unchanged; registering a callback or attaching a meter restores the
+  general boundary on the next call.
+- Host-callback re-entry re-arms the retained evaluation state
+  incrementally: rearms carrying the same limits and timeout skip the
+  redundant stores, cutting callback round-trip cost ~9-14%.
+- VM-private depth counters use plain fields instead of atomics until a
+  re-entrant dispatch shares them with an evaluation state.
+
 ## [0.10.0] - 2026-07-28
 
 ### Changed
