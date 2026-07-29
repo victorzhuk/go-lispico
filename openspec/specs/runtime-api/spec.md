@@ -182,6 +182,19 @@ when the body dispatches `GoFunc`s. `Stats()` SHALL remain accurate whether
 or not callbacks are registered, and registered `OnPluginCall`/`OnEval`
 callbacks SHALL keep firing with durations as today.
 
+When the engine has no meter, no registered callbacks, and the entry context
+carries no evaluation state — a condition the engine SHALL precompute rather
+than re-derive per call — the boundary SHALL additionally avoid repeated
+synchronization on the steady path: engine-root and cached-callee reads
+SHALL NOT take a per-call lock (a versioned snapshot read suffices, falling
+back to locked resolution on any version change or tombstone), evaluation-
+state bookkeeping SHALL NOT run, and per-call atomic operations SHALL be
+limited to stats attribution and VM acquisition. Panic recovery SHALL remain
+in force on this path — a panicking `GoFunc` or internal fault is still
+returned as an error, never propagated. Registering a callback, attaching a
+meter, or passing an evaluation-state context SHALL route the very next call
+through the general path with today's exact behavior.
+
 #### Scenario: Non-dispatching Call allocates only value representation
 
 - **WHEN** `Call` repeatedly invokes a compiled function whose body dispatches no further call (a selector or leaf body) on a bytecode engine with no callbacks registered
@@ -216,6 +229,21 @@ callbacks SHALL keep firing with durations as today.
 
 - **WHEN** an `OnPluginCall` callback is registered and `Call` runs
 - **THEN** the callback SHALL fire with the function name and a measured duration, as before
+
+#### Scenario: Steady path takes no per-call lock
+
+- **WHEN** `Call` repeatedly invokes a cached, canonical function on a fast-condition engine (no meter, no callbacks, plain context)
+- **THEN** the steady-state call SHALL perform no mutex acquisition for root or callee resolution, and redefinition, tombstoning, or hot-reload SHALL still be observed by the next call exactly as by per-call resolution
+
+#### Scenario: Fast-path panics are still recovered
+
+- **WHEN** a `GoFunc` dispatched during a fast-condition `Call` panics
+- **THEN** `Call` SHALL return the same recovered panic error as the general path, and the engine SHALL remain usable
+
+#### Scenario: Condition transitions route the next call correctly
+
+- **WHEN** a callback is registered (or a meter attached, or an evaluation-state context passed) after a sequence of fast-condition calls
+- **THEN** the next call SHALL take the general path — the callback fires, the meter is drawn, the shared budget is honored — with no stale fast-path behavior
 
 ### Requirement: Default evaluator selection
 
