@@ -115,17 +115,82 @@
 
 ## 1. Design decision (prototype-backed, before any production code)
 
-- [ ] 1.1 Vertical-slice prototype A — register form: hand-compile the fib
+- [x] 1.1 Vertical-slice prototype A — register form: hand-compile the fib
       body to a three-address register encoding over a frame register
       window; measure against the landed stack form. No compiler work,
       chunks built in test code.
-- [ ] 1.2 Vertical-slice prototype B — pre-decoded stream: the same fib
+- [x] 1.2 Vertical-slice prototype B — pre-decoded stream: the same fib
       body as a `[]func`-style pre-decoded instruction stream with
       operands resolved at compile time (Vitess/goja shape); same
       measurement.
-- [ ] 1.3 Decision in design.md: pick by measured fib delta, projected
+- [x] 1.3 Decision in design.md: pick by measured fib delta, projected
       implementation surface, and validation complexity. The loser's
       numbers stay in the doc.
+
+  **Decision (2026-07-30): both effects are real and both are small —
+  single-digit percent, against a proposal that projected −20-30%. B
+  (pre-decoded stream) is rejected as a standalone mechanism; A (register
+  form) is not refuted but does not earn its cost. NOT authorization for
+  section 2.** Full record in `design.md`.
+
+  A three-arm A/B could not attribute its −34% headline: the prototypes are
+  bespoke ~10-opcode loops and `arm=stack` is production's general ~45-opcode
+  interpreter, so encoding and specialization were conflated. Extended to a
+  2×2 factorial (addressing × dispatch) plus the production baseline.
+  `GOMAXPROCS=2`, 20 interleaved reps, go1.26.5:
+
+  | arm | addressing | dispatch | sec/op |
+  | --- | --- | --- | --- |
+  | `stack` (production) | stack | switch, general | 1.948m ± 2% |
+  | `predecoded` | register | closure | 1.214m ± 2% |
+  | `register` | register | switch | 1.237m ± 1% |
+  | `stack-specialized` | stack | switch | 1.269m ± 3% |
+  | `stack-specialized-predecoded` | stack | closure | 1.293m ± 2% |
+
+  - Addressing (register vs stack): **2.55%** under switch (p=0.000),
+    **6.51%** under closure (p=0.000).
+  - Dispatch (closure vs switch): **1.90%** under register (p=0.002), not
+    detected under stack (p=0.081). The cheapest-to-build cell — pre-decoding
+    today's stack encoding, no wire-format break — is the *slowest*
+    specialized arm, so the cheap version of B buys nothing and the version
+    that pays needs the expensive rewrite it was meant to avoid.
+  - Specialization (bespoke vs general loop): **~36%**, an order of magnitude
+    above either architectural axis, and not an architecture choice.
+  - Detection floor ≈2% at this sample size; read the p=0.081 null as "no
+    effect >~2% detectable," not as absence.
+
+  **Three measurement defects were found by adversarial review, each
+  conclusion-changing.** An earlier round reported a 14-17% addressing win at
+  p=0.000 that had already replicated across two sessions; a later round
+  reported a flat null. Neither was correct. (1) `stkInterp.pushFrame` copied
+  a full ~80-byte frame per call where `regInterp.pushFrame` patched in place
+  — ~21.9k extra copies per op, paid only by stack arms. (2) Fixed `b.Run`
+  ordering put the register arm earlier in both addressing comparisons.
+  (3) **The interleaving never existed**: `-count` does not re-invoke a
+  parent benchmark — it repeats each `b.Run` leaf back-to-back, so every
+  round before the last measured five contiguous per-arm blocks with drift
+  confounded against arm identity. Repetition now happens inside the parent,
+  reshuffling arm order across 20 reps at `-count=1`; reps pool by stripping
+  the `rep=N/` name component before `benchstat -col /arm`.
+
+  Carry forward: session replication controls for machine drift, not for
+  asymmetric work between arms, and a `p=0.000` only states within-run
+  consistency — which a systematic per-arm bias satisfies perfectly. Confirm
+  interleaving from the raw output before quoting any A/B here.
+
+  `instr/op` is identical at 175.1k across every arm. The pinned disassembly
+  shows the 13-instruction fib body holds exactly one `GET_LOCAL` and zero
+  separate constant loads — `compiler-branch-arith-fusion` already ate the
+  shuffle traffic, so the proposal's "itemizable as stack-shuffle dispatches"
+  premise and the literature's >47% instruction-elimination figure do not
+  apply to this VM. This falsifies the proposal's stated mechanism
+  independently of the timing result.
+
+  Prototypes: `core/vm/dispatch_proto_test.go`; `checkInterval` pinned from
+  `core/vm/opcode_test.go`. Zero production files touched. Limitations
+  (unexported site-cache path substituted by `env.GetCanonical()`, which also
+  compresses the dispatch axis; tax parity asserted analytically, not against
+  the live VM's unexported counters) are recorded in `design.md`.
 
 ## 2. Implementation (scoped after 1.3 — outline, to be expanded)
 
