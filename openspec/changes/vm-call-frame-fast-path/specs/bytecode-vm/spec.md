@@ -2,33 +2,30 @@
 
 ## MODIFIED Requirements
 
-### Requirement: Bytecode VM execution
+### Requirement: Structural-depth state hygiene
 
-The bytecode VM SHALL execute validated chunks with a dispatch loop that
-keeps per-frame execution state in loop-local storage, synchronizing with the
-frame stack only at control-flow transitions. A transition between frames
-running the same chunk MAY restore only the state that can differ (instruction
-pointer, stack base, environment); a cross-chunk transition SHALL restore the
-full dispatch state. Depth accounting SHALL use shared atomic counters only
-when the counter is actually shared with an evaluation state or a re-entrant
-context; a VM-private counter MAY be a plain field. VM reuse across boundary
-calls MAY skip re-initializing state a clean prior run provably left in the
-required condition; any error or panic exit SHALL restore the full reset
-before reuse. None of this SHALL change observable evaluation semantics:
-results, error shapes, resource-limit enforcement, re-entrant budget sharing,
-and race-detector cleanliness are unchanged.
+VM structural-depth accounting SHALL be restored on every exit path — normal
+return, thrown error, ceiling breach, and malformed input — including when the VM
+instance is reused from the pool. One failed evaluation SHALL NOT reduce the
+structural-depth budget available to any later evaluation on the same Engine.
 
-#### Scenario: Self-recursive execution stays correct
+Depth counters SHALL use atomic access whenever the counter is shared with an
+evaluation state or a re-entrant context; a counter private to one VM MAY be a
+plain field. The choice SHALL be made from the counter's identity at arm time,
+not re-derived per operation, and SHALL NOT change what a limit breach reports
+or when it trips.
 
-- **WHEN** a self-recursive compiled function executes deep call/return chains within one chunk
-- **THEN** results SHALL be identical to the tree-walker, and throw/catch unwinding across the fast-path frames SHALL behave exactly as before
+#### Scenario: Failed evaluation does not poison the next
+
+- **WHEN** a VM evaluation fails for any reason and a subsequent well-formed evaluation runs on the same `WithBytecode()` Engine
+- **THEN** the subsequent evaluation SHALL see the full configured structural-depth budget and succeed
+
+#### Scenario: Pooled reuse restores depth state
+
+- **WHEN** a pooled VM instance that previously exited through an error path is reused for a new evaluation
+- **THEN** its structural-depth accounting SHALL start fresh, with no carry-over from the failed run
 
 #### Scenario: Shared depth counters still enforce limits
 
 - **WHEN** a host `GoFunc` re-enters the evaluator so the call-depth counter is shared across the boundary
 - **THEN** combined nesting SHALL still trip the configured depth limit, and `go test -race` SHALL report no data race
-
-#### Scenario: Reused VM behaves like a fresh one
-
-- **WHEN** a boundary call reuses a VM whose previous run exited cleanly, and separately one whose previous run exited with a terminal error
-- **THEN** the next call SHALL observe fully initialized state in both cases, with no leakage of stack, frames, handlers, deadline, meter, or budget from the prior run

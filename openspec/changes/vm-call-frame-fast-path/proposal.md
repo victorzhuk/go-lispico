@@ -42,8 +42,10 @@ apply path itself must get cheaper for the boundary program to win.
 
 ## Impact
 
-- Affected specs: `bytecode-vm` (Bytecode VM execution — internal dispatch
-  state; no observable-behavior change).
+- Affected specs: `bytecode-vm` (Structural-depth state hygiene — the
+  shared-vs-private depth counter rule; no observable-behavior change). The
+  frame-sync fast paths were dropped on measurement, so no dispatch-state
+  wording lands.
 - Affected code: `core/vm/vm.go`, `core/vm/frame.go`.
 - Expected: fib −6-10%; Call/Callback −10-20ns each; goldset VM cells
   non-increasing.
