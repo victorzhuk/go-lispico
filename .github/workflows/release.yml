@@ -1,9 +1,9 @@
 # Release consumer gate (openspec/changes/release-consumer-gate, ADR 0008).
 #
 # ci.yml triggers on push to main/master and pull_request; this workflow
-# triggers on workflow_dispatch and on published releases. The two trigger
-# sets are disjoint, so they never run on the same event -- ordinary PR CI
-# carries no percentage gates by construction (tasks.md 4.1).
+# triggers on workflow_dispatch and on a stable release going public. The two
+# trigger sets are disjoint, so they never run on the same event -- ordinary
+# PR CI carries no percentage gates by construction (tasks.md 4.1).
 #
 # The gate is self-contained: it runs the committed gold set
 # (internal/goldset) under both execution modes -- no consumer checkout, no
@@ -14,7 +14,7 @@ name: Release consumer gate
 
 on:
   workflow_dispatch: {}
-  # `release: published` only fires after the release is already public --
+  # A release trigger only fires after the release is already public --
   # Actions has no pre-publish hook -- so this can never block a release.
   # What it does: record post-hoc regression evidence against the published
   # release and store that run's bench-vm.txt as the next release's
@@ -26,11 +26,21 @@ on:
   # the release runner" deferred to nothing. The fixed GOMAXPROCS and
   # BENCHTIME below make an automatic run reproducible enough to arm.
   #
-  # A workflow_dispatch run still works and stays useful for rehearsal, but
-  # it carries no release identity: it skips both the baseline lookup and the
-  # asset upload below, so it cannot produce a stored baseline.
+  # `released`, not `published`: `published` also fires for pre-releases, and
+  # the very first armed run is one-shot -- it runs in first-authorization
+  # mode and its bench-vm.txt becomes the baseline every later release is
+  # measured against. A pre-release would silently consume that slot and
+  # pin the baseline to an rc. `released` covers a stable release going
+  # public and a pre-release being promoted to one, which is exactly when a
+  # baseline should be captured.
+  #
+  # A workflow_dispatch run is still useful, but only for the untimed and
+  # benchmark legs. It carries no release identity, so the baseline lookup
+  # and the asset upload are both skipped -- meaning gh auth, tag_name
+  # interpolation, and the asset round-trip cannot be rehearsed by dispatch
+  # at all. Those three paths run for real the first time or not at all.
   release:
-    types: [published]
+    types: [released]
 
 # contents: write lets the passing gate store its bench-vm.txt as an asset on
 # the release it authorized, and read the previous release's asset back as the

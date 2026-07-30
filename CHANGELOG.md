@@ -9,15 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The release consumer gate (ADR 0008) runs on published releases, not on
-  manual dispatch alone. It records post-hoc evidence against a published
-  release and stores that run's `bench-vm.txt` as the next release's
-  non-regression baseline; it cannot block a release. Editing a gold-set
+- The release consumer gate (ADR 0008) runs when a stable release goes public,
+  not on manual dispatch alone. It records post-hoc evidence against that
+  release and stores the run's `bench-vm.txt` as the next release's
+  non-regression baseline; it cannot block a release. Pre-releases do not
+  trigger it, so an rc cannot become the baseline. Editing a gold-set
   fixture's source now counts as invalidating that fixture's stored baseline,
   alongside the existing `GOMAXPROCS`/benchtime rule.
-- ADR 0013's account of what authorized the bytecode-VM default is corrected:
-  the local gold-set correctness run plus ad hoc benchstat evidence, not a
-  hosted gate run, which had never happened.
+- ADR 0013's account of what authorized the bytecode-VM default is corrected.
+  The evidence was the local gold-set correctness run plus ad hoc benchstat
+  measurements; the hosted gate had never run.
 - `Engine.Call`, `Fn.Call`, and `PinnedFn.Call` on a bytecode engine with no
   engine meter, no callbacks, and a plain context take a lean boundary: a
   per-engine claimable VM (pool fallback under contention), a lock-free
