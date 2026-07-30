@@ -37,7 +37,7 @@
 
 ## 1. First real run
 
-- [ ] 1.1 Trigger `.github/workflows/release.yml` against **`v0.11.0`, the
+- [x] 1.1 Trigger `.github/workflows/release.yml` against **`v0.11.0`, the
       next tag cut from `master`** — naming the run this verdict is deferred
       to, per this change's own spec delta. Confirm: gold set green both
       modes, race suite green, paired benchmark run completes, `cmd/perfgate`
@@ -242,15 +242,25 @@
       `archive/2026-07-20-engine-bytecode-default/tasks.md` task 4.3. Do not
       reopen whether the default flip was justified; only correct which
       artifact produced the evidence.
-- [ ] 3.3 CHANGELOG `[Unreleased]`: note the gate's first real activation and
+- [x] 3.3 CHANGELOG `[Unreleased]`: note the gate's first real activation and
       the ADR 0013 correction.
 
-      Split, because half of it is not true yet. **Landed:** the trigger
-      change (the gate now runs on published releases), the fixture-source
-      invalidation rule, and the ADR 0013 correction. **Withheld until 1.1
-      completes:** any line claiming the gate has actually activated.
-      Announcing an activation that has not happened is the same class of
-      error as 3.2's framing — a claim of a verdict no run produced.
+      Split, because half of it was not true yet when the first pass ran.
+      **Landed then:** the trigger change (the gate now runs on published
+      releases), the fixture-source invalidation rule, and the ADR 0013
+      correction — written under `[Unreleased]` and since cut into
+      `[0.11.0]`. **Withheld until 1.1 completed:** any line claiming the gate
+      had actually activated. Announcing an activation that has not happened
+      is the same class of error as 3.2's framing — a claim of a verdict no
+      run produced.
+
+      **Second half landed 2026-07-30, once 1.1 ran.** The new `[Unreleased]`
+      entry records the first activation *with its outcome*: correctness legs
+      green, performance verdict failed on tier misclassification in the
+      gate's own corpus rather than on engine behavior, and no `bench-vm.txt`
+      asset stored — so the next release still runs as a first authorization.
+      An activation line without the outcome would repeat 3.2's error in the
+      opposite direction.
 
 ## 4. Verify
 
@@ -268,7 +278,14 @@
       but would understate any real evaluator regression measured against it
       until this re-run replaces it.
 
-      Blocked by construction: both changes stand at 0/12 tasks.
+      **Its stated blocker is cleared; a different one replaces it.** Both
+      changes archived 2026-07-30 at 12/12 (`archive/2026-07-30-reader-
+      allocation-floor`, `archive/2026-07-30-reader-state-reuse`), so the
+      reader axis has landed and every `Goldset/*` `B/op` figure has already
+      moved. What blocks 5.1 now is 1.2: there is no stored baseline to
+      re-store *over*, because the first armed run's verdict failed. This
+      task therefore collapses into 1.2 until the tiers are fixed — the same
+      release cut settles both, and the re-baseline is not a second run.
 
 ---
 
@@ -313,3 +330,46 @@ change whose measurement tasks never ran is the precise defect it was written
 to indict — task 2.2 exists only because
 `archive/2026-07-27-vm-batched-ledger-charging` was archived with its own 1.1,
 3.3, and 3.4 unchecked.
+
+---
+
+## Status at the end of the second apply pass
+
+The hosted gate ran between the two passes (run `30561584997`, event
+`release`, tag `v0.11.0`, conclusion `failure`), which settled two tasks the
+first pass could not reach and invalidated one of its stated blockers.
+
+Complete: 0.1, **1.1**, 2.4, 3.1, 3.2, **3.3**, 4.1. 1.1's four confirmations
+all hold and are recorded above; the task asked for a verdict to be produced,
+not for it to pass. 3.3's withheld half is written now that there is an
+activation to report, and it carries the outcome rather than the activation
+alone.
+
+Open, and why:
+
+| Task | Blocker |
+| --- | --- |
+| 1.2, 4.2, 5.1 | The verdict failed, so `release.yml`'s store step was skipped by its implicit `success()` guard and `v0.11.0` carries no assets. Needs `tiers.json` fixed (`gate-corpus-cl-and-recursion`), then a release cut whose gate passes; the workflow stores the baseline itself. Do not hand-upload. 5.1's re-baseline is that same first store, not a second one — the reader axis landed before any baseline existed. |
+| 2.1, 2.2 | Unchanged: need a two-ref paired bench on the hosted runner (`527f03c^` vs `527f03c`; `631b2ee^` vs `631b2ee`). No such run is scoped anywhere, in this change or another. |
+| 2.3 | Unchanged: needs a Call-boundary cell in the gate corpus — `gate-corpus-cl-and-recursion`'s scope. |
+
+One follow-up moves from future to present tense:
+
+- **The inconclusive rerun has already misfired once.** Defect 1 under task
+  1.1 — the rerun gated on `exit_code == '2'`, which exit 1 masks — is not a
+  latent hazard. It fired on run `30561584997`, skipping the rerun despite 12
+  inconclusive cells, so the gate's burden-of-proof rule went unapplied on
+  its own first execution. Not fixed here: 2.3 already declined widening
+  `release.yml`'s machinery mid-activation, and repairing the pass/fail
+  mechanism while documenting that mechanism's first run is the same drift.
+
+**Still not archived**, and the checkboxes are the weaker reason. The spec
+delta's added requirement reads "SHALL execute against at least one real
+release **and publish a stored non-regression baseline**" — the run happened,
+the publish did not, so the requirement this change adds is half-unmet by its
+own text. 2.1, 2.2, and 2.3 remain unrun on top of that, and none of them is
+settleable inside this change's scope — 2.3 belongs to
+`gate-corpus-cl-and-recursion`, and 2.1/2.2 belong to a hosted two-ref run
+nothing currently schedules. Closing this change honestly requires either
+running them or deliberately re-scoping them elsewhere; it does not require
+another apply pass.
