@@ -48,6 +48,70 @@ func buildFnCallSource(n int) string {
 	return fmt.Sprintf("(addN %s)", args.String())
 }
 
+// buildFlatListSource and buildFlatVectorSource return a single list/vector
+// literal of n integers — a wide-collection shape the small literal
+// benchmarks below don't cover.
+func buildFlatListSource(n int) string {
+	var items strings.Builder
+	items.WriteByte('(')
+	for i := range n {
+		if i > 0 {
+			items.WriteByte(' ')
+		}
+		fmt.Fprintf(&items, "%d", i)
+	}
+	items.WriteByte(')')
+	return items.String()
+}
+
+func buildFlatVectorSource(n int) string {
+	var items strings.Builder
+	items.WriteByte('[')
+	for i := range n {
+		if i > 0 {
+			items.WriteByte(' ')
+		}
+		fmt.Fprintf(&items, "%d", i)
+	}
+	items.WriteByte(']')
+	return items.String()
+}
+
+// buildEscapeHeavySource returns a list of n string literals, each carrying
+// multiple escape sequences — the shape where a naive Tokenize pre-count
+// pass would decode every string twice instead of just scanning past it.
+func buildEscapeHeavySource(n int) string {
+	var items strings.Builder
+	items.WriteByte('(')
+	for i := range n {
+		if i > 0 {
+			items.WriteByte(' ')
+		}
+		items.WriteString(`"line one\nline two\ttab"`)
+	}
+	items.WriteByte(')')
+	return items.String()
+}
+
+// buildCommentDominatedSource returns n comment lines followed by one real
+// form — nearly every scanned byte is comment, not token, so both Tokenize
+// passes redo the same comment-skipping work for it.
+func buildCommentDominatedSource(n int) string {
+	var b strings.Builder
+	for range n {
+		b.WriteString("; a representative comment line, long enough to matter\n")
+	}
+	b.WriteString("(+ 1 2)")
+	return b.String()
+}
+
+// buildLargeStringLiteralSource returns a single n-byte escape-free string
+// literal — readString's zero-copy fast path engages on both Tokenize
+// passes, so the count pass still walks all n bytes for no allocation gain.
+func buildLargeStringLiteralSource(n int) string {
+	return `"` + strings.Repeat("x", n) + `"`
+}
+
 func BenchmarkEval_SimpleArith(b *testing.B) {
 	b.ReportAllocs()
 	env := newCoreEnv()
@@ -200,12 +264,11 @@ func BenchmarkRead_SmallVectorLiteral(b *testing.B) {
 	}
 }
 
-// BenchmarkRead_Representative reads a small multi-form program mixing
-// defn, let, and list/vector literals — a realistic reader workload rather
-// than one isolated expression.
-func BenchmarkRead_Representative(b *testing.B) {
-	b.ReportAllocs()
-	src := `
+// representativeSource is the shared program behind BenchmarkRead_Representative,
+// BenchmarkTokenize_Representative, TestReaderStats_Bench, and
+// TestTokenize_CountMatchesLen's Read_Representative case — one definition so
+// editing it can't silently desync the stats pin from what it pins.
+const representativeSource = `
 (defn fib [n]
   (if (< n 2)
     n
@@ -214,6 +277,128 @@ func BenchmarkRead_Representative(b *testing.B) {
 (def items (list 1 2 3 4 5))
 (let [x 1 y 2] (+ x y))
 `
+
+// BenchmarkRead_Representative reads a small multi-form program mixing
+// defn, let, and list/vector literals — a realistic reader workload rather
+// than one isolated expression.
+func BenchmarkRead_Representative(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		Read(representativeSource)
+	}
+}
+
+// BenchmarkRead_WithFunctionRef and BenchmarkRead_WithReaderVector cover the
+// non-default reader flags — every BenchmarkRead_* above runs under
+// defaultReaderFlags only.
+func BenchmarkRead_WithFunctionRef(b *testing.B) {
+	b.ReportAllocs()
+	src := "#'my-fn"
+	d := FullDialect().WithFunctionRef()
+	b.ResetTimer()
+	for range b.N {
+		d.Read(src)
+	}
+}
+
+func BenchmarkRead_WithReaderVector(b *testing.B) {
+	b.ReportAllocs()
+	src := "#(1 2 3)"
+	d := FullDialect().WithReaderVector()
+	b.ResetTimer()
+	for range b.N {
+		d.Read(src)
+	}
+}
+
+// BenchmarkRead_BracketLiteralsRejected measures the WithoutBracketLiterals
+// branch itself: with the flag off, a bracket character has no fallback
+// meaning — it is always a hard parse error — so an error return is the only
+// way this branch is ever reached.
+func BenchmarkRead_BracketLiteralsRejected(b *testing.B) {
+	b.ReportAllocs()
+	src := "(f [1 2])"
+	d := FullDialect().WithoutBracketLiterals()
+	b.ResetTimer()
+	for range b.N {
+		d.Read(src)
+	}
+}
+
+// BenchmarkRead_DeepNesting covers parser recursion depth, well under
+// defaultReaderDepth so it measures the parse cost, not the depth-limit error.
+func BenchmarkRead_DeepNesting(b *testing.B) {
+	b.ReportAllocs()
+	src := strings.Repeat("(", 200) + "1" + strings.Repeat(")", 200)
+	b.ResetTimer()
+	for range b.N {
+		Read(src)
+	}
+}
+
+// BenchmarkRead_LargeFlatList and BenchmarkRead_LargeFlatVector cover a wide
+// collection literal, in contrast to BenchmarkRead_Small{List,Vector}Literal's
+// 3-element case.
+func BenchmarkRead_LargeFlatList(b *testing.B) {
+	b.ReportAllocs()
+	src := buildFlatListSource(1000)
+	b.ResetTimer()
+	for range b.N {
+		Read(src)
+	}
+}
+
+func BenchmarkRead_LargeFlatVector(b *testing.B) {
+	b.ReportAllocs()
+	src := buildFlatVectorSource(1000)
+	b.ResetTimer()
+	for range b.N {
+		Read(src)
+	}
+}
+
+// BenchmarkTokenize_Representative isolates Tokenize from Parse; every
+// benchmark above measures Read, which runs both.
+func BenchmarkTokenize_Representative(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		r := NewReader(representativeSource)
+		r.Tokenize()
+	}
+}
+
+// BenchmarkRead_EscapeHeavyStrings covers a source dense with escaped string
+// literals — the Tokenize pre-count pass must scan past each escape without
+// decoding it a second time.
+func BenchmarkRead_EscapeHeavyStrings(b *testing.B) {
+	b.ReportAllocs()
+	src := buildEscapeHeavySource(40)
+	b.ResetTimer()
+	for range b.N {
+		Read(src)
+	}
+}
+
+// BenchmarkRead_CommentDominated and BenchmarkRead_LargeStringLiteral cover
+// two shapes where the two-pass count/emit scan doubles CPU work for near-
+// zero allocation benefit: a source that is nearly all comment, and one
+// large escape-free string literal. Not a regression to fix — the trade-off
+// the two-pass design makes, put where a benchmark can see it instead of
+// staying invisible to the corpus like the escape-decode double-buffer did.
+func BenchmarkRead_CommentDominated(b *testing.B) {
+	b.ReportAllocs()
+	src := buildCommentDominatedSource(200)
+	b.ResetTimer()
+	for range b.N {
+		Read(src)
+	}
+}
+
+func BenchmarkRead_LargeStringLiteral(b *testing.B) {
+	b.ReportAllocs()
+	src := buildLargeStringLiteralSource(100_000)
 	b.ResetTimer()
 	for range b.N {
 		Read(src)

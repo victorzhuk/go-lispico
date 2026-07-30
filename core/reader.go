@@ -13,7 +13,7 @@ type ReaderStats struct {
 	Bytes int64
 }
 
-type tokenType int
+type tokenType uint8
 
 const (
 	tokenLParen      tokenType = iota // (
@@ -40,8 +40,8 @@ const (
 type token struct {
 	typ  tokenType
 	val  string
-	line int
-	col  int
+	line int32
+	col  int32
 }
 
 // readerFlags gates the reader syntax a Dialect turns on or off. Its zero value
@@ -65,6 +65,10 @@ type Reader struct {
 	line  int
 	col   int
 	flags readerFlags
+	// countOnly is set while countTokens scans for the exact token count.
+	// It tells readString's escape path to skip materializing a decoded
+	// value — the counting pass only needs to know where the string ends.
+	countOnly bool
 }
 
 func NewReader(input string) *Reader {
@@ -114,96 +118,174 @@ func (r *Reader) skipWhitespace() {
 	}
 }
 
+// Tokenize scans the whole input twice: once through countTokens to size the
+// result exactly, once for real. Both passes drive the same nextToken, so the
+// count can never drift from what the second pass actually emits.
 func (r *Reader) Tokenize() ([]token, error) {
-	var tokens []token
+	n, err := r.countTokens()
+	if err != nil {
+		return nil, err
+	}
 
+	tokens := make([]token, 0, n)
+	for {
+		tok, err := r.nextToken()
+		if err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, tok)
+		if tok.typ == tokenEOF {
+			return tokens, nil
+		}
+	}
+}
+
+// countTokens runs nextToken to completion to get the exact token count,
+// including the terminal EOF token, then rewinds r to where it started.
+func (r *Reader) countTokens() (int, error) {
+	pos, line, col := r.pos, r.line, r.col
+	r.countOnly = true
+	defer func() {
+		r.pos, r.line, r.col = pos, line, col
+		r.countOnly = false
+	}()
+
+	n := 0
+	for {
+		tok, err := r.nextToken()
+		if err != nil {
+			return 0, err
+		}
+		n++
+		if tok.typ == tokenEOF {
+			return n, nil
+		}
+	}
+}
+
+// nextToken scans and returns the next token, skipping whitespace and
+// comments first. At end of input it returns a tokenEOF token rather than an
+// error.
+func (r *Reader) nextToken() (token, error) {
 	for {
 		r.skipWhitespace()
 
 		if r.pos >= len(r.input) {
-			tokens = append(tokens, token{typ: tokenEOF, line: r.line, col: r.col})
-			break
+			return token{typ: tokenEOF, line: int32(r.line), col: int32(r.col)}, nil
 		}
 
 		ch := r.peek()
-		line, col := r.line, r.col
+		if ch == ';' {
+			r.readComment()
+			continue
+		}
+
+		line, col := int32(r.line), int32(r.col)
 
 		switch ch {
 		case '(':
 			r.next()
-			tokens = append(tokens, token{typ: tokenLParen, line: line, col: col})
+			return token{typ: tokenLParen, line: line, col: col}, nil
 		case ')':
 			r.next()
-			tokens = append(tokens, token{typ: tokenRParen, line: line, col: col})
+			return token{typ: tokenRParen, line: line, col: col}, nil
 		case '[', ']', '{', '}':
 			if !r.flags.bracketLiterals {
-				return nil, NewReadError(fmt.Sprintf("unexpected character: %c", ch), line, col)
+				return token{}, NewReadError(fmt.Sprintf("unexpected character: %c", ch), int(line), int(col))
 			}
 			r.next()
-			tokens = append(tokens, token{typ: bracketToken(ch), line: line, col: col})
+			return token{typ: bracketToken(ch), line: line, col: col}, nil
 		case '\'':
 			r.next()
-			tokens = append(tokens, token{typ: tokenQuote, line: line, col: col})
+			return token{typ: tokenQuote, line: line, col: col}, nil
 		case '`':
 			r.next()
-			tokens = append(tokens, token{typ: tokenBacktick, line: line, col: col})
+			return token{typ: tokenBacktick, line: line, col: col}, nil
 		case '~':
 			r.next()
 			if r.peek() == '@' {
 				r.next()
-				tokens = append(tokens, token{typ: tokenTildeAt, line: line, col: col})
-			} else {
-				tokens = append(tokens, token{typ: tokenTilde, line: line, col: col})
+				return token{typ: tokenTildeAt, line: line, col: col}, nil
 			}
+			return token{typ: tokenTilde, line: line, col: col}, nil
 		case '@':
 			r.next()
-			tokens = append(tokens, token{typ: tokenAt, line: line, col: col})
+			return token{typ: tokenAt, line: line, col: col}, nil
 		case '#':
 			r.next()
 			switch {
 			case r.flags.functionRef && r.peek() == '\'':
 				r.next()
-				tokens = append(tokens, token{typ: tokenFunctionRef, line: line, col: col})
+				return token{typ: tokenFunctionRef, line: line, col: col}, nil
 			case r.flags.readerVector && r.peek() == '(':
 				r.next()
-				tokens = append(tokens, token{typ: tokenHashParen, line: line, col: col})
+				return token{typ: tokenHashParen, line: line, col: col}, nil
 			default:
-				tokens = append(tokens, token{typ: tokenHash, line: line, col: col})
+				return token{typ: tokenHash, line: line, col: col}, nil
 			}
-		case ';':
-			r.readComment()
 		case '"':
 			tok, err := r.readString()
 			if err != nil {
-				return nil, err
+				return token{}, err
 			}
 			tok.line, tok.col = line, col
-			tokens = append(tokens, tok)
+			return tok, nil
 		case ':':
 			tok := r.readKeyword()
 			tok.line, tok.col = line, col
-			tokens = append(tokens, tok)
+			return tok, nil
 		default:
 			if isDigit(ch) || (ch == '-' && isDigit(r.peekNext())) {
 				tok := r.readNumber()
 				tok.line, tok.col = line, col
-				tokens = append(tokens, tok)
-			} else if isSymbolStart(ch) {
+				return tok, nil
+			}
+			if isSymbolStart(ch) {
 				tok := r.readSymbol()
 				tok.line, tok.col = line, col
-				tokens = append(tokens, tok)
-			} else {
-				return nil, NewReadError(fmt.Sprintf("unexpected character: %c", ch), r.line, r.col)
+				return tok, nil
 			}
+			return token{}, NewReadError(fmt.Sprintf("unexpected character: %c", ch), r.line, r.col)
 		}
 	}
-
-	return tokens, nil
 }
 
 func (r *Reader) readString() (token, error) {
 	r.next() // consume opening "
+	start := r.pos
+
+	for {
+		ch := r.next()
+		switch ch {
+		case 0:
+			return token{}, NewReadError("unterminated string", r.line, r.col)
+		case '"':
+			// Zero-copy: no escape in this literal, so the token aliases
+			// r.input directly and is retained indefinitely — the same
+			// aliasing contract readSymbol/readNumber/readKeyword already
+			// carry into stored values (e.g. Lambda.Name).
+			return token{typ: tokenString, val: r.input[start : r.pos-1]}, nil
+		case '\\':
+			return r.readStringEscaped(r.input[start : r.pos-1])
+		}
+	}
+}
+
+// readStringEscaped decodes the remainder of a string literal once an escape
+// is found, falling back to a strings.Builder copy. prefix is the unescaped
+// run already scanned before the backslash. On the countTokens pass
+// (r.countOnly), it still walks the exact same escape/quote boundary this
+// scans for a real read, just without writing into buf — the count needs
+// only where the string ends, not its decoded value.
+func (r *Reader) readStringEscaped(prefix string) (token, error) {
 	var buf strings.Builder
+	if !r.countOnly {
+		buf.WriteString(prefix)
+	}
+
+	if err := r.appendEscape(&buf); err != nil {
+		return token{}, err
+	}
 
 	for {
 		ch := r.next()
@@ -214,27 +296,42 @@ func (r *Reader) readString() (token, error) {
 			break
 		}
 		if ch == '\\' {
-			ch = r.next()
-			switch ch {
-			case 'n':
-				buf.WriteByte('\n')
-			case 't':
-				buf.WriteByte('\t')
-			case '"':
-				buf.WriteByte('"')
-			case '\\':
-				buf.WriteByte('\\')
-			case 'r':
-				buf.WriteByte('\r')
-			default:
-				return token{}, NewReadError(fmt.Sprintf("invalid escape: \\%c", ch), r.line, r.col)
+			if err := r.appendEscape(&buf); err != nil {
+				return token{}, err
 			}
-		} else {
+			continue
+		}
+		if !r.countOnly {
 			buf.WriteByte(ch)
 		}
 	}
 
 	return token{typ: tokenString, val: buf.String()}, nil
+}
+
+// appendEscape consumes the character following a backslash, validates it,
+// and writes its decoded byte to buf unless r.countOnly is set.
+func (r *Reader) appendEscape(buf *strings.Builder) error {
+	ch := r.next()
+	var decoded byte
+	switch ch {
+	case 'n':
+		decoded = '\n'
+	case 't':
+		decoded = '\t'
+	case '"':
+		decoded = '"'
+	case '\\':
+		decoded = '\\'
+	case 'r':
+		decoded = '\r'
+	default:
+		return NewReadError(fmt.Sprintf("invalid escape: \\%c", ch), r.line, r.col)
+	}
+	if !r.countOnly {
+		buf.WriteByte(decoded)
+	}
+	return nil
 }
 
 func (r *Reader) readNumber() token {
@@ -334,7 +431,7 @@ func (p *Parser) expect(tt tokenType) (token, error) {
 	if tok.typ != tt {
 		return tok, NewReadError(
 			fmt.Sprintf("expected %v, got %v", tt, tok.typ),
-			tok.line, tok.col,
+			int(tok.line), int(tok.col),
 		)
 	}
 	return tok, nil
@@ -355,8 +452,8 @@ func (p *Parser) parseForm() (Value, error) {
 		return nil, &LispicoError{
 			Code:    CodeResourceLimit,
 			Message: fmt.Sprintf("reader nesting depth limit %d exceeded", p.maxDepth),
-			Line:    tok.line,
-			Col:     tok.col,
+			Line:    int(tok.line),
+			Col:     int(tok.col),
 		}
 	}
 
@@ -364,7 +461,7 @@ func (p *Parser) parseForm() (Value, error) {
 
 	switch tok.typ {
 	case tokenEOF:
-		return nil, NewReadError("unexpected EOF", tok.line, tok.col)
+		return nil, NewReadError("unexpected EOF", int(tok.line), int(tok.col))
 	case tokenLParen:
 		return p.parseList()
 	case tokenLBracket:
@@ -390,7 +487,7 @@ func (p *Parser) parseForm() (Value, error) {
 	case tokenNumber:
 		p.next()
 		p.addNode(0)
-		return parseNumber(tok.val, tok.line, tok.col)
+		return parseNumber(tok.val, int(tok.line), int(tok.col))
 	case tokenSymbol:
 		p.next()
 		switch tok.val {
@@ -413,7 +510,7 @@ func (p *Parser) parseForm() (Value, error) {
 	default:
 		return nil, NewReadError(
 			fmt.Sprintf("unexpected token type %v", tok.typ),
-			tok.line, tok.col,
+			int(tok.line), int(tok.col),
 		)
 	}
 }

@@ -1,7 +1,10 @@
 package core
 
 import (
+	"errors"
+	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestTokenize_Atoms(t *testing.T) {
@@ -413,5 +416,108 @@ func TestTokenize_LineCol(t *testing.T) {
 	}
 	if tokens[1].line != 2 {
 		t.Errorf("second token line = %d, want 2", tokens[1].line)
+	}
+}
+
+// TestTokenize_ColBeyond65535 proves token.col carries columns past a
+// uint16's range: the layout choice (int32, not uint16) depends on it, since
+// reader_limits_test.go's depth stress input alone produces 100,001 columns
+// on one line.
+func TestTokenize_ColBeyond65535(t *testing.T) {
+	t.Parallel()
+	src := strings.Repeat(" ", 70000) + "foo"
+	r := NewReader(src)
+	tokens, err := r.Tokenize()
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if tokens[0].col != 70001 {
+		t.Errorf("col = %d, want 70001", tokens[0].col)
+	}
+}
+
+func TestToken_Sizeof(t *testing.T) {
+	t.Parallel()
+	if unsafe.Sizeof(int(0)) != 8 {
+		t.Skip("token layout is 64-bit specific; a 32-bit string header packs it differently")
+	}
+	if got := unsafe.Sizeof(token{}); got != 32 {
+		t.Errorf("unsafe.Sizeof(token{}) = %d, want 32", got)
+	}
+}
+
+// TestReadString_NoEscapeSharesBackingArray proves readString's fast path
+// engaged: an escape-free literal's String.V aliases the source string
+// instead of a copy, regression-locking the D2 aliasing contract.
+func TestReadString_NoEscapeSharesBackingArray(t *testing.T) {
+	t.Parallel()
+	src := `"hello"`
+	forms, err := Read(src)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	s, ok := forms[0].(String)
+	if !ok {
+		t.Fatalf("expected String, got %T", forms[0])
+	}
+	wantData := unsafe.StringData(src[1:6])
+	gotData := unsafe.StringData(s.V)
+	if gotData != wantData {
+		t.Error("String.V does not share backing memory with the source; fast path did not engage")
+	}
+}
+
+// TestReadString_WithEscapeDecodesCorrectly proves the copy path still
+// decodes escapes once one is present in the literal.
+func TestReadString_WithEscapeDecodesCorrectly(t *testing.T) {
+	t.Parallel()
+	forms, err := Read(`"line one\nline two"`)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	s, ok := forms[0].(String)
+	if !ok {
+		t.Fatalf("expected String, got %T", forms[0])
+	}
+	if want := "line one\nline two"; s.V != want {
+		t.Errorf("String.V = %q, want %q", s.V, want)
+	}
+}
+
+// TestReadString_EmbeddedNewlineTracksPosition is the regression lock for the
+// fast path's line/col bookkeeping: a raw newline inside a string literal
+// (no escape, so the zero-copy path engages) must still advance r.line the
+// same way the byte-by-byte builder path did, so a later error reports the
+// right position.
+func TestReadString_EmbeddedNewlineTracksPosition(t *testing.T) {
+	t.Parallel()
+	_, err := ReadOne("\"a\nb\"\n1.2.3")
+	if err == nil {
+		t.Fatal("expected error for invalid number")
+	}
+	var lispicoErr *LispicoError
+	if !errors.As(err, &lispicoErr) {
+		t.Fatalf("expected *LispicoError, got %T", err)
+	}
+	if lispicoErr.Line != 3 {
+		t.Errorf("expected line 3, got %d", lispicoErr.Line)
+	}
+}
+
+// TestReader_CountTokensZeroAllocsOnEscapedStrings locks the counting pass's
+// core claim: scanning past an escaped string to find its end must not
+// allocate, unlike the real pass's readStringEscaped which builds the
+// decoded value. This is the invariant whose breakage cost a 53% allocs/op
+// regression that no benchmark caught.
+func TestReader_CountTokensZeroAllocsOnEscapedStrings(t *testing.T) {
+	src := buildEscapeHeavySource(40)
+	r := NewReader(src)
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := r.countTokens(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("countTokens on escape-heavy input allocated %.1f times per run, want 0", allocs)
 	}
 }
