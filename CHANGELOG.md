@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Two v0.10.0 metering changes shipped without release-note coverage. The
-  three entries that follow document what they already do; nothing about
+  three entries here document what they already do; nothing about
   the metering ledger changes now. Reduction counts are compilation
   dependent: the VM charges one reduction per decoded instruction, so a
   compiler change that alters how many instructions a form compiles to
