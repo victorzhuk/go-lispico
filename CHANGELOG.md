@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The release consumer gate ran for the first time in the project's history,
+  against the published `v0.11.0` release. Its correctness legs passed — the
+  gold set under both execution modes and the race suite — and the paired
+  Evaluator/VM benchmark completed. The performance verdict failed, on tier
+  misclassification in the gate's own corpus rather than on engine behavior:
+  five cells committed as mode-insensitive turned out to be the corpus's most
+  engine-sensitive, and three committed as engine-sensitive barely move.
+  Because the verdict failed, no `bench-vm.txt` asset was stored on the
+  release, so the next release still runs as a first authorization rather
+  than a non-regression comparison against a stored baseline.
 - Reading source reuses its tokenizer and parser working state across calls
   instead of building it fresh each time, and collection literals are copied
   once into an exactly sized backing slice rather than grown by repeated
