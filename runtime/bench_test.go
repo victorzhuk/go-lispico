@@ -385,6 +385,14 @@ func BenchmarkEngine_CallBytecodeCanonical(b *testing.B) {
 // default dialect (Common Lisp, Lisp-2) with real stdlib canonical
 // arithmetic — every other fib/Call benchmark in this repo runs under
 // clojure.Dialect() (Lisp-1), which runtime.New() does not default to.
+//
+// It is not a gate cell and must not be cited as one: the release workflow
+// benches ./internal/goldset/ only, and that corpus is Clojure-dialect and
+// non-recursive by decision (consumer-release-gate, "Gate corpus dialect and
+// recursion coverage"). What this benchmark is for is per-change evidence on
+// the Lisp-2 path — it is the recorded acceptance gate for the func-cell site
+// cache (archive/2026-07-29-vm-func-site-cache, −30.43% p=0.000), which is
+// why it stays.
 func BenchmarkEngine_FibonacciCL(b *testing.B) {
 	eng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
 	if err != nil {
