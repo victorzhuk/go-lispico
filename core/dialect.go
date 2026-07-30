@@ -406,21 +406,10 @@ func (d Dialect) ReadWithMaxDepth(src string, maxDepth int) ([]Value, error) {
 // ReadWithMaxDepthStats tokenizes and parses src under the Dialect's reader
 // flags, returning the parsed forms and deterministic allocation-metering stats.
 func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, ReaderStats, error) {
-	r := NewReaderWithFlags(src, d.readerFlags())
-	tokens, err := r.Tokenize()
-	if err != nil {
-		return nil, ReaderStats{}, err
-	}
-	p := NewParserWithDepth(tokens, maxDepth)
-	var forms []Value
-	for p.peek().typ != tokenEOF {
-		form, err := p.Parse()
-		if err != nil {
-			return nil, ReaderStats{}, err
-		}
-		forms = append(forms, form)
-	}
-	return forms, p.Stats(), nil
+	s := readerScratchPool.Get().(*readerScratch)
+	s.Reset()
+	defer readerScratchPool.Put(s)
+	return s.read(src, d.readerFlags(), maxDepth)
 }
 
 // IsIdentity reports whether d is the identity dialect — the full kernel base

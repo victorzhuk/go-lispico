@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const defaultReaderDepth = 1024
@@ -122,16 +123,29 @@ func (r *Reader) skipWhitespace() {
 // result exactly, once for real. Both passes drive the same nextToken, so the
 // count can never drift from what the second pass actually emits.
 func (r *Reader) Tokenize() ([]token, error) {
+	return r.tokenizeInto(nil)
+}
+
+// tokenizeInto is Tokenize's real body, sized off buf instead of always
+// making a fresh slice: reused capacity from a pooled scratch buffer means
+// only a bigger input ever allocates. It always returns the buffer it ended
+// up with alongside any error — never a bare nil — so a caller feeding it a
+// pool slot's retained buffer never has that capacity discarded just because
+// this particular read failed.
+func (r *Reader) tokenizeInto(buf []token) ([]token, error) {
 	n, err := r.countTokens()
 	if err != nil {
-		return nil, err
+		return buf, err
 	}
 
-	tokens := make([]token, 0, n)
+	tokens := buf[:0]
+	if cap(tokens) < n {
+		tokens = make([]token, 0, n)
+	}
 	for {
 		tok, err := r.nextToken()
 		if err != nil {
-			return nil, err
+			return tokens, err
 		}
 		tokens = append(tokens, tok)
 		if tok.typ == tokenEOF {
@@ -391,6 +405,14 @@ type Parser struct {
 	maxDepth int
 	depth    int
 	stats    ReaderStats
+	// nodes is a mark/truncate scratch stack for parseList/parseVector/
+	// parseReaderVector: each holds its own mark (len(nodes) on entry),
+	// appends children as it parses them, then copies out its own span and
+	// truncates back to its mark before returning — safe under recursion
+	// since every nested call fully unwinds before its caller's next append.
+	// nil for a Parser built directly via NewParser/NewParserWithDepth, which
+	// grows it from scratch like any other append-based slice.
+	nodes []Value
 }
 
 func NewParser(tokens []token) *Parser {
@@ -402,6 +424,66 @@ func NewParserWithDepth(tokens []token, maxDepth int) *Parser {
 		maxDepth = defaultReaderDepth
 	}
 	return &Parser{tokens: tokens, maxDepth: maxDepth}
+}
+
+// readerScratch bundles a Reader, a Parser, and their token buffer as one
+// pooled unit for Dialect.ReadWithMaxDepthStats. The pool is shared across
+// every Dialect, so input/flags/maxDepth are per-call fields the checkout
+// site must assign itself — Reset only clears the bookkeeping Reset can
+// always get right regardless of which dialect or depth limit reads next.
+type readerScratch struct {
+	reader Reader
+	parser Parser
+	tokens []token
+}
+
+// Reset clears everything a subsequent Read must not observe, retaining
+// slice capacity. It does not touch reader.input, reader.flags,
+// parser.maxDepth, or parser.tokens — those are set at checkout, once the
+// caller knows which source, dialect, and depth limit the read is for.
+func (s *readerScratch) Reset() {
+	s.reader.pos = 0
+	s.reader.line = 1
+	s.reader.col = 1
+	s.reader.countOnly = false
+	s.parser.pos = 0
+	s.parser.depth = 0
+	s.parser.stats = ReaderStats{}
+	s.parser.nodes = s.parser.nodes[:0]
+	s.tokens = s.tokens[:0]
+}
+
+var readerScratchPool = sync.Pool{
+	New: func() any { return &readerScratch{} },
+}
+
+// read tokenizes and parses src into s, using flags and maxDepth for this one
+// call — the per-call fields Reset cannot assign. Callers must Reset s first;
+// read only ever assigns the checkout-time fields, never the bookkeeping ones.
+func (s *readerScratch) read(src string, flags readerFlags, maxDepth int) ([]Value, ReaderStats, error) {
+	if maxDepth <= 0 {
+		maxDepth = defaultReaderDepth
+	}
+	s.reader.input = src
+	s.reader.flags = flags
+	s.parser.maxDepth = maxDepth
+
+	tokens, err := s.reader.tokenizeInto(s.tokens)
+	s.tokens = tokens
+	if err != nil {
+		return nil, ReaderStats{}, err
+	}
+	s.parser.tokens = s.tokens
+
+	var forms []Value
+	for s.parser.peek().typ != tokenEOF {
+		form, err := s.parser.Parse()
+		if err != nil {
+			return nil, ReaderStats{}, err
+		}
+		forms = append(forms, form)
+	}
+	return forms, s.parser.Stats(), nil
 }
 
 func (p *Parser) Stats() ReaderStats { return p.stats }
@@ -516,21 +598,26 @@ func (p *Parser) parseForm() (Value, error) {
 }
 
 func (p *Parser) parseList() (Value, error) {
-	start := p.next() // consume (
-	_ = start
-	var items []Value
+	p.next() // consume (
+	mark := len(p.nodes)
 
 	for p.peek().typ != tokenRParen && p.peek().typ != tokenEOF {
 		item, err := p.parseForm()
 		if err != nil {
+			p.nodes = p.nodes[:mark]
 			return nil, err
 		}
-		items = append(items, item)
+		p.nodes = append(p.nodes, item)
 	}
 
 	if _, err := p.expect(tokenRParen); err != nil {
+		p.nodes = p.nodes[:mark]
 		return nil, err
 	}
+
+	items := make([]Value, len(p.nodes)-mark)
+	copy(items, p.nodes[mark:])
+	p.nodes = p.nodes[:mark]
 
 	p.addNode(0)
 	return NewList(items), nil
@@ -538,19 +625,25 @@ func (p *Parser) parseList() (Value, error) {
 
 func (p *Parser) parseVector() (Value, error) {
 	p.next() // consume [
-	var items []Value
+	mark := len(p.nodes)
 
 	for p.peek().typ != tokenRBracket && p.peek().typ != tokenEOF {
 		item, err := p.parseForm()
 		if err != nil {
+			p.nodes = p.nodes[:mark]
 			return nil, err
 		}
-		items = append(items, item)
+		p.nodes = append(p.nodes, item)
 	}
 
 	if _, err := p.expect(tokenRBracket); err != nil {
+		p.nodes = p.nodes[:mark]
 		return nil, err
 	}
+
+	items := make([]Value, len(p.nodes)-mark)
+	copy(items, p.nodes[mark:])
+	p.nodes = p.nodes[:mark]
 
 	p.addNode(0)
 	return NewVector(items), nil
@@ -602,19 +695,25 @@ func (p *Parser) parseFunctionRef() (Value, error) {
 
 func (p *Parser) parseReaderVector() (Value, error) {
 	p.next() // consume #(
-	var items []Value
+	mark := len(p.nodes)
 
 	for p.peek().typ != tokenRParen && p.peek().typ != tokenEOF {
 		item, err := p.parseForm()
 		if err != nil {
+			p.nodes = p.nodes[:mark]
 			return nil, err
 		}
-		items = append(items, item)
+		p.nodes = append(p.nodes, item)
 	}
 
 	if _, err := p.expect(tokenRParen); err != nil {
+		p.nodes = p.nodes[:mark]
 		return nil, err
 	}
+
+	items := make([]Value, len(p.nodes)-mark)
+	copy(items, p.nodes[mark:])
+	p.nodes = p.nodes[:mark]
 
 	p.addNode(0)
 	return NewVector(items), nil
