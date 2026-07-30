@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already was. Recursive Common Lisp workloads run roughly 30% faster;
   Clojure-dialect workloads are unaffected. Redefinition, deletion, and
   hot-reload remain immediately visible through a cached site.
+- Reading source allocates substantially less. The tokenizer sizes its token
+  slice exactly instead of growing it, the internal token shrank from 40 to
+  32 bytes, and a string literal with no escape sequence is no longer copied.
+  Parsing the gold-set corpus allocates about half the bytes it used to
+  (geomean −50%), and a small list literal drops from 720 bytes over 7
+  allocations to 304 over 4. Reader statistics, and therefore allocation-ledger
+  charging, are unchanged to the byte.
+- A string literal containing no escape sequence now shares storage with the
+  source text it was read from, rather than being copied. Symbols and keywords
+  have always done this, so an embedder holding parsed forms — a scope loaded
+  once and kept for the process lifetime, say — already kept its source text
+  reachable; string literals now behave the same way. Ledger accounting is
+  unaffected. Literals containing escapes are still decoded into fresh storage.
 
 ## [0.10.0] - 2026-07-28
 

@@ -113,6 +113,32 @@
   process, so machine state and toolchain cancel in the A/B. They are
   safe to run before the reference-runner number exists; section 2 is not.
 
+  ### Amendment (2026-07-30): no planned work can satisfy this gate
+
+  "What unblocks the gate" above names `release-gate-activation` as the
+  change that stands up the reference runner. It does not.
+  `.github/workflows/release.yml` benches `./internal/goldset/` only —
+  thirteen `.lisp` fixtures over `Goldset/*` and `GoldsetParse/*` — and
+  that change's task 2.4 decided the cross-engine bar is dropped: no
+  external harness is stood up and neither GopherLua nor goja enters
+  `go.mod`. No hosted run produces the GopherLua comparison this gate is
+  thresholded against, and no pending change scopes one. The same applies
+  to `design.md`'s closing Open Question, which repeats the claim.
+
+  Settling the gate therefore needs a re-scoping decision above this
+  change: either stand up a reference runner for the out-of-repo five-row
+  harness, or restate the gate against a bar this repo can measure.
+
+  This does not stand alone as the obstacle to section 2. Task 1.3
+  withheld authorization on measured evidence, and `design.md` Decision 4
+  falsified the proposal's stated mechanism, so a reference-runner number
+  would not by itself authorize section 2.
+
+  Toolchain note: `release.yml` pins Go 1.24 while the decision above
+  reads the gate on Go 1.26+. That is moot for the consumer gate, which
+  compares baseline and candidate on one toolchain; it would matter only
+  for the cross-engine prong.
+
 ## 1. Design decision (prototype-backed, before any production code)
 
 - [x] 1.1 Vertical-slice prototype A — register form: hand-compile the fib
