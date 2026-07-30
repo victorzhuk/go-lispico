@@ -190,6 +190,20 @@
       `Call` figure. Do not widen `release.yml`'s bench target here — that
       enlarges the baseline's surface mid-activation, which is exactly the
       kind of silent scope drift this change exists to catch.
+
+      **Amendment 2026-07-30: the assignment above no longer holds — the cell
+      is owned by nobody.** `gate-corpus-cl-and-recursion` closed without
+      adding any gate cell. Its own candidate fixtures were CL-dialect and
+      recursion, never `Call`, so the assignment was mistaken even before it
+      chose the narrow path; and it chose to state the corpus's scope
+      boundary rather than widen it, because committing a new cell's tier
+      needs a hosted baseline profile that the failed first run did not
+      produce. Its `consumer-release-gate` delta now states the exclusion
+      explicitly: no gate cell covers the `Call` boundary, and the
+      prohibition on quoting a `Call` figure as a settled bar stands. Do not
+      read that statement as ownership — settling this task still needs a
+      future change that either adds the cell or restates the bar against
+      something the repo measures.
 - [x] 2.4 Same run, cross-engine rows: GopherLua and goja are not in
       `go.mod` (testify, x/sync, x/term only), so no in-repo bench can
       produce the comparison this program's goal table is stated against.
@@ -351,7 +365,17 @@ Open, and why:
 | --- | --- |
 | 1.2, 4.2, 5.1 | The verdict failed, so `release.yml`'s store step was skipped by its implicit `success()` guard and `v0.11.0` carries no assets. Needs `tiers.json` fixed (`gate-corpus-cl-and-recursion`), then a release cut whose gate passes; the workflow stores the baseline itself. Do not hand-upload. 5.1's re-baseline is that same first store, not a second one — the reader axis landed before any baseline existed. |
 | 2.1, 2.2 | Unchanged: need a two-ref paired bench on the hosted runner (`527f03c^` vs `527f03c`; `631b2ee^` vs `631b2ee`). No such run is scoped anywhere, in this change or another. |
-| 2.3 | Unchanged: needs a Call-boundary cell in the gate corpus — `gate-corpus-cl-and-recursion`'s scope. |
+| 2.3 | Needs a Call-boundary cell in the gate corpus. **Reassigned to nobody** — `gate-corpus-cl-and-recursion` closed without adding one; see the amendment under 2.3. |
+
+A correction to this change's own Impact, which reads "`internal/perfgate/
+tiers.json` (no change expected — corpus reclassification is
+`gate-corpus-cl-and-recursion`'s scope)". That scoping is void. Neither change
+can reclassify: `tiers.json`'s own rule and ADR 0008 require a committed
+baseline profile, the only profile that exists is an expiring workflow
+artifact from a run whose verdict failed, and 1.2 forbids hand-promoting it.
+Fixing the eight misclassified cells needs a decision about what counts as a
+profile of record — a `workflow_dispatch` artifact, or an ADR 0008 amendment
+— before any change can own the edit.
 
 One follow-up moves from future to present tense:
 

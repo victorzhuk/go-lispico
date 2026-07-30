@@ -58,3 +58,34 @@ is why this change is sequenced after it.
   tiers.json rule.
 - Sequencing: after `release-gate-activation` (needs its baseline run to
   exist before a new cell's tier can be justified against one).
+
+## Amendment (2026-07-30, at apply time)
+
+Two premises above did not survive contact with the tree. The Why is left as
+written — it is the reasoning this change was accepted on — and corrected
+here.
+
+**The func-cell site-cache gap is closed.** The Why cites
+`core/vm/chunk.go:203`, `buildSites`, as "explicitly skip[ping] `Func:true`
+entries", making every CL dispatch re-walk `GetFuncCanonical`. That was true
+when this proposal was written and stopped being true a day later:
+`archive/2026-07-29-vm-func-site-cache` added `siteSym{constIdx, isFunc}`, and
+`buildSites` now indexes `OpGetFunc` and `OpFreezeNativeFunc` alongside
+`OpGetGlobal` and `OpFreezeNative`, keying each namespace separately so a
+Lisp-2 symbol's value and function cells never share a site. Its acceptance
+gate was `BenchmarkEngine_FibonacciCL` itself, cleared at −30.43% (p=0.000).
+Task 2.4, which exists to measure that gap's magnitude on a new CL cell, is
+therefore moot: the specific un-gated cost this change cites as the reason
+widening matters beyond housekeeping no longer exists.
+
+**The sequencing premise is circular, not merely unmet.** "After
+`release-gate-activation`" assumed that change would produce a stored
+baseline. It ran the gate and the verdict failed on tier misclassification, so
+`release.yml`'s store step was skipped and `v0.11.0` carries no asset. The
+loop: the gate needs correct tiers to pass, passing is what stores a baseline
+asset, and a stored baseline is what ADR 0008 accepts as the committed profile
+that licenses a tier. Nothing inside either change breaks it. Task 1.1 is
+therefore not "waiting on a run that is coming" — it is waiting on a decision
+about what counts as a profile of record, which is out of both changes' scope.
+
+Both amendments point the same way, and 0.1 was decided accordingly.

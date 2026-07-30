@@ -86,6 +86,23 @@ CL (Lisp-2). Without a Lisp-2 timed cell, this change's own gate could go
 green on a path the shipped engine never takes — task 1.2 adds that
 coverage.
 
+> **Annotation (2026-07-30, `gate-corpus-cl-and-recursion`).** The two claims
+> above are left as written; both have since been overtaken.
+>
+> The gap: closed. `archive/2026-07-29-vm-func-site-cache` added
+> `siteSym{constIdx, isFunc}`, and `buildSites` now indexes `OpGetFunc` and
+> `OpFreezeNativeFunc` alongside `OpGetGlobal` and `OpFreezeNative`, keying
+> each namespace separately. The follow-up this section anticipated exists.
+>
+> The coverage: `BenchmarkEngine_FibonacciCL` lives in `runtime/`, and the
+> release workflow benches `./internal/goldset/` only — so it never closed the
+> gate-coverage gap this section describes, and "task 1.2 adds that coverage"
+> overstates what was added. It remains valuable as per-change evidence on the
+> Lisp-2 path (it is the acceptance gate `vm-func-site-cache` cleared at
+> −30.43%), and it is kept for that. The gate corpus is now stated as
+> Clojure-dialect and non-recursive by decision in the `consumer-release-gate`
+> specification rather than treated as a gap awaiting this benchmark.
+
 ## Verification numbers
 
 Fib body: `(def fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))`.
