@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reading source reuses its tokenizer and parser working state across calls
+  instead of building it fresh each time, and collection literals are copied
+  once into an exactly sized backing slice rather than grown by repeated
+  append. Parsing allocates roughly 57% fewer bytes per read on the reader
+  benchmarks and 54% fewer on the gold set, with no cell regressing. Parsed
+  output is unchanged.
+- An empty list or vector literal now carries a zero-length backing slice
+  where it previously carried none. Every operation on `List` and `Vector`
+  behaves identically; only an embedder reaching past the public API — for
+  instance comparing value trees with `reflect.DeepEqual` — can observe the
+  difference.
+
 ## [0.11.0] - 2026-07-30
 
 ### Changed
