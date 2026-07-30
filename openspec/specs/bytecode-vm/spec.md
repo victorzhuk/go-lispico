@@ -709,9 +709,22 @@ at every run exit (normal return and error unwind), and before any `GoFunc`
 dispatch or re-entrant evaluation adoption, so any externally observable read
 of the ledger — a host function, a nested evaluation, a meter lease, or the
 evaluation's own completion — sees totals identical to per-instruction
-charging. Limit enforcement MAY lag by at most one unsettled batch (one
-checkpoint interval of fixed-size scalar charges); the terminal
-`ResourceLimitError` and its error shape SHALL be unchanged.
+charging. Limit enforcement MAY lag by at most one unsettled batch: one
+checkpoint interval's worth of whatever charges were issued in it, which is
+NOT bounded to fixed-size scalar charges — a checkpoint interval that
+constructs collections also accumulates list, vector, map, and closure
+shallow-byte charges and charged-constant charges in the same unsettled batch,
+and the slack bound SHALL be read as covering all of them, not scalars alone.
+The terminal `ResourceLimitError` and its error shape SHALL be unchanged.
+
+A compiled chunk's published `DeepBytes` SHALL include a fixed per-site charge
+for each fused-operator descriptor it carries, sized independently of the
+instruction count the fusion removed. Fusing operator resolution into fewer
+executed instructions SHALL NOT be assumed to shrink a chunk's accounted
+`DeepBytes` in proportion — the fused-descriptor charge MAY exceed the bytes
+freed by the removed instructions, so a compiler change that reduces
+instruction count MAY still increase the chunk's accounted size and its
+likelihood of exceeding `MaxCacheBytes` on admission.
 
 #### Scenario: Fused arithmetic result is charged
 
@@ -730,8 +743,13 @@ checkpoint interval of fixed-size scalar charges); the terminal
 
 #### Scenario: Limit crossing fails within one batch window
 
-- **WHEN** a program's charged bytes cross `MaxAllocationBytes` (or exhaust a meter lease) between two checkpoints
+- **WHEN** a program's charged bytes cross `MaxAllocationBytes` (or exhaust a meter lease) between two checkpoints, whether from scalar arithmetic, collection construction, or a mix of both within the same interval
 - **THEN** evaluation SHALL fail with the same terminal `ResourceLimitError` no later than the next settlement point, and the meter's draw/return accounting SHALL balance exactly as with per-instruction charging
+
+#### Scenario: Fusion may increase accounted chunk size despite fewer instructions
+
+- **WHEN** a chunk compiles with fused native-op sites that reduce its total instruction count relative to an equivalent unfused compilation
+- **THEN** its published `DeepBytes` MAY be larger than the unfused compilation's, and that increase SHALL be attributable to the fixed per-site fused-descriptor charge rather than to a measurement defect
 
 ### Requirement: All-constant collection literals compile to shared constants
 

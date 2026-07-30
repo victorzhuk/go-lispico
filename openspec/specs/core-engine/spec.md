@@ -248,7 +248,17 @@ compilation before any chunk is cached; GoFunc dispatch SHALL charge one
 reduction plus the result's shallow allocation size at the centralized apply
 sites, unless the callee has already charged the ledger for that same value, in
 which case the apply site SHALL NOT charge it again. Counter values are NOT
-required to be equal across evaluators.
+required to be equal across evaluators, and are NOT required to be equal
+across compiler versions for the same evaluator and the same source: because
+the VM charges one reduction per instruction decode, a compiler change that
+alters how many instructions a given form compiles to (a superinstruction
+fusing what were previously several instructions into one, for example)
+changes the reductions charged for evaluating that form, even with the
+evaluator and the source both unchanged. A resource-limit ceiling a program
+previously crossed at some iteration count MAY no longer be crossed at that
+count after such a compiler change; this is expected, not a defect, but SHALL
+be disclosed wherever a compiler change is documented as altering instruction
+count.
 Reduction accounting SHALL piggyback the existing batched-cancellation
 countdown — no additional per-step cost and no additional clock reads.
 Exceeding either ceiling SHALL raise `Code: "ResourceLimitError"`, terminal
@@ -311,6 +321,11 @@ its whole reachable structure alive.
 
 - **WHEN** a host invokes a Lisp function via `core.Evaluator.Apply` without going through an `Engine` entry point, under tight limits
 - **THEN** the evaluation SHALL be bounded by the same per-evaluation counters
+
+#### Scenario: A compiler change may shift where a reduction ceiling is crossed
+
+- **WHEN** a compiler version change alters how many VM instructions a given form compiles to (e.g. fusing several instructions into one), and the same source is evaluated against the same `MaxReductions` ceiling on both compiler versions
+- **THEN** the iteration count at which the ceiling is crossed MAY differ between the two versions, and this difference SHALL NOT be treated as a counter-consistency defect
 
 ### Requirement: Env owned-capacity accounting
 
