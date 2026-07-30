@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Two v0.10.0 metering changes shipped without release-note coverage. The
+  three entries that follow document what they already do; nothing about
+  the metering ledger changes now. Reduction counts are compilation
+  dependent: the VM charges one reduction per decoded instruction, so a
+  compiler change that alters how many instructions a form compiles to
+  changes the reductions charged for identical source under an unchanged
+  evaluator. v0.10.0's branch/arith fusion cut the recursive `fib` body
+  from 22 instructions to 13, so a program that previously tripped
+  `MaxReductions` at some iteration count may no longer trip it there.
+- v0.10.0 replaced per-opcode allocation charges with a VM-local
+  accumulator settled at checkpoints, run exits, and before any `GoFunc`
+  dispatch or re-entrant evaluation; settled totals are identical to
+  per-instruction charging. Enforcement can lag those totals by at most
+  one unsettled batch, and that batch also absorbs list, vector,
+  hash-map, closure, and charged-constant bytes alongside scalar charges,
+  with no size-triggered early settlement — so the lag before a
+  `MaxAllocationBytes` breach surfaces is not bounded by any fixed scalar
+  figure. The terminal error is unchanged: `ResourceLimitError`, raised
+  no later than the next settlement point.
+- v0.10.0's fusion also grows a chunk's accounted size: a fused-operator
+  descriptor charges 40 accounted bytes while each instruction the fusion
+  removes frees only 4, a break-even of 10 removed instructions per fused
+  site. Below that, a chunk's `DeepBytes` grows even though fewer
+  instructions execute, making a chunk near the `MaxCacheBytes` ceiling
+  likelier to be refused caching than the same source compiled before
+  fusion.
 - The release consumer gate ran for the first time in the project's history,
   against the published `v0.11.0` release. Its correctness legs passed — the
   gold set under both execution modes and the race suite — and the paired

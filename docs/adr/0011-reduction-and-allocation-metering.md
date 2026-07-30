@@ -17,6 +17,8 @@ Reductions are evaluator-local work units, not wall-clock time and not cross-eva
 
 The hot loops do not increment a shared atomic on every step. Both evaluators already keep a 128-step cancellation budget, so metering piggybacks that countdown and flushes consumed work at the existing sync points. This keeps the context-observation bound comfortably inside the required 1,024-reduction window while avoiding a new per-step branch or atomic write.
 
+Reduction counts are compilation dependent, not just source dependent: because the VM charges per decoded instruction, a change to lispico's own bytecode compiler that alters how many instructions a form compiles to changes the reductions the same source charges, even though the ledger itself is unchanged. A `MaxReductions` boundary that a given source used to trip at some iteration count can move to a different count after such a change. This is expected — the determinism requirement below binds one lispico build's charges across hosts and Go versions; it does not bind one source's charges across lispico's own compiler revisions.
+
 ## Allocation model
 
 Allocation charging is shallow and deterministic. It counts the produced value's own container cost, not a recursive deep walk of already-existing children. Values built incrementally in Lisp are therefore charged incrementally at each construction site; values materialized inside a Go builtin are charged once by their shallow result size.
