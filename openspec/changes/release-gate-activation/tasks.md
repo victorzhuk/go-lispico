@@ -52,12 +52,79 @@
       moment it was stored. Cutting the tag from `master` also brings the
       boundary work inside the measured tree, which is what 2.3 needs.
 
-      Blocked on a release cut, which is not this change's to make.
+      **Done 2026-07-30.** `v0.11.0` was cut from `master` (`fee885a`) and
+      published as a stable release, which fired the workflow for the first
+      time in the repository's history — run `30561584997`. Every
+      confirmation this task asks for holds: gold set green under both
+      execution modes, race suite green, paired Evaluator/VM run completed,
+      and `cmd/perfgate` produced a verdict in first-authorization mode.
+
+      **The verdict is FAIL, and it is a finding about the tiers, not about
+      the engine.** `internal/perfgate/tiers.json` classifications do not
+      survive contact with the hosted runner, and several are close to
+      inverted:
+
+      | cell | committed tier | measured | verdict |
+      | --- | --- | --- | --- |
+      | `Goldset/queue-promote` | data-dominated (±5%) | latency −63.02% | FAIL |
+      | `Goldset/pipeline` | data-dominated (±5%) | latency −40.50% | FAIL |
+      | `Goldset/registry-fold` | data-dominated (±5%) | latency −27.97% | FAIL |
+      | `Goldset/text-render` | data-dominated (±5%) | latency −22.78% | FAIL |
+      | `Goldset/merge-config` | data-dominated (±5%) | latency −18.00% | FAIL |
+      | `Goldset/guard-nil` | engine-sensitive (≥15%) | latency −2.83% | FAIL |
+      | `Goldset/twice-macro` | engine-sensitive (≥20% bytes) | bytes −12.65% | FAIL |
+      | `Goldset/kw-lookup` | engine-sensitive (≥20% bytes) | bytes −5.36% | FAIL |
+
+      Five cells assumed mode-insensitive are the most engine-sensitive in
+      the corpus — they fail for improving too much against a two-sided
+      tolerance — while three assumed engine-sensitive barely move. PASS:
+      `counter-closure`, `loop-sum`, `route-decision`, `rule-load`,
+      `safe-parse`, and `GoldsetParse/text-render`.
+
+      All 13 `GoldsetParse/*` cells came back INCONCLUSIVE ("latency delta
+      not statistically significant"), which is what a mode-invariant cost
+      *should* produce — the tiers.json comment predicted exactly this — but
+      the gate reports it as inconclusive rather than as the invariant
+      holding. A cell that is correct precisely because it does not move has
+      no way to say so.
+
+      Two mechanism defects this exposed, neither previously known:
+
+      1. **An inconclusive cell is never resolved if any other cell fails.**
+         The doubled-benchtime rerun is gated on
+         `steps.perfgate.outputs.exit_code == '2'`. Real failures make
+         perfgate exit 1, so exit 1 masks exit 2 and the rerun is skipped —
+         it skipped here despite 12 inconclusive cells.
+      2. **A failing verdict blocks baseline storage**, so 1.2 cannot
+         complete while the tiers are wrong (see 1.2).
+
+      Reclassification is deliberately NOT done here: ADR 0008 requires a
+      committed baseline profile to justify a tier, this change's own Impact
+      scopes `tiers.json` to `gate-corpus-cl-and-recursion`, and editing the
+      pass/fail surface mid-activation is the drift task 2.3 already
+      declined. What changed is that the profile now exists — run
+      `30561584997`'s `bench-evaluator.txt` and `bench-vm.txt`, retained as
+      the `consumer-gate-evidence` artifact.
 - [ ] 1.2 Store the run's `bench-vm.txt` as a release asset. Confirm it is
       downloadable via `gh release download` the way `release.yml`'s
       "Determine gate mode" step expects for the *next* release. With 0.1
       decided, the workflow's own "Store VM baseline on the authorized
       release" step does this; no manual upload is required.
+
+      **Not stored. `v0.11.0` carries no assets.** The store step inherits
+      the implicit `success()` guard on its `if:`, so a failing verdict
+      skips it — and 1.1's verdict failed on tier misclassification. The
+      data exists (run `30561584997`'s `consumer-gate-evidence` artifact
+      holds `bench-vm.txt`, `bench-evaluator.txt`, and `verdict.txt`), but
+      it is a workflow artifact, which expires, not a release asset, which
+      is what "Determine gate mode" looks up on the next release.
+
+      Do not hand-upload it to close this task. A baseline captured from a
+      run whose verdict failed would pin every future release to numbers the
+      gate itself rejected, and hand-placing it defeats the point of 0.1's
+      decision that only a release-triggered run can store the asset.
+      Correct order: fix the tiers, cut the next release, let the workflow
+      store the baseline itself.
 
 ## 2. Retroactive verdicts
 
