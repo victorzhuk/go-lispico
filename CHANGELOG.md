@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-30
+
 ### Changed
 
 - The release consumer gate (ADR 0008) runs when a stable release goes public,
@@ -549,7 +551,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.9.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/victorzhuk/go-lispico/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/victorzhuk/go-lispico/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/victorzhuk/go-lispico/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/victorzhuk/go-lispico/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/victorzhuk/go-lispico/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/victorzhuk/go-lispico/compare/v0.6.0...v0.7.0
