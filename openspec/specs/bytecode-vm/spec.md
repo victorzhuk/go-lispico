@@ -637,6 +637,14 @@ deadline, or internals — a stale-generation access SHALL behave as a context
 carrying no evaluation state, delegating to the outer context and adopting a
 fresh budget on re-entry.
 
+Re-arming SHALL be proportional to what changed: when a rearm carries the
+same configuration the wrapper was last armed with — same limits, timeout,
+and meter posture — the wrapper MAY refresh only its generation stamp and
+any per-run seeds that differ, rather than rewriting every field. Any
+configuration difference SHALL take the full rearm. The observable contract
+is unchanged in either case: the host function and any re-entry see exactly
+the values a full rearm would have installed.
+
 #### Scenario: Non-re-entrant host pays no state allocation
 
 - **WHEN** a compiled body repeatedly dispatches a `GoFunc` that never re-enters the evaluator
@@ -661,6 +669,16 @@ fresh budget on re-entry.
 
 - **WHEN** a `GoFunc` stores the context it received and reads state or re-enters the evaluator after its call returned and the VM has moved to a later run
 - **THEN** the stale context SHALL NOT expose the later run's budget, deadline, or internals; its accesses SHALL behave as a context carrying no evaluation state
+
+#### Scenario: Changed configuration is fully re-armed
+
+- **WHEN** the engine's limits, timeout, or meter posture change between two calls that reuse one wrapper
+- **THEN** the next dispatch SHALL observe the new configuration exactly as a freshly built wrapper would
+
+#### Scenario: Same-configuration rearm is observably identical
+
+- **WHEN** two adjacent calls with identical configuration each dispatch a re-entering `GoFunc`
+- **THEN** the second call's re-entry SHALL observe a fresh budget and correct seeds exactly as under a full rearm
 
 ### Requirement: Fused native-op results charge the allocation ledger
 
