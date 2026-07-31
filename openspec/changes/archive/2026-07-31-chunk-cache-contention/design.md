@@ -185,8 +185,24 @@ never displace an entry parked elsewhere.
 
 **Cross-stripe eviction is deliberately absent** — it would require a lock
 ordering across stripes. The cost is that eviction picks the admitting stripe's
-LRU victim rather than the global one. That only becomes observable at ceilings
-too small to hold a working set, which is what 1.2's adaptive rule handles.
+LRU victim rather than the global one, so a stripe with an empty LRU cannot
+displace an entry parked in another stripe: it refuses instead.
+
+**A known limitation, on the bytes and nodes axes only.** 1.2's adaptive rule
+keys on `MaxCacheEntries`, so it collapses to a single stripe only when the
+*entry* ceiling is small. A cache bound by `MaxCacheBytes` or `MaxCacheNodes`
+instead — say 4096 entries, which selects 8 stripes, with a byte ceiling sized
+for three chunks — still stripes, and a source hashing into an empty stripe
+while the residents sit elsewhere is refused every time: `cacheFitsAlone` only
+asks whether the chunk fits *alone* against the undivided ceiling, pre-eviction
+finds `s.tail == nil`, and the byte charge denies. For a stable working set that
+refusal is permanent, since the other stripes evict only when they themselves
+admit. The ceiling still holds and the evaluation is still correct — the entry
+just runs uncached. Extending the threshold to the byte and node axes is not
+cleanly possible, because chunk size is unknown at construction. The default
+limits (4096 entries, 64 MiB, 1M nodes) leave entries binding first for any
+ordinary chunk, so this is reachable only under a deliberately byte- or
+node-tight configuration.
 
 ### 1.2 Stripe key and count
 
