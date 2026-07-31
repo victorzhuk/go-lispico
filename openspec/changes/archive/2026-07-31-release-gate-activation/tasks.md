@@ -105,11 +105,31 @@
       declined. What changed is that the profile now exists — run
       `30561584997`'s `bench-evaluator.txt` and `bench-vm.txt`, retained as
       the `consumer-gate-evidence` artifact.
-- [ ] 1.2 Store the run's `bench-vm.txt` as a release asset. Confirm it is
+- [x] 1.2 Store the run's `bench-vm.txt` as a release asset. Confirm it is
       downloadable via `gh release download` the way `release.yml`'s
       "Determine gate mode" step expects for the *next* release. With 0.1
       decided, the workflow's own "Store VM baseline on the authorized
       release" step does this; no manual upload is required.
+
+      **Done 2026-07-31. `v0.12.0` carries `bench-vm.txt`, 29830 B, stored by
+      the workflow itself.** Release-triggered run `30646304157` (event
+      `release`, head `e300ae4`) passed 27/27 and reached "Store VM baseline on
+      the authorized release" — the step that every prior run either skipped for
+      want of release identity or never reached behind the implicit `success()`
+      guard. No hand-upload: the correct order this task insisted on (fix the
+      cause, cut a release, let the workflow store the baseline) is the order
+      that ran.
+
+      **The coin flip below was closed before the cut, not gambled on.** The
+      ordering fix (`fb3ee4f`, bytes and allocs bounds applied before latency
+      significance, with a named 4 B/op allowance on `guard-nil`) had never been
+      exercised on a runner — it was committed locally and unpushed, and the two
+      most recent hosted runs both failed. So `master` was pushed and a
+      `workflow_dispatch` pre-flight was fired at `59b8483` first: run
+      `30645498605`, PASS. Only then was the tag cut. `Goldset/guard-nil-2`
+      reads `PASS (latency delta not statistically significant)` in the release
+      run's verdict — the bytes bound is now reached and cleared rather than
+      short-circuited past, which is exactly what the fix claimed.
 
       **Blocked on a coin flip, as of 2026-07-31.** The store step runs only
       after the verdict step passes, and the gate's pass is no longer
@@ -327,13 +347,29 @@ not do is leave it unowned again.
 ## 4. Verify
 
 - [x] 4.1 `openspec validate --strict` on this change.
-- [ ] 4.2 Confirm the stored `bench-vm.txt` asset is present on the release
+- [x] 4.2 Confirm the stored `bench-vm.txt` asset is present on the release
       and downloadable by tag, matching `release.yml`'s own "Determine gate
       mode" lookup logic. Follows 1.2.
 
+      **Verified 2026-07-31 with the lookup step's own command**, not a
+      paraphrase of it: `gh release download v0.12.0 --pattern bench-vm.txt
+      --output baseline-vm.txt` succeeds from a repository checkout and returns
+      29830 bytes, byte-identical (`cmp`) to the `bench-vm.txt` in run
+      `30646304157`'s `consumer-gate-evidence` artifact. The file is a
+      well-formed benchstat input: 270 sample rows over 27 distinct cells
+      (13 `Goldset/*`, 13 `GoldsetParse/*`, 1 `GoldsetCall/*`) at
+      `BENCH_COUNT: 10`, carrying its `goos`/`goarch`/`cpu` header.
+
+      This also discharges the three paths `release.yml:37-41` says a dispatch
+      run "cannot rehearse at all" and that "run for real the first time or not
+      at all": `gh` auth under `contents: write`, `tag_name` interpolation, and
+      the asset round-trip. All three executed. "Determine gate mode" resolved
+      `first-authorization` correctly, no release having carried the asset
+      before this one.
+
 ## 5. Re-baseline after the reader axis (deferred until D and E land)
 
-- [ ] 5.1 Once changes `reader-allocation-floor` and `reader-state-reuse`
+- [x] 5.1 Once changes `reader-allocation-floor` and `reader-state-reuse`
       land, re-trigger the workflow and re-store `bench-vm.txt`. Every
       `Goldset/*` `B/op` figure will drop for reader-only reasons; the
       baseline from task 1.2 stays valid for regression-bounding (one-sided)
@@ -348,6 +384,16 @@ not do is leave it unowned again.
       re-store *over*, because the first armed run's verdict failed. This
       task therefore collapses into 1.2 until the tiers are fixed — the same
       release cut settles both, and the re-baseline is not a second run.
+
+      **Closed 2026-07-31 by that same first store, as this amendment
+      predicted.** `v0.12.0`'s stored `bench-vm.txt` was measured at
+      `e300ae4`, a tree that already contains both reader changes
+      (`archive/2026-07-30-reader-allocation-floor`,
+      `archive/2026-07-30-reader-state-reuse`), so every `Goldset/*` `B/op`
+      figure in it is post-reader-axis. There is no pre-axis baseline for it to
+      understate against and no second run to schedule. The one-sided
+      regression-bounding caveat in this task's original text never became
+      live.
 
 ---
 
@@ -553,3 +599,85 @@ What stays open here: 1.2, 4.2, and 5.1, all waiting on the same event — a
 release cut whose gate passes against corrected tiers, which stores the
 baseline itself. The cut is not this change's to make. This change is at 10/13
 and archives when that release lands.
+
+---
+
+## Status at the end of the fourth apply pass
+
+That release landed. **13/13; this change archives.**
+
+The event all three remaining tasks waited on was one release cut whose gate
+passes, and it produced one artifact that closes all three — 5.1's own
+amendment had already established that the re-baseline is that same first
+store, not a second run.
+
+| Step | Evidence |
+| --- | --- |
+| Push `master` | `2fe50d2..59b8483`, ff, 8 commits. Remote head re-read as `59b8483` before dispatching |
+| Pre-flight | dispatch run `30645498605` at `59b8483` — **PASS** |
+| Cut | `chore(release): cut v0.12.0` (`e300ae4`), tag `v0.12.0`, published non-draft non-prerelease |
+| Release run | `30646304157`, event `release`, head `e300ae4` — **success**, verdict 27/27 PASS |
+| Store | `bench-vm.txt`, 29830 B, on `v0.12.0` |
+| Lookup | `gh release download v0.12.0 --pattern bench-vm.txt` → byte-identical to the run artifact |
+
+**The pre-flight was the whole method, and it is worth naming as such.** The
+fix that closed the `guard-nil` coin flip (`fb3ee4f`) was committed locally,
+unpushed, and had never run on a hosted runner; the two most recent hosted runs
+had both failed. Cutting a tag straight into that state would have been the
+same bet this change spent three passes refusing to make. Pushing first, then
+dispatching at the exact tree, converted the cut from a coin flip into a
+checked step — and `gh workflow run --ref master` resolves against
+`origin/master`, so the push was not optional but a precondition for the
+pre-flight to measure anything. That trap is what disqualified run
+`30610843591` (see the third pass), and re-reading `git ls-remote` before
+dispatching is what proves it was avoided.
+
+**The tag is not the pre-flight's sha, and that is accounted for, not
+overlooked.** `e300ae4` is `59b8483` plus one commit that edits `CHANGELOG.md`
+only — no Go source, no `internal/goldset/testdata/` fixture, no `tiers.json`.
+The measured tree is behaviorally identical to the one the pre-flight passed
+on, which is why the pre-flight's verdict transfers. A cut that had carried
+code between pre-flight and tag would not have this property, and the check
+would need re-running.
+
+**Two mechanism defects this change recorded are now discharged by
+observation, not by argument.**
+
+1. **The exit-2 rerun fired correctly.** Defect 1 under task 1.1 — the rerun
+   gated on `exit_code == '2'`, which a real failure's exit 1 masks — misfired
+   on run `30561584997`, skipping the rerun despite 12 inconclusive cells. Both
+   runs today took the exit-2 path: "Rerun paired benchmark at doubled
+   benchtime" and "Resolve inconclusive cells after rerun" executed and passed.
+   The burden-of-proof rule ADR 0008 specifies has now been applied on a real
+   verdict for the first time. The defect was never fixed — it simply requires
+   a run with inconclusive cells and no failing cell to express correctly, and
+   that is what these were.
+2. **The three unrehearsable paths ran.** `release.yml:37-41` states that `gh`
+   auth, `tag_name` interpolation, and the asset round-trip "run for real the
+   first time or not at all" because dispatch carries no release identity. All
+   three ran, in "Determine gate mode" and "Store VM baseline". "Determine gate
+   mode" had executed to success exactly once before, on the failed
+   `30561584997`; this is its first execution on a run that reached the store.
+
+**One consequence to hand forward: the next release is the first
+non-regression run, which arms a known-unfixed defect.** Until now "Determine
+gate mode" found no baseline and fell through to first-authorization, which
+made its error handling harmless. From the next release it will find
+`v0.12.0`'s asset and run non-regression. Its loop treats any non-zero
+`gh release download` as absence and the surrounding `gh release list` has no
+failure check at all, so a transient API error will silently read as
+first-authorization — comparing the candidate VM against the Evaluator under
+improvement thresholds instead of running non-regression, and failing a healthy
+release for the wrong reason. The first pass filed this as "harmless until a
+baseline exists ... becomes live on the second". It is live now. It is not
+fixed here for the reason 2.3 established and this change held to throughout:
+repairing the gate's machinery inside the pass that documents that machinery's
+first execution is the drift this change exists to catch. It needs an owner
+before the next cut.
+
+**What this change set out to prove is now true by demonstration.** Its spec
+delta reads "SHALL execute against at least one real release **and publish a
+stored non-regression baseline**". The second pass recorded that half-unmet —
+the run happened, the publish did not. Both halves hold: the gate ran on a real
+release, and a real release carries the baseline every later release will be
+measured against.
