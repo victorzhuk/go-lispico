@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -261,6 +262,27 @@ func TestLimits_NegativeNormalize(t *testing.T) {
 	}
 	_, err := evalLimits(t, false, neg, deepVector(5000))
 	assert.True(t, isResourceLimit(t, err), "negative-normalized default must still reject extreme depth")
+}
+
+// TestLimits_MaxCollectionLenAboveInt32CapFailsClosed pins that a
+// MaxCollectionLen past math.MaxInt32 fails at construction rather than
+// silently wrapping — Vector's count field is int32.
+func TestLimits_MaxCollectionLenAboveInt32CapFailsClosed(t *testing.T) {
+	e, err := New(nil, WithDialect(clojure.Dialect()), WithResourceLimits(ResourceLimits{MaxCollectionLen: math.MaxInt32}))
+	require.NoError(t, err, "MaxCollectionLen exactly at the int32 cap must still construct")
+	t.Cleanup(func() { _ = e.Close() })
+
+	t.Run("above cap", func(t *testing.T) {
+		if math.MaxInt == math.MaxInt32 {
+			t.Skip("int is 32 bits wide; no value above the cap is representable")
+		}
+		// Incremented at run time: as a constant expression this would not
+		// compile on a 32-bit target, skip or no skip.
+		over := math.MaxInt32
+		over++
+		_, err := New(nil, WithDialect(clojure.Dialect()), WithResourceLimits(ResourceLimits{MaxCollectionLen: over}))
+		assert.True(t, isResourceLimit(t, err), "MaxCollectionLen above the int32 vector length cap must fail closed at construction")
+	})
 }
 
 func TestLimits_RangeCapViaRegistration(t *testing.T) {

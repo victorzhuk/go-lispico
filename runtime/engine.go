@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,6 +267,9 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	}
 
 	cfg.limits = resolveLimits(cfg.limits)
+	if cfg.limits.MaxCollectionLen > math.MaxInt32 {
+		return nil, core.NewResourceLimitError(fmt.Sprintf("MaxCollectionLen %d exceeds the vector length cap %d", cfg.limits.MaxCollectionLen, math.MaxInt32))
+	}
 	if cfg.engineMeter != nil {
 		grantedRed, grantedAlloc, err := cfg.engineMeter.LeaseEval(1, 0)
 		if err != nil {

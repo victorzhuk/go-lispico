@@ -188,7 +188,7 @@ resource ceilings before construction:
 | --- | ---: | --- |
 | `MaxReaderDepth` | 1024 | Maximum nesting depth of s-expressions |
 | `MaxStructuralDepth` | 1024 | Maximum structural depth of evaluated / compiled `Vector`, `HashMap`, and quasiquote `List` literals |
-| `MaxCollectionLen` | 10,000,000 | Maximum length of `range`-produced lists |
+| `MaxCollectionLen` | 10,000,000 | Maximum length of `range`-produced lists; may not exceed 2,147,483,647, the `Vector` length cap |
 | `MaxCacheEntries` | 4096 | Maximum bytecode chunk cache entries |
 | `MaxCacheBytes` | 64 MiB | Maximum retained deep bytes across bytecode chunk cache entries |
 | `MaxCacheNodes` | 1,000,000 | Maximum expanded AST nodes across bytecode chunk cache entries |

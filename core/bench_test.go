@@ -616,3 +616,114 @@ func BenchmarkQuasiquoteWideList(b *testing.B) {
 		})
 	}
 }
+
+// vecSink and vecRetainSink are package-level rather than scoped to a single
+// b.Run closure: a local sink for a boxed Vector/Value can be proven
+// non-escaping and stack-allocated, which would let a Vector struct-size
+// change measure nothing. Assigning through a package-level var forces the
+// interface conversion to heap-escape, so B/op stays attributable.
+var vecSink Value
+var vecRetainSink []Value
+
+// vecItems returns n distinct Int values for building either a flat or
+// trie-form Vector.
+func vecItems(n int) []Value {
+	items := make([]Value, n)
+	for i := range items {
+		items[i] = Int{V: int64(i)}
+	}
+	return items
+}
+
+// BenchmarkVectorConstructOneAtATime builds a size-n Vector from Vector{}
+// with n sequential single-item Conj calls, crossing vectorFlatThreshold
+// partway through and promoting to a trie.
+func BenchmarkVectorConstructOneAtATime(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		items := vecItems(n)
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				var v Vector
+				for _, item := range items {
+					v, _ = v.Conj(item)
+				}
+				vecSink = v
+			}
+		})
+	}
+}
+
+// BenchmarkVectorConstructBatched builds the same size-n Vector as
+// BenchmarkVectorConstructOneAtATime, but with a single variadic Conj call
+// rather than n sequential ones.
+func BenchmarkVectorConstructBatched(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		items := vecItems(n)
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				v, _ := Vector{}.Conj(items...)
+				vecSink = v
+			}
+		})
+	}
+}
+
+// BenchmarkVectorConjSteadyState conj's a single further element onto an
+// already-promoted size-n trie, isolating incremental append from the
+// one-time flat-to-trie promotion cost.
+func BenchmarkVectorConjSteadyState(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		base, _ := Vector{}.Conj(vecItems(n)...)
+		extra := Int{V: int64(n)}
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				v, _ := base.Conj(extra)
+				vecSink = v
+			}
+		})
+	}
+}
+
+// BenchmarkVectorAtTrie covers index reads against a trie-form Vector built
+// via Conj rather than NewVector, which always stays flat regardless of
+// length — the gap BenchmarkVectorAt does not cover.
+func BenchmarkVectorAtTrie(b *testing.B) {
+	for _, n := range []int{100, 1000, 10000} {
+		vec, _ := Vector{}.Conj(vecItems(n)...)
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := range b.N {
+				_ = vec.At(i % n)
+			}
+		})
+	}
+}
+
+// BenchmarkVectorRetentionBoxed measures the cost of boxing K held Vector
+// structs into the Value interface, isolating the interface-conversion cost
+// from the Vector struct size — the decisive figure for whether narrowing
+// the struct is worth doing. vecRetainSink is pre-sized to cap K so slice
+// growth never allocates inside the timed region.
+func BenchmarkVectorRetentionBoxed(b *testing.B) {
+	const k = 1000
+	for _, n := range []int{100, 1000, 10000} {
+		items := vecItems(n)
+		vecs := make([]Vector, k)
+		for i := range vecs {
+			vecs[i], _ = Vector{}.Conj(items...)
+		}
+		vecRetainSink = make([]Value, 0, k)
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				vecRetainSink = vecRetainSink[:0]
+				for _, v := range vecs {
+					vecRetainSink = append(vecRetainSink, v)
+				}
+			}
+		})
+	}
+}

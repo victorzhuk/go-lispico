@@ -67,6 +67,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocates 19.40% more than the Evaluator, `kw-lookup` at -9.04%, and
   `merge-config` at -19.96% against ADR 0008's 20% floor — and no release has
   been cut against the corrected tiers.
+- `Vector` packs into 64 bytes instead of 72, so every vector boxed as a
+  `Value` now lands in Go's 64-byte allocator size class rather than its
+  80-byte one — 16 bytes less per retained vector, measured at 20% on a
+  benchmark that retains a thousand of them. Every gold-set cell allocates
+  fewer bytes or the same; `queue-promote`, the one cell whose collection
+  outgrows the flat representation, drops 2.9% under the Evaluator and 3.9%
+  under the VM. Accounted allocation-ledger figures are unchanged, and are
+  pinned by a test against exactly this class of change: the ledger's sizes
+  come from ADR 0011's fixed table and do not follow Go struct layout.
+- A vector now holds at most 2147483647 elements. The limit is not reachable
+  through the shipped configuration — the default collection ceiling is ten
+  million — but an engine explicitly configured with a `MaxCollectionLen`
+  above it is now refused at construction with a `ResourceLimitError` rather
+  than accepted and allowed to wrap.
 
 ## [0.11.0] - 2026-07-30
 

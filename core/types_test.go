@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"testing"
+	"unsafe"
 )
 
 func TestNil(t *testing.T) {
@@ -138,6 +139,16 @@ func TestVector(t *testing.T) {
 	}
 }
 
+func TestVector_Sizeof(t *testing.T) {
+	t.Parallel()
+	if unsafe.Sizeof(int(0)) != 8 {
+		t.Skip("Vector layout is 64-bit specific; a 32-bit slice header packs it differently")
+	}
+	if got := unsafe.Sizeof(Vector{}); got != 64 {
+		t.Errorf("unsafe.Sizeof(Vector{}) = %d, want 64", got)
+	}
+}
+
 // TestVectorConjFromOversizedFlat pins Conj's flat-to-trie promotion against
 // a flat backing longer than vecBranch, built directly (not through
 // NewVector) so the case holds regardless of how vectorFlatThreshold
@@ -238,7 +249,7 @@ func TestVectorConjTailAtBranchBoundary(t *testing.T) {
 		}
 		tail = append(tail, val)
 	}
-	v := Vector{root: root, shift: shift, count: trieLen + len(tail), tail: tail}
+	v := Vector{root: root, shift: uint8(shift), count: int32(trieLen + len(tail)), tail: tail}
 	if v.root == nil || len(v.tail) != vecBranch {
 		t.Fatalf("setup: root!=nil=%v taillen=%d, want true and %d", v.root != nil, len(v.tail), vecBranch)
 	}

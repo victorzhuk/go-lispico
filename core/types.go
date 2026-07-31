@@ -402,12 +402,18 @@ type vecNode struct {
 // holding a multiple of vecBranch elements at height shift) and a tail
 // buffer of 0..vecBranch pending elements not yet folded into the trie.
 // Exactly one of flat/root is set; the zero value Vector{} is the empty
-// vector. There is no demotion.
+// vector. There is no demotion. Maximum length is math.MaxInt32; a
+// configured MaxCollectionLen above that is rejected at engine
+// construction rather than allowed to wrap.
+//
+// count and shift are narrower than the int/uint they hold so the struct
+// packs to 64 bytes rather than 72, putting a boxed Vector in Go's 64-byte
+// allocator size class instead of its 80-byte one.
 type Vector struct {
 	flat  []Value
 	root  *vecNode
-	shift uint
-	count int
+	shift uint8
+	count int32
 	tail  []Value
 }
 
@@ -427,7 +433,7 @@ func NewVector(items []Value) Vector {
 
 func (v Vector) Len() int {
 	if v.root != nil {
-		return v.count
+		return int(v.count)
 	}
 	return len(v.flat)
 }
@@ -440,15 +446,15 @@ func (v Vector) At(i int) Value {
 	if v.root == nil {
 		return v.flat[i]
 	}
-	if i < 0 || i >= v.count {
+	if i < 0 || i >= int(v.count) {
 		panic("index out of range")
 	}
-	trieLen := v.count - len(v.tail)
+	trieLen := int(v.count) - len(v.tail)
 	if i >= trieLen {
 		return v.tail[i-trieLen]
 	}
 	node := v.root
-	for shift := v.shift; shift > 0; shift -= vecBits {
+	for shift := uint(v.shift); shift > 0; shift -= vecBits {
 		node = node.kids[(i>>shift)&(vecBranch-1)]
 	}
 	return node.vals[i&(vecBranch-1)]
@@ -461,8 +467,8 @@ func (v Vector) ToSlice() []Value {
 		copy(out, v.flat)
 		return out
 	}
-	out := make([]Value, v.count)
-	i := flattenVecNode(v.root, v.shift, out)
+	out := make([]Value, int(v.count))
+	i := flattenVecNode(v.root, uint(v.shift), out)
 	copy(out[i:], v.tail)
 	return out
 }
@@ -512,7 +518,7 @@ func (v Vector) Conj(vs ...Value) (Vector, int64) {
 	var tail []Value
 	var bytes int64
 	if v.root != nil {
-		root, shift, trieLen = v.root, v.shift, v.count-len(v.tail)
+		root, shift, trieLen = v.root, uint(v.shift), int(v.count)-len(v.tail)
 		tail = append([]Value(nil), v.tail...)
 	} else {
 		// Promotion: flat drains into full leaves. A one-time cost bounded
@@ -530,7 +536,7 @@ func (v Vector) Conj(vs ...Value) (Vector, int64) {
 		tail = append(tail, val)
 	}
 	bytes += VectorShallowBytes(len(tail))
-	return Vector{root: root, shift: shift, count: trieLen + len(tail), tail: tail}, bytes
+	return Vector{root: root, shift: uint8(shift), count: int32(trieLen + len(tail)), tail: tail}, bytes
 }
 
 // vecPathBytes is the charge for pushing one full tail into the trie as a
