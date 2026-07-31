@@ -1,7 +1,13 @@
 package perfgate
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -461,4 +467,133 @@ func TestEvaluate_Startup_NonRegressionImprovementPasses(t *testing.T) {
 	}
 	res := Evaluate(cell, TierStartup, ModeNonRegression)
 	assert.Equal(t, VerdictPass, res.Verdict, "got %s", res.Reason)
+}
+
+// pinnedProfileRunID and pinnedProfileDir name the checked-in classification
+// profile that licenses tiers.json (see its own comment and
+// testdata/profile-30630796967/README.md). TestPinnedProfile ties the two
+// together: without it, a tier and the profile that licenses it can drift
+// apart with only a README as a warning. pinnedProfileDir is built from
+// pinnedProfileRunID, and the test separately asserts that same run ID
+// appears in tiers.json's own comment -- so replacing this profile with a
+// newer one and forgetting to update tiers.json's provenance sentence (or
+// the reverse) fails here instead of leaving two pointers to disagree
+// silently.
+const (
+	pinnedProfileRunID = "30630796967"
+	pinnedProfileDir   = "testdata/profile-" + pinnedProfileRunID
+)
+
+// pinnedBenchEvaluatorSHA256 and pinnedBenchVMSHA256 guard the provenance
+// the profile's README asserts ("The benchmark output is committed
+// verbatim"): benchstat.csv and verdict.txt are derived from these two raw
+// files, but nothing forced them to stay in sync with a silent edit or a
+// swap for a different run's files. Update both alongside benchstat.csv and
+// verdict.txt when committing a new profile.
+const (
+	pinnedBenchEvaluatorSHA256 = "1ae2277d83ac5f114bb5b7e29f326485d922cead5a9eecc758f0ad874e5532df"
+	pinnedBenchVMSHA256        = "b5f68501e6c619697493d306816fe3b0fac84fd76cb7a5ec02c590a6b980c1a4"
+)
+
+// TestPinnedProfile re-evaluates every cell in the committed profile against
+// the committed tiers.json and checks the verdict against the committed
+// verdict.txt -- the oracle here is that file, not a hardcoded expectation,
+// so replacing the profile without updating verdict.txt fails this test
+// rather than passing silently. It also pins the two raw benchmark files by
+// content digest and cross-checks the profile directory against tiers.json's
+// own provenance sentence, so a profile swap that only touches the derived
+// files (or only one of the two provenance pointers) fails here too.
+func TestPinnedProfile(t *testing.T) {
+	t.Parallel()
+
+	evaluatorData, err := os.ReadFile(filepath.Join(pinnedProfileDir, "bench-evaluator.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, pinnedBenchEvaluatorSHA256, hashHex(evaluatorData), "bench-evaluator.txt changed since it was pinned")
+
+	vmData, err := os.ReadFile(filepath.Join(pinnedProfileDir, "bench-vm.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, pinnedBenchVMSHA256, hashHex(vmData), "bench-vm.txt changed since it was pinned")
+
+	csvData, err := os.ReadFile(filepath.Join(pinnedProfileDir, "benchstat.csv"))
+	require.NoError(t, err)
+	cells, err := ParseBenchstatCSV(csvData)
+	require.NoError(t, err)
+
+	tiersData, err := os.ReadFile("tiers.json")
+	require.NoError(t, err)
+	tiers, err := LoadTierConfig(bytes.NewReader(tiersData))
+	require.NoError(t, err)
+
+	var tiersFile tierConfigFile
+	require.NoError(t, json.Unmarshal(tiersData, &tiersFile))
+	assert.Contains(t, tiersFile.Comment, pinnedProfileRunID,
+		"tiers.json's comment no longer names the profile this test pins")
+
+	verdictData, err := os.ReadFile(filepath.Join(pinnedProfileDir, "verdict.txt"))
+	require.NoError(t, err)
+	wantVerdicts := parsePinnedVerdicts(t, string(verdictData))
+
+	csvNames := make([]string, 0, len(cells))
+	for name := range cells {
+		csvNames = append(csvNames, TrimProcsSuffix(name))
+	}
+	tierNames := make([]string, 0, len(tiers))
+	for name := range tiers {
+		tierNames = append(tierNames, name)
+	}
+	verdictNames := make([]string, 0, len(wantVerdicts))
+	for name := range wantVerdicts {
+		verdictNames = append(verdictNames, TrimProcsSuffix(name))
+	}
+	assert.ElementsMatch(t, csvNames, tierNames, "benchstat.csv and tiers.json disagree on which cells exist")
+	assert.ElementsMatch(t, csvNames, verdictNames, "benchstat.csv and verdict.txt disagree on which cells exist")
+
+	for name, cell := range cells {
+		tier, ok := tiers[TrimProcsSuffix(name)]
+		require.True(t, ok, "no committed tier for cell %q", name)
+		want, ok := wantVerdicts[name]
+		require.True(t, ok, "no committed verdict for cell %q", name)
+
+		res := Evaluate(cell, tier, ModeFirstAuthorization)
+		assert.Equal(t, want, res.Verdict, "cell %q (tier %s): got %s, want %s", name, tier, res.Verdict, want)
+	}
+}
+
+func hashHex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// parsePinnedVerdicts parses cmd/perfgate's report format ("name: VERDICT" or
+// "name: VERDICT (reason)") into a map keyed by the full cell name, suffix
+// included, matching how ParseBenchstatCSV keys its own map.
+func parsePinnedVerdicts(t *testing.T, data string) map[string]Verdict {
+	t.Helper()
+
+	verdicts := make(map[string]Verdict)
+	for _, line := range strings.Split(strings.TrimSpace(data), "\n") {
+		name, rest, ok := strings.Cut(line, ": ")
+		require.True(t, ok, "verdict line %q: want \"name: VERDICT\"", line)
+		if i := strings.Index(rest, " ("); i >= 0 {
+			rest = rest[:i]
+		}
+		verdicts[name] = parseVerdict(t, rest)
+	}
+	return verdicts
+}
+
+func parseVerdict(t *testing.T, s string) Verdict {
+	t.Helper()
+
+	switch s {
+	case "PASS":
+		return VerdictPass
+	case "FAIL":
+		return VerdictFail
+	case "INCONCLUSIVE":
+		return VerdictInconclusive
+	default:
+		t.Fatalf("unknown verdict %q", s)
+		return VerdictUnknown
+	}
 }

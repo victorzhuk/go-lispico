@@ -82,11 +82,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moves from -9.36% to -21.93% bytes and clears ADR 0008's -20%
   engine-sensitive floor; `merge-config` moves from -20.39% to -26.93% and
   clears the same floor with wider margin. `guard-nil`, the data-dominated
-  cell, drops from +20.83% to +0.09% (1080 to 1081 B/op) but still fails its
+  cell, drops from +20.83% to +0.09% (1080 to 1081 B/op) but still exceeds its
   non-increasing bound by roughly a byte; that residual is unrelated engine
   cost (`core/vm.(*VM).run` vs `core.(*engine).Eval`, offsetting almost
   exactly, plus `sync.Pool` GC-cadence churn) and its threshold is left for a
-  hosted profile to settle, not amended here.
+  hosted profile to settle, not amended here. The hosted run reproduced the
+  figure exactly — 1128 against 1129 B/op, +0.09% at p=0.000 — and the cell
+  nevertheless passes the gate, for the reason recorded below.
+- The consumer performance gate passes, all 26 cells, for the first time in
+  the project's history: `workflow_dispatch` run `30630796967`, committed as
+  the classification profile ADR 0008 requires at
+  `internal/perfgate/testdata/profile-30630796967/`, with
+  `internal/perfgate/tiers.json` now licensed by it. No cell's tier changed.
+  A dispatch run carries no release identity, so it stores no baseline asset
+  and consumes no baseline slot; the stored non-regression baseline still
+  waits on a release cut whose gate passes.
+- Recorded, not fixed: a cell whose latency delta is not statistically
+  significant is never checked against its tier's allocation bounds. All four
+  of the gate's tier-evaluator functions return INCONCLUSIVE on a
+  non-significant latency before reaching the bytes and allocation-count
+  checks, and `Resolve` then collapses INCONCLUSIVE to a pass for every
+  tier/mode except an engine-sensitive improvement claim. `Goldset/guard-nil`
+  is the first cell in the corpus to exhibit it — its bytes exceed a bound the
+  gate structurally cannot evaluate, so its pass rests on burden of proof
+  rather than on merit. Every other cell reporting INCONCLUSIVE is
+  bit-identical on bytes, which is why no earlier profile could surface it.
 - `evaluateStartup` (`internal/perfgate`) now bounds allocated bytes and
   allocation count non-increasing, matching every other tier. Previously the
   tier's absolute "1 ms / 256 KiB" overhead escape excused allocation

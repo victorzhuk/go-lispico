@@ -1,0 +1,26 @@
+Goldset/counter-closure-2: PASS
+Goldset/guard-nil-2: INCONCLUSIVE (latency delta not statistically significant)
+Goldset/kw-lookup-2: PASS
+Goldset/loop-sum-2: PASS
+Goldset/merge-config-2: PASS
+Goldset/pipeline-2: PASS
+Goldset/queue-promote-2: PASS
+Goldset/registry-fold-2: PASS
+Goldset/route-decision-2: PASS
+Goldset/rule-load-2: PASS
+Goldset/safe-parse-2: PASS
+Goldset/text-render-2: PASS
+Goldset/twice-macro-2: PASS
+GoldsetParse/counter-closure-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/guard-nil-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/kw-lookup-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/loop-sum-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/merge-config-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/pipeline-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/queue-promote-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/registry-fold-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/route-decision-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/rule-load-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/safe-parse-2: PASS
+GoldsetParse/text-render-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/twice-macro-2: INCONCLUSIVE (latency delta not statistically significant)
