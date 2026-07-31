@@ -51,28 +51,39 @@
 
   **Verdict (2026-07-31): the gate FIRES.** Full record in `design.md`.
 
-  Delay attributed to `EvalCached` by `pprof -peek` (98.8-99.9% of all
+  Delay attributed to `EvalCached` by `pprof -peek` (98.3-100% of all
   `sync.Mutex` delay at every level, both arms), over wall clock taken as
-  `ns/op × N` — the timed loop only:
+  `ns/op × N`:
 
   | arm | P=2 | P=8 | P=24 |
   | --- | --- | --- | --- |
-  | hits | 0.05% | 19.52% | 485.71% |
-  | mixed | 11.53% | 1014.35% | 3667.15% |
+  | hits | 0.03% | 15.71% | 374.48% |
+  | mixed | 6.77% | 625.42% | 2197.44% |
 
   The numerator sums delay across goroutines while the denominator is one
   timeline, so these exceed 100% and are not a share of wall time. Dividing
-  by `GOMAXPROCS` gives 0.02 / 2.44 / 20.24% (hits) and 5.77 / 126.79 /
-  152.80% (mixed); the threshold is cleared at 8 and 24 under both
-  conventions, the sole exception being `hits` at 8 per-CPU (2.44%), where
-  `mixed` reads 126.79%.
+  by `GOMAXPROCS` gives 0.02 / 1.96 / 15.60% (hits) and 3.39 / 78.18 /
+  91.56% (mixed); the threshold is cleared at 8 and 24 under both
+  conventions, the sole exception being `hits` at 8 per-CPU (1.96%), where
+  `mixed` reads 78.18%.
 
   Three confirmations that need no normalization: `hits` throughput
-  **regresses** past 8 cores (822.4 → 1302 ns/op at 8 → 24); `mixed` does not
-  scale at all across 2/8/24 (3861 / 3729 / 3886 ns/op); and an independent
+  **regresses** past 8 cores (800.6 → 1310 ns/op at 8 → 24); `mixed` does not
+  scale at all across 2/8/24 (3960 / 3736 / 3887 ns/op); and an independent
   `-blockprofile` pass puts `EvalCached` at 60.21% (hits) and 87.74% (mixed)
   of all blocking at `GOMAXPROCS=24`, of which 99.8-100% is
   `sync.(*Mutex).Lock`.
+
+  **Correction.** Commit `e110c3d` recorded a first pass measured at
+  `-benchtime=5s`, whose ratios were inflated: `-mutexprofile` accumulates
+  across every run of Go's `b.N` ramp while `ns/op × N` reports only the final
+  one, so numerator and denominator covered different intervals. Two cells
+  breached the physical bound `delay ≤ GOMAXPROCS × wall` (`mixed` at 8 by
+  1.27×, at 24 by 1.53×), which is what exposed it. The table above is a
+  re-run at a fixed iteration count — one execution, no ramp — and every cell
+  now satisfies that bound. `ns/op` reproduced across both passes, so only the
+  accounting changed, not the finding. Any future ratio quoted here must be
+  bound-checked before it is published.
 
 ## 1. Design decision (only if the gate fires)
 

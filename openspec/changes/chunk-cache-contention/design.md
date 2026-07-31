@@ -39,20 +39,39 @@ without touching the release gate's pass/fail surface.
 
 ## Method
 
-**Numerator.** `-mutexprofile` accumulates process-wide, so the raw total is not
-the answer — at `GOMAXPROCS=24` it also carries 19.7s of `runtime.unlock`
-(scheduler/allocator locks) and 4.4s of `_LostContendedRuntimeLock`. The figure
-below is the delay attributed to `EvalCached` specifically, read with
+**Numerator.** `-mutexprofile` accumulates process-wide, and since Go 1.22 it
+also samples runtime-internal locks, so the raw total is not the answer — the
+`hits` profile at `GOMAXPROCS=24` totals 36.57s, of which only 19.62s is this
+mutex; the rest is `runtime.unlock` (scheduler/allocator) and
+`_LostContendedRuntimeLock`. The figure below is the delay attributed to
+`EvalCached` specifically, read with
 `pprof -peek 'sync\.\(\*Mutex\)\.Unlock$'`. That attribution is unambiguous:
-**98.8-99.9% of all `sync.Mutex` delay traces to `EvalCached` at every
+**98.3-100% of all `sync.Mutex` delay traces to `EvalCached` at every
 concurrency level and in both arms**, with `sync.(*Pool).pinSlow` the only other
-contributor at ≤1.2%.
+contributor at ≤1.7%.
 
-**Denominator.** Wall clock is taken as `ns/op × N` from the benchmark's own
-output — the timed loop only. Process wall clock would include engine
-construction and cache warmup and would understate the ratio. Warmup runs
-single-goroutine, and a mutex profile records only *contended* wait, so setup
-contributes ~0 to the numerator even though the profile spans the process.
+**Denominator, and a defect that had to be fixed first.** Wall clock is
+`ns/op × N`. Under an ordinary `-benchtime=5s` that pairing is **wrong**: Go
+reaches the target duration by re-running the benchmark function with an
+increasing `b.N`, reports `ns/op` and `N` from the final run only, but
+`-mutexprofile` accumulates across every run in the ramp — all of them fully
+parallel and contending. The numerator then covers a longer interval than the
+denominator.
+
+That is not a rounding concern; it produced impossible numbers. Aggregate
+blocked time cannot exceed `GOMAXPROCS × wall`, since that is all the
+goroutine-seconds that exist. A first pass at `-benchtime=5s` put `mixed` at
+`GOMAXPROCS=8` at 60.5s of delay against a 47.8s ceiling — 1.27× over — and at
+24 at 1.53× over. **Any ratio failing that bound is measuring two different
+intervals.**
+
+The figures below therefore come from a re-run at a fixed iteration count
+(`-benchtime=4000000x` for `hits`, `1500000x` for `mixed`), so the benchmark
+function executes exactly once and there is no ramp. Timed-loop wall then
+matches process wall to within ~10ms (e.g. 5.240s vs 5.263s), the two possible
+denominators converge, and every cell satisfies the bound. `ns/op` reproduced
+the ramped run closely (`hits` 1535/800.6/1310 vs 1551/822.4/1302), so the
+correction is one of accounting, not of behavior.
 
 **Normalization is stated, not assumed.** Task 0.3 specifies total mutex-wait ÷
 wall clock. That numerator is delay summed across all goroutines while the
@@ -67,34 +86,36 @@ each other and are never combined.
 
 ## Results
 
-`-benchtime=5s`, go1.26.5, AMD Ryzen AI 9 HX 370 (24 logical CPUs),
-`powersave` governor.
+Fixed iteration count, go1.26.5, AMD Ryzen AI 9 HX 370 (24 logical CPUs),
+`powersave` governor. `wall` is `ns/op × N`; `bound` checks
+delay ≤ `GOMAXPROCS × wall`.
 
-| arm | GOMAXPROCS | ns/op | N | wall (s) | `EvalCached` delay (s) | delay/wall | delay/(wall×P) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| hits | 2 | 1551.0 | 3863582 | 5.992 | 0.003 | 0.05% | 0.02% |
-| hits | 8 | 822.4 | 7509444 | 6.176 | 1.205 | **19.52%** | 2.44% |
-| hits | 24 | 1302.0 | 4658684 | 6.066 | 29.461 | **485.71%** | **20.24%** |
-| mixed | 2 | 3861.0 | 1566564 | 6.049 | 0.698 | **11.53%** | **5.77%** |
-| mixed | 8 | 3729.0 | 1600610 | 5.969 | 60.543 | **1014.35%** | **126.79%** |
-| mixed | 24 | 3886.0 | 1539045 | 5.981 | 219.322 | **3667.15%** | **152.80%** |
+| arm | GOMAXPROCS | ns/op | N | wall (s) | `EvalCached` delay (s) | delay/wall | delay/(wall×P) | bound |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| hits | 2 | 1535.0 | 4000000 | 6.140 | 0.002 | 0.03% | 0.02% | ok |
+| hits | 8 | 800.6 | 4000000 | 3.202 | 0.503 | **15.71%** | 1.96% | ok |
+| hits | 24 | 1310.0 | 4000000 | 5.240 | 19.623 | **374.48%** | **15.60%** | ok |
+| mixed | 2 | 3960.0 | 1500000 | 5.940 | 0.402 | **6.77%** | 3.39% | ok |
+| mixed | 8 | 3736.0 | 1500000 | 5.604 | 35.049 | **625.42%** | **78.18%** | ok |
+| mixed | 24 | 3887.0 | 1500000 | 5.830 | 128.122 | **2197.44%** | **91.56%** | ok |
 
 Threshold was >5% at `GOMAXPROCS=8` or higher. Every cell at 8 and 24 clears it
 under the stated convention. Under the per-CPU convention every cell at 8 and 24
-clears it except `hits` at 8 (2.44%) — and `mixed` at 8 is 126.79% in the same
+clears it except `hits` at 8 (1.96%) — and `mixed` at 8 is 78.18% in the same
 column, so the gate fires either way.
 
 ### Three confirmations that need no normalization at all
 
-1. **`hits` throughput regresses past 8 cores** — 822.4 ns/op at
-   `GOMAXPROCS=8`, 1302 ns/op at 24. Tripling the cores costs 58% throughput.
-2. **`mixed` does not scale at all** — 3861 / 3729 / 3886 ns/op at 2 / 8 / 24.
+1. **`hits` throughput regresses past 8 cores** — 800.6 ns/op at
+   `GOMAXPROCS=8`, 1310 ns/op at 24. Tripling the cores costs 64% throughput.
+2. **`mixed` does not scale at all** — 3960 / 3736 / 3887 ns/op at 2 / 8 / 24.
    Twelve times the cores buys nothing measurable.
 3. **Block profile, independent of the mutex profile** — at `GOMAXPROCS=24`,
    `EvalCached` accounts for **60.21%** of all blocking in `hits` and **87.74%**
-   in `mixed`, of which 99.8-100% is `sync.(*Mutex).Lock`.
+   in `mixed`, of which 99.8-100% is `sync.(*Mutex).Lock`. Both shares are
+   bounded by construction and so immune to the ramp defect above.
 
-Scaling from 2→8 in `hits` is 1.89× against an available 4×, so the ceiling is
+Scaling from 2→8 in `hits` is 1.92× against an available 4×, so the ceiling is
 already visible below the threshold level.
 
 ## Limitations
@@ -114,9 +135,12 @@ already visible below the threshold level.
   scope (proposal, "Explicitly out of scope"). It does not appear in the
   attribution above, so it is not distorting the numerator.
 - **The gate's own runner is `GOMAXPROCS=2`** (`release.yml:55`), the one level
-  where `hits` contention is negligible (0.05%). A gold-set concurrent cell,
+  where `hits` contention is negligible (0.03%). A gold-set concurrent cell,
   once the tiers loop allows one, would measure at the level least able to see
   this — worth carrying into that cell's design.
+- **CI never runs this benchmark.** `.github/workflows/ci.yml:22` is
+  `go test -race -count=1 ./...` with no `-bench`, so adding it costs CI
+  nothing.
 
 ## What section 1 must now decide
 
