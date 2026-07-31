@@ -75,31 +75,49 @@ than a `core/vm` one — contrary to this change's Impact section, which expecte
       claiming it. A local figure does not license a tier and is not evidence
       the gate passes; it is evidence the change is worth taking to a hosted
       run.
-- [ ] 3.2 For any cell 1.3 says is not fixable, amend ADR 0008's threshold for
+- [x] 3.2 For any cell 1.3 says is not fixable, amend ADR 0008's threshold for
       that tier with the profile and figures behind the amendment, per this
       change's spec delta. Do not reassign the cell's tier to pass it. An
       amendment that cannot name its evidence is a relabelling with extra
       steps.
 
-      Open, and deliberately so. `guard-nil` is the one cell 1.3 leaves
-      unfixed: it drops from +20.83% to +0.09% bytes (1080 B/op under the
-      Evaluator against 1081 under the VM, locally) and still fails its
-      data-dominated non-increasing bound, by a byte. A matched-N profile diff
-      shows the residual is not a removable site — `core/vm.(*VM).run`'s
-      ~96 B/op is offset almost exactly by `core.(*engine).Eval`'s ~−96 B/op,
-      two engines' honest cost for the same logical work, plus ~10–13 B/op of
-      `sync.Pool` GC-cadence churn on `vmPool` that varies run to run.
+      `guard-nil` is the one cell 1.3 leaves unfixed: it drops from +20.83% to
+      +0.09% bytes and still fails its data-dominated non-increasing bound, by
+      a byte. A matched-N profile diff shows the residual is not a removable
+      site — `core/vm.(*VM).run`'s ~96 B/op is offset almost exactly by
+      `core.(*engine).Eval`'s ~−96 B/op, two engines' honest cost for the same
+      logical work, plus ~10–13 B/op of `sync.Pool` GC-cadence churn on
+      `vmPool` that varies run to run.
 
-      The amendment is therefore the expected outcome rather than a fallback,
-      but it cannot be written yet: this change's own spec delta requires an
-      amendment to name the profile and figures behind it, and the only figures
-      that license one come from a hosted run. Local B/op is deterministic per
-      tree *and toolchain* — CI pins Go 1.24 against this box's 1.26.5 — so a
-      one-byte margin is exactly the size of figure that does not survive the
-      move. Size it from section 4's profile, and keep the allowance named and
-      per-cell rather than loosening the data-dominated tier as a whole: the
-      other twelve cells carrying that tier are reader-only, measure
-      bit-identical bytes across modes, and should keep the exact bound.
+      **Resolved: a named 4 B/op allowance, and the ordering defect fixed with
+      it.** The two were one decision, as the note under section 4 said. The
+      allowance is sized from hosted figures rather than the local ones this
+      task originally carried: three dispatch runs — 30630796967, 30637802780,
+      and 30639778105 — each measured 1128 B/op under the Evaluator against
+      1129 under the VM, +0.09%, p=0.000, 0% CI on both arms, allocations
+      bit-identical at 32. The allowance lives in `internal/perfgate/tiers.json`'s
+      `bytesAllowanceBOp` map and its number and evidence in ADR 0008's
+      Thresholds section, so the bound is answerable without reading
+      `perfgate.go` as the spec delta requires. It is named and per-cell: the
+      other thirteen data-dominated cells are reader-only, measure
+      bit-identical bytes across modes, and keep the exact bound. No cell's
+      tier changed.
+
+      The ordering fix hoists the bytes and allocation non-increase checks
+      above the latency-significance gate in `evaluateNonRegression`,
+      `evaluateWithinTolerance`, and `evaluateStartup`.
+      `evaluateEngineSensitiveImprovement` hoists only its allocations check:
+      its bytes check is a 20%-improvement floor, and benchstat `~` parses to
+      `DeltaPct = 0`, so hoisting a floor would turn "not yet significant" into
+      an immediate FAIL and delete the doubled-benchtime rerun for that tier.
+
+      `verdict.txt` for profile 30637802780 is byte-identical after both
+      changes, verified by running the gate against the committed profile —
+      `guard-nil`'s bytes now clear the allowance instead of never being
+      checked, and the cell still reads INCONCLUSIVE on its non-significant
+      latency (p=0.055). That is why `TestPinnedProfile` cannot discriminate
+      this fix, and why direct `Evaluate` tests pin the new ordering and the
+      allowance's within/past/unlisted cases instead.
 - [x] 3.3 CHANGELOG `[Unreleased]`: what moved, on which cells, and by how
       much. If a threshold was amended rather than an allocation reduced, say
       that plainly — the two are not interchangeable in a release note.
@@ -176,10 +194,19 @@ the implementation does not apply it. No earlier profile could have surfaced it
 `guard-nil` is the first cell in the corpus with a non-significant latency and a
 significant bytes delta.
 
-Left unfixed deliberately. The ordering change would alter the verdict path for
-all 26 cells and every future release, and it interacts with 3.2: fixing it
-makes `guard-nil` fail on bytes, which is precisely the amendment 3.2 holds
-open. Both belong to one deliberate decision, not to a tail-end edit here.
+Fixed under 3.2, together with the amendment it was bound to. The verdict path
+did change for every tier, but only in one class of case: a cell whose bytes or
+allocations regressed while its latency delta was not significant now fails on
+attempt one instead of resolving to a pass. No cell in the committed profile
+falls in that class, so `verdict.txt` did not move.
+
+A later run made the ordering defect concrete rather than theoretical. Dispatch
+run `30639778105`, on a tree byte-identical to the profile's on every engine
+path, read `guard-nil`'s latency as significant for the first time (+2.46%,
+p=0.000) — which cleared the significance gate, cleared the ±5% tolerance,
+reached `nonIncreasing`, and returned `FAIL (bytes increased by 0.09%)`. The
+cell's green was never a property of the engine; it was a property of whether
+that run's latency happened to reach significance.
 
 - [x] 4.4 Pin the committed profile with a test in
       `internal/perfgate/perfgate_test.go`: parse the profile's two benchmark
@@ -206,33 +233,30 @@ open. Both belong to one deliberate decision, not to a tail-end edit here.
 ### What remains open
 
 The gate passes. Hosted run `30630796967` against `2910e79` returned all 26
-cells green, the first passing gate in the project's history, and its paired
-output is committed as the profile licensing `tiers.json`. Locally,
+cells green, the first passing gate in the project's history. `tiers.json` is
+now licensed by the later profile `30637802780`, which added the Call cell and
+reproduced every figure this section quotes. Locally,
 `bin/perfgate` against that committed profile reports 13 PASS, 13 INCONCLUSIVE,
 0 FAIL, exit 2 — the pre-rerun state, since the hosted job reruns
 non-significant cells at doubled benchtime before resolving them.
 
 Open, in the order they have to be settled:
 
-1. **Task 3.2, and the ordering defect it is now bound to.** `guard-nil`'s
-   green rests on burden of proof rather than merit, and the ordering that
-   produces it spans all four tier evaluators. Fixing the ordering makes the
-   cell fail on bytes and forces the 3.2 amendment; amending the threshold
-   first leaves the ordering live for every future cell. They are one decision.
-   The figures the amendment needs now exist: 1128 against 1129 B/op, +0.09%,
-   p=0.000, profile `30630796967`.
-
-   Whoever takes it should expect `TestPinnedProfile` to fail, and that is the
-   test working. It pins `Goldset/guard-nil-2: INCONCLUSIVE` — the current,
-   defective behavior — so any fix to the ordering must regenerate
-   `verdict.txt` alongside the code. The digest constants stay valid: the raw
-   benchmark files do not move, only the judgment over them.
-
-2. **`release-gate-activation` 1.2, 4.2, 5.1.** Reachable but not reached. All
+1. **`release-gate-activation` 1.2, 4.2, 5.1.** Reachable but not reached. All
    three wait on a *release cut* whose gate passes, which stores the
    `bench-vm.txt` baseline asset. A `workflow_dispatch` run carries no release
    identity, so this one stored nothing and consumed no baseline slot. The cut
    is not this change's to make. Do not hand-upload the asset to close them.
+
+2. **The bytes allowance reads wider than the one cell using it.** An entry in
+   `bytesAllowanceBOp` is honored wherever a bytes non-increasing bound is
+   applied — data-dominated, concurrent, and startup cells in either mode, and
+   engine-sensitive cells once in non-regression. It is inert against the
+   engine-sensitive 20% improvement floor, which `nonIncreasing` does not
+   govern, so an entry on such a cell would do nothing at first authorization
+   and take effect only afterwards. `LoadTierConfig` validates that an
+   allowance names a known cell, not that its tier can honor it. Documented in
+   ADR 0008 and in the loader's own comment; no cell triggers it today.
 
 3. **`plugins/json`'s `TestDecodeHashMap_Scaling`.** A wall-clock ratio
    assertion that fails roughly one run in eight under load, on `master` as
