@@ -128,7 +128,7 @@
 
 ## 2. Retroactive verdicts
 
-- [ ] 2.1 Against the run from 1.1, record 527f03c's fusion result: does the
+- [x] 2.1 Against the run from 1.1, record 527f03c's fusion result: does the
       hosted runner's fib-adjacent cells (`loop-sum`, `queue-promote` — both
       contain `(= i N)`/`(+ i 1)`-shaped local/const native-op calls in a
       loop body per their own fixture source, `internal/goldset/testdata/
@@ -137,7 +137,7 @@
       as fusable-shape evidence) show any movement attributable to
       `OpFusedNativeOp`? Record the number even if it confirms the local
       near-miss.
-- [ ] 2.2 Run the interleaved benchstat that `vm-batched-ledger-charging`
+- [x] 2.2 Run the interleaved benchstat that `vm-batched-ledger-charging`
       (631b2ee) never ran (its own tasks 1.1/3.3/3.4 were left unchecked at
       archive time). Use this run's `bench-vm.txt` as one side; do not edit
       the archived change's `tasks.md` — record the result here, referencing
@@ -157,7 +157,17 @@
 > change did not scope. Neither task is dropped: the obligation stands, and
 > whichever run settles it must name its two refs.
 
-- [ ] 2.3 Settle `engine-lean-call-boundary`'s absolute bar, which archived
+**Both re-scoped 2026-07-31 to `gate-deferred-measurements`.** The method
+finding above is what closes them here: no run this change can produce
+attributes either commit, so leaving the boxes open would have kept the change
+hostage to work its own text proves is out of scope. The obligation is not
+dropped — it now has an owner and a named home, `gate-deferred-measurements`
+tasks 1.2 and 1.3, which must name both refs per that change's spec delta. That
+change's task 0.1 may also decide to decline the attribution outright, which is
+a legitimate outcome provided it is written down with reasoning; what it may
+not do is leave it unowned again.
+
+- [x] 2.3 Settle `engine-lean-call-boundary`'s absolute bar, which archived
       unmet. Its relative deltas were confirmed (Call rows −21..−37%), but
       the `Call ≤110ns` target — and the ≤95ns composed target — were never
       adjudicated: the dev box reads 137.0-137.4 ns median at HEAD c8645fb
@@ -204,6 +214,16 @@
       read that statement as ownership — settling this task still needs a
       future change that either adds the cell or restates the bar against
       something the repo measures.
+
+      **Re-scoped 2026-07-31 to `gate-deferred-measurements`**, which is that
+      future change: its tasks 2.1-2.5 add the `Call` cell to the gold set,
+      license its tier against a checked-in profile, adjudicate the ≤110ns and
+      composed ≤95ns targets against a hosted figure, and lift the quoting
+      prohibition only at that point. Its `consumer-release-gate` delta moves
+      the `Call` boundary out of the corpus's stated exclusions and into
+      required coverage, so the ownership gap this amendment recorded is
+      closed by assignment rather than by measurement — the measurement is
+      that change's task, not this one's.
 - [x] 2.4 Same run, cross-engine rows: GopherLua and goja are not in
       `go.mod` (testify, x/sync, x/term only), so no in-repo bench can
       produce the comparison this program's goal table is stated against.
@@ -397,3 +417,100 @@ settleable inside this change's scope — 2.3 belongs to
 nothing currently schedules. Closing this change honestly requires either
 running them or deliberately re-scoping them elsewhere; it does not require
 another apply pass.
+
+---
+
+## Status at the end of the third apply pass
+
+Nothing external moved between the second pass and this one. Every open task's
+blocker was re-checked rather than carried forward:
+
+| Fact | Command | Value |
+| --- | --- | --- |
+| `v0.11.0` assets | `gh release view v0.11.0 --json assets` | `[]` — still no `bench-vm.txt` |
+| Gate runs | `gh run list --workflow=release.yml` | one, `30561584997`, conclusion `failure` |
+| Evidence artifact | `gh api repos/:owner/:repo/actions/runs/30561584997/artifacts` | `consumer-gate-evidence`, 6615 B, `expired: false`, expires **2026-10-28** |
+| `tiers.json`, `release.yml` | `git log -- internal/perfgate/tiers.json .github/workflows/release.yml` | untouched since `7747113` |
+| An owner for the tiers fix | `openspec list --json` | none — the only other pending change is `value-layout-locality` (0/12) |
+
+The second pass's blocker table therefore stands. What this pass adds is a
+correction to how that table states the loop, and a deadline the table did not
+carry.
+
+**The loop was stated wrong: a classification profile and a stored baseline
+asset are two different artifacts.** The second pass concluded that fixing the
+tiers "needs a decision about what counts as a profile of record — a
+`workflow_dispatch` artifact, or an ADR 0008 amendment", which treats the
+expiring workflow artifact and the release asset as rival candidates for one
+slot. They are not the same slot. ADR 0008's Thresholds section requires "a
+checked-in baseline profile" — a file committed to this repository — to
+classify each cell, while the stored `bench-vm.txt` (`release.yml`'s "Store VM
+baseline on the authorized release") is the per-release non-regression
+comparator and is by construction *not* checked in. Task 1.2 forbids
+hand-placing the asset; it says nothing about committing hosted bench output as
+classification evidence, which is a different artifact with a different
+consumer.
+
+**A `workflow_dispatch` run produces that evidence today, with no release
+identity to abuse.** Only two steps in `release.yml` are release-gated:
+"Determine gate mode" and "Store VM baseline on the authorized release". The
+gold set, the race suite, the paired Evaluator/VM bench, and `perfgate` in
+first-authorization mode all run under dispatch, and "Upload release evidence"
+is `if: always()`, so `bench-evaluator.txt` and `bench-vm.txt` come back as an
+artifact regardless of verdict. A dispatch run at `master` thus yields a hosted
+paired profile that can be committed and cited without touching any release's
+assets and without consuming the one-shot `released` slot that 0.1 reserved.
+
+**What remains a judgment call is the ordering rule, not the artifact.** ADR
+0008 places the checked-in profile "before candidate results are produced". A
+profile taken from `master` and committed before the next tag is cut satisfies
+that literally, but the tree it profiles is the tree the next release measures,
+so the tiers would be fit to numbers already observed. That risk is inherent to
+any first-authorization profile and is bounded by what a tier asserts — a
+qualitative shape (engine-sensitive / data-dominated / startup), not a
+per-cell threshold. Whether that bound suffices is ADR 0008's owner's call, and
+it is the last question standing between here and 1.2.
+
+**Deadline: the only hosted profile this repository has ever produced expires
+2026-10-28.** After that, run `30561584997`'s data is gone and reopening 1.2,
+2.1, 2.2, 4.2, or 5.1 costs a fresh hosted run. A copy was pulled during this
+pass for inspection only; it lives outside the repository and is not repo
+state.
+
+**Decisions taken this pass, and two changes authored to carry them.**
+
+- The dispatch route is adopted. `gate-tier-reclassification` owns committing a
+  hosted `workflow_dispatch` profile as the classification profile of record
+  and correcting the eight misclassified cells against it. Its
+  `consumer-release-gate` delta writes down the distinction this pass found —
+  the checked-in classification profile and the stored per-release baseline
+  asset are separate artifacts with separate rules — so the loop cannot be
+  restated the old way again.
+- `gate-deferred-measurements` owns the three orphans. 2.1 and 2.2 become its
+  tasks 1.2 and 1.3 (a two-ref hosted bench naming both refs, with declining
+  the attribution an allowed outcome provided it is reasoned and written down);
+  2.3 becomes its tasks 2.1-2.5 (a `Call` cell in the gold set, its tier
+  licensed by a profile, the absolute bar adjudicated against a hosted figure).
+  Its spec delta moves the `Call` boundary from stated exclusion to required
+  coverage. All three tasks are checked here as re-scoped, not as measured.
+
+**A dispatch run was fired to prove the mechanism, and it did — while
+disqualifying itself as the profile.** Run `30610843591` (2026-07-31, `--ref
+master`) behaved exactly as `release.yml` predicts under dispatch: "Determine
+gate mode" and "Store VM baseline" skipped, gold set green, race suite green,
+paired bench complete, a first-authorization verdict produced, evidence
+uploaded, and only "Enforce performance gate verdict" failing on the same eight
+cells. Its head sha, however, is `fee885a`: GitHub resolves `--ref master`
+against the remote branch, and `origin/master` sits 20 commits behind the local
+one. That is `v0.11.0`'s tree, so the run re-measured the tree whose verdict is
+already known — figures reproduce run `30561584997`'s to within a few tenths of
+a percent — and using it would fit tiers to a judged release's candidate
+results. A usable profile needs a dispatch against the tree the next release is
+cut from, which needs those 20 commits pushed first. Recorded in
+`gate-tier-reclassification` task 1.1; the push is nobody's task in either
+change.
+
+What stays open here: 1.2, 4.2, and 5.1, all waiting on the same event — a
+release cut whose gate passes against corrected tiers, which stores the
+baseline itself. The cut is not this change's to make. This change is at 10/13
+and archives when that release lands.
