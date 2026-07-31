@@ -186,9 +186,12 @@ argument marshalling, function-cell lookup, and frame setup.
 
 Four qualifiers travel with the 188.50 ns figure wherever it is quoted:
 
-- **It is a hosted-runner figure.** The same cell reads 89.57 ns/op on a
-  developer box. That 2.1x gap on identical code is why this corpus admits
-  hosted figures only.
+- **It is a hosted-runner figure.** Measuring the same cell on a developer box
+  does not check it: ten samples at these same parameters span 120.4-196.2 ns
+  in one session on one box, a range that straddles this figure. A single fast
+  sample from such a box (89.57 ns/op at `-benchtime=50ms -count=1`) is inside
+  that noise, not evidence against the hosted number. This is why the corpus
+  admits hosted figures only.
 - **It excludes the caller's argument slice.** The cell passes a pre-built
   `[]core.Value` (`CallCell.Args`), so the variadic slice is hoisted out of
   the timed loop. `runtime`'s own Call benchmarks construct it inline and

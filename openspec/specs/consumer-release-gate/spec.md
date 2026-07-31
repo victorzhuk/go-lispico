@@ -165,8 +165,10 @@ builds, and the fact that the cell hoists the caller's variadic argument
 slice out of the timed loop and therefore excludes it. A developer-box
 measurement SHALL NOT be quoted as a settled bar: the boundary's recorded
 dev-box spread (137.0-137.4 ns against 119.7-122.8 ns at one HEAD on one day)
-is wider than the margins such a bar asserts, and the cell itself reads
-89.57 ns on a developer box against 188.50 ns hosted.
+is wider than the margins such a bar asserts, and the cell reproduces that
+instability directly — ten samples at the gate's own parameters on one
+developer box in one session span 120.4-196.2 ns, a range that straddles the
+188.50 ns hosted figure rather than sitting cleanly below it.
 
 An absolute nanosecond target for this boundary SHALL name the machine, the
 engine configuration, and what its timed region includes; a target that names

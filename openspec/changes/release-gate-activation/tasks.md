@@ -111,6 +111,22 @@
       decided, the workflow's own "Store VM baseline on the authorized
       release" step does this; no manual upload is required.
 
+      **Blocked on a coin flip, as of 2026-07-31.** The store step runs only
+      after the verdict step passes, and the gate's pass is no longer
+      reliable: dispatch run `30639778105` returned
+      `Goldset/guard-nil-2: FAIL (bytes increased by 0.09%)` because that
+      run's latency delta read +2.46% at p=0.000 — significant, where three
+      earlier runs read `~`, so the evaluator reached the bytes bound it had
+      always short-circuited past. No engine code differs between that run
+      and the profile run that passed. So whether a release cut stores its
+      asset now depends on whether that release's run happens to measure
+      `guard-nil`'s latency as significant. `vm-allocation-parity` task 3.2
+      owns the threshold decision that settles it; until then this task, 4.2,
+      and 5.1 are all waiting on the same coin flip rather than on a release
+      being cut. Recorded in
+      `archive/2026-07-31-gate-deferred-measurements/tasks.md` task 4.3 and in
+      `internal/perfgate/testdata/profile-30637802780/README.md`.
+
       **Not stored. `v0.11.0` carries no assets.** The store step inherits
       the implicit `success()` guard on its `if:`, so a failing verdict
       skips it — and 1.1's verdict failed on tier misclassification. The
@@ -165,6 +181,17 @@ dropped — it now has an owner and a named home, `gate-deferred-measurements`
 tasks 1.2 and 1.3, which must name both refs per that change's spec delta. That
 change's task 0.1 may also decide to decline the attribution outright, which is
 a legitimate outcome provided it is written down with reasoning; what it may
+
+**Settled 2026-07-31: declined, with reasoning.** That change archived as
+`archive/2026-07-31-gate-deferred-measurements`; its task 0.1 declined to build
+the two-ref capability and recorded the attribution of both `527f03c` and
+`631b2ee` as declined. Neither claim is confirmed or refuted, no run may be
+cited as settling either, and nothing here reopens. The rule that attribution
+needs a two-ref run naming both refs landed in `consumer-release-gate`
+regardless, so a future claim must name the run that will settle it or decline
+the same way. Read that archive's `tasks.md` sections 0 and 1 for the four
+reasons; the paragraph below is the pre-decision framing, kept as written.
+
 not do is leave it unowned again.
 
 - [x] 2.3 Settle `engine-lean-call-boundary`'s absolute bar, which archived
@@ -219,7 +246,8 @@ not do is leave it unowned again.
       future change: its tasks 2.1-2.5 add the `Call` cell to the gold set,
       license its tier against a checked-in profile, adjudicate the ≤110ns and
       composed ≤95ns targets against a hosted figure, and lift the quoting
-      prohibition only at that point. Its `consumer-release-gate` delta moves
+      prohibition only at that point. **Done 2026-07-31** — see the closing
+      note at the end of this file. Its `consumer-release-gate` delta moves
       the `Call` boundary out of the corpus's stated exclusions and into
       required coverage, so the ownership gap this amendment recorded is
       closed by assignment rather than by measurement — the measurement is
@@ -493,6 +521,17 @@ state.
   licensed by a profile, the absolute bar adjudicated against a hosted figure).
   Its spec delta moves the `Call` boundary from stated exclusion to required
   coverage. All three tasks are checked here as re-scoped, not as measured.
+
+  **Discharged 2026-07-31, at `archive/2026-07-31-gate-deferred-measurements`.**
+  2.1 and 2.2: declined with reasoning, no two-ref capability built. 2.3: the
+  cell `GoldsetCall/call-boundary` is committed, tiered engine-sensitive
+  against hosted profile `30637802780`, and reported PASS in hosted run
+  `30639778105`; the `≤110ns` and composed `≤95ns` targets were retired as not
+  adjudicable — they name no machine, engine configuration, or timed region,
+  and the cell reads 188.50 ns hosted under conditions none of them specify.
+  The quoting prohibition is lifted against hosted figures carrying their
+  qualifiers. That same run also failed on `guard-nil`, which is what now
+  blocks 1.2, 4.2, and 5.1 — see the note on 1.2 above.
 
 **A dispatch run was fired to prove the mechanism, and it did — while
 disqualifying itself as the profile.** Run `30610843591` (2026-07-31, `--ref

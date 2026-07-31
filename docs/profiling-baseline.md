@@ -239,8 +239,10 @@ VM-mode-specific and each under 3.5% — not worth chasing from this baseline.
   `internal/perfgate/testdata/profile-30637802780`. Quote that figure with the
   qualifiers recorded alongside it — it is a hosted-runner number for the gold
   set's engine configuration, and it excludes the caller's variadic argument
-  slice, which the cell hoists out of its timed loop. The same cell reads
-  89.57 ns here, which is the size of the gap between this box and the gate.
+  slice, which the cell hoists out of its timed loop. Measuring the same cell
+  here does not settle anything against it: ten samples at the gate's own
+  parameters span 120.4-196.2 ns in a single session, straddling the hosted
+  figure.
 
 ## 3a. Do global lookups still dominate?
 
