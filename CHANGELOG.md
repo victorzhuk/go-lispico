@@ -67,6 +67,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocates 19.40% more than the Evaluator, `kw-lookup` at -9.04%, and
   `merge-config` at -19.96% against ADR 0008's 20% floor — and no release has
   been cut against the corrected tiers.
+- `runtime.sha256Hash`, which keys the striped bytecode chunk cache off the
+  source text on every VM `Eval` (and off the stdlib bootstrap source in
+  `bytecodeEvaluator.EvalStdlibBootstrap`, `runtime/bootstrap_cache.go:66`),
+  copied the whole source string into a fresh byte slice before hashing it.
+  `crypto/sha256.Sum256` neither retains nor mutates its argument, so the
+  copy is unnecessary; hashing now aliases the string's bytes directly. The
+  site was 17.86% of `guard-nil`'s alloc_space on a profile taken before this
+  change. It fires on every VM evaluation, so removing it moves every gold-set
+  cell's bytes; on `guard-nil` specifically it was the whole of the
+  Evaluator-vs-VM gap, while `kw-lookup` and `merge-config` were already
+  below the Evaluator and simply move further below. Measured on the gold
+  set (`-benchtime=200ms`, whole-process A/B, GOMAXPROCS=2): `kw-lookup`
+  moves from -9.36% to -21.93% bytes and clears ADR 0008's -20%
+  engine-sensitive floor; `merge-config` moves from -20.39% to -26.93% and
+  clears the same floor with wider margin. `guard-nil`, the data-dominated
+  cell, drops from +20.83% to +0.09% (1080 to 1081 B/op) but still fails its
+  non-increasing bound by roughly a byte; that residual is unrelated engine
+  cost (`core/vm.(*VM).run` vs `core.(*engine).Eval`, offsetting almost
+  exactly, plus `sync.Pool` GC-cadence churn) and its threshold is left for a
+  hosted profile to settle, not amended here.
+- `evaluateStartup` (`internal/perfgate`) now bounds allocated bytes and
+  allocation count non-increasing, matching every other tier. Previously the
+  tier's absolute "1 ms / 256 KiB" overhead escape excused allocation
+  entirely, so a startup cell could allocate without limit and still pass.
+  The escape now excuses only the latency percentage bound. `Goldset/rule-load`,
+  the corpus's only startup cell, reads -28.28% bytes and -22.69% allocs on
+  the committed classification profile, so this changes no verdict on the
+  current corpus — confirmed by running `cmd/perfgate` against that profile
+  before and after the change and diffing the verdict output byte-for-byte.
 - `Vector` packs into 64 bytes instead of 72, so every vector boxed as a
   `Value` now lands in Go's 64-byte allocator size class rather than its
   80-byte one — 16 bytes less per retained vector, measured at 20% on a

@@ -1,6 +1,7 @@
 package perfgate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -168,17 +169,138 @@ func TestEvaluate_Concurrent_RaceNotClean(t *testing.T) {
 	assert.Equal(t, VerdictFail, res.Verdict)
 }
 
+// TestEvaluate_Startup_AbsoluteOverheadException: the absolute "1 ms / 256
+// KiB" overhead escape excuses the LATENCY percentage bound only — a cell
+// deep under the absolute latency/bytes floor still passes despite a 500%
+// latency delta. Bytes and allocs are unchanged (not increased) here on
+// purpose: that escape does not extend to the byte/alloc non-increasing
+// bounds, which evaluateStartup checks the same way every other tier does.
 func TestEvaluate_Startup_AbsoluteOverheadException(t *testing.T) {
 	t.Parallel()
 
 	cell := CellComparison{
 		Name:    "LoadRules",
 		Latency: MetricResult{Old: 0.0001, New: 0.0006, DeltaPct: 500, Significant: true, N: 10},
-		Bytes:   MetricResult{Old: 100, New: 200, DeltaPct: 100, Significant: true, N: 10},
+		Bytes:   MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: true, N: 10},
 		Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
 	}
 	res := Evaluate(cell, TierStartup, ModeNonRegression)
-	assert.Equal(t, VerdictPass, res.Verdict)
+	assert.Equal(t, VerdictPass, res.Verdict, "got %s", res.Reason)
+}
+
+// TestEvaluate_Startup_BytesOrAllocsIncreaseFails covers the non-increasing
+// bound on both latency paths evaluateStartup can take before it — a cell
+// safely within the 5% latency tolerance, and one that only survives on the
+// absolute 1ms/256KiB overhead escape — and under both gate modes (the next
+// hosted run is first-authorization; a later release compares non-regression
+// once a stored baseline exists). The "absolute-overhead escape" cases are
+// the ones that matter: they are the combination the pre-fix evaluateStartup
+// got wrong, returning VerdictPass as soon as the escape cleared latency
+// without ever checking bytes or allocs.
+func TestEvaluate_Startup_BytesOrAllocsIncreaseFails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		latency    MetricResult
+		bytes      MetricResult
+		allocs     MetricResult
+		wantReason string
+	}{
+		{
+			name:       "within tolerance, bytes increased",
+			latency:    MetricResult{Old: 0.0001, New: 0.0001, DeltaPct: 0, Significant: true, N: 10},
+			bytes:      MetricResult{Old: 100, New: 200, DeltaPct: 100, Significant: true, N: 10},
+			allocs:     MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
+			wantReason: "bytes increased",
+		},
+		{
+			name:       "within tolerance, allocs increased",
+			latency:    MetricResult{Old: 0.0001, New: 0.0001, DeltaPct: 0, Significant: true, N: 10},
+			bytes:      MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: true, N: 10},
+			allocs:     MetricResult{Old: 2, New: 3, DeltaPct: 50, Significant: true, N: 10},
+			wantReason: "allocs increased",
+		},
+		{
+			// Latency delta is 500%, well outside the 5% tolerance, but New
+			// (0.6ms/200B) clears the absolute 1ms/256KiB floor, so the
+			// escape rescues latency. Bytes still increased 100% — the case
+			// Blocker 1 named: the escape must not also rescue allocation.
+			name:       "absolute-overhead escape, bytes increased",
+			latency:    MetricResult{Old: 0.0001, New: 0.0006, DeltaPct: 500, Significant: true, N: 10},
+			bytes:      MetricResult{Old: 100, New: 200, DeltaPct: 100, Significant: true, N: 10},
+			allocs:     MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
+			wantReason: "bytes increased",
+		},
+		{
+			name:       "absolute-overhead escape, allocs increased",
+			latency:    MetricResult{Old: 0.0001, New: 0.0006, DeltaPct: 500, Significant: true, N: 10},
+			bytes:      MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: true, N: 10},
+			allocs:     MetricResult{Old: 2, New: 3, DeltaPct: 50, Significant: true, N: 10},
+			wantReason: "allocs increased",
+		},
+	}
+	for _, tt := range tests {
+		for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+			t.Run(fmt.Sprintf("%s/%s", tt.name, modeName(mode)), func(t *testing.T) {
+				t.Parallel()
+				cell := CellComparison{Name: "Goldset/rule-load", Latency: tt.latency, Bytes: tt.bytes, Allocs: tt.allocs}
+				res := Evaluate(cell, TierStartup, mode)
+				assert.Equal(t, VerdictFail, res.Verdict)
+				assert.Contains(t, res.Reason, tt.wantReason)
+			})
+		}
+	}
+}
+
+// TestEvaluate_Startup_Fail_BothPathsExceeded covers evaluateStartup's real
+// VerdictFail branch — latency exceeds the tolerance AND the absolute
+// overhead bound — which had no test on master before this change touched
+// the function.
+func TestEvaluate_Startup_Fail_BothPathsExceeded(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		t.Run(modeName(mode), func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:    "Goldset/rule-load",
+				Latency: MetricResult{Old: 0.0001, New: 0.002, DeltaPct: 1900, Significant: true, N: 10},
+				Bytes:   MetricResult{Old: 100, New: 200, DeltaPct: 100, Significant: true, N: 10},
+				Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
+			}
+			res := Evaluate(cell, TierStartup, mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "exceeds")
+			assert.Contains(t, res.Reason, "tolerance")
+			assert.Contains(t, res.Reason, "absolute overhead")
+		})
+	}
+}
+
+func modeName(m Mode) string {
+	if m == ModeFirstAuthorization {
+		return "first-authorization"
+	}
+	return "non-regression"
+}
+
+// TestEvaluate_Startup_NonSignificantByteDeltaPasses documents the known
+// blind spot recorded in ADR 0008: benchstat's "~" comes through parse.go as
+// DeltaPct=0 with Significant=false, so a real but non-significant byte/alloc
+// regression is indistinguishable from no change and passes here like every
+// other non-increasing tier.
+func TestEvaluate_Startup_NonSignificantByteDeltaPasses(t *testing.T) {
+	t.Parallel()
+
+	cell := CellComparison{
+		Name:    "Goldset/rule-load",
+		Latency: MetricResult{Old: 0.0001, New: 0.0001, DeltaPct: 0, Significant: true, N: 10},
+		Bytes:   MetricResult{Old: 100, New: 108, DeltaPct: 0, Significant: false, N: 10},
+		Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: false, N: 10},
+	}
+	res := Evaluate(cell, TierStartup, ModeNonRegression)
+	assert.Equal(t, VerdictPass, res.Verdict, "got %s", res.Reason)
 }
 
 func TestParseBenchstatCSV(t *testing.T) {

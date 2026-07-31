@@ -21,7 +21,7 @@ This ADR is the single owner of the numbers; the PRD and glossary reference them
 - Engine-sensitive hot cells: at least 15% lower latency and 20% fewer allocated bytes, allocation count non-increasing.
 - Data/output-dominated hot cells: within 5% latency, bytes and allocation count non-increasing.
 - Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing, race detector clean in the separate untimed run.
-- Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone.
+- Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone; bytes and allocation count stay non-increasing regardless of which of those two latency paths the cell takes — the absolute-overhead escape excuses the latency percentage only, never allocation.
 
 "Within 5%" above is a bound on regression, matching this section's opening rule that no cell may *regress* beyond its tier's budget: a candidate that is faster than its baseline passes at any margin. Reading it as a two-sided band would fail a release for making the engine faster, which is the outcome this ADR rejects below under a standing improvement gate. Two exceptions, both because the two runs are then expected to measure the same cost rather than two releases. First, comparing the Evaluator and VM variants of one commit at first authorization, a data/output-dominated cost is mode-invariant by classification, so movement either way is a finding. Second, the concurrent tier's timed figure may be a throughput measure, where larger is better, so its bound stays two-sided until that sign convention is stated.
 
@@ -30,6 +30,22 @@ Note (resolved-binding cells): the per-chunk global-read site cache adds one
 every eval (only `twice-macro`, whose `defmacro` bumps the macro epoch) therefore
 carries ~+0.2% B/op with allocation count and latency unchanged — a fixed
 per-chunk field, within CI benchstat noise, not a per-operation regression.
+
+Note (non-increasing bounds and benchstat "~"): every tier with a bytes or
+allocation-count non-increasing bound, including startup, shares one blind
+spot. benchstat reports a non-significant metric delta as `~`, which this
+gate's CSV parser turns into `DeltaPct = 0`; a real but non-significant
+byte or allocation regression is therefore indistinguishable from no change
+and passes the bound undetected. This is a pre-existing gap in the gate's
+machinery, not something this ADR resolves.
+
+Note (startup's absolute overhead reading, still open): "at most 1 ms and
+256 KiB absolute overhead" above is ambiguous between an absolute *New*
+value under the floor and an absolute *delta* (New − Old) under the floor.
+The implementation reads it as the former — a cell passes the escape when
+its New latency and New bytes each sit under the floor outright, regardless
+of Old. The latter reading is unresolved and not implemented; this note
+records the choice made, not a decision that the other reading is wrong.
 
 ## Consequences
 

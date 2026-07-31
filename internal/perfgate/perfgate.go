@@ -231,11 +231,14 @@ func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
 	return Result{Verdict: VerdictPass}
 }
 
+// evaluateStartup applies ADR 0008's startup/Rule-load rule: the absolute
+// "1 ms / 256 KiB" overhead escape is a relief valve for the LATENCY
+// percentage bound only, so sub-millisecond one-time work cannot fail on
+// percentage alone. It does not excuse allocation — bytes and allocation
+// count stay non-increasing here exactly as they do for every other tier,
+// regardless of which latency path (tolerance or absolute bound) the cell
+// takes.
 func evaluateStartup(cell CellComparison, mode Mode) Result {
-	// ADR 0008's "at most 1 ms and 256 KiB absolute overhead" is ambiguous
-	// between an absolute New value under the floor (what's implemented
-	// below) and an absolute delta (New-Old) under the floor. Worth an
-	// ADR/design clarification.
 	if !cell.Latency.Significant {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
 	}
@@ -251,6 +254,12 @@ func evaluateStartup(cell CellComparison, mode Mode) Result {
 			cell.Latency.DeltaPct, nonRegressionTolerancePct,
 			cell.Latency.New*1000, cell.Bytes.New,
 			startupMaxLatency, startupMaxBytes/1024)}
+	}
+	if r := nonIncreasing(cell.Bytes, "bytes"); r.Verdict != VerdictPass {
+		return r
+	}
+	if r := nonIncreasing(cell.Allocs, "allocs"); r.Verdict != VerdictPass {
+		return r
 	}
 	return Result{Verdict: VerdictPass}
 }
