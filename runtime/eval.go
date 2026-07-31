@@ -306,10 +306,14 @@ func (be *bytecodeEvaluator) evictCacheEntryLocked(s *cacheStripe, entry *cacheE
 	}
 }
 
+// flushCacheEpochLocked reclaims entries older than epoch. The test is < and
+// not != because a sweep for an older epoch can still be walking stripes when
+// a redefinition bumps past it: != would let that in-flight sweep delete an
+// entry a newer epoch just admitted into a stripe it had not yet reached.
 func (be *bytecodeEvaluator) flushCacheEpochLocked(s *cacheStripe, epoch int) {
 	for entry := s.tail; entry != nil; {
 		prev := entry.prev
-		if entry.key.macroEpoch != epoch {
+		if entry.key.macroEpoch < epoch {
 			be.evictCacheEntryLocked(s, entry)
 		}
 		entry = prev

@@ -627,6 +627,10 @@ func TestCache_ConcurrentAggregateBudgetHolds(t *testing.T) {
 	assert.LessOrEqual(t, stats.Entries, 100)
 	assert.LessOrEqual(t, stats.Bytes, int64(maxBytes))
 	assert.LessOrEqual(t, stats.Nodes, maxNodes)
+	// Upper bounds alone stay green if striped admission degenerates into
+	// permanent refusal, which would disable the cache without failing a
+	// single ceiling assertion.
+	assert.Positive(t, stats.Entries, "striped admission must still retain entries")
 }
 
 // TestCache_GlobalCounterDenialRollsBackWithoutChargingMeter proves the
