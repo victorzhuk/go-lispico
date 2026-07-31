@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The release consumer gate passed on a published release for the first time,
+  and `v0.12.0` carries the project's first stored `bench-vm.txt` baseline.
+  The run evaluated 27 cells — thirteen `Goldset/*`, thirteen
+  `GoldsetParse/*`, and `GoldsetCall/call-boundary` — in first-authorization
+  mode and passed all of them, then stored its VM benchmark output as a
+  release asset. Consequences for the next release: it is the first to run as
+  a non-regression comparison rather than a first authorization, and the
+  baseline it compares against was measured after the reader-allocation work
+  landed, so `B/op` figures are directly comparable. Recorded with its outcome
+  rather than as a bare activation, matching how the `v0.11.0` failure above
+  was recorded.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added
@@ -96,7 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   five cells committed as mode-insensitive turned out to be the corpus's most
   engine-sensitive, and three committed as engine-sensitive barely move.
   Because the verdict failed, no `bench-vm.txt` asset was stored on the
-  release, so the next release still runs as a first authorization rather
+  `v0.11.0` release, so `v0.12.0` in turn ran as a first authorization rather
   than a non-regression comparison against a stored baseline.
 - Reading source reuses its tokenizer and parser working state across calls
   instead of building it fresh each time, and collection literals are copied
