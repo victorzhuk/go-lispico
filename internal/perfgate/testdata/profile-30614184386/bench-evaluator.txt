@@ -1,0 +1,320 @@
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   19764	     12149 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   45054	      5545 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   39168	      6041 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1129	    206349 ns/op	   17429 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20468	     11638 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    8072	     30234 ns/op	   11068 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2018	    109862 ns/op	   24625 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   13950	     16923 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24633	      9682 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    8758	     23116 ns/op	    9468 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15224	     15612 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32526	      7204 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27117	      8556 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   47107	      4894 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   78444	      3275 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   82531	      2845 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   77640	      2947 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44313	      5295 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   49771	      4675 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   51565	      4581 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38613	      6155 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   51344	      4557 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16506	     14422 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   38089	      6239 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   75306	      3036 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59949	      3888 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	8.032s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   19676	     12008 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   45846	      5185 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   38438	      6134 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1117	    209089 ns/op	   17427 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20443	     11670 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    6718	     30445 ns/op	   11067 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    1983	    111174 ns/op	   24625 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   13953	     16937 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24406	      9677 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    9027	     22782 ns/op	    9467 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15627	     15256 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32737	      7171 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27892	      8557 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   47144	      4947 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   76422	      3016 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   79987	      2847 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   80094	      2896 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44229	      5244 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   50712	      4586 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   50727	      4554 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38599	      6104 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   51399	      4590 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16231	     14581 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   38091	      6196 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   74592	      3057 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59469	      3947 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.757s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   19975	     11995 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   46056	      5122 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   38828	      6096 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1132	    207358 ns/op	   17431 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20386	     11636 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    7915	     30306 ns/op	   11067 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    1995	    110896 ns/op	   24621 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14067	     18478 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24682	      9635 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    8920	     22794 ns/op	    9469 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15478	     15612 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32371	      7390 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27508	      8646 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   47197	      4897 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   77368	      3007 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   81560	      2860 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   76318	      2946 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44688	      5274 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   51135	      4612 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   51036	      4599 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38329	      6080 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   52380	      4535 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16396	     14392 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   37796	      6210 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   75822	      3043 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59328	      3906 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	8.222s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20356	     11927 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   44929	      5086 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   39415	      6032 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1138	    204803 ns/op	   17429 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20439	     11475 ns/op	    3752 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    8002	     30193 ns/op	   11068 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    1959	    110833 ns/op	   24622 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14114	     16959 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24939	      9619 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    9001	     22776 ns/op	    9468 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15418	     15344 ns/op	    5538 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32370	      7188 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27900	      8541 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   48319	      4901 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   79976	      2965 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   82597	      2821 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   79314	      2890 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44556	      5183 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   51764	      4581 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   50811	      4553 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38065	      6145 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   50994	      4662 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16394	     14555 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   38036	      6165 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   76204	      3008 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   60454	      3853 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.790s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20364	     11841 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   45530	      5135 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   39201	      6028 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1132	    205791 ns/op	   17431 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20484	     11471 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    6822	     29918 ns/op	   11067 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2018	    110324 ns/op	   24624 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14256	     16839 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24656	      9462 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	   10701	     22753 ns/op	    9466 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15633	     15377 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32623	      7198 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27516	      8651 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   48153	      4873 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   78261	      2991 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   82452	      2812 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   79141	      2914 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   45294	      5202 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   50482	      4584 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   50954	      4552 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38110	      6028 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   51057	      4554 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16561	     14514 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   38509	      6169 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   76914	      3013 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   58922	      3843 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.977s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20152	     11852 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   45910	      5136 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   39469	      6017 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1117	    206379 ns/op	   17431 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20614	     11430 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    7609	     29816 ns/op	   11067 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2034	    108955 ns/op	   24628 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14084	     16796 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24874	      9579 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	   10000	     22382 ns/op	    9468 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15499	     15382 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32847	      7225 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27843	      8496 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   46261	      5768 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   77040	      3001 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   80556	      2838 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   79681	      2923 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   45261	      5216 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   50349	      4587 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   51087	      4578 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38623	      6157 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   50287	      4571 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16346	     14414 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   37693	      6229 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   76238	      3021 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59708	      3882 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.819s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20178	     11794 ns/op	    3704 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   46300	      5120 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   38732	      6031 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1132	    205104 ns/op	   17431 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20686	     11470 ns/op	    3752 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    8113	     30164 ns/op	   11067 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2002	    109215 ns/op	   24624 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14250	     16934 ns/op	    6058 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24643	      9565 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    9301	     22626 ns/op	    9471 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15554	     15196 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32204	      7152 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27759	      8499 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   47522	      4823 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   77086	      2965 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   81042	      2822 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   78777	      2888 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44724	      5240 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   50521	      4625 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   49370	      4595 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38911	      6071 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   51459	      4514 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16424	     14480 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   38121	      6152 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   75140	      3036 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59851	      3904 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.764s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20108	     11727 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   45945	      5179 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   38758	      6052 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1142	    207904 ns/op	   17432 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20427	     11605 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    8287	     30125 ns/op	   11066 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2061	    112524 ns/op	   24623 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   10000	     20062 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   23486	      9598 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    9146	     22971 ns/op	    9467 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15616	     15352 ns/op	    5538 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   33372	      7132 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27976	      8474 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   48103	      4860 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   76153	      2978 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   83542	      2873 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   80737	      2868 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   45442	      5301 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   51403	      4616 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   51222	      4579 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38775	      6124 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   51319	      4556 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16260	     14526 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   37768	      6258 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   74696	      3043 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59690	      3913 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.618s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20190	     11954 ns/op	    3705 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   46293	      5151 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   38804	      6005 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1130	    206504 ns/op	   17434 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20292	     11556 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    7282	     30130 ns/op	   11068 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2074	    110026 ns/op	   24626 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14146	     16903 ns/op	    6058 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   24996	      9637 ns/op	    2921 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	    8834	     22853 ns/op	    9467 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15102	     15416 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32502	      7197 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27438	      8608 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   48136	      4893 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   78921	      2971 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   80540	      2836 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   79864	      2920 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44785	      5214 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   50954	      4646 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   51758	      4583 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38594	      6297 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   49935	      4644 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16266	     14419 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   37398	      6174 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   75565	      3056 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   58850	      3930 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.784s
+goos: linux
+goarch: amd64
+pkg: github.com/victorzhuk/go-lispico/internal/goldset
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkGoldset/counter-closure-2         	   20101	     11960 ns/op	    3704 B/op	      71 allocs/op
+BenchmarkGoldset/guard-nil-2               	   45168	      5163 ns/op	    1160 B/op	      32 allocs/op
+BenchmarkGoldset/kw-lookup-2               	   38406	      6026 ns/op	    1576 B/op	      39 allocs/op
+BenchmarkGoldset/loop-sum-2                	    1136	    207208 ns/op	   17429 B/op	     594 allocs/op
+BenchmarkGoldset/merge-config-2            	   20632	     11486 ns/op	    3753 B/op	      73 allocs/op
+BenchmarkGoldset/pipeline-2                	    8107	     29988 ns/op	   11068 B/op	     152 allocs/op
+BenchmarkGoldset/queue-promote-2           	    2004	    108704 ns/op	   24624 B/op	     387 allocs/op
+BenchmarkGoldset/registry-fold-2           	   14211	     16829 ns/op	    6057 B/op	     113 allocs/op
+BenchmarkGoldset/route-decision-2          	   25048	      9546 ns/op	    2920 B/op	      71 allocs/op
+BenchmarkGoldset/rule-load-2               	   10000	     22614 ns/op	    9468 B/op	     216 allocs/op
+BenchmarkGoldset/safe-parse-2              	   15406	     15526 ns/op	    5537 B/op	     104 allocs/op
+BenchmarkGoldset/text-render-2             	   32950	      7153 ns/op	    2448 B/op	      57 allocs/op
+BenchmarkGoldset/twice-macro-2             	   27638	      8581 ns/op	    2408 B/op	      59 allocs/op
+BenchmarkGoldsetParse/counter-closure-2    	   47979	      4866 ns/op	    1632 B/op	      50 allocs/op
+BenchmarkGoldsetParse/guard-nil-2          	   76902	      2993 ns/op	     784 B/op	      26 allocs/op
+BenchmarkGoldsetParse/kw-lookup-2          	   81381	      2818 ns/op	     816 B/op	      24 allocs/op
+BenchmarkGoldsetParse/loop-sum-2           	   78574	      2904 ns/op	     864 B/op	      28 allocs/op
+BenchmarkGoldsetParse/merge-config-2       	   44990	      5241 ns/op	    1888 B/op	      50 allocs/op
+BenchmarkGoldsetParse/pipeline-2           	   50600	      4576 ns/op	    1328 B/op	      37 allocs/op
+BenchmarkGoldsetParse/queue-promote-2      	   50781	      4529 ns/op	    1312 B/op	      40 allocs/op
+BenchmarkGoldsetParse/registry-fold-2      	   38650	      6084 ns/op	    1936 B/op	      53 allocs/op
+BenchmarkGoldsetParse/route-decision-2     	   51846	      4557 ns/op	    1296 B/op	      42 allocs/op
+BenchmarkGoldsetParse/rule-load-2          	   16392	     14509 ns/op	    5184 B/op	     148 allocs/op
+BenchmarkGoldsetParse/safe-parse-2         	   38479	      6153 ns/op	    1856 B/op	      61 allocs/op
+BenchmarkGoldsetParse/text-render-2        	   76831	      3021 ns/op	    1008 B/op	      32 allocs/op
+BenchmarkGoldsetParse/twice-macro-2        	   59334	      3872 ns/op	    1184 B/op	      41 allocs/op
+PASS
+ok  	github.com/victorzhuk/go-lispico/internal/goldset	7.802s

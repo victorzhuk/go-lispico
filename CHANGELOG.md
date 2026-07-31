@@ -56,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behaves identically; only an embedder reaching past the public API — for
   instance comparing value trees with `reflect.DeepEqual` — can observe the
   difference.
+- The consumer gate's cell tiers are corrected against a checked-in
+  classification profile (`internal/perfgate/testdata/profile-30614184386`,
+  from dispatch run `30614184386` at the gate's fixed parameters). Five cells
+  committed as mode-insensitive are the corpus's most engine-sensitive and are
+  reclassified as such; `guard-nil`, committed as engine-sensitive, is the one
+  cell whose latency does not vary with execution mode and becomes
+  data-dominated. The gate does not pass on the corrected tiers. Three cells
+  fail on allocated bytes rather than latency — `guard-nil`, where the VM
+  allocates 19.40% more than the Evaluator, `kw-lookup` at -9.04%, and
+  `merge-config` at -19.96% against ADR 0008's 20% floor — and no release has
+  been cut against the corrected tiers.
 
 ## [0.11.0] - 2026-07-30
 

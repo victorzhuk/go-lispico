@@ -1,0 +1,26 @@
+Goldset/counter-closure-2: PASS
+Goldset/guard-nil-2: FAIL (latency improved -2.65%, need at least 15% lower)
+Goldset/kw-lookup-2: FAIL (bytes improved 9.04%, need at least 20% fewer)
+Goldset/loop-sum-2: PASS
+Goldset/merge-config-2: FAIL (latency delta -20.59% exceeds 5% tolerance)
+Goldset/pipeline-2: FAIL (latency delta -46.20% exceeds 5% tolerance)
+Goldset/queue-promote-2: FAIL (latency delta -66.47% exceeds 5% tolerance)
+Goldset/registry-fold-2: FAIL (latency delta -31.64% exceeds 5% tolerance)
+Goldset/route-decision-2: PASS
+Goldset/rule-load-2: PASS
+Goldset/safe-parse-2: PASS
+Goldset/text-render-2: FAIL (latency delta -25.46% exceeds 5% tolerance)
+Goldset/twice-macro-2: PASS
+GoldsetParse/counter-closure-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/guard-nil-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/kw-lookup-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/loop-sum-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/merge-config-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/pipeline-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/queue-promote-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/registry-fold-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/route-decision-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/rule-load-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/safe-parse-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/text-render-2: INCONCLUSIVE (latency delta not statistically significant)
+GoldsetParse/twice-macro-2: INCONCLUSIVE (latency delta not statistically significant)
