@@ -106,18 +106,18 @@ than a `core/vm` one — contrary to this change's Impact section, which expecte
 
 ## 4. Re-profile
 
-- [ ] 4.1 Push the work to `origin/master` and dispatch
+- [x] 4.1 Push the work to `origin/master` and dispatch
       `.github/workflows/release.yml` against it, per `consumer-release-gate`'s
       rule that a `workflow_dispatch` run is a valid profile source and that
       `--ref master` resolves against the remote branch. Confirm the run's head
       sha matches the tree the profile is meant to measure.
-- [ ] 4.2 Commit the new profile under
+- [x] 4.2 Commit the new profile under
       `internal/perfgate/testdata/profile-<run id>/` with the same provenance
       README shape as `profile-30614184386`, and point
       `internal/perfgate/tiers.json`'s comment at it. The existing profile
       measures a tree without these fixes and stops licensing the tiers the
       moment the allocation figures move.
-- [ ] 4.3 Re-check every cell's tier against the new profile, not only the
+- [x] 4.3 Re-check every cell's tier against the new profile, not only the
       three this change targets. An allocation change can move a cell that was
       not its target across the engine-sensitive bytes floor in either
       direction.
@@ -155,7 +155,33 @@ allocation one. The alternative outcome is that the delta loses significance,
 which returns INCONCLUSIVE and then resolves to PASS. Neither is a surprise;
 record which one happened rather than re-opening section 2.
 
-- [ ] 4.4 Pin the committed profile with a test in
+**Outcome: the second one, and it exposed a third defect.** Run `30630796967`
+reads `guard-nil`'s latency as `~` at p=0.424 — INCONCLUSIVE, resolved to PASS.
+Its bytes read 1128 B/op under the Evaluator against 1129 under the VM: +0.09%
+at p=0.000, reproducing the local one-byte figure exactly.
+
+The cell therefore passes with its tier's bytes bound **never evaluated**.
+`evaluateWithinTolerance` returns INCONCLUSIVE the moment latency is not
+significant, before it reaches `nonIncreasing`, and `Resolve` collapses that to
+PASS under ADR 0008's burden-of-proof rule. All four tier evaluators share the
+ordering — `evaluateWithinTolerance`, `evaluateNonRegression`,
+`evaluateEngineSensitiveImprovement`, and `evaluateStartup`, the last being the
+function this change modified.
+
+This is a third distinct defect, not the startup hole section 2 closed and not
+the benchstat-`~` blind spot ADR 0008 now records. It is also this change's own
+spec delta being violated by the gate it ships: a tier states a bytes bound and
+the implementation does not apply it. No earlier profile could have surfaced it
+— every other INCONCLUSIVE cell is bit-identical on bytes at p=1.000, so
+`guard-nil` is the first cell in the corpus with a non-significant latency and a
+significant bytes delta.
+
+Left unfixed deliberately. The ordering change would alter the verdict path for
+all 26 cells and every future release, and it interacts with 3.2: fixing it
+makes `guard-nil` fail on bytes, which is precisely the amendment 3.2 holds
+open. Both belong to one deliberate decision, not to a tail-end edit here.
+
+- [x] 4.4 Pin the committed profile with a test in
       `internal/perfgate/perfgate_test.go`: parse the profile's two benchmark
       files, evaluate every cell against `tiers.json`, and assert the verdict
       the profile's own `verdict.txt` records. Nothing reads that directory
@@ -169,10 +195,47 @@ record which one happened rather than re-opening section 2.
 - [x] 5.1 `openspec validate --strict` on this change.
 - [x] 5.2 `go build ./... && go test ./... -count=1` and
       `go test -race -count=1 ./...`.
-- [ ] 5.3 `bin/perfgate` against the new committed profile in
+- [x] 5.3 `bin/perfgate` against the new committed profile in
       first-authorization mode. Record the verdict as it comes out. A cell
       still failing is a result to report, not a reason to revisit section 2.
-- [ ] 5.4 State what remains open. If the verdict is clean,
+- [x] 5.4 State what remains open. If the verdict is clean,
       `release-gate-activation` 1.2, 4.2, and 5.1 become reachable on the next
       release cut whose gate passes — the cut is not this change's to make
       either.
+
+### What remains open
+
+The gate passes. Hosted run `30630796967` against `2910e79` returned all 26
+cells green, the first passing gate in the project's history, and its paired
+output is committed as the profile licensing `tiers.json`. Locally,
+`bin/perfgate` against that committed profile reports 13 PASS, 13 INCONCLUSIVE,
+0 FAIL, exit 2 — the pre-rerun state, since the hosted job reruns
+non-significant cells at doubled benchtime before resolving them.
+
+Open, in the order they have to be settled:
+
+1. **Task 3.2, and the ordering defect it is now bound to.** `guard-nil`'s
+   green rests on burden of proof rather than merit, and the ordering that
+   produces it spans all four tier evaluators. Fixing the ordering makes the
+   cell fail on bytes and forces the 3.2 amendment; amending the threshold
+   first leaves the ordering live for every future cell. They are one decision.
+   The figures the amendment needs now exist: 1128 against 1129 B/op, +0.09%,
+   p=0.000, profile `30630796967`.
+
+2. **`release-gate-activation` 1.2, 4.2, 5.1.** Reachable but not reached. All
+   three wait on a *release cut* whose gate passes, which stores the
+   `bench-vm.txt` baseline asset. A `workflow_dispatch` run carries no release
+   identity, so this one stored nothing and consumed no baseline slot. The cut
+   is not this change's to make. Do not hand-upload the asset to close them.
+
+3. **`plugins/json`'s `TestDecodeHashMap_Scaling`.** A wall-clock ratio
+   assertion that fails roughly one run in eight under load, on `master` as
+   much as here. Harmless to this change and outside it, but the hosted job
+   treats a clean race suite as one of the three legs that make a run usable as
+   a profile, so it can discard a future run. Its own change.
+
+4. **The first non-test `unsafe` import.** `runtime/eval.go` now carries one.
+   The usage is sound and tested, but nothing in the repo states when `unsafe`
+   is acceptable here and no linter gates it; the only durable record is a
+   function comment. Worth an explicit invariant rather than a precedent set by
+   accident.
