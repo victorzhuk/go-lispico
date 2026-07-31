@@ -23,10 +23,10 @@ Concrete, size-class-crossing targets identified by direct inspection:
   crossing into the 64-byte class — a real 16-byte-per-boxed-vector saving,
   at the cost of capping vector length at 2³¹ elements.
 - `chunk.ConstCharges` (`core/vm/chunk.go:87`) is a `map[int]int64` read
-  inside the VM dispatch loop at `vm.go:811` (`OpConstCharged`) — the only
+  inside the VM dispatch loop at `vm.go:899-902` (`OpConstCharged`) — the only
   map hash lookup anywhere in the hot dispatch path. A dense `[]int64`
   parallel to `Constants` removes it entirely.
-- `OpTrue`/`OpFalse` (`vm.go:800,803`) construct a fresh `core.Bool{V: …}`
+- `OpTrue`/`OpFalse` (`vm.go:890,893`) construct a fresh `core.Bool{V: …}`
   per execution instead of pushing the already-shared `core.True`/`core.False`
   singletons (`types.go:61-62`).
 - `vecNode` (`core/types.go:395`) is 48 bytes with exactly one of its two
@@ -54,10 +54,12 @@ actually exercise vectors past the flat threshold, measure, then decide.
   bytes for any value type MUST NOT move when its Go struct layout changes.
   A change here that moves a gold-set `B/op` ledger figure is wrong, not a
   side effect to accept.
-- State plainly, if this change proceeds: no currently gated gold-set cell is
-  expected to move, because none exercises large enough collections. The
-  benefit is for embedders holding large in-memory vectors, not for this
-  repo's own release gate.
+- State plainly, if this change proceeds: the benefit is for embedders holding
+  large in-memory vectors, not for this repo's own release gate. One gated cell
+  does exercise the trie — `queue-promote` conjs to 40 elements and its own
+  comment records that it crosses `vectorFlatThreshold` — so "no gold-set cell
+  moves" is a check with a named target, not a formality. Any movement there
+  should be a reduction; an increase is a defect.
 
 ## Impact
 
@@ -66,7 +68,7 @@ actually exercise vectors past the flat threshold, measure, then decide.
   size or observable semantics).
 - Affected code, if gated in: `core/types.go` (`Vector`, `vecNode`,
   `OpTrue`/`OpFalse` call sites in `core/vm/vm.go`), `core/vm/chunk.go`
-  (`ConstCharges` representation), `core/vm/vm.go:811`.
+  (`ConstCharges` representation), `core/vm/vm.go:899-902`.
 - Explicitly not touched: `Cell` (`core/env.go:17`) — 64 bytes today, a
   56-byte trim would round back up to the same 64-byte size class and buy
   nothing; not proposed. Adjacent to pending `vm-register-dispatch`, which
