@@ -249,3 +249,28 @@ in the corpus, and both are the repo owner's call.
 
 `vm-allocation-parity` task 3.2 holds the open question of which threshold,
 if any, should be amended for this cell; nothing here settles it.
+
+**The finding stopped being hypothetical on the next run.** Dispatch run
+30639778105, on the tree that adds this profile and the Call cell's tier —
+`internal/goldset` and every other engine path byte-identical to the tree
+measured here — reported:
+
+```
+Goldset/guard-nil-2: FAIL (bytes increased by 0.09%)
+```
+
+Its latency delta came out at +2.46% with p=0.000: significant for the first
+time in the corpus's history, and inside the +-5% tolerance, so
+`evaluateWithinTolerance` cleared the significance gate, cleared the tolerance
+check, and then reached `nonIncreasing` — which failed on the same 1128
+against 1129 B/op this profile records. Nothing about the cell changed. The
+only thing that changed is that one run's latency measurement happened to
+reach significance where three earlier runs read `~`.
+
+So the gate's green on `guard-nil` was never a property of the code; it was a
+property of whether that run's latency delta cleared significance, and the
+cell fails whenever it does. This is not a regression, not attributable to the
+Call cell, and not fixable by any tier reassignment — the byte is real and
+`vm-allocation-parity` task 3.2 already records why it is not a removable
+allocation site. What is now settled is that the question that task holds is
+load-bearing for every release, not a documentation nicety.

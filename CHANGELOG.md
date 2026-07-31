@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   may be cited as settling one. Behavior is unaffected; what changes is that
   the two claims are now closed with a stated reason instead of pending
   indefinitely.
+- The release gate fails on the `guard-nil` gold-set cell whenever that run's
+  latency measurement reaches statistical significance. The cell allocates one
+  byte more under the VM than under the Evaluator (1128 against 1129 B/op), a
+  figure every profile has recorded, and its tier bounds allocated bytes
+  non-increasing. Until now the gate never evaluated that bound: a
+  non-significant latency delta short-circuits to inconclusive before the byte
+  check runs, and inconclusive resolves to pass. A hosted run has now come
+  back with that delta significant, and the cell failed. Nothing about the
+  engine changed between the runs — what changed is whether the check was
+  reached. The byte is not a removable allocation site, so the threshold
+  question stays open rather than being papered over with a tier change.
 - The classification profile behind the gate's cell tiers was recorded with
   the wrong benchmark parameters. Run `30630796967` ended inconclusive, so its
   rerun leg deleted both benchmark files and regenerated them at doubled
