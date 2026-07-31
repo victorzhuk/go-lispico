@@ -87,38 +87,106 @@
 
 ## 1. Design decision (only if the gate fires)
 
-- [ ] 1.1 Decide the budget-accounting mechanism for sharded state: an
+- [x] 1.1 Decide the budget-accounting mechanism for sharded state: an
       atomic global running total for `MaxCacheBytes`/`MaxCacheNodes`
       (approximate cross-stripe eviction ordering), or fixed per-stripe
       quotas with a documented tolerance. Prototype both against the
       existing "Compiled-chunk cache" requirement's scenarios before
       picking; record the loser's reasoning in `design.md`.
-- [ ] 1.2 Decide the stripe key and count: hash of `{sourceHash,
+
+  **Decided: hybrid — neither option as framed.** Per-stripe map/LRU/mutex
+  for storage, three engine-wide `atomic.Int64` counters as the sole
+  authority on aggregate occupancy, admission refusing rather than
+  over-admitting. The ceiling then holds exactly, with no tolerance term.
+  Both original options were checked against the existing scenarios and
+  both lose: per-stripe quotas divide ceilings the suite sets to 1, 2, 4, 5,
+  and 10, giving every stripe a quota of 0; a pure global total with
+  local-only eviction either over-admits or ossifies. Full reasoning in
+  `design.md`, "1.1 Budget accounting — hybrid".
+
+- [x] 1.2 Decide the stripe key and count: hash of `{sourceHash,
       dialectFingerprint, macroEpoch, formIndex}` (the existing cache key)
       is the natural candidate; stripe count sized to expected concurrent
       Engine usage, not maximal.
 
+  **Decided: route on `{sourceHash, formIndex}` only; count is adaptive.**
+  `macroEpoch` is excluded so a source's stale and fresh entries co-locate;
+  `dialectFP` is constant per engine. 1 stripe below `MaxCacheEntries` 64,
+  else 8 — a cache holding a handful of entries keeps single-lock behavior
+  exactly, which is what lets every pre-existing cache test keep its
+  assertions unmodified. `cacheKey` itself is unchanged.
+
 ## 2. Implementation
 
-- [ ] 2.1 Stripe the chunk cache map and its intrusive LRU by the chosen key.
+- [x] 2.1 Stripe the chunk cache map and its intrusive LRU by the chosen key.
       Each stripe: its own mutex, its own LRU list, matching the
       correctness invariants of the existing single-lock implementation
       exactly (hit skips macro expansion, redefinition invalidates,
       indistinguishable-rebind does not).
-- [ ] 2.2 Wire the chosen budget-accounting mechanism from 1.1.
-- [ ] 2.3 Confirm every existing "Compiled-chunk cache" scenario still holds
+
+  `cacheStripe{mu, cache, head, tail}` in `runtime/eval.go`; the LRU helpers
+  moved onto `*cacheStripe`. Stale-epoch reclamation also moved behind one
+  evaluator-global CAS, sweeping stripes one lock at a time — it previously
+  walked the whole LRU on every miss, which striping alone would have made
+  worse, not better.
+
+- [x] 2.2 Wire the chosen budget-accounting mechanism from 1.1.
+- [x] 2.3 Confirm every existing "Compiled-chunk cache" scenario still holds
       per-stripe and in aggregate (macro invalidation, indistinguishable
       rebind, process-level plugin artifact sharing untouched).
 
+  Every pre-existing cache test passes with its assertions **unmodified**.
+  The only test-side edits are `cacheCount` and `cacheContainsSource`, which
+  reached into the single map directly and now iterate stripes.
+
 ## 3. Verify
 
-- [ ] 3.1 Full floor: build/vet/gofmt/lint, full suite, `-race`, crossval,
+- [x] 3.1 Full floor: build/vet/gofmt/lint, full suite, `-race`, crossval,
       goldset both modes non-increasing.
-- [ ] 3.2 Concurrent benchmark cell from 0.1: contention share reduced
+
+  `go build ./...`, `go vet ./...`, `gofmt -l .` clean, `make lint` 0 issues,
+  `make test` and `go test -race -count=1 ./...` green across every package.
+  Goldset VM mode measured as an interleaved A/B against `master` (6 rounds,
+  alternating binaries, `GOMAXPROCS=2`, `-benchtime=200ms`): geomean +0.47%,
+  `B/op` and `allocs/op` identical in every cell. Two cells tripped p<0.05 at
+  n=6, one of them a parse-only cell this change cannot touch — that sets the
+  false-positive floor. The larger, `counter-closure` (+11.67%, p=0.009), was
+  re-run at n=12 and came back +2.4%, p=0.086: it did not replicate.
+
+- [x] 3.2 Concurrent benchmark cell from 0.1: contention share reduced
       relative to 0.2's baseline at `GOMAXPROCS=8`+; no correctness
       regression at any concurrency level.
-- [ ] 3.3 Budget-enforcement test: fill the cache past `MaxCacheBytes`/
+
+  Same protocol as the gate measurement — fixed iteration count, per-arm
+  profiling, every ratio bound-checked against `delay ≤ GOMAXPROCS × wall`.
+  `EvalCached` delay over wall clock, before → after:
+
+  | arm | P=2 | P=8 | P=24 |
+  | --- | --- | --- | --- |
+  | hits | 0.03% → 0.03% | 15.71% → **4.80%** | 374.48% → **83.88%** |
+  | mixed | 6.77% → **0.17%** | 625.42% → **14.77%** | 2197.44% → **371.34%** |
+
+  `mixed` now scales where it previously did not: 2082 / 921.3 / 828.0 ns/op
+  at 2 / 8 / 24, against 3960 / 3736 / 3887. `hits` still regresses from 8 to
+  24 cores, less steeply than before; its 4-source working set caps
+  achievable reduction near 4x regardless of stripe count, which is why the
+  `hits-wide` arm (32 sources) was added. Full table and the rejected
+  cache-line-padding follow-up in `design.md`.
+
+- [x] 3.3 Budget-enforcement test: fill the cache past `MaxCacheBytes`/
       `MaxCacheNodes` under concurrent load from multiple stripes; confirm
       the aggregate stays within the documented tolerance from 1.1, not
       merely within one stripe's local view.
-- [ ] 3.4 `openspec validate --strict` on this change.
+
+  `TestCache_ConcurrentAggregateBudgetHolds` — 8 goroutines over a 40-source
+  working set spanning every stripe, byte and node ceilings sized so eviction
+  fires throughout. There is no tolerance term to allow: the hybrid refuses
+  rather than over-admitting, so the assertion is the exact ceiling. It also
+  asserts a retention floor, since ceiling-only assertions would stay green
+  if striped admission degenerated into permanent refusal.
+  `TestCache_RefusalTerminatesUnderTightBudget` covers the pre-eviction loop
+  terminating on an empty stripe, and
+  `TestCache_GlobalCounterDenialRollsBackWithoutChargingMeter` covers the
+  counter rollback when the global charge denies.
+
+- [x] 3.4 `openspec validate --strict` on this change.

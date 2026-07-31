@@ -142,20 +142,131 @@ already visible below the threshold level.
   `go test -race -count=1 ./...` with no `-bench`, so adding it costs CI
   nothing.
 
-## What section 1 must now decide
+## What section 1 decided
 
-The gate firing authorizes sections 1-3, not a particular design. Both open
-questions stand as the proposal framed them:
+The gate firing authorized sections 1-3, not a particular design. One
+measurement constrained both answers: the profile shows the probe alone
+(`hits`, one lock acquisition per call) already saturating, because a hit calls
+`moveCacheEntryToHeadLocked` — a write under what reads as a read. A design that
+only shortened the admit path would not have addressed the dominant cost.
 
-- **1.1 budget accounting** — atomic global running total for
-  `MaxCacheBytes`/`MaxCacheNodes` (approximate cross-stripe eviction ordering)
-  versus fixed per-stripe quotas with a documented tolerance. The hazard named
-  in the proposal's Impact — a cache silently exceeding `MaxCacheBytes` across
-  stripes — is an existing tested invariant and the reason 3.3 exists.
-- **1.2 stripe key and count** — hash of the existing `cacheKey`
-  (`{sourceHash, formIndex, dialectFP, macroEpoch}`), count sized to expected
-  concurrent use rather than maximal.
+### 1.1 Budget accounting — hybrid
 
-One measurement note for 1.1: the profile shows the probe alone
-(`hits`, one lock acquisition per call) already saturating, so a design that
-only shortens the admit path would not address the dominant cost.
+Per-stripe map, LRU, and mutex for storage; three engine-wide `atomic.Int64`
+counters (entries, bytes, nodes) as the sole authority on aggregate occupancy.
+Admission, entirely inside the target stripe's own lock:
+
+1. `cacheFitsAlone` against the **undivided** `MaxCacheBytes`/`MaxCacheNodes`/
+   `MaxCacheEntries` — never a per-stripe fraction.
+2. Bounded local pre-eviction: `for s.tail != nil && cacheBudgetExceeded(chunk)`.
+3. CAS-charge the three counters (`used+n > max` → fail), with rollback across
+   the three.
+4. `engineMeter.ChargeRetained`, rolling the counters back on denial.
+5. Insert and link at the stripe's LRU head.
+
+Refusal is the only failure mode; nothing is ever inserted speculatively. The
+configured ceiling therefore bounds the total across all stripes **exactly**, with
+no tolerance term — which is what the "A sharded cache enforces its budget in
+aggregate" scenario requires.
+
+**Why the two proposed options lost.** *Fixed per-stripe quotas*
+(`floor(Max/N)`) bound the aggregate trivially but divide the configured number:
+the existing suite runs `MaxCacheEntries` of 1, 2, 4, 5, and 10 and
+`MaxCacheBytes` set to exactly one chunk's size, so every stripe gets a quota of
+0 and the cache goes silently dead — two of those tests would have passed
+vacuously, since their assertions are upper bounds. A "minimum 1 per stripe"
+guard fixes the dead cache but then caps the aggregate at N, an 8x ceiling
+violation in exactly the configuration the aggregate scenario exists to police.
+*A pure atomic global total with local-only eviction* cannot free enough when the
+admitting stripe's LRU is short, so it either over-admits (violating the
+scenario) or refuses — and refusing without the undivided fitness check of step 1
+ossifies: a stripe whose LRU is exhausted while the global total is full can
+never displace an entry parked elsewhere.
+
+**Cross-stripe eviction is deliberately absent** — it would require a lock
+ordering across stripes. The cost is that eviction picks the admitting stripe's
+LRU victim rather than the global one. That only becomes observable at ceilings
+too small to hold a working set, which is what 1.2's adaptive rule handles.
+
+### 1.2 Stripe key and count
+
+Routing uses a non-allocating reduction of `{sourceHash, formIndex}` only:
+`(binary.LittleEndian.Uint64(h[:8]) ^ uint64(formIndex)) & uint64(n-1)`.
+`macroEpoch` is excluded deliberately — including it would scatter a source's
+stale-epoch entry into a different stripe from its fresh replacement, so a miss
+could not find its own stale sibling co-located in the stripe it is about to
+write. `dialectFP` is constant per engine and contributes no entropy. `cacheKey`
+itself is unchanged and remains the exact map lookup key: routing and key
+equality are separate functions.
+
+The count is **adaptive**: 1 stripe below `MaxCacheEntries` 64, else 8. An engine
+whose cache holds a handful of entries gains nothing from partitioning and would
+only lose global LRU victim identity, so it keeps the single-lock behavior
+exactly. This is what lets every pre-existing cache test keep its assertions
+unmodified rather than being pinned to one stripe by a test-only knob. An
+unexported `withCacheStripes(n)` option overrides the rule so a benchmark can
+compare stripe counts in one binary.
+
+### Stale-epoch reclamation
+
+`flushCacheEpochLocked` previously walked the entire LRU on **every miss**. It is
+now gated by one evaluator-global `lastFlushedEpoch` CAS: the winner sweeps every
+stripe sequentially, never holding two stripe locks at once, and losers skip
+straight to their own admit. Cost drops from O(entries) per miss to O(entries)
+per macro-epoch bump.
+
+This is safe because `macroEpoch` is part of `cacheKey`, so a probe for the
+current epoch can never return a stale-epoch entry regardless of whether the
+sweep has run. Reclamation is a memory concern, not a hit/miss correctness one,
+and the capacity ceiling bounds occupancy independently. The sweep's predicate is
+`macroEpoch < epoch`, not `!= epoch`: a sweep for an older epoch can still be
+walking stripes when a redefinition bumps past it, and `!=` would let that
+in-flight sweep delete an entry a newer epoch had just admitted into a stripe it
+had not yet reached.
+
+### An implementation note
+
+Stripe maps are allocated lazily on each stripe's first admit. Allocating all
+eight at construction cost 8 allocations on every `New`, which
+`TestNew_NilLoggerAllocsBudget` caught (17 → 25). A nil Go map reads, deletes,
+and ranges safely, so the deferral changes only when the allocation happens.
+
+## Results after striping
+
+Same protocol as the gate measurement: fixed iteration count (`-benchtime=Nx`,
+one execution, no `b.N` ramp), each arm profiled in its own invocation, delay
+attributed to `EvalCached` by `pprof -peek 'sync\.\(\*Mutex\)\.Unlock$'`
+(96.8-100% of all `sync.Mutex` delay, `sync.(*Pool).pinSlow` the only other
+contributor), `wall` = `ns/op × N`, every cell bound-checked against
+`delay ≤ GOMAXPROCS × wall`.
+
+| arm | P | ns/op before | ns/op after | delay/wall before | delay/wall after | bound |
+| --- | --- | --- | --- | --- | --- | --- |
+| hits | 2 | 1535.0 | 1554.0 | 0.03% | 0.03% | ok |
+| hits | 8 | 800.6 | 704.3 | 15.71% | **4.80%** | ok |
+| hits | 24 | 1310.0 | 1192.0 | 374.48% | **83.88%** | ok |
+| mixed | 2 | 3960.0 | 2082.0 | 6.77% | **0.17%** | ok |
+| mixed | 8 | 3736.0 | 921.3 | 625.42% | **14.77%** | ok |
+| mixed | 24 | 3887.0 | 828.0 | 2197.44% | **371.34%** | ok |
+
+Task 3.2's bar — contention share reduced at `GOMAXPROCS=8` and above — is met in
+every cell: 3.3x and 4.5x on `hits`, 42x and 5.9x on `mixed`.
+
+Two results need no normalization at all. `mixed` **now scales**: 2082 / 921.3 /
+828.0 ns/op at 2 / 8 / 24, against 3960 / 3736 / 3887 before, where twelve times
+the cores bought nothing. And most of `mixed`'s gain at `GOMAXPROCS=2` — where
+striping cannot help, since contention there was already negligible — is the
+epoch-flush gate removing an O(entries) walk from every miss, not the partitioning.
+
+`hits` still regresses from 8 to 24 cores (704.3 → 1192 ns/op), less steeply than
+before (800.6 → 1310). Its 4-source working set is the near-term limit: four keys
+over eight stripes caps achievable reduction near 4x by occupancy alone, well
+short of 8x. The `hits-wide` arm (32 sources) exists to measure past that ceiling.
+
+**A rejected follow-up, recorded so it is not re-proposed.** `cacheStripe` is 32
+bytes, so two stripes share a 64-byte cache line and the eight partitions form
+four false-sharing pairs. Padding the struct to a full line was measured: `hits`
+moved -1.5% at `GOMAXPROCS=8` and -1.9% at 24, while `mixed` at 24 went **+10%
+worse**. That spread is inside this workstation's known drift, so the change is
+not decidable here and does not earn its memory. It stays available if a
+quieter machine ever shows the pairing matters.

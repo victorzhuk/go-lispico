@@ -382,6 +382,16 @@ artifacts, and SHALL NOT share per-engine resolution state: each Engine resolves
 globals against its own environments, and no binding, macro, or canonical flag
 SHALL leak between Engines through the shared artifacts.
 
+The cache's internal locking granularity is an implementation choice: it MAY be
+a single mutex guarding one map and LRU, or MAY be sharded (striped by a hash of
+the cache key) to reduce contention under concurrent evaluation on one shared
+Engine. Whichever granularity is used, every correctness and bound invariant
+above SHALL hold in aggregate across the whole cache, not merely within one
+shard: a chunk-cache-size ceiling configured on the Engine SHALL bound the
+cache's total entries, bytes, and nodes across all internal partitions, and
+concurrent evaluation on a shared Engine SHALL observe the same hit/miss and
+invalidation behavior as single-goroutine use, verified under `-race`.
+
 #### Scenario: Repeated evaluation reuses the chunk
 
 - **WHEN** the same source is evaluated twice on one Engine under the VM
@@ -421,6 +431,16 @@ SHALL leak between Engines through the shared artifacts.
 
 - **WHEN** two Engines built from shared plugin artifacts each define new bindings and one unloads the plugin
 - **THEN** neither Engine SHALL observe the other's bindings or unload, and `go test -race` SHALL report no data race across concurrent engine construction
+
+#### Scenario: A sharded cache enforces its budget in aggregate
+
+- **WHEN** the chunk cache is implemented as multiple internally-locked partitions and concurrent evaluations insert entries across several partitions at once
+- **THEN** the Engine's configured `MaxCacheBytes` and `MaxCacheNodes` ceilings SHALL bound the total across all partitions, not merely each partition independently
+
+#### Scenario: Concurrent access is race-free regardless of locking granularity
+
+- **WHEN** multiple goroutines call `EvalCached` concurrently on one shared Engine, whether the cache is single-locked or sharded
+- **THEN** `go test -race` SHALL report no data race, and hit/miss/invalidation behavior SHALL match single-goroutine use for the same sequence of operations
 
 ### Requirement: Dialect-axis execution
 
