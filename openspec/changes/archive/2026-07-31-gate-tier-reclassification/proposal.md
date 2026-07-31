@@ -20,6 +20,23 @@ because they improve too much against a two-sided tolerance:
 | `Goldset/twice-macro` | engine-sensitive (≥20% bytes) | bytes −12.65% | FAIL |
 | `Goldset/kw-lookup` | engine-sensitive (≥20% bytes) | bytes −5.36% | FAIL |
 
+The `guard-nil` row quotes `verdict.txt`'s own wording, where `perfgate`
+reports a shortfall against an improvement floor and so inverts benchstat's
+sign: the VM is 2.83% *slower* there, which benchstat records as +2.83%. Every
+other row in the table is a benchstat figure read directly.
+
+That table measured `fee885a`. The profile this change went on to commit
+(`internal/perfgate/testdata/profile-30614184386`) measures `4607f1e`, and it
+does not agree with all eight rows. Five are the pure misclassification the
+table describes and reclassify cleanly. `twice-macro` passes on the newer tree
+at bytes −20.51% without any tier change, so its committed tier was right all
+along. The remaining two — `kw-lookup` at bytes −9.04% and `merge-config` at
+bytes −19.96% — plus `guard-nil`, whose VM path allocates 19.40% more than the
+Evaluator, fail on the allocation axis under the tier that describes them
+honestly, and under every other tier as well. Those three are engine findings
+rather than label errors; the change records them and hands them to a follow-up
+rather than choosing a tier that would pass them by mislabeling what they are.
+
 Because the verdict failed, `release.yml`'s "Store VM baseline on the
 authorized release" step was skipped by the implicit `success()` guard on its
 `if:`, so `v0.11.0` carries no `bench-vm.txt`. That blocks
@@ -77,7 +94,11 @@ asset write, and without consuming the one-shot `released` slot that
   its comment), the committed profile files, CHANGELOG `[Unreleased]`.
 - Unblocks: `release-gate-activation` 1.2 / 4.2 / 5.1 become reachable — not
   complete — once a release is cut whose gate passes against corrected tiers.
-  The cut is not this change's to make either.
+  The cut is not this change's to make either. As landed, the corrected tiers
+  do not produce a passing gate: `guard-nil`, `kw-lookup`, and `merge-config`
+  still fail on allocated bytes, so those three tasks stay blocked on the
+  allocation work rather than on the tiers. What this change removes is the
+  misclassification standing in front of that finding.
 - Risk: this change edits the gate's pass/fail surface, which is exactly what
   `release-gate-activation` declined to do mid-activation. It is safe to do
   here because the activation is finished: the gate has run, its verdict is
