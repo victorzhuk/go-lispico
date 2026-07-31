@@ -109,6 +109,7 @@ type engineConfig struct {
 	dialect      core.Dialect
 	limits       ResourceLimits
 	engineMeter  Meter
+	cacheStripes int
 }
 
 // EngineOption configures an Engine created by New.
@@ -301,7 +302,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 	e.rootEnvPtr.Store(rootEnv)
 
 	if cfg.bytecode {
-		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect, cfg.engineMeter)
+		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect, cfg.engineMeter, cfg.cacheStripes)
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be

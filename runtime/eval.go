@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -40,6 +41,51 @@ type cacheKey struct {
 	macroEpoch int
 }
 
+// cacheStripeThreshold and cacheStripeCount implement the chunk cache's
+// adaptive striping rule: an engine whose cache holds a handful of entries
+// gains nothing from partitioning and would only lose global LRU victim
+// identity, so it stays a single stripe. A production-sized cache (the
+// default ceiling is 4096 entries) partitions eight ways to remove
+// bytecodeEvaluator's single mutex as a cross-core serialization point.
+// Both values are read only through resolveCacheStripes; the stripe count
+// must stay a power of two because stripeIndex routes with a mask.
+const (
+	cacheStripeThreshold = 64
+	cacheStripeCount     = 8
+)
+
+// resolveCacheStripes applies the adaptive rule, honoring override when set
+// (>0) so benchmarks can compare stripe counts within one binary.
+func resolveCacheStripes(maxEntries, override int) int {
+	if override > 0 {
+		return override
+	}
+	if maxEntries < cacheStripeThreshold {
+		return 1
+	}
+	return cacheStripeCount
+}
+
+// withCacheStripes overrides the chunk cache's stripe count instead of
+// deriving it from resolveCacheStripes. Test hook only — production leaves
+// it unset (0) and takes the adaptive rule; callers must pass a power of two.
+func withCacheStripes(n int) EngineOption {
+	return func(cfg *engineConfig) {
+		cfg.cacheStripes = n
+	}
+}
+
+// cacheStripe is one partition of the chunk cache: its own map and its own
+// LRU list, guarded by its own mutex. bytecodeEvaluator's aggregate budget
+// counters are the sole authority on total occupancy across every stripe —
+// a stripe never enforces a fraction of the ceiling on its own.
+type cacheStripe struct {
+	mu    sync.Mutex
+	cache map[cacheKey]*cacheEntry
+	head  *cacheEntry
+	tail  *cacheEntry
+}
+
 // bytecodeEvaluator runs Lisp forms through the bytecode VM with chunk caching
 // and VM pool reuse for concurrent safety and reduced allocation.
 type bytecodeEvaluator struct {
@@ -49,12 +95,11 @@ type bytecodeEvaluator struct {
 	macro              macroExpander
 	tree               core.Evaluator
 	dialect            core.Dialect
-	mu                 sync.Mutex
-	cache              map[cacheKey]*cacheEntry
-	cacheHead          *cacheEntry
-	cacheTail          *cacheEntry
-	cacheBytes         int64
-	cacheNodes         int
+	stripes            []cacheStripe
+	cacheEntries       atomic.Int64
+	cacheBytes         atomic.Int64
+	cacheNodes         atomic.Int64
+	lastFlushedEpoch   atomic.Int64
 	dialectFP          string
 	vmPool             sync.Pool
 	maxStructuralDepth int
@@ -74,7 +119,11 @@ type cacheEntry struct {
 	next  *cacheEntry
 }
 
-func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect, meter Meter) *bytecodeEvaluator {
+func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect, meter Meter, stripeOverride int) *bytecodeEvaluator {
+	// Stripe maps are lazily allocated on each stripe's first admit (see
+	// cacheAdmitLocked) rather than here, so an engine that never populates
+	// the chunk cache pays for the stripes slice alone, not N empty maps.
+	stripes := make([]cacheStripe, resolveCacheStripes(limits.MaxCacheEntries, stripeOverride))
 	be := &bytecodeEvaluator{
 		globals:            globals,
 		maxDepth:           maxDepth,
@@ -91,7 +140,7 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 		tree:               treeWalker,
 		dialect:            dialect,
 		dialectFP:          dialect.Fingerprint(),
-		cache:              make(map[cacheKey]*cacheEntry),
+		stripes:            stripes,
 	}
 	be.vmPool = sync.Pool{
 		New: func() any {
@@ -101,32 +150,65 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 	return be
 }
 
-func (be *bytecodeEvaluator) cacheGetLocked(key cacheKey) (*vm.Chunk, bool) {
-	entry, ok := be.cache[key]
+// stripeFor routes a cache key to its stripe using only sourceHash and
+// formIndex — never macroEpoch, which is deliberately excluded: including it
+// would scatter a source's stale-epoch entry into a different stripe than
+// its fresh replacement, so a miss could not find its own stale sibling
+// co-located in the stripe it is about to write. dialectFP is constant per
+// engine and contributes no entropy, so it is excluded too. cacheKey itself
+// stays the exact map lookup key; routing and key equality are separate concerns.
+func (be *bytecodeEvaluator) stripeFor(key cacheKey) *cacheStripe {
+	return &be.stripes[stripeIndex(key.sourceHash, key.formIndex, len(be.stripes))]
+}
+
+func stripeIndex(h sourceHash, formIndex, n int) int {
+	if n == 1 {
+		return 0
+	}
+	mixed := binary.LittleEndian.Uint64(h[:8]) ^ uint64(formIndex)
+	return int(mixed & uint64(n-1))
+}
+
+func (s *cacheStripe) cacheGetLocked(key cacheKey) (*vm.Chunk, bool) {
+	entry, ok := s.cache[key]
 	if !ok {
 		return nil, false
 	}
-	be.moveCacheEntryToHeadLocked(entry)
+	s.moveCacheEntryToHeadLocked(entry)
 	return entry.chunk, true
 }
 
-func (be *bytecodeEvaluator) cacheAdmitLocked(key cacheKey, chunk *vm.Chunk) bool {
+// cacheAdmitLocked admits chunk into stripe s. The aggregate ceiling holds
+// exactly, with no tolerance term: cacheFitsAlone checks the true undivided
+// limits (never divided by stripe count), bounded local pre-eviction makes
+// room by evicting only from s's own tail, and the CAS-charge against
+// bytecodeEvaluator's global counters is the only way an entry becomes
+// visible — refusal is the sole failure mode, nothing is ever inserted
+// speculatively.
+func (be *bytecodeEvaluator) cacheAdmitLocked(s *cacheStripe, key cacheKey, chunk *vm.Chunk) bool {
 	if !be.cacheFitsAlone(chunk) {
+		return false
+	}
+	// s.tail != nil bounds the loop: one big LRU rarely empties mid-eviction,
+	// but an N-way split one does routinely once other stripes hold the budget.
+	for s.tail != nil && be.cacheBudgetExceeded(chunk) {
+		be.evictCacheEntryLocked(s, s.tail)
+	}
+	if err := be.chargeCacheBudget(chunk); err != nil {
 		return false
 	}
 	if be.engineMeter != nil {
 		if err := be.engineMeter.ChargeRetained(chunk.DeepBytes, 1); err != nil {
+			be.releaseCacheBudget(chunk.DeepBytes, chunk.NodeCount)
 			return false
 		}
 	}
-	entry := &cacheEntry{key: key, chunk: chunk}
-	be.cache[key] = entry
-	be.insertCacheEntryHeadLocked(entry)
-	be.cacheBytes += chunk.DeepBytes
-	be.cacheNodes += chunk.NodeCount
-	for be.cacheOverLimitLocked() {
-		be.evictCacheEntryLocked(be.cacheTail)
+	if s.cache == nil {
+		s.cache = make(map[cacheKey]*cacheEntry)
 	}
+	entry := &cacheEntry{key: key, chunk: chunk}
+	s.cache[key] = entry
+	s.insertCacheEntryHeadLocked(entry)
 	return true
 }
 
@@ -143,88 +225,139 @@ func (be *bytecodeEvaluator) cacheFitsAlone(chunk *vm.Chunk) bool {
 	return be.maxCacheNodes >= chunk.NodeCount
 }
 
-func (be *bytecodeEvaluator) cacheOverLimitLocked() bool {
-	return len(be.cache) > be.maxCacheEntries || be.cacheBytes > int64(be.maxCacheBytes) || be.cacheNodes > be.maxCacheNodes
+// cacheBudgetExceeded reports whether admitting chunk would push any of the
+// three global counters past its ceiling — the same used+n>max test
+// chargeCacheBudget applies, checked ahead of time so pre-eviction can make
+// room before the charge is attempted.
+func (be *bytecodeEvaluator) cacheBudgetExceeded(chunk *vm.Chunk) bool {
+	return be.cacheEntries.Load()+1 > int64(be.maxCacheEntries) ||
+		be.cacheBytes.Load()+chunk.DeepBytes > int64(be.maxCacheBytes) ||
+		be.cacheNodes.Load()+int64(chunk.NodeCount) > int64(be.maxCacheNodes)
 }
 
-func (be *bytecodeEvaluator) insertCacheEntryHeadLocked(entry *cacheEntry) {
-	entry.prev = nil
-	entry.next = be.cacheHead
-	if be.cacheHead != nil {
-		be.cacheHead.prev = entry
-	} else {
-		be.cacheTail = entry
+// chargeCacheBudget CAS-charges the three global counters in order,
+// rolling back what already succeeded when a later charge fails — the same
+// bytes-then-slots rollback shape as limitMeter.ChargeRetained in meter.go.
+func (be *bytecodeEvaluator) chargeCacheBudget(chunk *vm.Chunk) error {
+	if err := chargeCounter(&be.cacheEntries, int64(be.maxCacheEntries), 1); err != nil {
+		return err
 	}
-	be.cacheHead = entry
+	if err := chargeCounter(&be.cacheBytes, int64(be.maxCacheBytes), chunk.DeepBytes); err != nil {
+		returnCounter(&be.cacheEntries, 1)
+		return err
+	}
+	if err := chargeCounter(&be.cacheNodes, int64(be.maxCacheNodes), int64(chunk.NodeCount)); err != nil {
+		returnCounter(&be.cacheBytes, chunk.DeepBytes)
+		returnCounter(&be.cacheEntries, 1)
+		return err
+	}
+	return nil
 }
 
-func (be *bytecodeEvaluator) moveCacheEntryToHeadLocked(entry *cacheEntry) {
-	if entry == be.cacheHead {
+func (be *bytecodeEvaluator) releaseCacheBudget(bytes int64, nodes int) {
+	returnCounter(&be.cacheEntries, 1)
+	returnCounter(&be.cacheBytes, bytes)
+	returnCounter(&be.cacheNodes, int64(nodes))
+}
+
+func (s *cacheStripe) insertCacheEntryHeadLocked(entry *cacheEntry) {
+	entry.prev = nil
+	entry.next = s.head
+	if s.head != nil {
+		s.head.prev = entry
+	} else {
+		s.tail = entry
+	}
+	s.head = entry
+}
+
+func (s *cacheStripe) moveCacheEntryToHeadLocked(entry *cacheEntry) {
+	if entry == s.head {
 		return
 	}
-	be.unlinkCacheEntryLocked(entry)
-	be.insertCacheEntryHeadLocked(entry)
+	s.unlinkCacheEntryLocked(entry)
+	s.insertCacheEntryHeadLocked(entry)
 }
 
-func (be *bytecodeEvaluator) unlinkCacheEntryLocked(entry *cacheEntry) {
+func (s *cacheStripe) unlinkCacheEntryLocked(entry *cacheEntry) {
 	if entry.prev != nil {
 		entry.prev.next = entry.next
 	} else {
-		be.cacheHead = entry.next
+		s.head = entry.next
 	}
 	if entry.next != nil {
 		entry.next.prev = entry.prev
 	} else {
-		be.cacheTail = entry.prev
+		s.tail = entry.prev
 	}
 	entry.prev = nil
 	entry.next = nil
 }
 
-func (be *bytecodeEvaluator) evictCacheEntryLocked(entry *cacheEntry) {
+func (be *bytecodeEvaluator) evictCacheEntryLocked(s *cacheStripe, entry *cacheEntry) {
 	if entry == nil {
 		return
 	}
-	delete(be.cache, entry.key)
-	be.unlinkCacheEntryLocked(entry)
-	be.cacheBytes -= entry.chunk.DeepBytes
-	be.cacheNodes -= entry.chunk.NodeCount
-	if be.cacheBytes < 0 {
-		be.cacheBytes = 0
-	}
-	if be.cacheNodes < 0 {
-		be.cacheNodes = 0
-	}
+	delete(s.cache, entry.key)
+	s.unlinkCacheEntryLocked(entry)
+	be.releaseCacheBudget(entry.chunk.DeepBytes, entry.chunk.NodeCount)
 	if be.engineMeter != nil {
 		be.engineMeter.ReleaseRetained(entry.chunk.DeepBytes, 1)
 	}
 }
 
-func (be *bytecodeEvaluator) flushCacheEpochLocked(epoch int) {
-	for entry := be.cacheTail; entry != nil; {
+func (be *bytecodeEvaluator) flushCacheEpochLocked(s *cacheStripe, epoch int) {
+	for entry := s.tail; entry != nil; {
 		prev := entry.prev
 		if entry.key.macroEpoch != epoch {
-			be.evictCacheEntryLocked(entry)
+			be.evictCacheEntryLocked(s, entry)
 		}
 		entry = prev
 	}
 }
 
+// flushStaleEpoch reclaims stale-epoch entries across every stripe, gated by
+// one CAS on lastFlushedEpoch so exactly one caller per epoch bump pays the
+// O(total entries) sweep; losers skip straight to their own admit.
+// Correctness never depends on the sweep running promptly, or at all: epoch
+// is part of cacheKey, so a probe for the current epoch can never return a
+// stale-epoch entry regardless of whether reclamation has caught up. The
+// sweep is reclamation only, never hit/miss correctness.
+func (be *bytecodeEvaluator) flushStaleEpoch(epoch int64) {
+	for {
+		prev := be.lastFlushedEpoch.Load()
+		if prev >= epoch {
+			return
+		}
+		if !be.lastFlushedEpoch.CompareAndSwap(prev, epoch) {
+			continue
+		}
+		for i := range be.stripes {
+			st := &be.stripes[i]
+			st.mu.Lock()
+			be.flushCacheEpochLocked(st, int(epoch))
+			st.mu.Unlock()
+		}
+		return
+	}
+}
+
 func (be *bytecodeEvaluator) flushCache() {
-	be.mu.Lock()
-	defer be.mu.Unlock()
-	for be.cacheTail != nil {
-		be.evictCacheEntryLocked(be.cacheTail)
+	for i := range be.stripes {
+		s := &be.stripes[i]
+		s.mu.Lock()
+		for s.tail != nil {
+			be.evictCacheEntryLocked(s, s.tail)
+		}
+		s.mu.Unlock()
 	}
 }
 
 func (be *bytecodeEvaluator) cacheStats() CacheStats {
-	be.mu.Lock()
-	defer be.mu.Unlock()
 	return CacheStats{
-		Entries: len(be.cache),
-		Bytes:   be.cacheBytes,
-		Nodes:   be.cacheNodes,
+		Entries: int(be.cacheEntries.Load()),
+		Bytes:   be.cacheBytes.Load(),
+		Nodes:   int(be.cacheNodes.Load()),
 		Epoch:   fmt.Sprintf("%s:%d", be.dialectFP, be.globals.MacroEpoch()),
 	}
 }
@@ -360,9 +493,11 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		macroEpoch: be.globals.MacroEpoch(),
 	}
 
-	be.mu.Lock()
-	chunk, hit := be.cacheGetLocked(key)
-	be.mu.Unlock()
+	s := be.stripeFor(key)
+
+	s.mu.Lock()
+	chunk, hit := s.cacheGetLocked(key)
+	s.mu.Unlock()
 
 	if !hit {
 		// Expand only on a miss. A cached chunk was compiled from the
@@ -375,9 +510,7 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		}
 
 		currentEpoch := be.globals.MacroEpoch()
-		be.mu.Lock()
-		be.flushCacheEpochLocked(currentEpoch)
-		be.mu.Unlock()
+		be.flushStaleEpoch(int64(currentEpoch))
 
 		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 		comp.SetEvalMeter(core.EvalMeterFrom(ctx))
@@ -399,14 +532,14 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 			return nil, err
 		}
 
-		be.mu.Lock()
-		if cached, dup := be.cacheGetLocked(key); dup {
+		s.mu.Lock()
+		if cached, dup := s.cacheGetLocked(key); dup {
 			chunk = cached
 			hit = true
-		} else if be.cacheAdmitLocked(key, chunk) {
+		} else if be.cacheAdmitLocked(s, key, chunk) {
 			hit = false
 		}
-		be.mu.Unlock()
+		s.mu.Unlock()
 	}
 
 	// The site cache pays off only across repeated runs, so build it the first
