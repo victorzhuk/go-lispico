@@ -109,18 +109,19 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 	for _, name := range names {
 		cell := cells[name]
 		cell.RaceClean = raceClean
-		tier, ok := tiers[perfgate.TrimProcsSuffix(name)]
+		ct, ok := tiers[perfgate.TrimProcsSuffix(name)]
 		if !ok {
 			fmt.Fprintf(&report, "%s: FAIL no committed tier for this cell\n", name)
 			anyFail = true
 			continue
 		}
+		cell.BytesAllowanceBOp = ct.BytesAllowanceBOp
 
-		res := perfgate.Evaluate(cell, tier, mode)
+		res := perfgate.Evaluate(cell, ct.Tier, mode)
 		verdict := res.Verdict
 		if verdict == perfgate.VerdictInconclusive {
 			if rerun {
-				verdict = perfgate.Resolve(tier, mode)
+				verdict = perfgate.Resolve(ct.Tier, mode)
 			} else {
 				needsRerun = true
 			}

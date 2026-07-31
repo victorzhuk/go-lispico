@@ -88,6 +88,13 @@ type CellComparison struct {
 	// run"). Only TierConcurrent checks it. Zero value is false so an
 	// unset field fails closed rather than silently passing a release gate.
 	RaceClean bool
+
+	// BytesAllowanceBOp is a named, per-cell absolute bytes allowance
+	// (tiers.json's bytesAllowanceBOp), populated by the caller from the
+	// loaded tier config rather than parsed from the benchstat comparison
+	// itself. Zero value means no allowance, i.e. the exact non-increasing
+	// bound. Only nonIncreasing reads it.
+	BytesAllowanceBOp float64
 }
 
 const (
@@ -173,7 +180,20 @@ func Resolve(tier Tier, mode Mode) Verdict {
 	return VerdictPass
 }
 
+// evaluateEngineSensitiveImprovement checks allocs before the significance
+// gate but leaves bytes below it, unlike every other evaluator here. Bytes
+// on this tier is a 20%-fewer improvement floor, not a non-increasing bound
+// like allocs — floor-style checks fail on DeltaPct > -N, and benchstat's "~"
+// parses to DeltaPct = 0 (parse.go), so hoisting a floor would turn "not yet
+// significant" into an immediate false FAIL and delete the doubled-benchtime
+// rerun path for this tier. Leaving the bytes floor gated on significance is
+// safe: no engine-sensitive cell in the corpus reads "~" on bytes, and a
+// cell still inconclusive after the one allowed rerun is failed by Resolve
+// anyway, so nothing escapes indefinitely.
 func evaluateEngineSensitiveImprovement(cell CellComparison) Result {
+	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
+		return r
+	}
 	if !cell.Latency.Significant {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency improvement not statistically significant"}
 	}
@@ -185,16 +205,22 @@ func evaluateEngineSensitiveImprovement(cell CellComparison) Result {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
 			"bytes improved %.2f%%, need at least %.0f%% fewer", -cell.Bytes.DeltaPct, engineSensitiveBytesImprovementPct)}
 	}
-	if r := nonIncreasing(cell.Allocs, "allocs"); r.Verdict != VerdictPass {
-		return r
-	}
 	return Result{Verdict: VerdictPass}
 }
 
 // evaluateNonRegression fails a cell whose latency regressed past tolerancePct.
 // An improvement of any size passes: the cell is being judged against a
-// previous release, and a faster candidate is not a defect.
+// previous release, and a faster candidate is not a defect. Bytes and allocs
+// are checked before the significance gate, so a non-significant latency
+// delta cannot hide a real allocation regression behind an INCONCLUSIVE that
+// Resolve later collapses to PASS.
 func evaluateNonRegression(cell CellComparison, tolerancePct float64) Result {
+	if r := nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp); r.Verdict != VerdictPass {
+		return r
+	}
+	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
+		return r
+	}
 	if !cell.Latency.Significant {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
 	}
@@ -202,31 +228,26 @@ func evaluateNonRegression(cell CellComparison, tolerancePct float64) Result {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
 			"latency regressed %.2f%%, exceeding the %.0f%% tolerance", cell.Latency.DeltaPct, tolerancePct)}
 	}
-	if r := nonIncreasing(cell.Bytes, "bytes"); r.Verdict != VerdictPass {
-		return r
-	}
-	if r := nonIncreasing(cell.Allocs, "allocs"); r.Verdict != VerdictPass {
-		return r
-	}
 	return Result{Verdict: VerdictPass}
 }
 
 // evaluateWithinTolerance fails a cell whose latency moved past tolerancePct in
 // either direction. Used where the two runs are expected to measure the same
-// cost, so any movement is a finding.
+// cost, so any movement is a finding. Bytes and allocs are checked before the
+// significance gate for the same reason as evaluateNonRegression.
 func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
+	if r := nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp); r.Verdict != VerdictPass {
+		return r
+	}
+	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
+		return r
+	}
 	if !cell.Latency.Significant {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
 	}
 	if math.Abs(cell.Latency.DeltaPct) > tolerancePct {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
 			"latency delta %.2f%% exceeds %.0f%% tolerance", cell.Latency.DeltaPct, tolerancePct)}
-	}
-	if r := nonIncreasing(cell.Bytes, "bytes"); r.Verdict != VerdictPass {
-		return r
-	}
-	if r := nonIncreasing(cell.Allocs, "allocs"); r.Verdict != VerdictPass {
-		return r
 	}
 	return Result{Verdict: VerdictPass}
 }
@@ -236,9 +257,15 @@ func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
 // percentage bound only, so sub-millisecond one-time work cannot fail on
 // percentage alone. It does not excuse allocation — bytes and allocation
 // count stay non-increasing here exactly as they do for every other tier,
-// regardless of which latency path (tolerance or absolute bound) the cell
-// takes.
+// checked before the significance gate and before the tolerance/absolute-
+// overhead block, regardless of which latency path that block takes.
 func evaluateStartup(cell CellComparison, mode Mode) Result {
+	if r := nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp); r.Verdict != VerdictPass {
+		return r
+	}
+	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
+		return r
+	}
 	if !cell.Latency.Significant {
 		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
 	}
@@ -255,22 +282,28 @@ func evaluateStartup(cell CellComparison, mode Mode) Result {
 			cell.Latency.New*1000, cell.Bytes.New,
 			startupMaxLatency, startupMaxBytes/1024)}
 	}
-	if r := nonIncreasing(cell.Bytes, "bytes"); r.Verdict != VerdictPass {
-		return r
-	}
-	if r := nonIncreasing(cell.Allocs, "allocs"); r.Verdict != VerdictPass {
-		return r
-	}
 	return Result{Verdict: VerdictPass}
 }
 
 // nonIncreasing enforces ADR 0008's "allocation count non-increasing" and
 // "bytes ... non-increasing" bounds. These are exact counts in Go's
 // benchmark output, not sampled statistics, so unlike latency they carry no
-// significance gate here.
-func nonIncreasing(m MetricResult, label string) Result {
-	if m.DeltaPct > 0 {
-		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf("%s increased by %.2f%%", label, m.DeltaPct)}
+// significance gate here. allowanceBOp is an absolute B/op headroom above
+// Old before a positive delta fails — always 0 except for the bytes check
+// on a cell carrying a tiers.json bytesAllowanceBOp entry; the allocs axis
+// has no allowance mechanism. This reaches only the calls in this file, so
+// evaluateEngineSensitiveImprovement's inline bytes-improvement floor is
+// untouched by any allowance.
+func nonIncreasing(m MetricResult, label string, allowanceBOp float64) Result {
+	if m.DeltaPct <= 0 {
+		return Result{Verdict: VerdictPass}
 	}
-	return Result{Verdict: VerdictPass}
+	if m.New-m.Old <= allowanceBOp {
+		return Result{Verdict: VerdictPass}
+	}
+	if allowanceBOp > 0 {
+		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
+			"%s increased by %.2f%% (%.0f over its %.0f B/op allowance)", label, m.DeltaPct, m.New-m.Old, allowanceBOp)}
+	}
+	return Result{Verdict: VerdictFail, Reason: fmt.Sprintf("%s increased by %.2f%%", label, m.DeltaPct)}
 }

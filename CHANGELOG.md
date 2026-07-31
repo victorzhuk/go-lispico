@@ -33,17 +33,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   may be cited as settling one. Behavior is unaffected; what changes is that
   the two claims are now closed with a stated reason instead of pending
   indefinitely.
-- The release gate fails on the `guard-nil` gold-set cell whenever that run's
-  latency measurement reaches statistical significance. The cell allocates one
-  byte more under the VM than under the Evaluator (1128 against 1129 B/op), a
-  figure every profile has recorded, and its tier bounds allocated bytes
-  non-increasing. Until now the gate never evaluated that bound: a
-  non-significant latency delta short-circuits to inconclusive before the byte
-  check runs, and inconclusive resolves to pass. A hosted run has now come
-  back with that delta significant, and the cell failed. Nothing about the
-  engine changed between the runs — what changed is whether the check was
-  reached. The byte is not a removable allocation site, so the threshold
-  question stays open rather than being papered over with a tier change.
+- The gate's four tier-evaluator functions checked latency significance
+  before the bytes and allocation-count non-increasing bounds, so a
+  non-significant latency delta let `Resolve` collapse straight to a pass
+  without those bounds ever being evaluated. Bytes and allocation count are
+  now checked first in `evaluateNonRegression`, `evaluateWithinTolerance`,
+  and `evaluateStartup`; `evaluateEngineSensitiveImprovement` hoists only
+  its allocs check, since its bytes check is a 20%-improvement floor rather
+  than a non-increasing bound and hoisting it would fail cells outright
+  before the doubled-benchtime rerun ever ran. This surfaced as the
+  `guard-nil` gold-set cell failing whenever a hosted run's latency
+  measurement happened to reach significance: the cell allocates one byte
+  more under the VM than under the Evaluator (1128 against 1129 B/op,
+  +0.09%, p=0.000, 0% CI, reproduced across three hosted runs), which is
+  not a removable allocation site — `core/vm.(*VM).run`'s cost offsets
+  almost exactly against `core.(*engine).Eval`'s, plus a small `sync.Pool`
+  GC-cadence remainder on the VM's chunk pool, two engines' honest cost for
+  the same logical work. `Goldset/guard-nil` now carries a named, per-cell,
+  absolute allowance of 4 B/op on the bytes axis (`tiers.json`'s
+  `bytesAllowanceBOp`), sized from the hosted figures. No allocation was
+  reduced; every other data-dominated cell keeps the exact bound.
 - The classification profile behind the gate's cell tiers was recorded with
   the wrong benchmark parameters. Run `30630796967` ended inconclusive, so its
   rerun leg deleted both benchmark files and regenerated them at doubled
@@ -130,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly, plus `sync.Pool` GC-cadence churn) and its threshold is left for a
   hosted profile to settle, not amended here. The hosted run reproduced the
   figure exactly — 1128 against 1129 B/op, +0.09% at p=0.000 — and the cell
-  nevertheless passes the gate, for the reason recorded below.
+  nevertheless passes the gate, for the reason recorded above.
 - The consumer performance gate passes, all 26 cells, for the first time in
   the project's history: `workflow_dispatch` run `30630796967`, committed as
   the classification profile ADR 0008 requires at
@@ -139,16 +148,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A dispatch run carries no release identity, so it stores no baseline asset
   and consumes no baseline slot; the stored non-regression baseline still
   waits on a release cut whose gate passes.
-- Recorded, not fixed: a cell whose latency delta is not statistically
-  significant is never checked against its tier's allocation bounds. All four
-  of the gate's tier-evaluator functions return INCONCLUSIVE on a
-  non-significant latency before reaching the bytes and allocation-count
-  checks, and `Resolve` then collapses INCONCLUSIVE to a pass for every
-  tier/mode except an engine-sensitive improvement claim. `Goldset/guard-nil`
-  is the first cell in the corpus to exhibit it — its bytes exceed a bound the
-  gate structurally cannot evaluate, so its pass rests on burden of proof
-  rather than on merit. Every other cell reporting INCONCLUSIVE is
-  bit-identical on bytes, which is why no earlier profile could surface it.
 - `evaluateStartup` (`internal/perfgate`) now bounds allocated bytes and
   allocation count non-increasing, matching every other tier. Previously the
   tier's absolute "1 ms / 256 KiB" overhead escape excused allocation

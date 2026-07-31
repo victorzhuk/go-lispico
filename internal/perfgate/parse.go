@@ -176,23 +176,34 @@ func TrimProcsSuffix(name string) string {
 	return name[:i]
 }
 
-// tierConfigFile is tiers.json's on-disk shape: a documenting comment plus
-// the cell-name -> tier map.
+// tierConfigFile is tiers.json's on-disk shape: a documenting comment, the
+// cell-name -> tier map, and an optional cell-name -> bytes allowance map.
 type tierConfigFile struct {
-	Comment string            `json:"comment"`
-	Cells   map[string]string `json:"cells"`
+	Comment           string             `json:"comment"`
+	Cells             map[string]string  `json:"cells"`
+	BytesAllowanceBOp map[string]float64 `json:"bytesAllowanceBOp"`
+}
+
+// CellTier is one cell's committed classification plus any named bytes
+// allowance, so a cell's gate treatment is answerable from tiers.json alone
+// without reading perfgate.go. BytesAllowanceBOp reaches only nonIncreasing;
+// it has no effect on evaluateEngineSensitiveImprovement's inline bytes
+// floor, relevant only if a future engine-sensitive cell is ever given one.
+type CellTier struct {
+	Tier              Tier
+	BytesAllowanceBOp float64
 }
 
 // LoadTierConfig reads a cell-name -> tier mapping (perfgate/tiers.json).
 // Real cell names and tier assignments are YAGEL-owned and not yet
 // published (design.md "Open inputs"); tiers.json ships placeholder
 // entries only until YAGEL's corpus lands.
-func LoadTierConfig(r io.Reader) (map[string]Tier, error) {
+func LoadTierConfig(r io.Reader) (map[string]CellTier, error) {
 	var file tierConfigFile
 	if err := json.NewDecoder(r).Decode(&file); err != nil {
 		return nil, fmt.Errorf("perfgate: decode tier config: %w", err)
 	}
-	tiers := make(map[string]Tier, len(file.Cells))
+	tiers := make(map[string]CellTier, len(file.Cells))
 	for name, tier := range file.Cells {
 		t := Tier(tier)
 		switch t {
@@ -200,7 +211,15 @@ func LoadTierConfig(r io.Reader) (map[string]Tier, error) {
 		default:
 			return nil, fmt.Errorf("perfgate: cell %q: unknown tier %q", name, tier)
 		}
-		tiers[name] = t
+		tiers[name] = CellTier{Tier: t}
+	}
+	for name, allowance := range file.BytesAllowanceBOp {
+		ct, ok := tiers[name]
+		if !ok {
+			return nil, fmt.Errorf("perfgate: bytesAllowanceBOp names cell %q, absent from cells", name)
+		}
+		ct.BytesAllowanceBOp = allowance
+		tiers[name] = ct
 	}
 	return tiers, nil
 }

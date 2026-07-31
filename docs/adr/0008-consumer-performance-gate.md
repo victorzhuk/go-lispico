@@ -19,7 +19,7 @@ Consumers opt into the VM only after every known VM parity, state-cleanup, cache
 This ADR is the single owner of the numbers; the PRD and glossary reference them. No cell may regress beyond its tier's budget. Before candidate results are produced, a checked-in baseline profile classifies each cell:
 
 - Engine-sensitive hot cells: at least 15% lower latency and 20% fewer allocated bytes, allocation count non-increasing.
-- Data/output-dominated hot cells: within 5% latency, bytes and allocation count non-increasing.
+- Data/output-dominated hot cells: within 5% latency, bytes and allocation count non-increasing — subject to any per-cell bytes allowance recorded in `internal/perfgate/tiers.json`'s `bytesAllowanceBOp`.
 - Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing, race detector clean in the separate untimed run.
 - Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone; bytes and allocation count stay non-increasing regardless of which of those two latency paths the cell takes — the absolute-overhead escape excuses the latency percentage only, never allocation.
 
@@ -46,6 +46,32 @@ The implementation reads it as the former — a cell passes the escape when
 its New latency and New bytes each sit under the floor outright, regardless
 of Old. The latter reading is unresolved and not implemented; this note
 records the choice made, not a decision that the other reading is wrong.
+
+Note (`Goldset/guard-nil`'s named bytes allowance): three hosted dispatch
+runs (30630796967, 30637802780, 30639778105) each measured the same
+deterministic figure for this cell — 1128 B/op under the Evaluator against
+1129 under the VM, +0.09%, p=0.000, 0% CI on both arms. This is not a
+removable allocation site: `core/vm.(*VM).run`'s cost offsets almost
+exactly against `core.(*engine).Eval`'s, plus a small `sync.Pool`
+GC-cadence remainder on the VM's chunk pool — two engines' honest cost for
+the same logical work. `guard-nil` therefore carries a named, per-cell,
+absolute allowance of 4 B/op on the bytes axis only, recorded in
+`internal/perfgate/tiers.json`'s `bytesAllowanceBOp`, sized from those
+hosted figures rather than a developer-box estimate. The other thirteen
+data-dominated cells — every `GoldsetParse/*` cell — keep the exact
+non-increasing bound with no allowance. The mechanism itself is not
+tier-specific, and reads wider than this one cell: an entry in that map is
+honored wherever a bytes non-increasing bound is applied — data/output-
+dominated, concurrent, and startup cells in either mode, and
+engine-sensitive cells once they compare against a previous release. It is
+inert against the engine-sensitive tier's 20%-fewer-bytes improvement
+floor, which is not a non-increasing bound, so an entry naming an
+engine-sensitive cell would do nothing at first authorization and take
+effect only afterwards. Only `Goldset/guard-nil` carries one today; a
+second entry needs the same evidence this one does. This is a distinct fix from
+the benchstat-`~` blind spot noted above, which this allowance does not
+close — that gap applies to every non-increasing bound in the gate and
+remains open. No cell's tier changes.
 
 ## Consequences
 

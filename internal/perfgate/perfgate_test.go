@@ -262,7 +262,10 @@ func TestEvaluate_Startup_BytesOrAllocsIncreaseFails(t *testing.T) {
 // TestEvaluate_Startup_Fail_BothPathsExceeded covers evaluateStartup's real
 // VerdictFail branch — latency exceeds the tolerance AND the absolute
 // overhead bound — which had no test on master before this change touched
-// the function.
+// the function. Bytes and allocs are held non-increasing on purpose: bytes
+// and allocs are now checked before this branch, so a cell failing both
+// would report "bytes increased" instead, which is a different case (see
+// TestEvaluate_Startup_BytesOrAllocsIncreaseFails).
 func TestEvaluate_Startup_Fail_BothPathsExceeded(t *testing.T) {
 	t.Parallel()
 
@@ -272,7 +275,7 @@ func TestEvaluate_Startup_Fail_BothPathsExceeded(t *testing.T) {
 			cell := CellComparison{
 				Name:    "Goldset/rule-load",
 				Latency: MetricResult{Old: 0.0001, New: 0.002, DeltaPct: 1900, Significant: true, N: 10},
-				Bytes:   MetricResult{Old: 100, New: 200, DeltaPct: 100, Significant: true, N: 10},
+				Bytes:   MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: true, N: 10},
 				Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
 			}
 			res := Evaluate(cell, TierStartup, mode)
@@ -370,14 +373,40 @@ func TestLoadTierConfig(t *testing.T) {
 
 	tiers, err := LoadTierConfig(strings.NewReader(config))
 	require.NoError(t, err)
-	assert.Equal(t, TierEngineSensitive, tiers["BenchmarkApply"])
-	assert.Equal(t, TierDataDominated, tiers["BenchmarkFormat"])
+	assert.Equal(t, TierEngineSensitive, tiers["BenchmarkApply"].Tier)
+	assert.Equal(t, TierDataDominated, tiers["BenchmarkFormat"].Tier)
+	assert.Zero(t, tiers["BenchmarkFormat"].BytesAllowanceBOp, "a cell absent from bytesAllowanceBOp gets no allowance")
 }
 
 func TestLoadTierConfig_UnknownTier(t *testing.T) {
 	t.Parallel()
 
 	const config = `{"cells": {"BenchmarkApply": "bogus"}}`
+
+	_, err := LoadTierConfig(strings.NewReader(config))
+	require.Error(t, err)
+}
+
+// TestLoadTierConfig_BytesAllowance guards tiers.json's bytesAllowanceBOp map:
+// a listed cell gets its allowance, an unlisted one defaults to 0.
+func TestLoadTierConfig_BytesAllowance(t *testing.T) {
+	t.Parallel()
+
+	const config = `{"cells": {"Goldset/guard-nil": "data-dominated", "Goldset/pipeline": "data-dominated"}, "bytesAllowanceBOp": {"Goldset/guard-nil": 4}}`
+
+	tiers, err := LoadTierConfig(strings.NewReader(config))
+	require.NoError(t, err)
+	assert.Equal(t, 4.0, tiers["Goldset/guard-nil"].BytesAllowanceBOp)
+	assert.Zero(t, tiers["Goldset/pipeline"].BytesAllowanceBOp)
+}
+
+// TestLoadTierConfig_BytesAllowance_UnknownCell guards against a typo'd
+// bytesAllowanceBOp key silently reverting to the exact bound instead of
+// surfacing as a load error.
+func TestLoadTierConfig_BytesAllowance_UnknownCell(t *testing.T) {
+	t.Parallel()
+
+	const config = `{"cells": {"Goldset/guard-nil": "data-dominated"}, "bytesAllowanceBOp": {"Goldset/gaurd-nil": 4}}`
 
 	_, err := LoadTierConfig(strings.NewReader(config))
 	require.Error(t, err)
@@ -469,6 +498,155 @@ func TestEvaluate_Startup_NonRegressionImprovementPasses(t *testing.T) {
 	assert.Equal(t, VerdictPass, res.Verdict, "got %s", res.Reason)
 }
 
+// TestEvaluate_Ordering_BytesAllocsBeforeSignificance guards the fix to
+// evaluateNonRegression, evaluateWithinTolerance, and evaluateStartup: a
+// non-significant latency delta must not hide a real bytes or allocs
+// regression behind an INCONCLUSIVE that Resolve later collapses to PASS.
+// Before the fix, every case below returned INCONCLUSIVE.
+func TestEvaluate_Ordering_BytesAllocsBeforeSignificance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tier Tier
+		mode Mode
+	}{
+		{name: "non-regression", tier: TierDataDominated, mode: ModeNonRegression},
+		{name: "within-tolerance", tier: TierDataDominated, mode: ModeFirstAuthorization},
+		{name: "startup/first-authorization", tier: TierStartup, mode: ModeFirstAuthorization},
+		{name: "startup/non-regression", tier: TierStartup, mode: ModeNonRegression},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+"/bytes increased", func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:    "Format",
+				Latency: MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: false, N: 10},
+				Bytes:   MetricResult{Old: 100, New: 105, DeltaPct: 5, Significant: true, N: 10},
+				Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
+			}
+			res := Evaluate(cell, tt.tier, tt.mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "bytes increased")
+		})
+		t.Run(tt.name+"/allocs increased", func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:    "Format",
+				Latency: MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: false, N: 10},
+				Bytes:   MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: true, N: 10},
+				Allocs:  MetricResult{Old: 2, New: 3, DeltaPct: 50, Significant: true, N: 10},
+			}
+			res := Evaluate(cell, tt.tier, tt.mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "allocs increased")
+		})
+	}
+}
+
+// TestEvaluate_EngineSensitiveImprovement_AllocsOrdering guards the one
+// asymmetric hoist: allocs is checked before the significance gate here, but
+// bytes stays below it because bytes on this tier is a 20%-improvement
+// floor, not a non-increasing bound — hoisting it would fail "not yet
+// significant" outright. The first case pins that deliberate non-hoist:
+// without it, a later "make all four evaluators uniform" pass could hoist
+// the bytes floor too and silently delete the rerun path for this tier.
+func TestEvaluate_EngineSensitiveImprovement_AllocsOrdering(t *testing.T) {
+	t.Parallel()
+
+	t.Run("not significant, bytes and allocs both benchstat tilde", func(t *testing.T) {
+		t.Parallel()
+		cell := CellComparison{
+			Name:    "Apply",
+			Latency: MetricResult{Old: 100, New: 95, DeltaPct: 0, Significant: false, N: 10},
+			Bytes:   MetricResult{Old: 64, New: 64, DeltaPct: 0, Significant: false, N: 10},
+			Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: false, N: 10},
+		}
+		res := Evaluate(cell, TierEngineSensitive, ModeFirstAuthorization)
+		assert.Equal(t, VerdictInconclusive, res.Verdict)
+	})
+
+	t.Run("not significant, allocs increased", func(t *testing.T) {
+		t.Parallel()
+		cell := CellComparison{
+			Name:    "Apply",
+			Latency: MetricResult{Old: 100, New: 95, DeltaPct: 0, Significant: false, N: 10},
+			Bytes:   MetricResult{Old: 64, New: 64, DeltaPct: 0, Significant: true, N: 10},
+			Allocs:  MetricResult{Old: 2, New: 3, DeltaPct: 50, Significant: true, N: 10},
+		}
+		res := Evaluate(cell, TierEngineSensitive, ModeFirstAuthorization)
+		assert.Equal(t, VerdictFail, res.Verdict)
+		assert.Contains(t, res.Reason, "allocs increased")
+	})
+}
+
+// TestEvaluate_BytesAllowance guards the per-cell absolute bytes allowance
+// (tiers.json's bytesAllowanceBOp): it is per-cell rather than a tier-wide
+// loosening, sized in absolute B/op rather than percentage, and reaches only
+// nonIncreasing. Both modes are covered because first-authorization routes
+// TierDataDominated to evaluateWithinTolerance and non-regression routes it
+// to evaluateNonRegression. The "within allowance" case is Goldset/guard-nil
+// exactly: 1128 against 1129 B/op.
+func TestEvaluate_BytesAllowance(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		t.Run(modeName(mode)+"/within allowance", func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:              "Goldset/guard-nil",
+				Latency:           MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: false, N: 10},
+				Bytes:             MetricResult{Old: 1128, New: 1129, DeltaPct: 0.09, Significant: true, N: 10},
+				Allocs:            MetricResult{Old: 32, New: 32, DeltaPct: 0, Significant: true, N: 10},
+				BytesAllowanceBOp: 4,
+			}
+			res := Evaluate(cell, TierDataDominated, mode)
+			assert.Equal(t, VerdictInconclusive, res.Verdict, "got %s", res.Reason)
+		})
+
+		t.Run(modeName(mode)+"/past allowance", func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:              "Goldset/guard-nil",
+				Latency:           MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: false, N: 10},
+				Bytes:             MetricResult{Old: 1128, New: 1150, DeltaPct: 1.95, Significant: true, N: 10},
+				Allocs:            MetricResult{Old: 32, New: 32, DeltaPct: 0, Significant: true, N: 10},
+				BytesAllowanceBOp: 4,
+			}
+			res := Evaluate(cell, TierDataDominated, mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "bytes increased")
+		})
+
+		t.Run(modeName(mode)+"/unlisted cell gets no allowance", func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:    "Goldset/guard-nil",
+				Latency: MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: false, N: 10},
+				Bytes:   MetricResult{Old: 1128, New: 1129, DeltaPct: 0.09, Significant: true, N: 10},
+				Allocs:  MetricResult{Old: 32, New: 32, DeltaPct: 0, Significant: true, N: 10},
+			}
+			res := Evaluate(cell, TierDataDominated, mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "bytes increased by 0.09%")
+		})
+
+		t.Run(modeName(mode)+"/allowance does not reach allocs", func(t *testing.T) {
+			t.Parallel()
+			cell := CellComparison{
+				Name:              "Goldset/guard-nil",
+				Latency:           MetricResult{Old: 100, New: 100, DeltaPct: 0, Significant: false, N: 10},
+				Bytes:             MetricResult{Old: 1128, New: 1129, DeltaPct: 0.09, Significant: true, N: 10},
+				Allocs:            MetricResult{Old: 32, New: 33, DeltaPct: 3.13, Significant: true, N: 10},
+				BytesAllowanceBOp: 4,
+			}
+			res := Evaluate(cell, TierDataDominated, mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "allocs increased")
+		})
+	}
+}
+
 // pinnedProfileRunID and pinnedProfileDir name the checked-in classification
 // profile that licenses tiers.json (see its own comment and
 // testdata/profile-30630796967/README.md). TestPinnedProfile ties the two
@@ -549,13 +727,14 @@ func TestPinnedProfile(t *testing.T) {
 	assert.ElementsMatch(t, csvNames, verdictNames, "benchstat.csv and verdict.txt disagree on which cells exist")
 
 	for name, cell := range cells {
-		tier, ok := tiers[TrimProcsSuffix(name)]
+		ct, ok := tiers[TrimProcsSuffix(name)]
 		require.True(t, ok, "no committed tier for cell %q", name)
 		want, ok := wantVerdicts[name]
 		require.True(t, ok, "no committed verdict for cell %q", name)
 
-		res := Evaluate(cell, tier, ModeFirstAuthorization)
-		assert.Equal(t, want, res.Verdict, "cell %q (tier %s): got %s, want %s", name, tier, res.Verdict, want)
+		cell.BytesAllowanceBOp = ct.BytesAllowanceBOp
+		res := Evaluate(cell, ct.Tier, ModeFirstAuthorization)
+		assert.Equal(t, want, res.Verdict, "cell %q (tier %s): got %s, want %s", name, ct.Tier, res.Verdict, want)
 	}
 }
 
@@ -571,7 +750,7 @@ func parsePinnedVerdicts(t *testing.T, data string) map[string]Verdict {
 	t.Helper()
 
 	verdicts := make(map[string]Verdict)
-	for _, line := range strings.Split(strings.TrimSpace(data), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(data), "\n") {
 		name, rest, ok := strings.Cut(line, ": ")
 		require.True(t, ok, "verdict line %q: want \"name: VERDICT\"", line)
 		if i := strings.Index(rest, " ("); i >= 0 {
