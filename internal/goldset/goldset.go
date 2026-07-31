@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/victorzhuk/go-lispico/clojure"
+	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 	"github.com/victorzhuk/go-lispico/runtime"
 )
@@ -99,4 +100,43 @@ func Fixtures() ([]Fixture, error) {
 		})
 	}
 	return fixtures, nil
+}
+
+// callFixtureName is the gold-set cell in testdata/call: the Engine.Call
+// boundary, measured directly instead of through Eval.
+const callFixtureName = "call-boundary"
+
+// CallCell is the Engine.Call gold-set cell: setup source to Eval, then the
+// function name and arguments to Call, checked against an independent
+// expected result.
+type CallCell struct {
+	Name   string
+	Source string
+	Fn     string
+	Args   []core.Value
+	Want   string
+}
+
+// CallFixture loads testdata/call/call-boundary.lisp with its .golden pair,
+// same missing-golden-is-an-error discipline as Fixtures(). Fn and Args are
+// hardcoded here rather than read from the fixture: they are Go values by
+// construction — what the boundary marshals — so they belong in Go, while the
+// expected result stays a file golden like every other fixture.
+func CallFixture() (CallCell, error) {
+	path := filepath.Join("testdata", "call", callFixtureName+".lisp")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return CallCell{}, err
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "call", callFixtureName+".golden"))
+	if err != nil {
+		return CallCell{}, fmt.Errorf("goldset: call fixture %q has no golden: %w", callFixtureName, err)
+	}
+	return CallCell{
+		Name:   callFixtureName,
+		Source: string(src),
+		Fn:     "call-boundary",
+		Args:   []core.Value{core.Int{V: 7}, core.Int{V: 11}},
+		Want:   strings.TrimSpace(string(golden)),
+	}, nil
 }

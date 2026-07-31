@@ -31,3 +31,29 @@ func TestGoldset(t *testing.T) {
 		}
 	}
 }
+
+// TestGoldsetCall runs the Engine.Call gold-set cell under both execution
+// modes against its golden. Unlike TestGoldset it asserts through Call, not
+// Eval: an unasserted fixture must not silently pass the gate.
+func TestGoldsetCall(t *testing.T) {
+	t.Parallel()
+
+	cell, err := CallFixture()
+	require.NoError(t, err)
+
+	for _, mode := range Modes {
+		t.Run(string(mode)+"/"+cell.Name, func(t *testing.T) {
+			t.Parallel()
+			eng, err := NewEngine(mode)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = eng.Close() })
+
+			_, err = eng.Eval(context.Background(), cell.Name, cell.Source)
+			require.NoError(t, err)
+
+			got, err := eng.Call(context.Background(), cell.Fn, cell.Args...)
+			require.NoError(t, err)
+			require.Equal(t, cell.Want, got.String())
+		})
+	}
+}

@@ -51,6 +51,40 @@ func BenchmarkGoldset(b *testing.B) {
 	}
 }
 
+// BenchmarkGoldsetCall isolates the Engine.Call boundary the release gate
+// runs against: setup Eval happens once, untimed, so the timed loop measures
+// only argument marshalling, function-cell lookup, and frame setup per call.
+// Exactly one Call per iteration is deliberate — an absolute Call target is
+// adjudicated against this cell's ns/op.
+func BenchmarkGoldsetCall(b *testing.B) {
+	mode := benchMode(b)
+	cell, err := CallFixture()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run(cell.Name, func(b *testing.B) {
+		eng, err := NewEngine(mode)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer func() { _ = eng.Close() }()
+		ctx := context.Background()
+
+		if _, err := eng.Eval(ctx, cell.Name, cell.Source); err != nil {
+			b.Fatal(err)
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			if _, err := eng.Call(ctx, cell.Fn, cell.Args...); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 // BenchmarkGoldsetParse isolates the reader's share of BenchmarkGoldset: the
 // same fixture sources, parsed alone through the shared, mode-invariant
 // reader (docs/profiling-baseline.md).

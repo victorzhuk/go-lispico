@@ -304,6 +304,9 @@ func BenchmarkEngine_Stats(b *testing.B) {
 	}
 }
 
+// BenchmarkEngine_Call is not a gate cell and must not be cited as one: the
+// release workflow benches ./internal/goldset/ only, a package this one is
+// not part of.
 func BenchmarkEngine_Call(b *testing.B) {
 	eng, err := New(nil, WithDialect(clojure.Dialect()))
 	if err != nil {
@@ -321,6 +324,8 @@ func BenchmarkEngine_Call(b *testing.B) {
 	}
 }
 
+// BenchmarkEngine_CallBytecode carries the same gate-cell caveat as
+// BenchmarkEngine_Call above.
 func BenchmarkEngine_CallBytecode(b *testing.B) {
 	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	if err != nil {
@@ -342,6 +347,8 @@ func BenchmarkEngine_CallBytecode(b *testing.B) {
 // body ((defn pick [a b] a), compiled to OpGetLocal/OpReturn) — the clean
 // boundary the lazy-observability fast path optimizes: no reentrantCtx
 // evalState, no callback, no timing.
+//
+// Same gate-cell caveat as BenchmarkEngine_Call.
 func BenchmarkEngine_CallBytecodePlain(b *testing.B) {
 	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	if err != nil {
@@ -363,6 +370,8 @@ func BenchmarkEngine_CallBytecodePlain(b *testing.B) {
 // (which binds `+` via Engine.Bind, clearing the canonical flag and forcing a
 // GoFunc fallback), this reflects the shipped runtime: canonical `+` compiles
 // to OpAdd and executes via execNativeFastFused, no GoFunc call frame.
+//
+// Same gate-cell caveat as BenchmarkEngine_Call.
 func BenchmarkEngine_CallBytecodeCanonical(b *testing.B) {
 	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	if err != nil {
@@ -525,6 +534,8 @@ func BenchmarkEngine_PinnedFnCallCallback(b *testing.B) {
 // an OnPluginCall callback registered — measures the with-callback cost
 // (timing + RLock + slice copy + dispatch) the fast path pays only when a
 // caller actually asked for it.
+//
+// Same gate-cell caveat as BenchmarkEngine_Call.
 func BenchmarkEngine_CallBytecodeCallback(b *testing.B) {
 	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 	if err != nil {
