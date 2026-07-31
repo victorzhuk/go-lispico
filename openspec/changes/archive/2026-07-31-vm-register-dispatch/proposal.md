@@ -1,5 +1,11 @@
 # vm-register-dispatch
 
+> **Closed as not-needed (2026-07-31). Not implemented.** The Impact section's
+> "fib −20-30%" and the Why section's stack-shuffle premise were both falsified
+> by this change's own prototypes — see `tasks.md` Disposition and `design.md`
+> Decisions 1 and 4. Read what follows as the original proposal, not as a
+> description of the VM.
+
 ## Why
 
 This is the program's gated endgame, authored now so the decision criteria

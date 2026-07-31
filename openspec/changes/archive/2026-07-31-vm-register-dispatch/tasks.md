@@ -1,5 +1,53 @@
 # Tasks — vm-register-dispatch
 
+## Disposition (2026-07-31): closed as not-needed — section 2 and 3 not built
+
+Sections 2 and 3 stay unchecked and unbuilt. Three independent grounds, any
+one sufficient; the second and third do not depend on the first:
+
+1. **The gate never closed and no planned work can close it.** Task 0's local
+   prong is not decidable on this box, and the amendment below establishes
+   that `release-gate-activation` does not stand up the reference runner it
+   was named as depending on — `release.yml` benches `./internal/goldset/`
+   only, and that change's task 2.4 dropped the cross-engine bar.
+2. **Task 1.3 withheld authorization on its own measurement.** Register
+   addressing costs the stack form 2.55% under switch dispatch and 6.51%
+   under closure dispatch; pre-decoded dispatch is worth 1.90% under register
+   addressing and is undetectable under stack addressing. Best combination
+   measured: 4.5% over the production-shaped baseline, against a proposal
+   projecting fib −20-30%.
+3. **The proposal's mechanism is falsified** (`design.md` Decision 4). The
+   pinned 13-instruction fib body holds exactly one `GET_LOCAL` and zero
+   separate constant loads — `compiler-branch-arith-fusion` already harvested
+   the instruction-count axis, so the literature's >47% elimination figure
+   does not transfer to this VM. `instr/op` is identical at 175.1k across all
+   five arms.
+
+Ground 3 in particular means a reference-runner number would not have
+authorized section 2 either. Closing does not refute register bytecode in
+general — the effects are real, just an order of magnitude below what the
+change was premised on.
+
+**Spec delta not applied.** `specs/bytecode-vm/spec.md` describes the
+two-form VM this change would have built; archived with `--skip-specs` so
+`bytecode-vm` keeps its single-form contract. The delta stays in the archive
+as the record of what was scoped.
+
+**Prototypes removed**, per `design.md`'s "maintenance surface with no
+production consumer" note: `core/vm/dispatch_proto_test.go` deleted, and with
+it `TestCheckIntervalPinnedByDispatchProto` in `core/vm/opcode_test.go`,
+which existed only to hold that file's `regCheckInterval` copy in lockstep.
+The measurements they produced survive here and in `design.md`; re-running
+them means restoring the file from `d4dd328`.
+
+**Reusable findings, independent of this change's outcome** — recorded in
+`design.md` Decision 3, and the reason that section is worth keeping: `-count`
+does not interleave a parent benchmark's `b.Run` arms, session replication
+does not establish validity, and a `p=0.000` only asserts within-run
+consistency, which a systematic per-arm bias satisfies perfectly. Any future
+A/B here must equalize allocation and copy idioms between arms, randomize arm
+order, and confirm interleaving from the raw output before quoting numbers.
+
 ## 0. Gate (blocking — nothing below starts until this fires)
 
 - [x] 0.1 After vm-batched-ledger-charging, vm-deadline-clock-cadence,
