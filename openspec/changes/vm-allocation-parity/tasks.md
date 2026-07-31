@@ -222,6 +222,12 @@ Open, in the order they have to be settled:
    The figures the amendment needs now exist: 1128 against 1129 B/op, +0.09%,
    p=0.000, profile `30630796967`.
 
+   Whoever takes it should expect `TestPinnedProfile` to fail, and that is the
+   test working. It pins `Goldset/guard-nil-2: INCONCLUSIVE` — the current,
+   defective behavior — so any fix to the ordering must regenerate
+   `verdict.txt` alongside the code. The digest constants stay valid: the raw
+   benchmark files do not move, only the judgment over them.
+
 2. **`release-gate-activation` 1.2, 4.2, 5.1.** Reachable but not reached. All
    three wait on a *release cut* whose gate passes, which stores the
    `bench-vm.txt` baseline asset. A `workflow_dispatch` run carries no release

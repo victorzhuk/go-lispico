@@ -81,6 +81,13 @@ digest constants `perfgate_test.go`'s `TestPinnedProfile` checks the raw
 files against. Missing any one of the five leaves a stale artifact that
 either the test or a later reader silently trusts.
 
+Changing the gate's own logic invalidates `verdict.txt` the same way, without
+any file here being touched: the verdict is a judgment over the benchmark
+output, not a property of it. A change to how a tier is evaluated must
+regenerate it against the new logic. The digest constants stay valid in that
+case — the raw benchmark files have not moved — so the test will fail on the
+verdict alone, which is the intended signal rather than a broken pin.
+
 ## Tier classification
 
 Every figure below is this profile's own, VM against Evaluator, from
