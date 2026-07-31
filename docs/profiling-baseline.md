@@ -233,6 +233,14 @@ VM-mode-specific and each under 3.5% — not worth chasing from this baseline.
   per-fixture `sec/op` measurement, which varies far more widely (1.3-65.8%).
 - `allocs/op` and `B/op` from `go test -benchmem` are deterministic and are the
   trustworthy signal when timings disagree between runs.
+- Absolute timings in this document are dev-box captures and settle no bar.
+  The one boundary that now has a hosted figure is `Engine.Call`, measured by
+  the gate cell `GoldsetCall/call-boundary`: 188.50 ns/op on the runner, at
+  `internal/perfgate/testdata/profile-30637802780`. Quote that figure with the
+  qualifiers recorded alongside it — it is a hosted-runner number for the gold
+  set's engine configuration, and it excludes the caller's variadic argument
+  slice, which the cell hoists out of its timed loop. The same cell reads
+  89.57 ns here, which is the size of the gap between this box and the gate.
 
 ## 3a. Do global lookups still dominate?
 

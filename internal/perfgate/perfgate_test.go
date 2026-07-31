@@ -480,7 +480,7 @@ func TestEvaluate_Startup_NonRegressionImprovementPasses(t *testing.T) {
 // the reverse) fails here instead of leaving two pointers to disagree
 // silently.
 const (
-	pinnedProfileRunID = "30630796967"
+	pinnedProfileRunID = "30637802780"
 	pinnedProfileDir   = "testdata/profile-" + pinnedProfileRunID
 )
 
@@ -491,8 +491,8 @@ const (
 // swap for a different run's files. Update both alongside benchstat.csv and
 // verdict.txt when committing a new profile.
 const (
-	pinnedBenchEvaluatorSHA256 = "1ae2277d83ac5f114bb5b7e29f326485d922cead5a9eecc758f0ad874e5532df"
-	pinnedBenchVMSHA256        = "b5f68501e6c619697493d306816fe3b0fac84fd76cb7a5ec02c590a6b980c1a4"
+	pinnedBenchEvaluatorSHA256 = "51d22b660eff68d34b4e6a55557bd2357b70e02a7efbd9913f42f6e76cb1bd7e"
+	pinnedBenchVMSHA256        = "f50713f51da72f016c34846ff882017a86e34872eb6ac8fbef802d175236bb55"
 )
 
 // TestPinnedProfile re-evaluates every cell in the committed profile against

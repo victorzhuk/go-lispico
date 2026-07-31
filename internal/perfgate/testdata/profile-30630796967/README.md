@@ -1,5 +1,22 @@
 # Classification profile — run 30630796967
 
+**Superseded by `profile-30637802780`, and corrected on two points.** The
+`BENCHTIME` row below reads 200ms, but this run's verdict was inconclusive
+(exit code 2), so the "Rerun paired benchmark at doubled benchtime" step ran,
+and that step deletes both bench files and regenerates them at doubled
+benchtime before the upload. The files committed here are therefore a **400ms**
+measurement — `Goldset/counter-closure-2` reads 57092 iterations here against
+28188 in the 200ms `profile-30637802780`, on the same runner CPU and within 2%
+on ns/op. For the same reason the statement below that `verdict.txt` is "the
+pre-rerun verdict" is wrong: this run's actual pre-rerun verdict was computed
+against the 200ms files the rerun step then deleted, and the file here is a
+no-`-rerun`-flag verdict over post-rerun data. Neither correction invalidates
+a tier this profile licensed — a percentage delta at 400ms is as sound as one
+at 200ms, and every tier still holds on the successor profile's 200ms
+figures — but the parameters this directory reports were not the parameters
+that produced its files. The raw files are left untouched; correcting them
+would destroy the evidence rather than the error.
+
 The checked-in baseline profile ADR 0008's Thresholds section requires: the
 paired Evaluator/VM measurement that licenses every tier in
 `internal/perfgate/tiers.json`. It is not a stored non-regression baseline —

@@ -7,8 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The release gate now measures the `Engine.Call` boundary. Every gate cell
+  until now ran through `Eval`, so the boundary an embedder actually calls was
+  unmeasured by the gate; `GoldsetCall/call-boundary` calls a GoFunc-free
+  function once per timed iteration under both execution modes, and is
+  classified engine-sensitive against a hosted profile
+  (`internal/perfgate/testdata/profile-30637802780`) that measures it at
+  -80.66% latency and -100.00% allocated bytes under the VM against the
+  Evaluator, 188.50 ns/op and zero allocations. The figure is a hosted-runner
+  measurement for the gold set's engine configuration and excludes the
+  caller's variadic argument slice, which the cell hoists out of its timed
+  loop; an embedder building fresh arguments per call pays that slice on top.
+
 ### Changed
 
+- The performance claims of two v0.10.0 commits are recorded as declined
+  rather than left open: native-op fusion and the batched allocation ledger.
+  Both are ancestors of every tag cut since, with no build tag or environment
+  knob that disables either, so no single run can attribute a figure to
+  either commit — attribution would need a deliberate paired run of each
+  commit against its parent, and that instrument is not built because nothing
+  currently open needs it. Neither claim is confirmed or refuted, and no run
+  may be cited as settling one. Behavior is unaffected; what changes is that
+  the two claims are now closed with a stated reason instead of pending
+  indefinitely.
+- The classification profile behind the gate's cell tiers was recorded with
+  the wrong benchmark parameters. Run `30630796967` ended inconclusive, so its
+  rerun leg deleted both benchmark files and regenerated them at doubled
+  benchtime before upload, making the committed files a 400ms measurement
+  under a README stating 200ms. No tier it licensed is invalidated — every one
+  still holds on the successor profile's 200ms figures — and the raw files are
+  left as measured, with the correction recorded alongside them.
 - Two v0.10.0 metering changes shipped without release-note coverage. The
   three entries here document what they already do; nothing about
   the metering ledger changes now. Reduction counts are compilation
