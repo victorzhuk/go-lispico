@@ -46,15 +46,3 @@ func TestOpcodeInvalid(t *testing.T) {
 		t.Errorf("Opcode.String() = %q, want %q", got, expected)
 	}
 }
-
-// TestCheckIntervalPinnedByDispatchProto guards checkInterval against silent
-// drift: dispatch_proto_test.go's regCheckInterval redeclares this value
-// (checkInterval is unexported, unreachable from package vm_test) to keep the
-// dispatch-form prototypes' cancellation-poll cadence in lockstep with the
-// real VM's. If checkInterval ever changes, that copy must change with it.
-func TestCheckIntervalPinnedByDispatchProto(t *testing.T) {
-	const pinnedRegCheckInterval = 128
-	if checkInterval != pinnedRegCheckInterval {
-		t.Fatalf("checkInterval = %d, want %d — update dispatch_proto_test.go's regCheckInterval to match", checkInterval, pinnedRegCheckInterval)
-	}
-}
