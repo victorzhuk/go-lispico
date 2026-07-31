@@ -4,9 +4,12 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -595,6 +598,27 @@ func TestLoadScope_ReturnsResultScopeAndRetainedUsage(t *testing.T) {
 	if _, ok := e.RootEnv().Get("x"); ok {
 		t.Fatal("LoadScope binding leaked to root env")
 	}
+}
+
+func TestSha256Hash_MatchesCopyBasedImplementation(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{0, 1, 215, 604, 1023, 1024, 1025, 4096} {
+		t.Run(fmt.Sprintf("len=%d", n), func(t *testing.T) {
+			t.Parallel()
+			s := strings.Repeat("a", n)
+			want := sha256.Sum256([]byte(s))
+			assert.Equal(t, sourceHash(want), sha256Hash(s))
+		})
+	}
+}
+
+func TestSha256Hash_DoesNotAllocate(t *testing.T) {
+	s := strings.Repeat("a", 1024)
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = sha256Hash(s)
+	})
+	assert.Zero(t, allocs, "sha256Hash must not allocate")
 }
 
 type testPlugin struct {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/core/compiler"
@@ -751,8 +752,12 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 	return result, nil
 }
 
+// sha256Hash keys the striped chunk cache off the source text. Sum256 neither
+// retains nor mutates its argument, so aliasing the string's bytes instead of
+// copying them is safe and avoids a heap copy of the whole source on every
+// cached Eval.
 func sha256Hash(s string) sourceHash {
-	return sha256.Sum256([]byte(s))
+	return sha256.Sum256(unsafe.Slice(unsafe.StringData(s), len(s)))
 }
 
 func (e *engineImpl) EvalFile(path string) (core.Value, error) {
