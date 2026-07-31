@@ -193,3 +193,10 @@ cell in the corpus where it does.
 This is recorded as a finding for a later change to own. Fixing the
 ordering, or amending a threshold, would change the verdict of all 26
 cells, and both are the repo owner's call, not this profile's.
+
+**Closed by `vm-allocation-parity`.** Both were taken together: the four tier
+evaluators now check bytes and allocations before the latency-significance
+gate, and `Goldset/guard-nil` carries a named 4 B/op allowance on its bytes
+bound, recorded in ADR 0008 and bound in `tiers.json`'s `bytesAllowanceBOp`.
+The figures above are unchanged and still license the cell's tier; what changed
+is that the bound is now applied rather than skipped.

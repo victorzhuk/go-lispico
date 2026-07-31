@@ -616,6 +616,8 @@ func TestEvaluate_BytesAllowance(t *testing.T) {
 			res := Evaluate(cell, TierDataDominated, mode)
 			assert.Equal(t, VerdictFail, res.Verdict)
 			assert.Contains(t, res.Reason, "bytes increased")
+			assert.Contains(t, res.Reason, "+22 B/op against a 4 B/op allowance",
+				"a cell failing past an allowance must name the allowance it exceeded")
 		})
 
 		t.Run(modeName(mode)+"/unlisted cell gets no allowance", func(t *testing.T) {

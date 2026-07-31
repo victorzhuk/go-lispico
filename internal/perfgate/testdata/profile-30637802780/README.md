@@ -277,3 +277,21 @@ Call cell, and not fixable by any tier reassignment — the byte is real and
 `vm-allocation-parity` task 3.2 already records why it is not a removable
 allocation site. What is now settled is that the question that task holds is
 load-bearing for every release, not a documentation nicety.
+
+**Both are closed, and the paragraphs above stand as the record of what was
+measured, not of what the gate still does.** `vm-allocation-parity` took the
+ordering and the threshold as one decision. `evaluateNonRegression`,
+`evaluateWithinTolerance`, and `evaluateStartup` now check bytes and
+allocations before the latency-significance gate;
+`evaluateEngineSensitiveImprovement` hoists only its allocations check,
+because its bytes check is a 20%-improvement floor and benchstat's `~` parses
+to a zero delta, so hoisting a floor would fail a not-yet-significant cell
+outright. `Goldset/guard-nil` carries a named 4 B/op absolute allowance on the
+bytes axis, bound in `tiers.json`'s `bytesAllowanceBOp` and recorded with these
+figures in ADR 0008.
+
+This profile's `verdict.txt` did not move: `guard-nil`'s bytes now clear the
+allowance where they were previously never checked, and the cell still reads
+INCONCLUSIVE on its non-significant latency (p=0.055). A future profile
+replacing this one should expect the same — a verdict file that does not change
+is not evidence the gate's judgment did not.

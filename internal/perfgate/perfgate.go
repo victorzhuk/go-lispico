@@ -303,7 +303,7 @@ func nonIncreasing(m MetricResult, label string, allowanceBOp float64) Result {
 	}
 	if allowanceBOp > 0 {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
-			"%s increased by %.2f%% (%.0f over its %.0f B/op allowance)", label, m.DeltaPct, m.New-m.Old, allowanceBOp)}
+			"%s increased by %.2f%% (+%.0f B/op against a %.0f B/op allowance)", label, m.DeltaPct, m.New-m.Old, allowanceBOp)}
 	}
 	return Result{Verdict: VerdictFail, Reason: fmt.Sprintf("%s increased by %.2f%%", label, m.DeltaPct)}
 }
