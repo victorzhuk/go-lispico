@@ -323,17 +323,13 @@ func (m *stdlibLazyMaterializer) LookupAndMaterialize(env *core.Env, name string
 
 	for _, key := range m.activeKeys() {
 		if entry, ok := stdlibLazyTemplateRegistry.entryFor(key, name); ok {
-			return m.materializeOne(env, key.pluginName, entry, true, funcNS)
+			return m.materializeOne(env, key.pluginName, entry, funcNS)
 		}
 	}
 	return nil, false, false
 }
 
-// viaLookup reports the publication was driven by an interactive lookup
-// rather than the enumeration sweep: first-touch publication fills an empty
-// function cell too, so head-position resolution observes the binding even
-// when the owner dialect wrote only the value cell.
-func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string, entry *stdlibTemplateEntry, viaLookup, funcNS bool) (core.Value, bool, bool) {
+func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string, entry *stdlibTemplateEntry, funcNS bool) (core.Value, bool, bool) {
 	// Per-name mutex: concurrent first-touch of one name serializes (the
 	// loser observes the installed binding), disjoint names proceed in
 	// parallel, and no global lock is held across env writes or execution.
@@ -364,9 +360,18 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 			m.logMaterializeFailure(entry, err)
 			return nil, false, false
 		}
-		return entry.value, true, entry.canonical
+		if funcNS {
+			if v, ok, canon := env.GetMaterializedFuncCanonical(entry.name); ok {
+				return v, true, canon
+			}
+			return nil, false, false
+		}
+		if v, ok, canon := env.GetMaterializedCanonical(entry.name); ok {
+			return v, true, canon
+		}
+		return nil, false, false
 	case stdlibTemplateBootstrap:
-		return m.materializeBootstrap(env, pluginName, entry, viaLookup)
+		return m.materializeBootstrap(env, pluginName, entry, funcNS)
 	default:
 		return nil, false, false
 	}
@@ -441,7 +446,7 @@ func (m *stdlibLazyMaterializer) recordInstall(pluginName, name string) {
 // as the eager bootstrap loader does. The defining form's body is not
 // evaluated at definition time, so execution never re-enters materialization
 // for the same name.
-func (m *stdlibLazyMaterializer) materializeBootstrap(env *core.Env, pluginName string, entry *stdlibTemplateEntry, viaLookup bool) (core.Value, bool, bool) {
+func (m *stdlibLazyMaterializer) materializeBootstrap(env *core.Env, pluginName string, entry *stdlibTemplateEntry, funcNS bool) (core.Value, bool, bool) {
 	owner := env.Evaluator()
 	definer, ok := owner.(core.BootstrapDefiner)
 	if !ok {
@@ -454,14 +459,14 @@ func (m *stdlibLazyMaterializer) materializeBootstrap(env *core.Env, pluginName 
 				m.logMaterializeFailure(entry, err)
 				return nil, false, false
 			}
-			return m.publishBootstrap(env, pluginName, entry.name, viaLookup)
+			return m.publishBootstrap(env, pluginName, entry.name, funcNS)
 		}
 	}
 	if _, err := definer.DefineBootstrap(context.Background(), entry.source, env); err != nil {
 		m.logMaterializeFailure(entry, err)
 		return nil, false, false
 	}
-	return m.publishBootstrap(env, pluginName, entry.name, viaLookup)
+	return m.publishBootstrap(env, pluginName, entry.name, funcNS)
 }
 
 // logMaterializeFailure surfaces a deferred-definition failure the miss path
@@ -471,13 +476,14 @@ func (m *stdlibLazyMaterializer) logMaterializeFailure(entry *stdlibTemplateEntr
 	m.engine.logger.Warn("lazy stdlib materialization failed", "name", entry.name, "error", err)
 }
 
-// publishBootstrap returns the binding the installed owner produced and,
+// publishBootstrap reads the binding the installed owner produced and,
 // under a Lisp-2 owner only, fills an empty function cell so head-position
 // resolution works; under Lisp-1 the value cell is the single namespace and
 // must not gain a func-cell mirror. HasLive probes pick the cell without
 // consulting the lazy layer, so the read can never re-enter materializeOne
-// for the name this call is materializing.
-func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, name string, viaLookup bool) (core.Value, bool, bool) {
+// for the name this call is materializing. The result comes from the
+// requested namespace only: a cell the owner did not bind reports not-found.
+func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, name string, funcNS bool) (core.Value, bool, bool) {
 	var v core.Value
 	var ok bool
 	switch {
@@ -489,14 +495,23 @@ func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, nam
 	if !ok {
 		return nil, false, false
 	}
-	if (viaLookup || m.engine.config.dialect.IsLisp2()) && !env.HasLiveFunc(name) {
+	if m.engine.config.dialect.IsLisp2() && !env.HasLiveFunc(name) {
 		if err := env.SetFunc(name, v); err != nil {
 			m.logMaterializeFailure(&stdlibTemplateEntry{name: name}, err)
 			return nil, false, false
 		}
 	}
 	m.recordInstall(pluginName, name)
-	return v, true, false
+	if funcNS {
+		if v, ok, canon := env.GetMaterializedFuncCanonical(name); ok {
+			return v, true, canon
+		}
+		return nil, false, false
+	}
+	if v, ok, canon := env.GetMaterializedCanonical(name); ok {
+		return v, true, canon
+	}
+	return nil, false, false
 }
 
 // TombstoneForDelete records an explicit env.Delete so a later miss does not
@@ -673,7 +688,7 @@ func (m *stdlibLazyMaterializer) ForceAll(env *core.Env) {
 			if dead || live {
 				continue
 			}
-			m.materializeOne(env, key.pluginName, entry, false, false)
+			m.materializeOne(env, key.pluginName, entry, false)
 		}
 	}
 }

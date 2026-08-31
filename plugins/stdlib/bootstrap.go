@@ -82,7 +82,7 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 		// resolution never misses; under Lisp-1 the value cell is the single
 		// namespace and must not gain a func-cell mirror. Only an empty cell
 		// is filled, so a user binding always wins.
-		if (lisp2 || env.LazyLayer() == nil) && !env.HasLiveFunc(entry.name) {
+		if lisp2 && !env.HasLiveFunc(entry.name) {
 			if v, ok := env.Get(entry.name); ok {
 				if err := env.SetFunc(entry.name, v); err != nil {
 					return fmt.Errorf("bootstrap eval: %w", err)
