@@ -418,34 +418,30 @@ func (m *stdlibLazyMaterializer) recordInstall(pluginName, name string) {
 	m.state.materialized++
 }
 
-// materializeBootstrap executes a deferred defmacro/defn form exactly as the
-// eager bootstrap loader does: the reusable entry goes through the shared
-// compiled-artifact cache, everything else through the full-kernel evaluator
-// so dialects without defmacro (EmptyDialect) still get their macros. The
-// defining form's body is not evaluated at definition time, so execution
-// never re-enters materialization for the same name.
+// materializeBootstrap executes a deferred defmacro/defn form through the
+// env's installed evaluator (its core.BootstrapDefiner capability), exactly
+// as the eager bootstrap loader does. The defining form's body is not
+// evaluated at definition time, so execution never re-enters materialization
+// for the same name.
 func (m *stdlibLazyMaterializer) materializeBootstrap(env *core.Env, pluginName string, entry *stdlibTemplateEntry) (core.Value, bool, bool) {
-	ctx := context.Background()
+	owner := env.Evaluator()
+	definer, ok := owner.(core.BootstrapDefiner)
+	if !ok {
+		m.logMaterializeFailure(entry, fmt.Errorf("stdlib bootstrap: installed evaluator %T does not implement core.BootstrapDefiner", owner))
+		return nil, false, false
+	}
 	if entry.reusable {
 		if be, ok := env.Evaluator().(*bytecodeEvaluator); ok {
-			if _, err := be.EvalStdlibBootstrap(ctx, entry.source, env); err != nil {
+			if _, err := be.EvalStdlibBootstrap(context.Background(), entry.source, env); err != nil {
 				m.logMaterializeFailure(entry, err)
 				return nil, false, false
 			}
 			return m.publishBootstrap(env, pluginName, entry.name)
 		}
 	}
-	forms, err := core.Read(entry.source)
-	if err != nil {
+	if _, err := definer.DefineBootstrap(context.Background(), entry.source, env); err != nil {
 		m.logMaterializeFailure(entry, err)
 		return nil, false, false
-	}
-	evaluator := core.NewEvaluator()
-	for _, form := range forms {
-		if _, err := evaluator.Eval(ctx, form, env); err != nil {
-			m.logMaterializeFailure(entry, err)
-			return nil, false, false
-		}
 	}
 	return m.publishBootstrap(env, pluginName, entry.name)
 }
@@ -457,12 +453,20 @@ func (m *stdlibLazyMaterializer) logMaterializeFailure(entry *stdlibTemplateEntr
 	m.engine.logger.Warn("lazy stdlib materialization failed", "name", entry.name, "error", err)
 }
 
-// publishBootstrap mirrors the freshly defined name into the function cell
-// when it is not already there, replicating the eager mirrorBootstrapBindings
-// pass (head-position resolution under Lisp-2; harmless under Lisp-1).
-// Bootstrap entries are defmacro/defn — never canonical operators.
+// publishBootstrap returns the binding the installed owner produced and
+// fills the other cell if empty, mirroring the eager loader's publication so
+// head-position resolution works under either dialect. HasLive probes pick
+// the cell without consulting the lazy layer, so the read can never re-enter
+// materializeOne for the name this call is materializing.
 func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, name string) (core.Value, bool, bool) {
-	v, ok := env.Get(name)
+	var v core.Value
+	var ok bool
+	switch {
+	case env.HasLive(name):
+		v, ok = env.Get(name)
+	case env.HasLiveFunc(name):
+		v, ok = env.GetFunc(name)
+	}
 	if !ok {
 		return nil, false, false
 	}
