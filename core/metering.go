@@ -211,7 +211,12 @@ func ChargeEvalAllocBytes(ctx context.Context, n int64) error {
 // ChargeGoFuncResultBytes charges n bytes and marks that the active GoFunc
 // dispatch already accounted for its own return value, so the apply site's
 // fallback shallow charge (ValueShallowBytes(result)) is skipped for it.
-// Call exactly once, immediately before returning the value n describes.
+// n == 0 marks a wholly borrowed result — an existing argument, stored
+// member, or caller-supplied default returned as-is — in which case the
+// centralized apply sites skip the fallback shallow charge without adding
+// any bytes. Non-zero n charges exactly that many bytes; mixed results
+// that combine fresh and borrowed components must pass only the fresh
+// delta. Call exactly once, immediately before returning the value n describes.
 func ChargeGoFuncResultBytes(ctx context.Context, n int64) error {
 	st := evalStateFrom(ctx)
 	st.calleeCharged = true

@@ -739,8 +739,8 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 			return nil, err
 		}
 		// A callee that already charged its own result via
-		// ChargeGoFuncResultBytes skips this fallback — see
-		// core.ChargeGoFuncResultBytes for why.
+		// ChargeGoFuncResultBytes skips this fallback — see the
+		// borrowed-result contract in core.ChargeGoFuncResultBytes.
 		if !charged {
 			vm.pendingValue(result)
 			if err := vm.flushPendingAllocBytes(); err != nil {
@@ -1943,8 +1943,8 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			return err
 		}
 		// A callee that already charged its own result via
-		// ChargeGoFuncResultBytes skips this fallback — see
-		// core.ChargeGoFuncResultBytes for why.
+		// ChargeGoFuncResultBytes skips this fallback — see the
+		// borrowed-result contract in core.ChargeGoFuncResultBytes.
 		if !charged {
 			vm.pendingValue(result)
 		}

@@ -828,9 +828,12 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 			}
 			// A callee that already charged its own result via
 			// ChargeGoFuncResultBytes (cons/conj/concat/... on a shared
-			// List/Vector) skips this fallback — it would otherwise
-			// re-charge the whole result's shallow size on every call,
-			// turning an O(1) structural update into an O(n) charge.
+			// List/Vector) skips this fallback — a wholly borrowed
+			// result (n == 0) adds no bytes, and a fresh or mixed
+			// result charges only the fresh delta; without this
+			// skip the whole result's shallow size would be
+			// re-charged on every call, turning an O(1)
+			// structural update into an O(n) charge.
 			if !charged {
 				if err := st.chargeAllocBytes(ValueShallowBytes(result)); err != nil {
 					return nil, err
