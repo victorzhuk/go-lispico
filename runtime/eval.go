@@ -1123,3 +1123,15 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
 	return result, childEnv, nil
 }
+
+var _ core.BootstrapDefiner = (*bytecodeEvaluator)(nil)
+
+// DefineBootstrap delegates to the tree-walking evaluator this bytecode
+// evaluator is compiled against; it never parses or binds on its own.
+func (be *bytecodeEvaluator) DefineBootstrap(ctx context.Context, source string, env *core.Env) (core.Value, error) {
+	definer, ok := be.tree.(core.BootstrapDefiner)
+	if !ok {
+		return nil, core.NewEvalError("evaluator lacks the bootstrap definer capability", nil)
+	}
+	return definer.DefineBootstrap(ctx, source, env)
+}

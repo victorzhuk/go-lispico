@@ -2066,3 +2066,34 @@ func evalFunction(_ context.Context, _ *engine, args []Value, env *Env) (Value, 
 	}
 	return fn, nil
 }
+
+var _ BootstrapDefiner = (*engine)(nil)
+
+// DefineBootstrap loads exactly one bootstrap definition from trusted host
+// source into env through this engine's own dialect rules. The source is read
+// under the full reader flags regardless of the owner's restrictions, but the
+// grammar decision happens before any evaluation and the definition dispatches
+// through the kernel table, so a dialect lacking defn/defmacro still receives
+// its bootstrap while its effective form table stays untouched.
+func (e *engine) DefineBootstrap(ctx context.Context, source string, env *Env) (Value, error) {
+	forms, err := Read(source)
+	if err != nil {
+		return nil, err
+	}
+	if len(forms) != 1 {
+		return nil, evalErrorf("bootstrap source must contain exactly one definition, got %d forms", len(forms))
+	}
+	list, ok := forms[0].(List)
+	if !ok {
+		return nil, evalErrorf("bootstrap source must be a definition form, got %T", forms[0])
+	}
+	items := list.ToSlice()
+	if len(items) == 0 {
+		return nil, evalErrorf("bootstrap source must be a definition form, got empty list")
+	}
+	head, ok := items[0].(Symbol)
+	if !ok || (head.V != "defn" && head.V != "defmacro") {
+		return nil, evalErrorf("bootstrap source must define with defn or defmacro, got %v", items[0])
+	}
+	return kernel[head.V](ctx, e, items[1:], env)
+}

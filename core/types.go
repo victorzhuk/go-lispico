@@ -1412,3 +1412,12 @@ func ToGoValue(v Value) (any, error) {
 		return nil, fmt.Errorf("unsupported Lisp type: %T", v)
 	}
 }
+
+// BootstrapDefiner is the trusted host-only capability for loading one
+// bootstrap definition into a target environment through the owning
+// evaluator's dialect rules (kernel-head dispatch, namespace axis), never
+// through a fresh identity Evaluator. Nothing publishes it as a Lisp value
+// or special form.
+type BootstrapDefiner interface {
+	DefineBootstrap(ctx context.Context, source string, env *Env) (Value, error)
+}
