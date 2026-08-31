@@ -108,11 +108,14 @@ func TestStdlibEagerBootstrap_UsesInstalledOwner(t *testing.T) {
 		t.Fatalf("env evaluator replaced during Init: %T", env.Evaluator())
 	}
 
-	// Publication: bootstrap macros/functions resolve through the function cell
-	// under a Lisp-2 owner, without widening the Kernel table.
+	// Publication: the default evaluator is Lisp-1, so bootstrap names
+	// publish into the value cell only — the function cell stays empty.
 	for _, name := range eagerBootstrapNames {
-		if _, ok := env.GetFunc(name); !ok {
-			t.Errorf("bootstrap name %q not published in function cell", name)
+		if _, ok := env.Get(name); !ok {
+			t.Errorf("bootstrap name %q not published in the value cell", name)
+		}
+		if _, ok := env.GetFunc(name); ok {
+			t.Errorf("bootstrap name %q mirrored into the function cell under the Lisp-1 default evaluator", name)
 		}
 	}
 }
@@ -136,9 +139,10 @@ func TestStandaloneEnv_AdoptsDefaultEvaluator(t *testing.T) {
 
 	for _, name := range eagerBootstrapNames {
 		if _, ok := env.Get(name); !ok {
-			if _, okf := env.GetFunc(name); !okf {
-				t.Errorf("bootstrap name %q not bound after standalone Init", name)
-			}
+			t.Errorf("bootstrap name %q not published in the value cell after standalone Init", name)
+		}
+		if _, ok := env.GetFunc(name); ok {
+			t.Errorf("bootstrap name %q mirrored into the function cell under the Lisp-1 default evaluator", name)
 		}
 	}
 }

@@ -102,6 +102,74 @@ func TestStdlibLazyBootstrap_UsesInstalledOwner(t *testing.T) {
 	if root.Evaluator() != core.Evaluator(probe) {
 		t.Fatalf("installed owner replaced during materialization: %T", root.Evaluator())
 	}
+	// The owner is the Lisp-1 (Clojure-identity) dialect: the value cell is
+	// the single namespace, so first touch must publish there and must not
+	// mirror the binding into the function cell.
+	if _, ok := root.Get("->"); !ok {
+		t.Fatalf("-> not published in the value cell after first touch under the Lisp-1 owner")
+	}
+	if _, ok := root.GetFunc("->"); ok {
+		t.Fatalf("-> mirrored into the function cell after first touch under the Lisp-1 owner; the value cell is the single namespace")
+	}
+}
+
+
+// TestStdlibLazyBootstrap_UsesInstalledOwnerCellFirstTouch pins the cell a
+// first touch publishes for a deferred bootstrap name under each owner axis:
+// the evaluator's lisp2 axis solely owns publication — Lisp-1 publishes the
+// value cell only, Lisp-2 the function cell only — and the opposite cell
+// stays untouched whichever position (value or function) triggered the miss.
+func TestStdlibLazyBootstrap_UsesInstalledOwnerCellFirstTouch(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		axis   string
+		d      core.Dialect
+		funcNS bool
+		lookupFound bool
+	}{
+		{axis: "lisp1", d: clojure.Dialect(), funcNS: false, lookupFound: true},
+		{axis: "lisp1", d: clojure.Dialect(), funcNS: true, lookupFound: false},
+		{axis: "lisp2", d: core.FullDialect().Lisp2(), funcNS: false, lookupFound: false},
+		{axis: "lisp2", d: core.FullDialect().Lisp2(), funcNS: true, lookupFound: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.axis+"_first_touch_"+map[bool]string{false: "value", true: "func"}[tc.funcNS]+"_position", func(t *testing.T) {
+			t.Parallel()
+
+			eng, err := New(nil, WithBytecode(), WithDialect(tc.d))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = eng.Close() })
+			require.NoError(t, eng.Use(stdlib.New()))
+			root := eng.RootEnv()
+
+			if tc.funcNS {
+				if _, ok := root.GetFunc("->"); ok != tc.lookupFound {
+					t.Fatalf("function-position first touch under %s owner: GetFunc(\"->\") found=%v, want %v", tc.axis, ok, tc.lookupFound)
+				}
+			} else {
+				if _, ok := root.Get("->"); ok != tc.lookupFound {
+					t.Fatalf("value-position first touch under %s owner: Get(\"->\") found=%v, want %v", tc.axis, ok, tc.lookupFound)
+				}
+			}
+
+			if tc.d.IsLisp2() {
+				if _, ok := root.GetFunc("->"); !ok {
+					t.Fatalf("-> not published in the function cell after first touch under the Lisp-2 owner")
+				}
+				if _, ok := root.Get("->"); ok {
+					t.Fatalf("-> leaked into the value cell under the Lisp-2 owner; the function cell is the single publication cell")
+				}
+			} else {
+				if _, ok := root.Get("->"); !ok {
+					t.Fatalf("-> not published in the value cell after first touch under the Lisp-1 owner")
+				}
+				if _, ok := root.GetFunc("->"); ok {
+					t.Fatalf("-> mirrored into the function cell under the Lisp-1 owner; the value cell is the single namespace")
+				}
+			}
+		})
+	}
 }
 
 // TestBootstrapLazyConcurrentFirstTouch_PublishesOnce proves concurrent first
@@ -139,8 +207,11 @@ func TestBootstrapLazyConcurrentFirstTouch_PublishesOnce(t *testing.T) {
 	assert.Equal(t, 1, after-before,
 		"concurrent first touch of one bootstrap name must materialize exactly once")
 
-	if _, ok := root.GetFunc("->"); !ok {
-		t.Fatalf("-> not published in function cell after materialization")
+	if _, ok := root.Get("->"); !ok {
+		t.Fatalf("-> not published in the value cell after concurrent first touch under the Lisp-1 owner")
+	}
+	if _, ok := root.GetFunc("->"); ok {
+		t.Fatalf("-> mirrored into the function cell after concurrent first touch under the Lisp-1 owner; the value cell is the single namespace")
 	}
 	v, err := eng.Eval(context.Background(), "use", "(-> 1 (+ 2))")
 	require.NoError(t, err)
