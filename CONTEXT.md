@@ -135,7 +135,7 @@ _Avoid_: resource limit, instruction budget
 ### Metering
 
 **Reduction**:
-One unit of evaluator work, defined per evaluator: tree-walker trampoline iteration or form dispatch; VM instruction decode; macro-expansion step; compiler-emitted instruction; GoFunc dispatch. Counts are not comparable across evaluators — parity is same-ceiling, same-terminal-error behavior.
+One unit of evaluator work, defined per evaluator: tree-walker trampoline iteration or form dispatch; VM instruction decode; macro-expansion step; compiler-emitted instruction; GoFunc dispatch. Builtin logical work accrues locally via `NewBuiltinWorkBudget` and synchronizes every 128 units. Counts are not comparable across evaluators — parity is same-ceiling, same-terminal-error behavior.
 _Avoid_: fuel, tick, instruction budget
 
 **Allocation charge**:

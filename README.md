@@ -202,9 +202,18 @@ Exceeding one returns a `*core.LispicoError` with `Code: "ResourceLimitError"`.
 Structural depth is enforced at evaluation time in both evaluators so
 a dead-branch over-limit literal (`(if false <deep> 1)`) is not rejected.
 Reductions piggyback the existing 128-step cancellation budget in both
-evaluators, and allocation charging uses the fixed deterministic size table in
-ADR 0011. Reader output is charged before the first form runs; VM/tree-walker
-work and `GoFunc` re-entry share one per-evaluation ledger. Charging is
+evaluators, and builtin logical work accrues locally via
+`core.NewBuiltinWorkBudget(ctx)` with `Step()` synchronizing every 128 units
+with the shared evaluation state (reductions + engine deadline + caller
+cancellation); max unobserved work is 127 units. Allocation charging uses
+the fixed deterministic size table in ADR 0011. Reader output is charged
+before the first form runs; VM/tree-walker work and `GoFunc` re-entry share
+one per-evaluation ledger. Builtin `GoFunc` results are charged at the
+centralized apply site unless the callee opted out via
+`ChargeGoFuncResultBytes` — zero bytes marks a wholly borrowed result (the
+apply site skips its fallback shallow charge), and mixed results charge only
+the fresh delta. The full builtin resource-migration path is tracked in
+`openspec/changes/stdlib-builtin-resource-migration`. Charging is
 incremental: a builtin whose result derives structurally from one of its own
 arguments (`cons`, `conj`, `concat`, and similarly shaped ops on `List`/
 `Vector`) charges only what it newly allocated, not the whole result's
@@ -214,7 +223,9 @@ binding capacity (`MaxRetainedBytesPerEnv`/`MaxRetainedSlotsPerEnv`, ADR 0012)
 is a separate measure with its own ledger, not folded into
 `MaxAllocationBytes`. The per-engine bytecode chunk cache obeys the entry,
 deep-byte, and expanded-node ceilings; the process-level stdlib bootstrap
-artifact cache is exempt.
+artifact cache is exempt. Reduction counts and charge values are evaluator-
+and compiler-version-specific; only terminal behavior is compared across
+engine configurations, not raw counter values.
 
 ## Status
 

@@ -14,8 +14,11 @@ Reductions are evaluator-local work units, not wall-clock time and not cross-eva
 - Macro expansion: one reduction per expansion step.
 - Bytecode VM: one reduction per decoded instruction, plus one per `GoFunc` dispatch.
 - Compiler: one reduction per emitted instruction.
+- Builtin Go function (`GoFunc`): logical work accrues locally via `core.NewBuiltinWorkBudget(ctx)`, with `Step()` recording one unit and synchronizing with the shared eval state (reductions, engine deadline, caller cancellation) every 128 units. Max unobserved work is 127 units; the first sync error is latched and replayed by every subsequent `Step`/`Flush` call.
 
 The hot loops do not increment a shared atomic on every step. Both evaluators already keep a 128-step cancellation budget, so metering piggybacks that countdown and flushes consumed work at the existing sync points. This keeps the context-observation bound comfortably inside the required 1,024-reduction window while avoiding a new per-step branch or atomic write.
+
+The Builtin work budget flushes on `Flush()` and at return from `GoFunc.Fn`, ensuring host-visible totals are exact at every observation point. The VM installs the run's resolved absolute deadline (`vm.deadline` via `reentrantCtx` armDeadline + `InstallReentrantDeadline`) before the first `GoFunc` dispatch — an earlier non-zero outer deadline wins; no fresh `now+timeout` is derived. This means a builtin observing its deadline at any point during execution sees the same pre-resolved instant the VM committed at dispatch, not a recomputed bound.
 
 Reduction counts are compilation dependent, not just source dependent: because the VM charges per decoded instruction, a change to lispico's own bytecode compiler that alters how many instructions a form compiles to changes the reductions the same source charges, even though the ledger itself is unchanged. A `MaxReductions` boundary that a given source used to trip at some iteration count can move to a different count after such a change. This is expected — the determinism requirement below binds one lispico build's charges across hosts and Go versions; it does not bind one source's charges across lispico's own compiler revisions.
 
@@ -94,3 +97,23 @@ skipped for that call. Contract:
   charge for `map`'s own result already being billed.
 - Both evaluators enforce the same rule off the same marker, so a builtin
   that opts out charges identically under the tree-walker and the VM.
+
+A zero-byte charge (`n == 0`) marks a wholly borrowed result — an existing
+argument, stored member, or caller-supplied default returned as-is. The
+apply site skips the fallback shallow charge without adding any bytes. A
+non-zero `n` charges exactly that many bytes; mixed results combining fresh
+and borrowed components must pass only the fresh delta. The normative charge
+site for `GoFunc` results is now the centralized apply site *unless* the
+callee opted out via `ChargeGoFuncResultBytes`; builtins that return
+structurally derived or wholly borrowed results are the primary opt-out
+consumers.
+
+### Trusted-host boundary
+
+Host-provided `GoFunc` implementations (registered by plugins) are
+trusted-host boundaries: the core-owned interruption guarantee — reduction
+budgets, allocation ceilings, cooperative cancellation — applies at the
+*call boundary* and at *charge sites*, but the code inside a `GoFunc.Fn`
+body runs on the host's trust. The `BuiltinWorkBudget` lets well-behaved
+builtins participate in cooperative metering, but core cannot enforce
+metering correctness on untrusted Go code that ignores the budget API.
