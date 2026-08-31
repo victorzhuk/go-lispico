@@ -141,48 +141,60 @@ func TestBuiltinWorkBudget_CallerCancellationObservedAtSync(t *testing.T) {
 }
 
 // TestBuiltinWorkBudget_TerminalFlushWins_OriginalErrorPreserved pins the
-// consumer-side error precedence: a pending non-Terminal error survives a
-// successful final Flush unchanged, but a Terminal flush error replaces it.
+// consumer-side error precedence through a real engine dispatch: a GoFunc
+// accumulates a pending non-Terminal validation error mid-loop, then applies
+// the mandatory final Flush. When the Flush succeeds, the dispatch surfaces
+// the original error unchanged; when the Flush raises a Terminal
+// ResourceLimitError, the Terminal error wins and the pending one is dropped.
 func TestBuiltinWorkBudget_TerminalFlushWins_OriginalErrorPreserved(t *testing.T) {
 	t.Parallel()
-	pending := NewTypeError("int", Int{V: 1}) // non-Terminal consumer error
+
+	// spin steps the budget 50 times, accumulates a non-Terminal validation
+	// error at iteration 25, and returns it after the mandatory final Flush.
+	// The budget is built from the dispatched ctx (the production path), so
+	// the Flush charge lands on the eval state the evaluator enforces.
+	spin := func() *Env {
+		env := newTestEnv()
+		env.Set("spin", GoFunc{Name: "spin", Fn: func(ctx context.Context, _ Evaluator, _ []Value, _ *Env) (Value, error) {
+			b := NewBuiltinWorkBudget(ctx)
+			var pending error
+			for i := range 50 {
+				if err := b.Step(); err != nil {
+					return Nil{}, err
+				}
+				if i == 25 {
+					pending = NewTypeError("int", Int{V: 1})
+				}
+			}
+			if ferr := b.Flush(); ferr != nil && (pending == nil || IsTerminalEvalError(ferr)) {
+				pending = ferr
+			}
+			return Nil{}, pending
+		}})
+		return env
+	}
 
 	t.Run("flushSuccessPreservesPending", func(t *testing.T) {
 		t.Parallel()
-		b := NewBuiltinWorkBudget(budgetCtx(context.Background(), 1_000_000))
-		stepN(t, b, 10)
-		flushErr := b.Flush()
-		if flushErr != nil {
-			t.Fatalf("setup: expected successful flush, got %v", flushErr)
+		ctx := budgetCtx(context.Background(), 1_000_000) // 50 units fit: Flush succeeds
+		_, err := NewEvaluator().Eval(ctx, Read1(t, "(spin)"), spin())
+		if err == nil {
+			t.Fatal("dispatch must surface the GoFunc's pending non-Terminal error, got nil")
 		}
-		if IsTerminalEvalError(pending) {
-			t.Fatalf("setup: pending error must be non-Terminal, got %v", pending)
+		if IsTerminalEvalError(err) {
+			t.Fatalf("successful Flush must keep the original non-Terminal error, got terminal %v", err)
 		}
-		// Precedence rule: flush success keeps the original non-Terminal error.
-		var combined error = pending
-		if flushErr != nil {
-			combined = flushErr
-		}
-		if combined != pending {
-			t.Fatalf("flush success must return original non-Terminal error unchanged, got %v", combined)
+		if errCode(t, err) != "TypeError" {
+			t.Fatalf("successful Flush must return the original TypeError unchanged, got code %q: %v", errCode(t, err), err)
 		}
 	})
 
 	t.Run("terminalFlushReplacesPending", func(t *testing.T) {
 		t.Parallel()
-		b := NewBuiltinWorkBudget(budgetCtx(context.Background(), 1)) // latches terminal on first sync
-		stepN(t, b, 127)
-		flushErr := b.Flush()
-		if !IsTerminalEvalError(flushErr) {
-			t.Fatalf("setup: expected Terminal flush error, got %v", flushErr)
-		}
-		// Precedence rule: Terminal flush error wins; original non-Terminal dropped.
-		var combined error = pending
-		if flushErr != nil {
-			combined = flushErr
-		}
-		if combined != flushErr {
-			t.Fatalf("Terminal flush error must win over pending non-Terminal error, got %v", combined)
+		ctx := budgetCtx(context.Background(), 40) // 50 units exceed 40: Flush raises Terminal
+		_, err := NewEvaluator().Eval(ctx, Read1(t, "(spin)"), spin())
+		if !IsTerminalEvalError(err) || errCode(t, err) != CodeResourceLimit {
+			t.Fatalf("Terminal flush error must win over the pending non-Terminal error: want terminal %s, got %v", CodeResourceLimit, err)
 		}
 	})
 }
