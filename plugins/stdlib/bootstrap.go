@@ -56,6 +56,11 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 		return fmt.Errorf("stdlib bootstrap: installed evaluator %T does not implement core.BootstrapDefiner", owner)
 	}
 
+	lisp2 := false
+	if axis, ok := owner.(interface{ IsLisp2() bool }); ok {
+		lisp2 = axis.IsLisp2()
+	}
+
 	ctx := context.Background()
 	cacheEval, _ := owner.(stdlibBootstrapEvaluator)
 	for _, entry := range stdlibBootstrapEntries() {
@@ -72,10 +77,12 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 		} else if _, err := definer.DefineBootstrap(ctx, entry.source, env); err != nil {
 			return fmt.Errorf("bootstrap eval: %w", err)
 		}
-		// The definition lands in the cell the owner's dialect owns; the
-		// other cell stays empty so head-position resolution would miss.
-		// Fill only an empty cell — a user binding always wins.
-		if !env.HasLiveFunc(entry.name) {
+		// The definition lands in the cell the owner's dialect owns. Under
+		// a Lisp-2 owner, fill an empty function cell so head-position
+		// resolution never misses; under Lisp-1 the value cell is the single
+		// namespace and must not gain a func-cell mirror. Only an empty cell
+		// is filled, so a user binding always wins.
+		if (lisp2 || env.LazyLayer() == nil) && !env.HasLiveFunc(entry.name) {
 			if v, ok := env.Get(entry.name); ok {
 				if err := env.SetFunc(entry.name, v); err != nil {
 					return fmt.Errorf("bootstrap eval: %w", err)

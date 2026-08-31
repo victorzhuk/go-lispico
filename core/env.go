@@ -48,7 +48,11 @@ func (c *Cell) Version() uint64 { return c.version.Load() }
 //
 // The layer must be safe for concurrent use.
 type LazyLayer interface {
-	LookupAndMaterialize(env *Env, name string) (Value, bool, bool)
+	// funcNS selects the namespace the caller resolves: false for the value
+	// cell (Get/GetCanonical), true for the function cell (GetFunc and
+	// friends). The layer answers only in that namespace, so an installed
+	// binding never leaks across cells.
+	LookupAndMaterialize(env *Env, name string, funcNS bool) (Value, bool, bool)
 	TombstoneForDelete(env *Env, name string)
 	RegisterValue(env *Env, name string, val Value, canonical bool) error
 	RegisterSource(env *Env, name, source string, reusable bool) bool
@@ -484,12 +488,53 @@ func (e *Env) GetCanonical(name string) (Value, bool, bool) {
 		return v, true, canon
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if v, ok, canon := layer.LookupAndMaterialize(e, name); ok {
+		if v, ok, canon := layer.LookupAndMaterialize(e, name, false); ok {
 			return v, true, canon
 		}
 	}
 	if e.parent != nil {
 		return e.parent.GetCanonical(name)
+	}
+	return nil, false, false
+}
+
+// GetMaterializedCanonical resolves name like GetCanonical but never consults
+// the lazy layer: it reads only value cells already materialized in the scope
+// chain. The layer's installed path uses it to re-read a binding it published
+// without re-entering LookupAndMaterialize for the same name.
+func (e *Env) GetMaterializedCanonical(name string) (Value, bool, bool) {
+	e.mu.RLock()
+	var v Value
+	var canon bool
+	if cell, ok := e.vars[name]; ok {
+		v, canon = cell.v, cell.canonical
+	}
+	e.mu.RUnlock()
+	if v != nil {
+		return v, true, canon
+	}
+	if e.parent != nil {
+		return e.parent.GetMaterializedCanonical(name)
+	}
+	return nil, false, false
+}
+
+// GetMaterializedFuncCanonical is GetMaterializedCanonical for the function
+// cell namespace: it walks the chain reading only materialized func cells,
+// never consulting the lazy layer.
+func (e *Env) GetMaterializedFuncCanonical(name string) (Value, bool, bool) {
+	e.mu.RLock()
+	var v Value
+	var canon bool
+	if cell, ok := e.funcs[name]; ok {
+		v, canon = cell.v, cell.canonical
+	}
+	e.mu.RUnlock()
+	if v != nil {
+		return v, true, canon
+	}
+	if e.parent != nil {
+		return e.parent.GetMaterializedFuncCanonical(name)
 	}
 	return nil, false, false
 }
@@ -552,7 +597,7 @@ func (e *Env) CellLocal(name string) (*Cell, bool) {
 		return cell, true
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(e, name); ok {
+		if _, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			if cell, hit := e.CellLocal(name); hit {
 				return cell, true
 			}
@@ -571,7 +616,7 @@ func (e *Env) FuncCellLocal(name string) (*Cell, bool) {
 		return cell, true
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(e, name); ok {
+		if _, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
 			if cell, hit := e.FuncCellLocal(name); hit {
 				return cell, true
 			}
@@ -614,7 +659,7 @@ func (e *Env) Get(name string) (Value, bool) {
 		return v, true
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if val, ok, _ := layer.LookupAndMaterialize(e, name); ok {
+		if val, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			return val, true
 		}
 	}
@@ -704,7 +749,7 @@ func (e *Env) GetFunc(name string) (Value, bool) {
 		return v, true
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if val, ok, _ := layer.LookupAndMaterialize(e, name); ok {
+		if val, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true
 		}
 	}
@@ -729,7 +774,7 @@ func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 		return v, true, canon
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if val, ok, canon := layer.LookupAndMaterialize(e, name); ok {
+		if val, ok, canon := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true, canon
 		}
 	}
@@ -749,7 +794,7 @@ func (e *Env) Find(name string) (*Env, bool) {
 		return e, true
 	}
 	if layer := e.LazyLayer(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(e, name); ok {
+		if _, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			if e.HasLive(name) {
 				return e, true
 			}

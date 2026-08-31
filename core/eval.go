@@ -2067,6 +2067,9 @@ func evalFunction(_ context.Context, _ *engine, args []Value, env *Env) (Value, 
 	return fn, nil
 }
 
+// IsLisp2 reports whether this engine's dialect separates the function cell.
+func (e *engine) IsLisp2() bool { return e.lisp2 }
+
 var _ BootstrapDefiner = (*engine)(nil)
 
 // DefineBootstrap loads exactly one bootstrap definition from trusted host

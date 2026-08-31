@@ -158,6 +158,9 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 // co-located in the stripe it is about to write. dialectFP is constant per
 // engine and contributes no entropy, so it is excluded too. cacheKey itself
 // stays the exact map lookup key; routing and key equality are separate concerns.
+// IsLisp2 reports whether this evaluator's dialect separates the function cell.
+func (be *bytecodeEvaluator) IsLisp2() bool { return be.dialect.IsLisp2() }
+
 func (be *bytecodeEvaluator) stripeFor(key cacheKey) *cacheStripe {
 	return &be.stripes[stripeIndex(key.sourceHash, key.formIndex, len(be.stripes))]
 }
