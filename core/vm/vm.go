@@ -498,11 +498,14 @@ func resolveReentrantDeadline(ctx context.Context, timeout time.Duration) time.T
 // would wipe out state a GoFunc dispatched earlier this same run may have
 // already materialized, so the live check must run first.
 //
-// The engine deadline is armed here, before the first GoFunc dispatch of a
-// run, so the absolute instant installed into the re-entry state
-// (installReentrantDeadline) exists even when the instruction budget has not
-// reached the first pollCancel checkpoint yet — a callback observing the
-// deadline later in the run must never derive a fresh now+timeout instant.
+// The engine deadline is armed on the rearm and adopt paths, before the
+// first GoFunc dispatch of a run, so the absolute instant installed into the
+// re-entry state (installReentrantDeadline) exists even when the instruction
+// budget has not reached the first pollCancel checkpoint yet — a callback
+// observing the deadline later in the run must never derive a fresh
+// now+timeout instant. The live fast path needs no arm: a wrapper live for
+// the current run can only be reached after an earlier dispatch this run
+// already rearmed or adopted it, and that dispatch armed the deadline.
 func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	if err := vm.flushConsumedReductions(); err != nil {
 		return nil, err
@@ -510,26 +513,32 @@ func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	if err := vm.flushPendingAllocBytes(); err != nil {
 		return nil, err
 	}
-	vm.armDeadline(ctx)
 	if vm.reentryCtx != nil {
 		if core.ReentrantEvalStateLive(vm.reentryCtx) {
 			return vm.reentryCtx, nil
 		}
+		vm.armDeadline(ctx)
+		// The absolute instant must be in the wrapper before the rearm
+		// restamps its generation: once the generation publishes, a
+		// goroutine still holding the retained ctx from the prior run can
+		// materialize against it, and it must never see the expired
+		// deadline of the run that just ended.
+		vm.installReentrantDeadline(vm.reentryCtx)
 		if structCounter, ok := core.RearmReentrantEvalState(vm.reentryCtx, ctx, vm.structDepthLoad(), vm.callDepthLoad(), vm.meterSnapshot(), vm.timeout); ok {
-			vm.installReentrantDeadline(vm.reentryCtx)
 			vm.structDepth = structCounter
 			vm.callDepth = core.EvalCallCounter(vm.reentryCtx)
 			return vm.reentryCtx, nil
 		}
 	}
+	vm.armDeadline(ctx)
 	adopted, structCounter, meter := core.AdoptReentrantEvalState(ctx, vm.timeout, resolveReentrantDeadline, vm.structDepthLoad(), vm.callDepthLoad(), vm.meterSnapshot(), &vm.runGen)
 	vm.structDepth = structCounter
 	vm.callDepth = core.EvalCallCounter(adopted)
 	if meter.Valid() {
 		vm.meter = meter
 	}
-	vm.reentryCtx = adopted
 	vm.installReentrantDeadline(adopted)
+	vm.reentryCtx = adopted
 	return adopted, nil
 }
 
