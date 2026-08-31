@@ -172,6 +172,61 @@ func TestStdlibLazyBootstrap_UsesInstalledOwnerCellFirstTouch(t *testing.T) {
 	}
 }
 
+// TestStdlibLazyBootstrap_DivergentOwnerAxis pins that lazy first-touch
+// publication follows the installed evaluator's lisp2 axis, not the engine
+// config dialect: a Lisp-2-configured runtime with a Lisp-1 installed owner
+// publishes the value cell only, and a Lisp-1-configured runtime with a
+// Lisp-2 owner the function cell only.
+func TestStdlibLazyBootstrap_DivergentOwnerAxis(t *testing.T) {
+	t.Parallel()
+
+	t.Run("lisp2_engine_lisp1_owner_value_cell_only", func(t *testing.T) {
+		t.Parallel()
+
+		eng, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = eng.Close() })
+		ownerEng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ownerEng.Close() })
+
+		root := eng.RootEnv()
+		root.SetEvaluator(ownerEng.RootEnv().Evaluator())
+
+		require.NoError(t, eng.Use(stdlib.New()))
+
+		if _, ok := root.Get("->"); !ok {
+			t.Fatalf("-> not published in the value cell after first touch under the Lisp-1 owner")
+		}
+		if _, ok := root.GetFunc("->"); ok {
+			t.Fatalf("-> mirrored into the function cell under the Lisp-1 owner in a Lisp-2-configured runtime; the installed owner's axis, not the engine config dialect, owns publication")
+		}
+	})
+
+	t.Run("lisp1_engine_lisp2_owner_function_cell_only", func(t *testing.T) {
+		t.Parallel()
+
+		eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = eng.Close() })
+		ownerEng, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = ownerEng.Close() })
+
+		root := eng.RootEnv()
+		root.SetEvaluator(ownerEng.RootEnv().Evaluator())
+
+		require.NoError(t, eng.Use(stdlib.New()))
+
+		if _, ok := root.GetFunc("->"); !ok {
+			t.Fatalf("-> not published in the function cell after first touch under the Lisp-2 owner")
+		}
+		if _, ok := root.Get("->"); ok {
+			t.Fatalf("-> leaked into the value cell under the Lisp-2 owner in a Lisp-1-configured runtime; the installed owner's axis, not the engine config dialect, owns publication")
+		}
+	})
+}
+
 // TestBootstrapLazyConcurrentFirstTouch_PublishesOnce proves concurrent first
 // touch of one deferred bootstrap name publishes exactly once (per-name
 // MaterializeCount delta == 1) with the correct result, race-clean.
