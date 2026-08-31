@@ -298,18 +298,6 @@ func BenchmarkBootstrapPhases(b *testing.B) {
 		}
 	})
 
-	b.Run("binding-mirror", func(b *testing.B) {
-		for b.Loop() {
-			env := core.NewEnv(nil)
-			env.SetEvaluator(core.NewEvaluator())
-			registerBuiltinsForBench(New(), env)
-			before := snapshotBootstrapBindings(env)
-			for _, name := range []string{"->", "->>", "as->", "if-let", "when-let", "get-in"} {
-				env.Set(name, core.Int{V: 1})
-			}
-			New().mirrorBootstrapBindings(env, before)
-		}
-	})
 }
 
 func registerBuiltinsForBench(p *Plugin, env *core.Env) {
@@ -320,17 +308,6 @@ func registerBuiltinsForBench(p *Plugin, env *core.Env) {
 	p.registerHigherOrder(env)
 	p.registerControl(env)
 	p.registerTypes(env)
-}
-
-func snapshotBootstrapBindings(env *core.Env) map[string]struct{} {
-	before := make(map[string]struct{})
-	for _, name := range env.VarNames() {
-		before[name] = struct{}{}
-	}
-	for _, name := range env.FuncNames() {
-		before[name] = struct{}{}
-	}
-	return before
 }
 
 func TestMerge_LinearGrowth(t *testing.T) {

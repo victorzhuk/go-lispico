@@ -46,44 +46,19 @@ func stdlibBootstrapEntries() []bootstrapEntry {
 	}
 }
 
-func (p *Plugin) mirrorBootstrapBindings(env *core.Env, before map[string]struct{}) error {
-	for _, name := range env.LocalNames() {
-		if _, existed := before[name]; existed {
-			continue
-		}
-		if _, inFuncs := env.GetFunc(name); inFuncs {
-			continue
-		}
-		if v, ok := env.Get(name); ok {
-			if err := env.SetFunc(name, v); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func (p *Plugin) loadBootstrap(env *core.Env) error {
-	bootstrapCode := stdlibBootstrapEntries()
+	if env.Evaluator() == nil {
+		env.SetEvaluator(core.NewEvaluator())
+	}
+	owner := env.Evaluator()
+	definer, ok := owner.(core.BootstrapDefiner)
+	if !ok {
+		return fmt.Errorf("stdlib bootstrap: installed evaluator %T does not implement core.BootstrapDefiner", owner)
+	}
 
-	// The bootstrap macros are defined with the full-kernel evaluator so they
-	// work even when the engine's dialect (e.g. EmptyDialect) drops defmacro.
-	// After definition, newly-added names are mirrored to the function cell so
-	// they resolve in head position under Lisp-2. Under Lisp-1 the function cell
-	// is unused, so the copy is harmless.
-	evaluator := core.NewEvaluator()
 	ctx := context.Background()
-	cacheEval, _ := env.Evaluator().(stdlibBootstrapEvaluator)
-
-	before := make(map[string]struct{})
-	for _, name := range env.LocalNames() {
-		before[name] = struct{}{}
-	}
-	for _, name := range env.LocalFuncNames() {
-		before[name] = struct{}{}
-	}
-
-	for _, entry := range bootstrapCode {
+	cacheEval, _ := owner.(stdlibBootstrapEvaluator)
+	for _, entry := range stdlibBootstrapEntries() {
 		// A lazy layer defers the definition behind first touch; the
 		// materializer executes this same source then (see
 		// stdlibLazyMaterializer.materializeBootstrap).
@@ -91,28 +66,22 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 			continue
 		}
 		if entry.reusable && cacheEval != nil {
-			_, err := cacheEval.EvalStdlibBootstrap(ctx, entry.source, env)
-			if err != nil {
+			if _, err := cacheEval.EvalStdlibBootstrap(ctx, entry.source, env); err != nil {
 				return fmt.Errorf("bootstrap eval: %w", err)
 			}
-			continue
+		} else if _, err := definer.DefineBootstrap(ctx, entry.source, env); err != nil {
+			return fmt.Errorf("bootstrap eval: %w", err)
 		}
-
-		forms, err := core.Read(entry.source)
-		if err != nil {
-			return fmt.Errorf("bootstrap read: %w", err)
-		}
-
-		for _, form := range forms {
-			_, err = evaluator.Eval(ctx, form, env)
-			if err != nil {
-				return fmt.Errorf("bootstrap eval: %w", err)
+		// The definition lands in the cell the owner's dialect owns; the
+		// other cell stays empty so head-position resolution would miss.
+		// Fill only an empty cell — a user binding always wins.
+		if !env.HasLiveFunc(entry.name) {
+			if v, ok := env.Get(entry.name); ok {
+				if err := env.SetFunc(entry.name, v); err != nil {
+					return fmt.Errorf("bootstrap eval: %w", err)
+				}
 			}
 		}
-	}
-
-	if err := p.mirrorBootstrapBindings(env, before); err != nil {
-		return err
 	}
 
 	return nil
