@@ -183,12 +183,12 @@ func TestVM_ApplyPooled_ReentrantCtxFreshPerDistinctOuterCtx(t *testing.T) {
 	}
 }
 
-// TestVM_ReentrantCtx_NoClockReadWhenGoFuncNeverObservesState proves a
-// GoFunc dispatch that never reads its ctx's evaluation state costs zero
-// clock reads — the deadline resolution this change defers to first
-// observation. Modeled on TestVM_SetTimeoutArmsDeadlineLazily
-// (lazy_deadline_test.go).
-func TestVM_ReentrantCtx_NoClockReadWhenGoFuncNeverObservesState(t *testing.T) {
+// TestVM_ReentrantCtx_DeadlineResolvedOnceAtFirstDispatch proves a run's
+// absolute deadline is resolved exactly once, at the first GoFunc dispatch
+// (reentrantCtx arms it before installing), and every observation in that
+// run — however late — reads the same instant instead of deriving a fresh
+// now+timeout bound.
+func TestVM_ReentrantCtx_DeadlineResolvedOnceAtFirstDispatch(t *testing.T) {
 	var calls atomic.Int64
 	restore := nowFunc
 	nowFunc = func() time.Time {
@@ -200,9 +200,11 @@ func TestVM_ReentrantCtx_NoClockReadWhenGoFuncNeverObservesState(t *testing.T) {
 	env := core.NewEnv(nil)
 	v := New(env, WithEvaluator(core.NewEvaluator()))
 
+	var observed []time.Time
 	fn := core.GoFunc{
-		Name: "noop",
-		Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+		Name: "probe",
+		Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			observed = append(observed, core.EvalDeadlineFrom(ctx))
 			return args[0], nil
 		},
 	}
@@ -217,7 +219,17 @@ func TestVM_ReentrantCtx_NoClockReadWhenGoFuncNeverObservesState(t *testing.T) {
 		}
 	}
 
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("nowFunc called %d times, want 0 (deadline resolution deferred to first observation)", got)
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("nowFunc called %d times, want 5 (one armDeadline read per run's first dispatch)", got)
+	}
+	for i, d := range observed {
+		if d.IsZero() {
+			t.Fatalf("dispatch %d observed a zero deadline", i)
+		}
+	}
+	for i := 1; i < len(observed); i++ {
+		if observed[i].Equal(observed[i-1]) {
+			t.Fatalf("runs %d and %d observed the same deadline %v — each run must arm its own instant", i-1, i, observed[i])
+		}
 	}
 }

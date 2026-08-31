@@ -141,7 +141,9 @@ func (st *evalState) callCounter() *atomic.Int64 {
 // resolveDeadline is nil: AdoptEvalStateWithMeter sets deadline eagerly at
 // build time and never touches resolveDeadline/timeout; the VM reentrant
 // path (AdoptReentrantEvalState/RearmReentrantEvalState) leaves deadline
-// zero and resolves lazily through resolveDeadline+timeout instead (see
+// zero and resolves through either the VM-installed absolute instant
+// (armedDeadlineNs, written before the run's first GoFunc dispatch — see
+// InstallReentrantDeadline) or lazily through resolveDeadline+timeout (see
 // Value). Only the reentrant regime is ever rearmed in place on an existing
 // wrapper, which is why its fields are atomic: a GoFunc can stash this ctx
 // somewhere a goroutine other than the one performing the rearm reads it
@@ -158,6 +160,14 @@ type lazyEvalStateCtx struct {
 	// that owns the VM, so the callback takes timeout as a plain argument
 	// instead of reading a *VM field itself.
 	resolveDeadline func(context.Context, time.Duration) time.Time
+	// armedDeadlineNs carries the VM run's already-resolved absolute deadline
+	// (Unix nanoseconds; zero when the run armed no deadline), installed by
+	// the evaluating goroutine before the run's first GoFunc dispatch
+	// (InstallReentrantDeadline). It takes precedence over resolveDeadline so
+	// a late observation never derives a fresh now+timeout instant; clearing
+	// it on the next run's rearm keeps a prior run's expired instant from
+	// leaking after the VM resets its own deadline.
+	armedDeadlineNs atomic.Int64
 	// timeout backs resolveDeadline, in nanoseconds. Atomic for the same
 	// reason as maxReductions et al. below.
 	timeout       atomic.Int64
@@ -246,8 +256,12 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 		}
 		st := newEvalStateWithLimits(c.maxReductions.Load(), c.maxAllocBytes.Load())
 		deadline := c.deadline
-		if c.resolveDeadline != nil {
-			deadline = c.resolveDeadline(c.Context, time.Duration(c.timeout.Load()))
+		if deadline.IsZero() {
+			if ns := c.armedDeadlineNs.Load(); ns != 0 {
+				deadline = time.Unix(0, ns)
+			} else if c.resolveDeadline != nil {
+				deadline = c.resolveDeadline(c.Context, time.Duration(c.timeout.Load()))
+			}
 		}
 		st.deadline = deadline
 		st.shared = &c.counter
@@ -543,6 +557,21 @@ func RearmReentrantEvalState(retained, ctx context.Context, structSeed, callSeed
 func ReentrantEvalStateLive(ctx context.Context) bool {
 	w, ok := ctx.(*lazyEvalStateCtx)
 	return ok && w.live()
+}
+
+// InstallReentrantDeadline writes the VM run's already-resolved absolute
+// deadline (Unix nanoseconds; zero clears) into a reentrant eval-state ctx
+// built by AdoptReentrantEvalState, so the deadline a GoFunc observes at
+// first materialization is the run's original instant rather than a fresh
+// now+timeout derivation. Called by the evaluating goroutine before the
+// first GoFunc dispatch of a run; a wrapper still live for the current run
+// keeps the instant installed at its first dispatch. Non-wrapper ctx (a
+// materialized evalState already in the outer context) is ignored — the
+// outer state's own deadline governs.
+func InstallReentrantDeadline(ctx context.Context, deadlineNs int64) {
+	if w, ok := ctx.(*lazyEvalStateCtx); ok {
+		w.armedDeadlineNs.Store(deadlineNs)
+	}
 }
 
 // ctxComparable reports whether ctx's dynamic type is safe to compare with

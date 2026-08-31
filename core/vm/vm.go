@@ -497,6 +497,12 @@ func resolveReentrantDeadline(ctx context.Context, timeout time.Duration) time.T
 // allocating), or neither (build fresh). Rearming an already-live wrapper
 // would wipe out state a GoFunc dispatched earlier this same run may have
 // already materialized, so the live check must run first.
+//
+// The engine deadline is armed here, before the first GoFunc dispatch of a
+// run, so the absolute instant installed into the re-entry state
+// (installReentrantDeadline) exists even when the instruction budget has not
+// reached the first pollCancel checkpoint yet — a callback observing the
+// deadline later in the run must never derive a fresh now+timeout instant.
 func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	if err := vm.flushConsumedReductions(); err != nil {
 		return nil, err
@@ -504,11 +510,13 @@ func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 	if err := vm.flushPendingAllocBytes(); err != nil {
 		return nil, err
 	}
+	vm.armDeadline(ctx)
 	if vm.reentryCtx != nil {
 		if core.ReentrantEvalStateLive(vm.reentryCtx) {
 			return vm.reentryCtx, nil
 		}
 		if structCounter, ok := core.RearmReentrantEvalState(vm.reentryCtx, ctx, vm.structDepthLoad(), vm.callDepthLoad(), vm.meterSnapshot(), vm.timeout); ok {
+			vm.installReentrantDeadline(vm.reentryCtx)
 			vm.structDepth = structCounter
 			vm.callDepth = core.EvalCallCounter(vm.reentryCtx)
 			return vm.reentryCtx, nil
@@ -521,7 +529,24 @@ func (vm *VM) reentrantCtx(ctx context.Context) (context.Context, error) {
 		vm.meter = meter
 	}
 	vm.reentryCtx = adopted
+	vm.installReentrantDeadline(adopted)
 	return adopted, nil
+}
+
+// installReentrantDeadline writes this run's already-resolved absolute
+// deadline (vm.deadline, armed by armDeadline) into a freshly adopted or
+// rearmed re-entry ctx, so GoFunc dispatch and any nested evaluator callback
+// observe the original instant instead of deriving a fresh now+timeout
+// deadline at first observation. A zero deadline clears any prior run's
+// instant. Called only on the evaluating goroutine before f.Fn runs; a
+// wrapper still live for the current run keeps the deadline installed at
+// its first dispatch.
+func (vm *VM) installReentrantDeadline(reCtx context.Context) {
+	var ns int64
+	if !vm.deadline.IsZero() {
+		ns = vm.deadline.UnixNano()
+	}
+	core.InstallReentrantDeadline(reCtx, ns)
 }
 
 func (vm *VM) pushReentrantDepth(reCtx context.Context) (*atomic.Int64, int64) {
