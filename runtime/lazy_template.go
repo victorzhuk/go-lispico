@@ -495,7 +495,11 @@ func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, nam
 	if !ok {
 		return nil, false, false
 	}
-	if m.engine.config.dialect.IsLisp2() && !env.HasLiveFunc(name) {
+	lisp2 := false
+	if axis, ok := env.Evaluator().(interface{ IsLisp2() bool }); ok {
+		lisp2 = axis.IsLisp2()
+	}
+	if lisp2 && !env.HasLiveFunc(name) {
 		if err := env.SetFunc(name, v); err != nil {
 			m.logMaterializeFailure(&stdlibTemplateEntry{name: name}, err)
 			return nil, false, false
