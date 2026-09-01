@@ -396,13 +396,14 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("get: requires 2 or 3 arguments")
 			}
 
-			m, ok := args[0].(*core.HashMap)
-			if !ok {
+			switch m := args[0].(type) {
+			case *core.HashMap:
+				if v, found := m.Get(args[1]); found {
+					return v, nil
+				}
+			case core.Nil:
+			default:
 				return nil, fmt.Errorf("get: expected map, got %T", args[0])
-			}
-
-			if v, found := m.Get(args[1]); found {
-				return v, nil
 			}
 
 			if len(args) == 3 {

@@ -571,6 +571,41 @@ func TestCollections_MapOps(t *testing.T) {
 		}
 	})
 
+	t.Run("get nil subject", func(t *testing.T) {
+		result := eval(t, env, `(get nil :k)`)
+		if _, ok := result.(core.Nil); !ok {
+			t.Errorf("expected nil, got %v", result)
+		}
+	})
+
+	t.Run("get nil subject with default", func(t *testing.T) {
+		result := eval(t, env, `(get nil :k :not-found)`)
+		if !result.Equals(core.Keyword{V: "not-found"}) {
+			t.Errorf("expected :not-found, got %v", result)
+		}
+	})
+
+	t.Run("get non-map subject", func(t *testing.T) {
+		err := evalErr(t, env, `(get 5 :k)`)
+		if err == nil {
+			t.Error("expected error from get on non-map")
+		}
+	})
+
+	t.Run("get-in nil subject", func(t *testing.T) {
+		result := eval(t, env, `(get-in nil (list :a))`)
+		if _, ok := result.(core.Nil); !ok {
+			t.Errorf("expected nil, got %v", result)
+		}
+	})
+
+	t.Run("get-in missing intermediate", func(t *testing.T) {
+		result := eval(t, env, `(get-in (hash-map :a 1) (list :b :c))`)
+		if _, ok := result.(core.Nil); !ok {
+			t.Errorf("expected nil, got %v", result)
+		}
+	})
+
 	t.Run("assoc", func(t *testing.T) {
 		result := eval(t, env, `(assoc (hash-map :a 1) :b 2)`)
 		m, ok := result.(*core.HashMap)
