@@ -43,6 +43,18 @@ None.
 
 - Affects error construction throughout `plugins/stdlib`, CL adapter validation,
   direct stdlib tests, runtime behavior goldens, and host-facing documentation.
+- Also affects `internal/collections`, which originates comparison and ordering
+  failures reachable from `<`, `>`, `<=`, `>=`, and `sort`. Those are converted in
+  place because their stdlib call sites return them bare and cannot distinguish a
+  comparator failure from a Terminal work-budget flush.
+- Leaves `core/types.go` unchanged. The unhashable-key failure behind `hash-map`,
+  `assoc`, `merge`, `dissoc`, and `conj` is converted at the stdlib boundary as an
+  immediate external-error conversion.
+- Also affects `core/vm`, which implements `+`, `-`, `*`, `/`, `=`, and the
+  ordering comparisons natively rather than dispatching to the Builtin. Those
+  native paths originate their own failures, so leaving them plain would make the
+  default bytecode engine disagree with the tree-walker on exactly the operators
+  hosts use most.
 - Does not change which valid inputs succeed or which invalid inputs fail.
 - Does not add source locations to `core.Value`; positional evaluation errors
   require a separate positional-form design.
