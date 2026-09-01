@@ -50,3 +50,7 @@ func TestBootstrapEntries_AllMacroDefinitionsNoReusePolicy(t *testing.T) {
 
 	assert.Equal(t, []string{"->", "->>", "as->", "if-let", "when-let"}, names)
 }
+
+// Unkeyed, so a regrown field breaks the build: the entry shape cannot
+// silently reacquire a reuse policy.
+var _ = bootstrapEntry{"->", "(defmacro -> [x & forms] x)"}

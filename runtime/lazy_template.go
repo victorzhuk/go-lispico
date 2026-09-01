@@ -27,7 +27,6 @@ type stdlibTemplateEntry struct {
 	value     core.Value
 	canonical bool
 	source    string
-	reusable  bool
 }
 
 type stdlibTemplateKey struct {
@@ -453,15 +452,6 @@ func (m *stdlibLazyMaterializer) materializeBootstrap(env *core.Env, pluginName 
 		m.logMaterializeFailure(entry, fmt.Errorf("stdlib bootstrap: installed evaluator %T does not implement core.BootstrapDefiner", owner))
 		return nil, false, false
 	}
-	if entry.reusable {
-		if be, ok := env.Evaluator().(*bytecodeEvaluator); ok {
-			if _, err := be.EvalStdlibBootstrap(context.Background(), entry.source, env); err != nil {
-				m.logMaterializeFailure(entry, err)
-				return nil, false, false
-			}
-			return m.publishBootstrap(env, pluginName, entry.name, funcNS)
-		}
-	}
 	if _, err := definer.DefineBootstrap(context.Background(), entry.source, env); err != nil {
 		m.logMaterializeFailure(entry, err)
 		return nil, false, false
@@ -593,7 +583,7 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 // RegisterSource defers a pure-Lisp bootstrap definition (defmacro/defn).
 // Same stdlib-only restriction as RegisterValue; it reports false for other
 // plugins and when the layer is disabled so the caller evaluates eagerly.
-func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source string, reusable bool) bool {
+func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source string) bool {
 	if m == nil {
 		return false
 	}
@@ -605,10 +595,9 @@ func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source stri
 	}
 	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}
 	if err := stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
-		name:     name,
-		kind:     stdlibTemplateBootstrap,
-		source:   source,
-		reusable: reusable,
+		name:   name,
+		kind:   stdlibTemplateBootstrap,
+		source: source,
 	}); err != nil {
 		m.engine.logger.Warn("stdlib template layer already published, falling back to eager bootstrap", "name", name, "error", err)
 		return false

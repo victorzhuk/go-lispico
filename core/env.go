@@ -55,7 +55,7 @@ type LazyLayer interface {
 	LookupAndMaterialize(env *Env, name string, funcNS bool) (Value, bool, bool)
 	TombstoneForDelete(env *Env, name string)
 	RegisterValue(env *Env, name string, val Value, canonical bool) error
-	RegisterSource(env *Env, name, source string, reusable bool) bool
+	RegisterSource(env *Env, name, source string) bool
 	ForceAll(env *Env)
 }
 
@@ -131,9 +131,9 @@ func (e *Env) RegisterValueWithContext(ctx context.Context, name string, val Val
 // name behind first touch and reports whether the layer accepted it. With
 // no layer (or a disabled one) it returns false and the caller evaluates
 // the source eagerly.
-func (e *Env) RegisterSource(name, source string, reusable bool) bool {
+func (e *Env) RegisterSource(name, source string) bool {
 	if layer := e.LazyLayer(); layer != nil {
-		return layer.RegisterSource(e, name, source, reusable)
+		return layer.RegisterSource(e, name, source)
 	}
 	return false
 }

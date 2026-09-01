@@ -8,13 +8,8 @@ import (
 )
 
 type bootstrapEntry struct {
-	name     string
-	source   string
-	reusable bool
-}
-
-type stdlibBootstrapEvaluator interface {
-	EvalStdlibBootstrap(ctx context.Context, source string, env *core.Env) (core.Value, error)
+	name   string
+	source string
 }
 
 func stdlibBootstrapEntries() []bootstrapEntry {
@@ -59,19 +54,14 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 	}
 
 	ctx := context.Background()
-	cacheEval, _ := owner.(stdlibBootstrapEvaluator)
 	for _, entry := range stdlibBootstrapEntries() {
 		// A lazy layer defers the definition behind first touch; the
 		// materializer executes this same source then (see
 		// stdlibLazyMaterializer.materializeBootstrap).
-		if env.RegisterSource(entry.name, entry.source, entry.reusable) {
+		if env.RegisterSource(entry.name, entry.source) {
 			continue
 		}
-		if entry.reusable && cacheEval != nil {
-			if _, err := cacheEval.EvalStdlibBootstrap(ctx, entry.source, env); err != nil {
-				return fmt.Errorf("bootstrap eval: %w", err)
-			}
-		} else if _, err := definer.DefineBootstrap(ctx, entry.source, env); err != nil {
+		if _, err := definer.DefineBootstrap(ctx, entry.source, env); err != nil {
 			return fmt.Errorf("bootstrap eval: %w", err)
 		}
 		// The definition lands in the cell the owner's dialect owns. Under
