@@ -2,7 +2,6 @@ package stdlib
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/internal/collections"
@@ -13,13 +12,13 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 		Name: "map",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("map: requires 2 arguments")
+				return nil, arityErrorf("map: requires 2 arguments")
 			}
 
 			switch args[1].(type) {
 			case core.List, core.Vector:
 			default:
-				return nil, fmt.Errorf("map: second argument must be collection")
+				return nil, typeErrorf("map: second argument must be collection")
 			}
 
 			return collections.MapSequences(ctx, eval, env, args[0], args[1:])
@@ -31,7 +30,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 		Name: "filter",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("filter: requires 2 arguments")
+				return nil, arityErrorf("filter: requires 2 arguments")
 			}
 
 			var items []core.Value
@@ -41,7 +40,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 			case core.Vector:
 				items = c.ToSlice()
 			default:
-				return nil, fmt.Errorf("filter: second argument must be collection")
+				return nil, typeErrorf("filter: second argument must be collection")
 			}
 
 			var results []core.Value
@@ -65,7 +64,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 		Name: "reduce",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 || len(args) > 3 {
-				return nil, fmt.Errorf("reduce: requires 2 or 3 arguments")
+				return nil, arityErrorf("reduce: requires 2 or 3 arguments")
 			}
 
 			var items []core.Value
@@ -80,7 +79,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 			case core.Vector:
 				items = c.ToSlice()
 			default:
-				return nil, fmt.Errorf("reduce: last argument must be collection")
+				return nil, typeErrorf("reduce: last argument must be collection")
 			}
 
 			var acc core.Value
@@ -112,7 +111,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 		Name: "apply",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
-				return nil, fmt.Errorf("apply: requires at least 2 arguments")
+				return nil, arityErrorf("apply: requires at least 2 arguments")
 			}
 
 			fn := args[0]
@@ -125,7 +124,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 			case core.Vector:
 				tail = c.ToSlice()
 			default:
-				return nil, fmt.Errorf("apply: last argument must be collection, got %T", last)
+				return nil, typeErrorf("apply: last argument must be collection, got %T", last)
 			}
 
 			callArgs := append(args[1:len(args)-1], tail...)

@@ -2,7 +2,6 @@ package stdlib
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -12,7 +11,7 @@ func (p *Plugin) registerControl(env *core.Env) error {
 		Name: "assert",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
-				return nil, fmt.Errorf("assert: requires at least 1 argument")
+				return nil, arityErrorf("assert: requires at least 1 argument")
 			}
 
 			cond, err := eval.Eval(ctx, args[0], env)
@@ -27,11 +26,11 @@ func (p *Plugin) registerControl(env *core.Env) error {
 						return nil, err
 					}
 					if s, ok := msg.(core.String); ok {
-						return nil, fmt.Errorf("assertion failed: %s", s.V)
+						return nil, domainErrorf("assertion failed: %s", s.V)
 					}
-					return nil, fmt.Errorf("assertion failed: %v", msg)
+					return nil, domainErrorf("assertion failed: %v", msg)
 				}
-				return nil, fmt.Errorf("assertion failed")
+				return nil, domainErrorf("assertion failed")
 			}
 
 			return core.Nil{}, nil

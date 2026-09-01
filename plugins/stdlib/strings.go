@@ -27,12 +27,12 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "format",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
-				return nil, fmt.Errorf("format: requires at least 1 argument")
+				return nil, arityErrorf("format: requires at least 1 argument")
 			}
 
 			fmtStr, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("format: first argument must be string")
+				return nil, typeErrorf("format: first argument must be string")
 			}
 
 			if fmtStr.V == "" {
@@ -57,12 +57,12 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/join",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("string/join: requires 2 arguments")
+				return nil, arityErrorf("string/join: requires 2 arguments")
 			}
 
 			sep, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("string/join: separator must be string")
+				return nil, typeErrorf("string/join: separator must be string")
 			}
 			coll := args[1]
 
@@ -77,7 +77,7 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 					parts = append(parts, toString(item))
 				}
 			default:
-				return nil, fmt.Errorf("string/join: expected collection, got %T", coll)
+				return nil, typeErrorf("string/join: expected collection, got %T", coll)
 			}
 
 			return core.String{V: strings.Join(parts, sep.V)}, nil
@@ -90,14 +90,14 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/split",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("string/split: requires 2 arguments")
+				return nil, arityErrorf("string/split: requires 2 arguments")
 			}
 
 			s, ok1 := args[0].(core.String)
 			sep, ok2 := args[1].(core.String)
 
 			if !ok1 || !ok2 {
-				return nil, fmt.Errorf("string/split: requires string arguments")
+				return nil, typeErrorf("string/split: requires string arguments")
 			}
 
 			parts := strings.Split(s.V, sep.V)
@@ -114,21 +114,21 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 
 	if err := env.RegisterValue("string/trim", core.GoFunc{
 		Name: "string/trim",
-		Fn:   unaryStringFunc(strings.TrimSpace),
+		Fn:   unaryStringFunc("string/trim", strings.TrimSpace),
 	}, false); err != nil {
 		return err
 	}
 
 	if err := env.RegisterValue("string/upper", core.GoFunc{
 		Name: "string/upper",
-		Fn:   unaryStringFunc(strings.ToUpper),
+		Fn:   unaryStringFunc("string/upper", strings.ToUpper),
 	}, false); err != nil {
 		return err
 	}
 
 	if err := env.RegisterValue("string/lower", core.GoFunc{
 		Name: "string/lower",
-		Fn:   unaryStringFunc(strings.ToLower),
+		Fn:   unaryStringFunc("string/lower", strings.ToLower),
 	}, false); err != nil {
 		return err
 	}
@@ -137,7 +137,7 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/replace",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 3 {
-				return nil, fmt.Errorf("string/replace: requires 3 arguments")
+				return nil, arityErrorf("string/replace: requires 3 arguments")
 			}
 
 			s, ok1 := args[0].(core.String)
@@ -145,7 +145,7 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			new, ok3 := args[2].(core.String)
 
 			if !ok1 || !ok2 || !ok3 {
-				return nil, fmt.Errorf("string/replace: requires string arguments")
+				return nil, typeErrorf("string/replace: requires string arguments")
 			}
 
 			return core.String{V: strings.ReplaceAll(s.V, old.V, new.V)}, nil
@@ -158,14 +158,14 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/contains?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("string/contains?: requires 2 arguments")
+				return nil, arityErrorf("string/contains?: requires 2 arguments")
 			}
 
 			s, ok1 := args[0].(core.String)
 			substr, ok2 := args[1].(core.String)
 
 			if !ok1 || !ok2 {
-				return nil, fmt.Errorf("string/contains?: requires string arguments")
+				return nil, typeErrorf("string/contains?: requires string arguments")
 			}
 
 			return core.Bool{V: strings.Contains(s.V, substr.V)}, nil
@@ -178,14 +178,14 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/starts-with?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("string/starts-with?: requires 2 arguments")
+				return nil, arityErrorf("string/starts-with?: requires 2 arguments")
 			}
 
 			s, ok1 := args[0].(core.String)
 			prefix, ok2 := args[1].(core.String)
 
 			if !ok1 || !ok2 {
-				return nil, fmt.Errorf("string/starts-with?: requires string arguments")
+				return nil, typeErrorf("string/starts-with?: requires string arguments")
 			}
 
 			return core.Bool{V: strings.HasPrefix(s.V, prefix.V)}, nil
@@ -198,14 +198,14 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/ends-with?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("string/ends-with?: requires 2 arguments")
+				return nil, arityErrorf("string/ends-with?: requires 2 arguments")
 			}
 
 			s, ok1 := args[0].(core.String)
 			suffix, ok2 := args[1].(core.String)
 
 			if !ok1 || !ok2 {
-				return nil, fmt.Errorf("string/ends-with?: requires string arguments")
+				return nil, typeErrorf("string/ends-with?: requires string arguments")
 			}
 
 			return core.Bool{V: strings.HasSuffix(s.V, suffix.V)}, nil
@@ -218,12 +218,12 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/length",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("string/length: requires 1 argument")
+				return nil, arityErrorf("string/length: requires 1 argument")
 			}
 
 			s, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("string/length: requires string argument")
+				return nil, typeErrorf("string/length: requires string argument")
 			}
 
 			return core.Int{V: int64(len([]rune(s.V)))}, nil
@@ -236,12 +236,12 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string/lines",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("string/lines: requires 1 argument")
+				return nil, arityErrorf("string/lines: requires 1 argument")
 			}
 
 			s, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("string/lines: requires string argument")
+				return nil, typeErrorf("string/lines: requires string argument")
 			}
 
 			lines := strings.Split(s.V, "\n")
@@ -260,17 +260,17 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string->int",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("string->int: requires 1 argument")
+				return nil, arityErrorf("string->int: requires 1 argument")
 			}
 
 			s, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("string->int: requires string argument")
+				return nil, typeErrorf("string->int: requires string argument")
 			}
 
 			i, err := strconv.ParseInt(s.V, 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("string->int: %w", err)
+				return nil, wrapCause("string->int", err)
 			}
 
 			return core.Int{V: i}, nil
@@ -283,17 +283,17 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 		Name: "string->float",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("string->float: requires 1 argument")
+				return nil, arityErrorf("string->float: requires 1 argument")
 			}
 
 			s, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("string->float: requires string argument")
+				return nil, typeErrorf("string->float: requires string argument")
 			}
 
 			f, err := strconv.ParseFloat(s.V, 64)
 			if err != nil {
-				return nil, fmt.Errorf("string->float: %w", err)
+				return nil, wrapCause("string->float", err)
 			}
 
 			return core.Float{V: f}, nil
@@ -609,15 +609,15 @@ func addFormatEstimate(a, b int64) int64 {
 	return a + b
 }
 
-func unaryStringFunc(fn func(string) string) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+func unaryStringFunc(name string, fn func(string) string) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
 	return func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 		if len(args) != 1 {
-			return nil, fmt.Errorf("requires 1 argument")
+			return nil, arityErrorf("%s: requires 1 argument", name)
 		}
 
 		s, ok := args[0].(core.String)
 		if !ok {
-			return nil, fmt.Errorf("expected string, got %T", args[0])
+			return nil, typeErrorf("%s: expected string, got %T", name, args[0])
 		}
 
 		return core.String{V: fn(s.V)}, nil
