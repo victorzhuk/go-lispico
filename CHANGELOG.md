@@ -83,6 +83,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value's shallow size, so consumers metering `MaxAllocationBytes` see a lower
   charge for `get` than before.
 
+- **Breaking:** `RegisterSource` lost its trailing `reusable bool` parameter,
+  on both the environment method and the `core.LazyLayer` interface it
+  delegates to:
+
+  ```go
+  // core.Env method
+  func (e *Env) RegisterSource(name, source string) bool
+
+  // core.LazyLayer interface method
+  RegisterSource(env *Env, name, source string) bool
+  ```
+
+  The flag selected the process-level stdlib bootstrap artifact cache, which
+  is retired, so it advertised a reuse path that no longer exists. A host that
+  implements `core.LazyLayer` itself deletes the parameter from its
+  `RegisterSource`. The failure mode is indirect: the interface is satisfied
+  structurally, so a stale implementation compiles on its own and the error
+  lands at the `SetLazyLayer` call site instead — `does not implement
+  core.LazyLayer (wrong type for method RegisterSource)`, followed by the
+  `have`/`want` signatures. The per-engine bytecode chunk cache is unaffected;
+  hosts relying on it need do nothing.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added

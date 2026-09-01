@@ -338,10 +338,9 @@ unrelated values charges that result's full deep size. Retained per-`Env`
 binding capacity (`MaxRetainedBytesPerEnv`/`MaxRetainedSlotsPerEnv`, ADR 0012)
 is a separate measure with its own ledger, not folded into
 `MaxAllocationBytes`. The per-engine bytecode chunk cache obeys the entry,
-deep-byte, and expanded-node ceilings; the process-level stdlib bootstrap
-artifact cache is exempt. Reduction counts and charge values are evaluator-
-and compiler-version-specific; only terminal behavior is compared across
-engine configurations, not raw counter values.
+deep-byte, and expanded-node ceilings. Reduction counts and charge values are
+evaluator- and compiler-version-specific; only terminal behavior is compared
+across engine configurations, not raw counter values.
 
 ## Status
 

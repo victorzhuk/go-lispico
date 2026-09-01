@@ -380,13 +380,11 @@ tree-walker's, only the walk is gone. `range` caps
 its result length (`MaxCollectionLen`) and checks `ctx` cooperatively; the
 per-engine bytecode chunk cache is bounded by entry, deep-byte, and
 expanded-node ceilings (`MaxCacheEntries`, `MaxCacheBytes`, `MaxCacheNodes`) and
-reclaims entries orphaned by a macro-epoch bump. The process-level stdlib
-bootstrap artifact cache is exempt from these per-engine ceilings.
-`MaxReductions` counts macro expansion,
-compiler emission, evaluator work, and `GoFunc` dispatch via the existing
-128-step cancellation budget, while `MaxAllocationBytes` charges the fixed
-deterministic size table from ADR 0011 at reader, compiler, VM, tree-walker,
-and `GoFunc` result boundaries. `MaxRetainedBytesPerEnv` and
+reclaims entries orphaned by a macro-epoch bump. `MaxReductions` counts macro
+expansion, compiler emission, evaluator work, and `GoFunc` dispatch via the
+existing 128-step cancellation budget, while `MaxAllocationBytes` charges the
+fixed deterministic size table from ADR 0011 at reader, compiler, VM,
+tree-walker, and `GoFunc` result boundaries. `MaxRetainedBytesPerEnv` and
 `MaxRetainedSlotsPerEnv` cap per-environment retained binding capacity
 (ADR 0012): every `Env` on the engine path carries owned counters
 (bytes + slots), charged on new-slot binding writes using the same fixed
