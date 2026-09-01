@@ -1,4 +1,4 @@
-package stdlib
+package collections
 
 import (
 	"context"
@@ -10,9 +10,9 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-// naturalLess wraps naturalCmp as a SortLessFunc.
+// naturalLess wraps NaturalCmp as a SortLessFunc.
 func naturalLessForSort(a, b core.Value) (bool, error) {
-	c, err := naturalCmp(a, b)
+	c, err := NaturalCmp(a, b)
 	if err != nil {
 		return false, err
 	}
@@ -63,7 +63,7 @@ func sortedAscendingInt(items []core.Value) error {
 }
 
 // TestStableSort_NaturalOrderAndMixedKind exercises the kernel directly
-// with a naturalCmp-wrapping less and key=nil: ints, strings, and
+// with a NaturalCmp-wrapping less and key=nil: ints, strings, and
 // keywords sort ascending; the caller's input slice retains its original
 // order (the kernel sorts an internal copy); and a mixed-kind input
 // surfaces a non-terminal "sort: ..." error.
