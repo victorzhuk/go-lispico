@@ -231,23 +231,18 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("nth: index must be integer")
 			}
 
-			switch c := args[0].(type) {
-			case core.List:
-				if idx.V < 0 || int(idx.V) >= c.Len() {
-					if len(args) == 3 {
-						return args[2], nil
-					}
-					return nil, fmt.Errorf("nth: index out of bounds")
+			val, outcome, err := IndexedAccess(ctx, args[0], idx.V)
+			if err != nil {
+				return nil, err
+			}
+			switch outcome {
+			case AccessHit:
+				return val, nil
+			case AccessOutOfRange:
+				if len(args) == 3 {
+					return args[2], nil
 				}
-				return c.At(int(idx.V)), nil
-			case core.Vector:
-				if idx.V < 0 || int(idx.V) >= c.Len() {
-					if len(args) == 3 {
-						return args[2], nil
-					}
-					return nil, fmt.Errorf("nth: index out of bounds")
-				}
-				return c.At(int(idx.V)), nil
+				return nil, fmt.Errorf("nth: index out of bounds")
 			default:
 				return nil, fmt.Errorf("nth: expected collection, got %T", args[0])
 			}
