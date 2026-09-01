@@ -25,6 +25,15 @@ func newEngine(t *testing.T, opts ...runtime.EngineOption) runtime.Engine {
 	return e
 }
 
+func noopFn(name string) core.Value {
+	return core.GoFunc{
+		Name: name,
+		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Nil{}, nil
+		},
+	}
+}
+
 // TestCL_IsNotIdentity asserts that the CL dialect is non-identity because of
 // its non-default axes (Lisp-2, CL reader flags).
 func TestCL_IsNotIdentity(t *testing.T) {
@@ -241,12 +250,12 @@ func TestCL_Dialect_Memoized(t *testing.T) {
 			"append":  "concat",
 			"length":  "count",
 			"reverse": "reverse",
-			"nth":     "nth",
-			"sort":    "sort",
-			"mapcar":  "map",
 			"apply":   "apply",
 			"type":    "type",
-		})
+		}).
+		WithAdapter("nth", "cl/nth@1", noopFn("nth")).
+		WithAdapter("mapcar", "cl/mapcar@1", noopFn("mapcar")).
+		WithAdapter("sort", "cl/sort@1", noopFn("sort"))
 	require.Equal(t, memoized.Fingerprint(), uncached.Fingerprint(), "memoized and uncached Fingerprint() must agree")
 	assert.Equal(t, cl.Dialect().Fingerprint(), memoized.Fingerprint(), "repeated cl.Dialect() calls must produce the same fingerprint")
 

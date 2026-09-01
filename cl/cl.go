@@ -5,6 +5,8 @@
 //   - CL reader flags (#' and #(...) enabled, [..]/{..} disabled)
 //   - Delta renames for special forms (defun→defn, setq→set!, progn→do)
 //   - CL vocabulary renaming core GoFuncs (car→first, cdr→rest, etc.)
+//   - Adapters binding nth, mapcar, and sort to their CL argument shapes
+//     over the shared collection kernels
 //
 // defun is registered as an alias for the kernel defn form via [Dialect.Add].
 // defn/fn/defmacro accept both Vector and List params via paramsAsVector for
@@ -19,10 +21,116 @@
 package cl
 
 import (
+	"context"
+	"fmt"
 	"sync"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
+
+const (
+	clNthID    = "cl/nth@1"
+	clMapcarID = "cl/mapcar@1"
+	clSortID   = "cl/sort@1"
+)
+
+var clNth = sync.OnceValue(func() core.Value {
+	return core.GoFunc{
+		Name: "nth",
+		Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			if len(args) != 2 {
+				return nil, fmt.Errorf("nth: requires 2 arguments")
+			}
+			idx, ok := args[0].(core.Int)
+			if !ok {
+				return nil, core.NewTypeError("integer", args[0])
+			}
+			if _, isNil := args[1].(core.Nil); isNil {
+				return core.Nil{}, nil
+			}
+			val, outcome, err := stdlib.IndexedAccess(ctx, args[1], idx.V)
+			if err != nil {
+				return nil, err
+			}
+			switch outcome {
+			case stdlib.AccessHit:
+				return val, nil
+			case stdlib.AccessOutOfRange:
+				return core.Nil{}, nil
+			default:
+				return nil, fmt.Errorf("nth: expected collection, got %T", args[1])
+			}
+		},
+	}
+})
+
+var clMapcar = sync.OnceValue(func() core.Value {
+	return core.GoFunc{
+		Name: "mapcar",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			if len(args) < 2 {
+				return nil, fmt.Errorf("mapcar: requires a function and at least one sequence")
+			}
+			return stdlib.MapSequences(ctx, eval, env, args[0], args[1:])
+		},
+	}
+})
+
+var clSort = sync.OnceValue(func() core.Value {
+	return core.GoFunc{
+		Name: "sort",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			if len(args) < 2 {
+				return nil, fmt.Errorf("sort: requires a sequence and a predicate")
+			}
+			var keyFn core.Value
+			for rest := args[2:]; len(rest) > 0; rest = rest[2:] {
+				kw, ok := rest[0].(core.Keyword)
+				if !ok || kw.V != "key" || len(rest) < 2 {
+					return nil, fmt.Errorf("sort: unsupported argument %v", rest[0])
+				}
+				keyFn = rest[1]
+			}
+
+			seq := args[0]
+			var items []core.Value
+			switch c := seq.(type) {
+			case core.List:
+				items = c.ToSlice()
+			case core.Vector:
+				items = c.ToSlice()
+			case core.Nil:
+				items = nil
+			default:
+				return nil, fmt.Errorf("sort: expected collection, got %T", seq)
+			}
+
+			var key stdlib.SortKeyFunc
+			if keyFn != nil {
+				key = func(v core.Value) (core.Value, error) {
+					return eval.Apply(ctx, keyFn, []core.Value{v}, env)
+				}
+			}
+			sorted, err := stdlib.StableSort(ctx, items, key, func(a, b core.Value) (bool, error) {
+				r, err := eval.Apply(ctx, args[1], []core.Value{a, b}, env)
+				if err != nil {
+					return false, err
+				}
+				return core.IsTruthy(r), nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			switch seq.(type) {
+			case core.Vector:
+				return core.NewVector(sorted), nil
+			default:
+				return core.NewList(sorted), nil
+			}
+		},
+	}
+})
 
 var stockDialect = sync.OnceValue(func() core.Dialect {
 	return core.FullDialect().
@@ -42,12 +150,12 @@ var stockDialect = sync.OnceValue(func() core.Dialect {
 			"append":  "concat",
 			"length":  "count",
 			"reverse": "reverse",
-			"nth":     "nth",
-			"sort":    "sort",
-			"mapcar":  "map",
 			"apply":   "apply",
 			"type":    "type",
 		}).
+		WithAdapter("nth", clNthID, clNth()).
+		WithAdapter("mapcar", clMapcarID, clMapcar()).
+		WithAdapter("sort", clSortID, clSort()).
 		Memoized()
 })
 
