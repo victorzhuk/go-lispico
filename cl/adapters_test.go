@@ -88,7 +88,7 @@ func TestCLSort_Goldens(t *testing.T) {
 	assert.Error(t, err, "sort with :key but no predicate must be rejected by the CL grammar")
 }
 // TestCLAdapters_Lisp2Callbacks: callbacks named in head position resolve
-// through the function cell — lambda, defun, and GoFunc targets.
+// through the function cell — fn, defun, and GoFunc targets.
 func TestCLAdapters_Lisp2Callbacks(t *testing.T) {
 	e := newEngine(t)
 	ctx := context.Background()
@@ -111,9 +111,9 @@ func TestCLAdapters_Lisp2Callbacks(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, intList(1, 2, 3).Equals(got), "(sort '(3 1 2) #'lt) = %v, want (1 2 3)", got)
 
-	got, err = e.Eval(ctx, "sort", "(sort '(3 1 2) (lambda (a b) (< a b)))")
+	got, err = e.Eval(ctx, "sort", "(sort '(3 1 2) (fn (a b) (< a b)))")
 	require.NoError(t, err)
-	assert.True(t, intList(1, 2, 3).Equals(got), "(sort '(3 1 2) (lambda (a b) (< a b))) = %v, want (1 2 3)", got)
+	assert.True(t, intList(1, 2, 3).Equals(got), "(sort '(3 1 2) (fn (a b) (< a b))) = %v, want (1 2 3)", got)
 
 	require.NoError(t, e.RootEnv().SetBoth("rec", core.GoFunc{
 		Name: "rec",
@@ -295,7 +295,7 @@ func TestCLSort_CallbackOrderAndCount(t *testing.T) {
 	assert.NotEmpty(t, preds, "comparisons must still run")
 
 	// Generalized truthiness: a keyword is truthy in predicate position.
-	got, err = e.Eval(ctx, "sort", "(sort '(3 1 2) (lambda (a b) (if (< a b) :yes nil)))")
+	got, err = e.Eval(ctx, "sort", "(sort '(3 1 2) (fn (a b) (if (< a b) :yes nil)))")
 	require.NoError(t, err)
 	assert.True(t, intList(1, 2, 3).Equals(got), "keyword-returning predicate = %v, want (1 2 3)", got)
 
