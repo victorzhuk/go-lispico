@@ -215,6 +215,9 @@ var errorInventory = []errorSite{
 	{Family: "Collections", Fn: "vals", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
 	{Family: "Collections", Fn: "contains?", File: fileCollection, Func: "registerCollections", Class: "ArityError", Reachable: true},
 	{Family: "Collections", Fn: "contains?", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
+	// merge's conversion wrap only fires when result.Set rejects a key that Each
+	// drew from an existing map, but Assoc and Set reject unhashable keys at
+	// insertion and NewHashMap is the only constructor, so no such key exists.
 	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "external-conversion", Reachable: false},
 	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
 	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
