@@ -3,6 +3,7 @@ package stdlib
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -114,5 +115,63 @@ type SortLessFunc func(a, b core.Value) (bool, error)
 // unchanged; a mandatory Flush on every return path makes a Terminal
 // ResourceLimitError win over any pending non-Terminal callback error.
 func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less SortLessFunc) ([]core.Value, error) {
-	panic("not implemented")
+	b := core.NewBuiltinWorkBudget(ctx)
+	sorted := make([]core.Value, len(items))
+	copy(sorted, items)
+	for i := range items {
+		sorted[i] = items[i]
+		if err := b.Step(); err != nil {
+			return finishSort(b, nil, err)
+		}
+	}
+
+	var keys []core.Value
+	if key != nil {
+		keys = make([]core.Value, len(sorted))
+		for i, v := range sorted {
+			k, err := key(v)
+			if err != nil {
+				return finishSort(b, nil, err)
+			}
+			keys[i] = k
+			if err := b.Step(); err != nil {
+				return finishSort(b, nil, err)
+			}
+		}
+	}
+
+	var sortErr error
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sortErr != nil {
+			return false
+		}
+		if err := b.Step(); err != nil {
+			sortErr = err
+			return false
+		}
+		a, c := sorted[i], sorted[j]
+		if keys != nil {
+			a, c = keys[i], keys[j]
+		}
+		ok, err := less(a, c)
+		if err != nil {
+			sortErr = err
+			return false
+		}
+		return ok
+	})
+	if sortErr != nil {
+		return finishSort(b, nil, sortErr)
+	}
+	return finishSort(b, sorted, nil)
+}
+
+func finishSort(b *core.BuiltinWorkBudget, sorted []core.Value, err error) ([]core.Value, error) {
+	if ferr := b.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
+		return nil, ferr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return sorted, nil
 }

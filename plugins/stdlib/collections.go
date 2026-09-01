@@ -3,7 +3,6 @@ package stdlib
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -605,20 +604,15 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("sort: expected collection, got %T", args[0])
 			}
 
-			var sortErr error
-			sort.SliceStable(sorted, func(i, j int) bool {
-				if sortErr != nil {
-					return false
-				}
-				cmp, err := naturalCmp(sorted[i], sorted[j])
+			sorted, err := StableSort(ctx, sorted, nil, func(a, b core.Value) (bool, error) {
+				cmp, err := naturalCmp(a, b)
 				if err != nil {
-					sortErr = err
-					return false
+					return false, err
 				}
-				return cmp < 0
+				return cmp < 0, nil
 			})
-			if sortErr != nil {
-				return nil, sortErr
+			if err != nil {
+				return nil, err
 			}
 
 			return core.NewList(sorted), nil
