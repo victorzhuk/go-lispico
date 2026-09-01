@@ -89,6 +89,7 @@ func TestCLSort_Goldens(t *testing.T) {
 	_, err = e.Eval(ctx, "sort", "(sort '(3 1 2) :key #'length)")
 	assert.Error(t, err, "sort with :key but no predicate must be rejected by the CL grammar")
 }
+
 // TestCLAdapters_Lisp2Callbacks: callbacks named in head position resolve
 // through the function cell — fn, defun, and GoFunc targets.
 func TestCLAdapters_Lisp2Callbacks(t *testing.T) {
@@ -237,6 +238,7 @@ func TestCLAdapters_CallbackErrors(t *testing.T) {
 		assert.Equal(t, 2, calls, "no predicate call may follow the first error")
 	})
 }
+
 // TestCLSort_CallbackOrderAndCount: key projections run exactly once per
 // element, in original order, before any comparison; equivalent elements
 // keep their input order; the first predicate error stops the sort.
