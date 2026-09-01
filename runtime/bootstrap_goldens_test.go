@@ -13,7 +13,7 @@ import (
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
-// bootstrapGoldenNames is the frozen per-name golden corpus: the six bootstrap
+// bootstrapGoldenNames is the frozen per-name golden corpus: the five bootstrap
 // names with the kind each definition source binds (defmacro -> core.Macro,
 // defn -> core.Lambda).
 var bootstrapGoldenNames = []struct {
@@ -25,7 +25,6 @@ var bootstrapGoldenNames = []struct {
 	{name: "as->", macro: true},
 	{name: "if-let", macro: true},
 	{name: "when-let", macro: true},
-	{name: "get-in", macro: false},
 }
 
 // loadStdlibEngine builds an engine under d with the given evaluator options
@@ -77,7 +76,7 @@ func assertKind(t *testing.T, mode, name string, val core.Value, macro bool) {
 	assert.Equal(t, name, lam.Name, "%s: fn %s bound under wrong name", mode, name)
 }
 
-// TestBootstrapDialectGoldens_Lisp2 pins, for all six bootstrap names in both
+// TestBootstrapDialectGoldens_Lisp2 pins, for all five bootstrap names in both
 // eager and lazy modes under the Lisp-2 (CL) dialect, that each definition
 // lands in the function cell — so it resolves in head position — and never
 // mirrors into the value cell. The CL collection adapters and canonical map
@@ -136,7 +135,7 @@ func TestBootstrapDialectGoldens_Lisp2(t *testing.T) {
 	}
 }
 
-// TestBootstrapDialectGoldens_Lisp1 pins, for all six bootstrap names in both
+// TestBootstrapDialectGoldens_Lisp1 pins, for all five bootstrap names in both
 // eager and lazy modes under the Lisp-1 (Clojure identity) dialect, that each
 // definition lands in the value cell and never mirrors into the function
 // cell — a single namespace has no second cell to populate.
@@ -158,7 +157,7 @@ func TestBootstrapDialectGoldens_Lisp1(t *testing.T) {
 }
 
 // TestBootstrapDialectGoldens_EmptyBase pins that the restricted empty-base
-// dialect does not lose trusted definitions: all six bootstrap names publish
+// dialect does not lose trusted definitions: all five bootstrap names publish
 // into the dialect-owned cell (Lisp-1 axis => value cell) in both modes.
 func TestBootstrapDialectGoldens_EmptyBase(t *testing.T) {
 	for _, mode := range goldenModes {
@@ -170,6 +169,53 @@ func TestBootstrapDialectGoldens_EmptyBase(t *testing.T) {
 				require.True(t, ok, "empty-base/%s: trusted definition %s was lost under the restricted dialect", mode.name, g.name)
 				assertKind(t, "empty-base/"+mode.name, g.name, got, g.macro)
 			}
+		})
+	}
+}
+
+// TestGetIn_CallableIsBuiltin pins get-in as a registered Go builtin rather
+// than a bootstrap Lisp definition. A registered builtin publishes into both
+// cells under Lisp-2 and into the single value cell under Lisp-1; a dialect
+// with a nil vocabulary strips nothing, so it stays bound there too.
+func TestGetIn_CallableIsBuiltin(t *testing.T) {
+	requireBuiltin := func(t *testing.T, label string, val core.Value) {
+		t.Helper()
+		fn, ok := val.(core.GoFunc)
+		require.True(t, ok, "%s: get-in = %T, want core.GoFunc", label, val)
+		assert.Equal(t, "get-in", fn.Name, "%s: builtin bound under wrong name", label)
+	}
+
+	for _, mode := range goldenModes {
+		t.Run("lisp2/"+mode.name, func(t *testing.T) {
+			root := loadStdlibEngine(t, cl.Dialect(), mode.eager).RootEnv()
+
+			val, ok := root.Get("get-in")
+			require.True(t, ok, "Lisp-2/%s: a registered builtin publishes into the value cell", mode.name)
+			requireBuiltin(t, "Lisp-2/"+mode.name+"/value", val)
+
+			fnVal, ok := root.GetFunc("get-in")
+			require.True(t, ok, "Lisp-2/%s: a registered builtin publishes into the function cell", mode.name)
+			requireBuiltin(t, "Lisp-2/"+mode.name+"/func", fnVal)
+		})
+
+		t.Run("lisp1/"+mode.name, func(t *testing.T) {
+			root := loadStdlibEngine(t, clojure.Dialect(), mode.eager).RootEnv()
+
+			val, ok := root.Get("get-in")
+			require.True(t, ok, "Lisp-1/%s: get-in must be bound in the value cell", mode.name)
+			requireBuiltin(t, "Lisp-1/"+mode.name, val)
+
+			if _, ok := root.GetFunc("get-in"); ok {
+				t.Errorf("Lisp-1/%s: get-in mirrored into the function cell; Lisp-1 has a single namespace with no func-cell mirror", mode.name)
+			}
+		})
+
+		t.Run("empty-base/"+mode.name, func(t *testing.T) {
+			root := loadStdlibEngine(t, core.EmptyDialect(), mode.eager).RootEnv()
+
+			val, ok := root.Get("get-in")
+			require.True(t, ok, "empty-base/%s: a nil vocabulary strips nothing, so get-in stays bound", mode.name)
+			requireBuiltin(t, "empty-base/"+mode.name, val)
 		})
 	}
 }
