@@ -86,7 +86,7 @@ func TestDialectVocab_AdapterResolvesToSharedImpl(t *testing.T) {
 		},
 	}
 
-	d := core.FullDialect().WithAdapter("rev-first", adapter)
+	d := core.FullDialect().WithAdapter("rev-first", "rev-first@1", adapter)
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
