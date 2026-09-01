@@ -388,23 +388,32 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "get",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 || len(args) > 3 {
-				return nil, fmt.Errorf("get: requires 2 or 3 arguments")
+				return nil, lookupArityError("get", len(args))
 			}
 
 			switch m := args[0].(type) {
 			case *core.HashMap:
 				if v, found := m.Get(args[1]); found {
+					if err := chargeBorrowedResult(ctx); err != nil {
+						return nil, err
+					}
 					return v, nil
 				}
 			case core.Nil:
 			default:
-				return nil, fmt.Errorf("get: expected map, got %T", args[0])
+				return nil, lookupTypeError("get", "map", args[0])
 			}
 
 			if len(args) == 3 {
+				if err := chargeBorrowedResult(ctx); err != nil {
+					return nil, err
+				}
 				return args[2], nil
 			}
 
+			if err := chargeBorrowedResult(ctx); err != nil {
+				return nil, err
+			}
 			return core.Nil{}, nil
 		},
 	}, false); err != nil {
@@ -711,6 +720,26 @@ func appendCollectionElems(dst *[]core.Value, arg core.Value) error {
 		return fmt.Errorf("expected collection, got %T", arg)
 	}
 	return nil
+}
+
+// lookupArityError reports a lookup builtin called outside its 2-or-3
+// argument window; NewArityError takes a single expected count and cannot
+// express a range.
+func lookupArityError(name string, got int) *core.LispicoError {
+	return &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("%s: requires 2 or 3 arguments, got %d", name, got)}
+}
+
+// lookupTypeError reports a lookup builtin applied to an unsupported
+// subject. A type error is not a miss: the caller must not fall through to
+// the default.
+func lookupTypeError(name, expected string, got core.Value) *core.LispicoError {
+	return &core.LispicoError{Code: "TypeError", Message: fmt.Sprintf("%s: expected %s, got %T", name, expected, got)}
+}
+
+// chargeBorrowedResult marks a result the caller borrowed from its subject
+// rather than allocated, so the apply site does not charge its shallow size.
+func chargeBorrowedResult(ctx context.Context) error {
+	return core.ChargeGoFuncResultBytes(ctx, 0)
 }
 
 // chargeCollectionResult validates res against the collection-length and
