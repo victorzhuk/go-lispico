@@ -342,6 +342,34 @@ deep-byte, and expanded-node ceilings. Reduction counts and charge values are
 evaluator- and compiler-version-specific; only terminal behavior is compared
 across engine configurations, not raw counter values.
 
+## Error handling
+
+Failures raised by the interpreter and by the active stdlib are
+`*core.LispicoError` values carrying a `Code`: `ArityError` for a wrong
+argument count, `TypeError` for a wrong argument type, `EvalError` for a
+correctly typed value outside an operation's domain, and `ResourceLimitError`
+for an exceeded ceiling. They arrive wrapped, so recover them with `errors.As`
+rather than a type assertion:
+
+```go
+if core.IsTerminalEvalError(err) {
+    return err
+}
+var le *core.LispicoError
+if errors.As(err, &le) && le.Code == "ArityError" {
+    return fmt.Errorf("malformed call: %w", err)
+}
+```
+
+`core.IsTerminalEvalError` comes first because a cancelled or expired
+evaluation returns a wrapped `context` error, not a `*core.LispicoError`.
+Terminal failures — resource ceilings, cancellation, deadline expiry — abort
+the evaluation and are not catchable by Lisp `try`/`catch`.
+
+Codes are the contract; message wording is not, and only reader errors carry a
+source position. The full code table is in
+[ARCHITECTURE.md](ARCHITECTURE.md#error-handling).
+
 ## Status
 
 **Alpha** — Core functionality complete, API subject to change.

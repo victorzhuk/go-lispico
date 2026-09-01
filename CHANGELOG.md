@@ -105,6 +105,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `have`/`want` signatures. The per-engine bytecode chunk cache is unaffected;
   hosts relying on it need do nothing.
 
+- **Breaking:** every failure originated by an active stdlib Builtin or a CL
+  adapter is now a typed `*core.LispicoError`, where many were plain
+  `fmt.Errorf` values that the Evaluator and VM passed through unclassified. A
+  wrong argument count reports `ArityError`, a wrong runtime type `TypeError`,
+  and a correctly typed value outside an operation's domain — an out-of-range
+  index, a zero divisor, malformed format syntax, incomparable operands —
+  `EvalError`, unless a more specific code already governs. Callback errors,
+  failures from the shared evaluation-state checkpoint, and Terminal errors
+  keep their original type and code instead of being flattened, and a Terminal
+  error never becomes catchable by Lisp `try`/`catch`. A host that compared
+  concrete error types from a direct stdlib call switches to `errors.As` and
+  `Code`:
+
+  ```go
+  var le *core.LispicoError
+  if errors.As(err, &le) && le.Code == "ArityError" { … }
+  ```
+
+  Codes are the contract; message wording is not, and stdlib errors carry no
+  source position — `Line` and `Col` remain reader-only. Which inputs succeed
+  and which fail is unchanged.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added

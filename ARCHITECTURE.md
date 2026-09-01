@@ -533,11 +533,119 @@ if err != nil {
 }
 ```
 
-Failures are reported as `*core.LispicoError` with a `Code` identifying the
-error class — `ReadError`, `EvalError`, `TypeError`, `ArityError`,
-`UndefinedError`, `PanicError` — plus source location (`Source`, `Line`,
-`Col`) when the error can be tied to a position in the input. `Unwrap` exposes
-the cause for `errors.Is`/`errors.As`.
+Failures are reported as `*core.LispicoError` carrying a `Code` that identifies
+the error class. `Unwrap` exposes the cause for `errors.Is`/`errors.As`.
+
+### Error codes
+
+| Code | Exported constant | Reported for |
+| --- | --- | --- |
+| `ReadError` | — | a tokenizer or parser failure |
+| `CompileError` | `compiler.CodeCompileError` | a form the bytecode compiler rejects |
+| `ArityError` | — | a call with the wrong number of arguments |
+| `TypeError` | — | an argument of the wrong runtime type |
+| `EvalError` | — | a correctly typed argument outside the operation's domain |
+| `UndefinedError` | — | a reference to an unbound symbol |
+| `ResourceLimitError` | `core.CodeResourceLimit` | a resource ceiling exceeded |
+| `PanicError` | `core.CodePanic` | a panic recovered from an embedded `GoFunc` at a runtime boundary |
+| `ConcurrentUseError` | `core.CodeConcurrentUse` | a `PinnedFn` entered concurrently or re-entered from its own execution |
+| `VMStateError` | `core.CodeVMState` | a pinned call that left its private VM dirty; a full reset was applied |
+
+Only the last four have exported constants. The rest are string literals inside
+their constructors (`core.NewReadError`, `core.NewArityError`,
+`core.NewTypeError`, `core.NewEvalError`, `core.NewUndefinedError`), so a host
+switching on them writes the literal.
+
+The `Code` is the contract; the `Message` is not. Message wording tracks the
+operation it describes and must never be matched on.
+
+`Error()` renders as `"<Code>: <Message>"`, or
+`"<Code> at <Source>:<Line>:<Col>: <Message>"` when a position is set.
+Positions come from the reader alone: `Line` and `Col` are filled in by
+tokenizer and parser failures and by the reader depth ceiling. `core.Value`
+carries no position, so an error raised while evaluating a form has none.
+
+### Classifying a stdlib failure
+
+Every evaluation failure originated by an active stdlib Builtin or a CL adapter
+is recoverable as a `*core.LispicoError`:
+
+- Wrong argument count — `ArityError`.
+- Wrong runtime type — `TypeError`.
+- A correctly typed value outside the operation's domain — an out-of-range
+  index, a zero divisor, malformed format syntax, incomparable operands —
+  `EvalError`, unless a more specific code already governs the failure.
+
+Errors that only pass through a Builtin keep their original type and code: a
+callback error raised inside a higher-order function, a failure surfaced by the
+shared evaluation-state checkpoint, and a resource-helper failure all propagate
+unchanged. A terminal error is never rewritten into `EvalError`.
+
+The tree-walking evaluator and the VM report the same `Code`, with equivalent
+diagnostic meaning, for the same invalid call.
+
+### Recovering an error in the host
+
+Errors reaching the embedder are wrapped, so recover the typed error with
+`errors.As` rather than a type assertion:
+
+```go
+var le *core.LispicoError
+if errors.As(err, &le) {
+    switch le.Code {
+    case "ArityError", "TypeError":
+        return fmt.Errorf("malformed call: %w", err)
+    case "EvalError":
+        return fmt.Errorf("argument outside the operation's domain: %w", err)
+    case core.CodeResourceLimit:
+        return fmt.Errorf("resource ceiling exceeded: %w", err)
+    }
+}
+```
+
+Calls that reach each of those arms:
+
+```go
+_, arity := eng.Eval(ctx, "host", "(get (hash-map :a 1))")
+_, typ := eng.Eval(ctx, "host", "(get (vector 10 20) 0)")
+_, domain := eng.Eval(ctx, "host", "(nth -1 (list 1 2))")
+
+limited, err := runtime.New(log, runtime.WithResourceLimits(
+    runtime.ResourceLimits{MaxReaderDepth: 4}))
+if err != nil {
+    return err
+}
+defer limited.Close()
+_, ceiling := limited.Eval(ctx, "host", "(list (list (list (list (list 1)))))")
+```
+
+`arity` carries `ArityError`, `typ` `TypeError`, `domain` `EvalError`, and
+`ceiling` `ResourceLimitError`.
+
+### Terminal errors
+
+Resource-limit failures, context cancellation, and deadline expiry are
+terminal: they abort the enclosing evaluation, and Lisp `try`/`catch` cannot
+intercept them. A `catch` clause recovers an ordinary `TypeError`, while a
+`ResourceLimitError` reaches the host exactly as it would have without the
+`try`. An in-language handler is bound the rendered message string, not the
+code, so classification stays a host-side concern.
+
+Test for terminal errors with `core.IsTerminalEvalError`, and test first: a
+cancelled or expired evaluation returns a wrapped `context` error rather than a
+`*core.LispicoError`, so `errors.As` alone does not see it.
+
+```go
+if core.IsTerminalEvalError(err) {
+    return err
+}
+var le *core.LispicoError
+if errors.As(err, &le) && le.Code == "ArityError" {
+    return fmt.Errorf("malformed call: %w", err)
+}
+```
+
+### Recovered panics
 
 The runtime boundary recovers panics from embedded `GoFunc` values at
 `Engine.Eval`, `Engine.Call`, `Fn.Call`, and `PinnedFn.Call`. Recovered panics
