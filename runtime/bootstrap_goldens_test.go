@@ -33,12 +33,15 @@ var bootstrapGoldenNames = []struct {
 // (RootEnv().VarNames/FuncNames force their lazy layer), so cell assertions
 // observe the published state. The process-global lazy flag is restored
 // before the caller's assertions run; publication is already complete.
-func loadStdlibEngine(t *testing.T, d core.Dialect, eager bool) Engine {
+func loadStdlibEngine(t *testing.T, d core.Dialect, eager bool, opts ...EngineOption) Engine {
 	t.Helper()
+	if len(opts) == 0 {
+		opts = []EngineOption{WithTreeWalker()}
+	}
 	restore := SetStdlibLazyDisabledForTesting(eager)
 	defer restore()
 
-	eng, err := New(nil, WithTreeWalker(), WithDialect(d))
+	eng, err := New(nil, append(opts, WithDialect(d))...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })
 	require.NoError(t, eng.Use(stdlib.New()))
@@ -91,6 +94,42 @@ func TestBootstrapDialectGoldens_Lisp2(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	execModes := []struct {
+		name string
+		opts []EngineOption
+	}{
+		{name: "tree-walker"},
+		{name: "bytecode", opts: []EngineOption{WithBytecode()}},
+	}
+	goldens := []struct {
+		name string
+		src  string
+		want core.Value
+	}{
+		{"cl/nth@1", "(nth 1 '(10 20 30))", core.Int{V: 20}},
+		{"cl/mapcar@1", "(mapcar (fn (x) (* x x)) '(1 2 3))", core.NewList([]core.Value{core.Int{V: 1}, core.Int{V: 4}, core.Int{V: 9}})},
+		{"cl/sort@1", "(sort '(3 1 2) #'<)", core.NewList([]core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}})},
+		{"canonical map", "(map (fn (x) (* x x)) '(1 2 3))", core.NewList([]core.Value{core.Int{V: 1}, core.Int{V: 4}, core.Int{V: 9}})},
+	}
+	for _, em := range execModes {
+		for _, mode := range goldenModes {
+			t.Run(em.name+"/"+mode.name, func(t *testing.T) {
+				eng := loadStdlibEngine(t, cl.Dialect(), mode.eager, em.opts...)
+				root := eng.RootEnv()
+				for _, name := range []string{"nth", "mapcar", "sort"} {
+					if _, ok := root.Get(name); !ok {
+						t.Errorf("%s/%s: %s must be bound in the root env", em.name, mode.name, name)
+					}
+				}
+				for _, g := range goldens {
+					got, err := eng.Eval(context.Background(), "lisp2-golden", g.src)
+					require.NoError(t, err, "%s/%s: %s", em.name, mode.name, g.src)
+					assert.True(t, g.want.Equals(got), "%s/%s: %s = %v, want %v", em.name, mode.name, g.src, got, g.want)
+				}
+			})
+		}
 	}
 }
 

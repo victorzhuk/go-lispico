@@ -698,6 +698,10 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 	env := e.rootEnv
 	e.mu.RUnlock()
 
+	if d := e.evalDeadline(ctx, start); !d.IsZero() && core.EvalDeadlineFrom(ctx).IsZero() {
+		ctx = core.WithEvalDeadline(ctx, d)
+	}
+
 	if be := e.bytecodeEvaluator; be != nil {
 		result = core.Nil{}
 		sourceHash := sha256Hash(input)
@@ -725,8 +729,6 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 		e.logger.Debug("eval", "source", source, "duration", dur)
 		return result, nil
 	}
-
-	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
 
 	result = core.Nil{}
 	for _, form := range forms {
