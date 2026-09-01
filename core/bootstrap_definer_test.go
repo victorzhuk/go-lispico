@@ -54,7 +54,7 @@ func (p *evalCountingEvaluator) Apply(ctx context.Context, fn Value, args []Valu
 }
 
 // bootstrapCorpus mirrors the shipped stdlib corpus at
-// plugins/stdlib/bootstrap.go: exactly 6 entries.
+// plugins/stdlib/bootstrap.go: exactly 5 entries.
 var bootstrapCorpus = []struct {
 	name   string
 	source string
@@ -76,8 +76,6 @@ var bootstrapCorpus = []struct {
          val (first (rest bindings))]
     (list (quote let) (vector name val)
       (cons (quote when) (cons name body)))))`},
-	{name: "get-in", source: `(defn get-in [m ks]
-  (reduce (fn [acc k] (get acc k)) m ks))`},
 }
 
 func TestDefineBootstrap_AcceptsSingleDefnOrDefmacro(t *testing.T) {
@@ -213,13 +211,6 @@ func TestDefineBootstrap_FullKernelDispatchUnderEmptyDialect(t *testing.T) {
 			got, ok := env.Get(entry.name)
 			if !ok {
 				t.Fatalf("%s not bound after DefineBootstrap", entry.name)
-			}
-			if entry.name == "get-in" {
-				lam, ok := got.(Lambda)
-				if !ok || lam.Name != "get-in" {
-					t.Fatalf("get-in = %#v, want Lambda named get-in", got)
-				}
-				return
 			}
 			mac, ok := got.(Macro)
 			if !ok || mac.Name != entry.name {

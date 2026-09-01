@@ -69,7 +69,7 @@ func (e *incapableEvaluator) Apply(ctx context.Context, fn core.Value, args []co
 
 // eagerBootstrapNames are the bootstrap definitions stdlib publishes eagerly
 // when the lazy layer is disabled (bootstrap.stdlibBootstrapEntries).
-var eagerBootstrapNames = []string{"->", "->>", "as->", "if-let", "when-let", "get-in"}
+var eagerBootstrapNames = []string{"->", "->>", "as->", "if-let", "when-let"}
 
 func TestStdlibEagerBootstrap_UsesInstalledOwner(t *testing.T) {
 	restore := runtime.SetStdlibLazyDisabledForTesting(true)

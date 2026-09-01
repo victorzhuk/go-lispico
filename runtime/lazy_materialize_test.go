@@ -420,8 +420,9 @@ func TestLazyMaterialize_UnloadRemovesDeferredAndMaterialized(t *testing.T) {
 
 // TestLazyMaterialize_ConcurrentDependentNames exercises first-touch of a
 // deferred pure-Lisp definition whose body resolves other deferred names
-// (get-in -> reduce/get) from many goroutines: every name materializes at
-// most once, nobody deadlocks, and results stay correct. Run with -race.
+// (-> expands through reduce/list?/cons/first/rest/list) from many
+// goroutines: every name materializes at most once, nobody deadlocks, and
+// results stay correct. Run with -race.
 func TestLazyMaterialize_ConcurrentDependentNames(t *testing.T) {
 	t.Parallel()
 
@@ -439,17 +440,70 @@ func TestLazyMaterialize_ConcurrentDependentNames(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
-			v, err := eng.Eval(ctx, "dep", "(get-in {:a {:b {:c 7}}} [:a :b :c])")
+			v, err := eng.Eval(ctx, "dep", "(-> 1 (+ 2) (* 3))")
 			assert.NoError(t, err)
-			assert.True(t, core.Int{V: 7}.Equals(v), "got %v", v)
+			assert.True(t, core.Int{V: 9}.Equals(v), "got %v", v)
 		}()
 	}
 	wg.Wait()
 
 	impl := eng.(*engineImpl)
-	// get-in + its transitive first-touches (reduce, get) materialize once each.
-	assert.LessOrEqual(t, impl.lazyMaterializer.MaterializeCount(), 4,
+	installed := installedNames(impl)
+	assert.Contains(t, installed, "reduce",
+		"-> must materialize the deferred names its expansion resolves")
+	assert.Equal(t, len(installed), impl.lazyMaterializer.MaterializeCount(),
 		"dependent names must materialize at most once each")
+
+	before := impl.lazyMaterializer.MaterializeCount()
+	_, err = eng.Eval(context.Background(), "repeat", "(-> 1 (+ 2) (* 3))")
+	require.NoError(t, err)
+	assert.Equal(t, before, impl.lazyMaterializer.MaterializeCount(),
+		"a repeat evaluation must not re-materialize")
+}
+
+// TestLazyMaterialize_GetInHasNoSourceTemplate pins get-in as a Go builtin:
+// it publishes a value template rather than bootstrap source, and its first
+// touch materializes that one name without pulling in the reduce and get its
+// former Lisp body resolved.
+func TestLazyMaterialize_GetInHasNoSourceTemplate(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	require.NoError(t, eng.Use(stdlib.New()))
+
+	impl := eng.(*engineImpl)
+	keys := impl.lazyMaterializer.activeKeys()
+	require.Len(t, keys, 1)
+	layer, ok := stdlibLazyTemplateRegistry.layerFor(keys[0])
+	require.True(t, ok)
+	entry, ok := layer.publishedEntries()["get-in"]
+	require.True(t, ok, "get-in not published in the template layer")
+	assert.Equal(t, stdlibTemplateGoValue, entry.kind,
+		"get-in must publish a Go builtin template, not bootstrap source")
+
+	v, err := eng.Eval(context.Background(), "get-in", "(get-in {:a {:b {:c 7}}} [:a :b :c])")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 7}.Equals(v), "got %v", v)
+
+	assert.Equal(t, 1, impl.lazyMaterializer.MaterializeCount(),
+		"get-in alone must materialize")
+	installed := installedNames(impl)
+	assert.NotContains(t, installed, "reduce")
+	assert.NotContains(t, installed, "get")
+}
+
+// installedNames snapshots the names this engine has materialized.
+func installedNames(impl *engineImpl) []string {
+	state := impl.lazyMaterializer.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	names := make([]string, 0, len(state.installed))
+	for name := range state.installed {
+		names = append(names, name)
+	}
+	return names
 }
 
 // TestLazyMaterialize_ConcurrentActivateFirstWrite races the first write to

@@ -43,7 +43,7 @@ func TestBootstrapReusableEntriesExpandDeterministically(t *testing.T) {
 			assert.False(t, entry.reusable, "macro definitions capture their defining env")
 		}
 	}
-	assert.Equal(t, 1, reusable)
+	assert.Equal(t, 0, reusable)
 }
 
 func assertReusableBootstrapFormCompiles(t *testing.T, form core.Value) {

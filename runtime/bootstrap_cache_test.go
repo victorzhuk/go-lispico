@@ -22,15 +22,16 @@ func TestStdlibBootstrapCache_SecondEngineReusesArtifact(t *testing.T) {
 	defer first.Close()
 	assertStdlibBootstrapBehavior(t, first)
 
+	// No bootstrap entry is reusable, so startup never reaches the cache.
 	stats := stdlibBootstrapCacheStatsForTest()
-	assert.Equal(t, stdlibBootstrapCacheStats{Entries: 1, Misses: 1, Compiles: 1}, stats)
+	assert.Equal(t, stdlibBootstrapCacheStats{}, stats)
 
 	second := newBytecodeStdlibEngine(t)
 	defer second.Close()
 	assertStdlibBootstrapBehavior(t, second)
 
 	stats = stdlibBootstrapCacheStatsForTest()
-	assert.Equal(t, stdlibBootstrapCacheStats{Entries: 1, Hits: 1, Misses: 1, Compiles: 1}, stats)
+	assert.Equal(t, stdlibBootstrapCacheStats{}, stats)
 }
 
 func TestStdlibBootstrapCache_DisableHookForcesCompile(t *testing.T) {
@@ -43,8 +44,8 @@ func TestStdlibBootstrapCache_DisableHookForcesCompile(t *testing.T) {
 	second := newBytecodeStdlibEngine(t)
 	defer second.Close()
 
-	// get-in's compiled artifact is deferred to first touch; touching it on
-	// both engines with the cache disabled forces one compile per engine.
+	// get-in is a Go builtin: touching it on both engines compiles nothing,
+	// so the disable hook has no artifact left to force.
 	for _, eng := range []Engine{first, second} {
 		v, err := eng.Eval(context.Background(), "touch", "(get-in {:a {:b 1}} [:a :b])")
 		require.NoError(t, err)
@@ -52,7 +53,7 @@ func TestStdlibBootstrapCache_DisableHookForcesCompile(t *testing.T) {
 	}
 
 	stats := stdlibBootstrapCacheStatsForTest()
-	assert.Equal(t, stdlibBootstrapCacheStats{Compiles: 2}, stats)
+	assert.Equal(t, stdlibBootstrapCacheStats{}, stats)
 }
 
 func TestStdlibBootstrapCache_CachedAndDisabledBehaviorMatch(t *testing.T) {
@@ -156,9 +157,7 @@ func TestStdlibBootstrapCache_ConcurrentFirstLoadRaceSafe(t *testing.T) {
 	}
 
 	stats := stdlibBootstrapCacheStatsForTest()
-	assert.Equal(t, 1, stats.Entries)
-	assert.GreaterOrEqual(t, stats.Compiles, 1)
-	assert.LessOrEqual(t, stats.Compiles, 8)
+	assert.Equal(t, stdlibBootstrapCacheStats{}, stats)
 }
 
 func TestUnloadPlugin_InvalidatesMacroCache(t *testing.T) {
@@ -266,9 +265,7 @@ func TestStdlibBootstrapCache_DialectArtifactsAreSeparated(t *testing.T) {
 	assertStdlibBootstrapBehavior(t, clojureEng)
 
 	stats := stdlibBootstrapCacheStatsForTest()
-	assert.Equal(t, 2, stats.Entries)
-	assert.Equal(t, 2, stats.Misses)
-	assert.Equal(t, 2, stats.Compiles)
+	assert.Equal(t, stdlibBootstrapCacheStats{}, stats)
 }
 
 func TestStdlibBootstrapCache_CacheCeilingByDialectFingerprint(t *testing.T) {
@@ -287,9 +284,10 @@ func TestStdlibBootstrapCache_CacheCeilingByDialectFingerprint(t *testing.T) {
 		require.NoError(t, eng.Close())
 	}
 
+	// The per-dialect ceiling is unexercised while nothing produces an
+	// artifact: more dialects than it allows still store none.
 	stats := stdlibBootstrapCacheStatsForTest()
-	assert.LessOrEqual(t, stats.Entries, maxStdlibBootstrapArtifacts)
-	assert.GreaterOrEqual(t, stats.Compiles, maxStdlibBootstrapArtifacts)
+	assert.Equal(t, stdlibBootstrapCacheStats{}, stats)
 }
 
 func syntheticStdlibDialect(i int) core.Dialect {
