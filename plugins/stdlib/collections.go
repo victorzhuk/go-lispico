@@ -420,6 +420,15 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		return err
 	}
 
+	if err := env.RegisterValue("get-in", core.GoFunc{
+		Name: "get-in",
+		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			return getInLookup(ctx, args)
+		},
+	}, false); err != nil {
+		return err
+	}
+
 	if err := env.RegisterValue("assoc", core.GoFunc{
 		Name: "assoc",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -740,6 +749,105 @@ func lookupTypeError(name, expected string, got core.Value) *core.LispicoError {
 // rather than allocated, so the apply site does not charge its shallow size.
 func chargeBorrowedResult(ctx context.Context) error {
 	return core.ChargeGoFuncResultBytes(ctx, 0)
+}
+
+// getInLookup walks a key path through nested maps. A key found holding nil
+// is a hit: that nil is carried on and only reads as missing once a further
+// key has to be looked up inside it. An empty path is a hit on the subject
+// itself, so the default is never consulted.
+func getInLookup(ctx context.Context, args []core.Value) (core.Value, error) {
+	if len(args) < 2 || len(args) > 3 {
+		return nil, lookupArityError("get-in", len(args))
+	}
+
+	path, ok := newKeyPathCursor(args[1])
+	if !ok {
+		return nil, lookupTypeError("get-in", "key path", args[1])
+	}
+
+	missing := core.Value(core.Nil{})
+	if len(args) == 3 {
+		missing = args[2]
+	}
+
+	budget := core.NewBuiltinWorkBudget(ctx)
+	subject := args[0]
+	for {
+		key, more := path.next()
+		if !more {
+			return getInResult(ctx, budget, subject, nil)
+		}
+
+		switch m := subject.(type) {
+		case *core.HashMap:
+			if err := budget.Step(); err != nil {
+				return getInResult(ctx, budget, nil, err)
+			}
+			v, found := m.Get(key)
+			if !found {
+				return getInResult(ctx, budget, missing, nil)
+			}
+			subject = v
+		case core.Nil:
+			return getInResult(ctx, budget, missing, nil)
+		default:
+			return getInResult(ctx, budget, nil, lookupTypeError("get-in", "map", subject))
+		}
+	}
+}
+
+// getInResult settles the budget before anything leaves the builtin: a
+// terminal sync error outranks a lookup error, and only a value return
+// reaches the result ledger.
+func getInResult(ctx context.Context, budget *core.BuiltinWorkBudget, v core.Value, err error) (core.Value, error) {
+	if ferr := budget.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
+		return nil, ferr
+	}
+	if err != nil {
+		return nil, err
+	}
+	if cerr := chargeBorrowedResult(ctx); cerr != nil {
+		return nil, cerr
+	}
+	return v, nil
+}
+
+// keyPathCursor hands out path keys one at a time without materializing the
+// path. A List advances by Rest, O(1) per key on the shared representation
+// where a repeated At would be quadratic.
+type keyPathCursor struct {
+	list  core.List
+	vec   core.Vector
+	isVec bool
+	i, n  int
+}
+
+func newKeyPathCursor(path core.Value) (keyPathCursor, bool) {
+	switch p := path.(type) {
+	case core.List:
+		return keyPathCursor{list: p, n: p.Len()}, true
+	case core.Vector:
+		return keyPathCursor{vec: p, isVec: true, n: p.Len()}, true
+	case core.Nil:
+		return keyPathCursor{}, true
+	default:
+		return keyPathCursor{}, false
+	}
+}
+
+// next bounds-checks before every At: both At implementations panic out of
+// range.
+func (c *keyPathCursor) next() (core.Value, bool) {
+	if c.i >= c.n {
+		return nil, false
+	}
+	c.i++
+	if c.isVec {
+		return c.vec.At(c.i - 1), true
+	}
+	key := c.list.At(0)
+	c.list = c.list.Rest()
+	return key, true
 }
 
 // chargeCollectionResult validates res against the collection-length and

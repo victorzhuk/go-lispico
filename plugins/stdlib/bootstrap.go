@@ -40,9 +40,6 @@ func stdlibBootstrapEntries() []bootstrapEntry {
          val (first (rest bindings))]
     (list (quote let) (vector name val)
       (cons (quote when) (cons name body)))))`},
-
-		{name: "get-in", source: `(defn get-in [m ks]
-  (reduce (fn [acc k] (get acc k)) m ks))`, reusable: true},
 	}
 }
 
