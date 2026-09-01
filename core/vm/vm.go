@@ -1224,7 +1224,11 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			hm := core.NewHashMap()
 			for i := 0; i < len(pairs); i += 2 {
 				if err := hm.Set(pairs[i], pairs[i+1]); err != nil {
-					return nil, err
+					return nil, &core.LispicoError{
+						Code:    "EvalError",
+						Message: fmt.Sprintf("map literal: %v", err),
+						Cause:   err,
+					}
 				}
 			}
 			if err := vm.checkConstructionDepth(hm); err != nil {
@@ -1701,6 +1705,23 @@ func execNative(eval core.Evaluator, op Opcode, args []core.Value, env *core.Env
 	}
 }
 
+// The native opcodes below bypass the stdlib Builtins for + - * / = < > <= >=,
+// so they must raise the same error classes those Builtins do; otherwise the VM
+// and the tree-walker classify the operators hosts use most differently.
+
+func arityErrorf(format string, args ...any) *core.LispicoError {
+	return &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf(format, args...)}
+}
+
+func typeErrorf(format string, args ...any) *core.LispicoError {
+	return &core.LispicoError{Code: "TypeError", Message: fmt.Sprintf(format, args...)}
+}
+
+// domainErrorf reports a well-typed value outside the operation's domain.
+func domainErrorf(format string, args ...any) *core.LispicoError {
+	return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf(format, args...)}
+}
+
 func nativeAdd(args []core.Value) (core.Value, error) {
 	var intSum int64
 	var floatSum float64
@@ -1720,7 +1741,7 @@ func nativeAdd(args []core.Value) (core.Value, error) {
 			}
 			floatSum += v.V
 		default:
-			return nil, fmt.Errorf("+: expected number, got %T", arg)
+			return nil, typeErrorf("+: expected number, got %T", arg)
 		}
 	}
 	if hasFloat {
@@ -1731,7 +1752,7 @@ func nativeAdd(args []core.Value) (core.Value, error) {
 
 func nativeSub(args []core.Value) (core.Value, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("-: requires at least 1 argument")
+		return nil, arityErrorf("-: requires at least 1 argument")
 	}
 	var intR int64
 	var floatR float64
@@ -1743,7 +1764,7 @@ func nativeSub(args []core.Value) (core.Value, error) {
 		floatR = v.V
 		hasFloat = true
 	default:
-		return nil, fmt.Errorf("-: expected number, got %T", args[0])
+		return nil, typeErrorf("-: expected number, got %T", args[0])
 	}
 	if len(args) == 1 {
 		if hasFloat {
@@ -1766,7 +1787,7 @@ func nativeSub(args []core.Value) (core.Value, error) {
 			}
 			floatR -= v.V
 		default:
-			return nil, fmt.Errorf("-: expected number, got %T", arg)
+			return nil, typeErrorf("-: expected number, got %T", arg)
 		}
 	}
 	if hasFloat {
@@ -1794,7 +1815,7 @@ func nativeMul(args []core.Value) (core.Value, error) {
 			}
 			floatP *= v.V
 		default:
-			return nil, fmt.Errorf("*: expected number, got %T", arg)
+			return nil, typeErrorf("*: expected number, got %T", arg)
 		}
 	}
 	if hasFloat {
@@ -1805,7 +1826,7 @@ func nativeMul(args []core.Value) (core.Value, error) {
 
 func nativeDiv(args []core.Value) (core.Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("/: requires at least 2 arguments")
+		return nil, arityErrorf("/: requires at least 2 arguments")
 	}
 	var dividend float64
 	switch v := args[0].(type) {
@@ -1814,23 +1835,23 @@ func nativeDiv(args []core.Value) (core.Value, error) {
 	case core.Float:
 		dividend = v.V
 	default:
-		return nil, fmt.Errorf("/: expected number, got %T", args[0])
+		return nil, typeErrorf("/: expected number, got %T", args[0])
 	}
 	for _, arg := range args[1:] {
 		var divisor float64
 		switch v := arg.(type) {
 		case core.Int:
 			if v.V == 0 {
-				return nil, fmt.Errorf("/: division by zero")
+				return nil, domainErrorf("/: division by zero")
 			}
 			divisor = float64(v.V)
 		case core.Float:
 			if v.V == 0 {
-				return nil, fmt.Errorf("/: division by zero")
+				return nil, domainErrorf("/: division by zero")
 			}
 			divisor = v.V
 		default:
-			return nil, fmt.Errorf("/: expected number, got %T", arg)
+			return nil, typeErrorf("/: expected number, got %T", arg)
 		}
 		dividend /= divisor
 	}
@@ -1839,7 +1860,7 @@ func nativeDiv(args []core.Value) (core.Value, error) {
 
 func nativeOrder(name string, args []core.Value, ok func(int) bool) (core.Value, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("%s: requires at least 1 argument", name)
+		return nil, arityErrorf("%s: requires at least 1 argument", name)
 	}
 	if _, err := toFloat(name, args[0]); err != nil {
 		return nil, err
@@ -1858,7 +1879,7 @@ func nativeOrder(name string, args []core.Value, ok func(int) bool) (core.Value,
 
 func nativeEq(args []core.Value) (core.Value, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("=: requires at least 1 argument")
+		return nil, arityErrorf("=: requires at least 1 argument")
 	}
 	for _, arg := range args[1:] {
 		if !args[0].Equals(arg) {
@@ -1904,7 +1925,7 @@ func toFloat(name string, v core.Value) (float64, error) {
 	case core.Float:
 		return n.V, nil
 	default:
-		return 0, fmt.Errorf("%s: expected number, got %T", name, v)
+		return 0, typeErrorf("%s: expected number, got %T", name, v)
 	}
 }
 
