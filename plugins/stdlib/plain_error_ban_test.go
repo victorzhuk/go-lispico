@@ -115,21 +115,43 @@ func plainErrorCallName(call *ast.CallExpr) (string, bool) {
 	return "", false
 }
 
-// migratedScanDirs are the directories whose Builtin failures must reach the
-// caller as typed core errors.
-var migratedScanDirs = []string{"plugins/stdlib", "internal/collections", "cl"}
+// migratedScanDirs are the directories whose evaluation failures must reach the
+// caller as typed core errors. core/vm is in scope because its native operator
+// and map-literal opcodes bypass the Builtins and classify those failures
+// themselves.
+var migratedScanDirs = []string{"plugins/stdlib", "internal/collections", "cl", "core/vm"}
 
-// plainErrorAllowlist exempts the stdlib bootstrap wrapping sites. Bootstrap
-// source registration and evaluation are not a registered Builtin's failure,
-// and the bootstrap ownership contract requires these wraps to carry an
-// already-typed cause through unchanged rather than reclassify it.
+// plainErrorAllowlist exempts sites that do not originate an evaluation
+// failure. Keys are file:line, so inserting a line above an entry turns it into
+// a violation plus an unused entry; the unused-entry report is what forces the
+// correction rather than letting the exemption drift onto another site.
 var plainErrorAllowlist = []struct {
 	file string
 	line int
 }{
+	// Bootstrap source registration and evaluation are not a registered
+	// Builtin's failure, and the bootstrap ownership contract requires these
+	// wraps to carry an already-typed cause through unchanged.
 	{file: "plugins/stdlib/bootstrap.go", line: 48},
 	{file: "plugins/stdlib/bootstrap.go", line: 65},
 	{file: "plugins/stdlib/bootstrap.go", line: 75},
+
+	// Internal VM state assertions: a violated ResetIncremental invariant is a
+	// kernel defect, not an evaluation failure a host can classify.
+	{file: "core/vm/vm.go", line: 300},
+	{file: "core/vm/vm.go", line: 305},
+
+	// Wrapping, not origination: %w carries an already-typed inner error or a
+	// terminal sentinel through, so errors.As and errors.Is still reach it.
+	{file: "core/vm/vm.go", line: 846},
+	{file: "core/vm/vm.go", line: 853},
+	{file: "core/vm/vm.go", line: 907},
+
+	// Malformed-bytecode assertions: a constant or subchunk index out of range
+	// means the chunk is corrupt, not that the program failed.
+	{file: "core/vm/chunk.go", line: 305},
+	{file: "core/vm/chunk.go", line: 318},
+	{file: "core/vm/chunk.go", line: 326},
 }
 
 func TestMigratedPackagesConstructOnlyTypedErrors(t *testing.T) {
