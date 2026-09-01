@@ -63,4 +63,3 @@ func orderingFunc(name string, ok func(cmp int) bool) func(context.Context, core
 		return core.BoxBool(true), nil
 	}
 }
-

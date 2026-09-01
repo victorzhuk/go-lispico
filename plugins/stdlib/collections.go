@@ -796,4 +796,3 @@ func collectionLimit(env *core.Env) int {
 	}
 	return defaultStdlibCollectionLen
 }
-
