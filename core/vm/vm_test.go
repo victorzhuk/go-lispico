@@ -739,6 +739,23 @@ func TestVM_CallNonCallable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for calling non-callable")
 	}
+
+	var le *core.LispicoError
+	require.ErrorAs(t, err, &le)
+	assert.Equal(t, "TypeError", le.Code, "error code")
+	assert.Equal(t, "expected callable, got core.Int", le.Message, "error message")
+}
+
+func TestVM_ApplyNonCallable(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+
+	_, err := vm.apply(context.Background(), core.Int{V: 5}, nil, nil)
+	require.Error(t, err, "apply on a non-callable must fail")
+
+	var le *core.LispicoError
+	require.ErrorAs(t, err, &le)
+	assert.Equal(t, "TypeError", le.Code, "error code")
+	assert.Equal(t, "expected callable, got core.Int", le.Message, "error message")
 }
 
 func TestVM_ContextCancellation(t *testing.T) {

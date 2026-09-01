@@ -258,7 +258,7 @@ func TestCLSort_CallbackOrderAndCount(t *testing.T) {
 		Name: "p",
 		Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			events = append(events, "p:"+args[0].String()+","+args[1].String())
-			return core.Bool{V: args[0].(core.Int).V <= args[1].(core.Int).V}, nil
+			return core.Bool{V: args[0].(core.Int).V < args[1].(core.Int).V}, nil
 		},
 	}
 	require.NoError(t, e.RootEnv().SetBoth("k", keyFn))
@@ -496,6 +496,24 @@ func TestCLSort_GrammarBeforeCallbacks(t *testing.T) {
 			code:    "TypeError",
 			message: "expected function, got core.Int",
 		},
+		{
+			name:    "predicate not callable over nil",
+			src:     `(sort nil 5)`,
+			code:    "TypeError",
+			message: "expected function, got core.Int",
+		},
+		{
+			name:    "key not callable",
+			src:     `(sort (list 3 1 2) #'clsort-pred :key 5)`,
+			code:    "TypeError",
+			message: "expected function, got core.Int",
+		},
+		{
+			name:    "predicate not callable over empty vector",
+			src:     `(sort #() 5)`,
+			code:    "TypeError",
+			message: "expected function, got core.Int",
+		},
 	}
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -526,6 +544,114 @@ func TestCLSort_GrammarBeforeCallbacks(t *testing.T) {
 					assert.Equal(t, before, predCalls, "%s: grammar/type validation must precede any predicate callback", tc.name)
 				})
 			}
+		})
+	}
+}
+
+// TestCLMapcar_FunctionArgValidation pins the adapter-boundary validation of
+// the mapcar function argument: a non-callable fn is rejected with one
+// uniform message in both evaluator modes, before any sequence work, while
+// evaluator-callable values (Keyword included) are accepted.
+func TestCLMapcar_FunctionArgValidation(t *testing.T) {
+	modes := []struct {
+		name string
+		opts []runtime.EngineOption
+	}{
+		{name: "tree-walker", opts: []runtime.EngineOption{runtime.WithTreeWalker()}},
+		{name: "vm", opts: []runtime.EngineOption{runtime.WithBytecode()}},
+	}
+	cases := []struct {
+		name    string
+		src     string
+		code    string
+		message string
+	}{
+		{
+			name:    "int fn over nil",
+			src:     `(mapcar 5 nil)`,
+			code:    "TypeError",
+			message: "expected function, got core.Int",
+		},
+		{
+			name:    "int fn over list",
+			src:     `(mapcar 5 (list 1 2))`,
+			code:    "TypeError",
+			message: "expected function, got core.Int",
+		},
+		{
+			name:    "nil fn over list",
+			src:     `(mapcar nil (list 1))`,
+			code:    "TypeError",
+			message: "expected function, got core.Nil",
+		},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			e := newEngine(t, mode.opts...)
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					_, err := e.Eval(context.Background(), "cl-mapcar-fn-validation", tc.src)
+					require.Error(t, err, "%s: non-callable fn must be rejected", tc.name)
+					var le *core.LispicoError
+					require.ErrorAs(t, err, &le, "%s: error must be a typed *core.LispicoError, got %v", tc.name, err)
+					assert.Equal(t, tc.code, le.Code, "%s: error code", tc.name)
+					assert.Equal(t, tc.message, le.Message, "%s: error message", tc.name)
+				})
+			}
+
+			got, err := e.Eval(context.Background(), "cl-mapcar-fn-validation", "(mapcar :k (list 1 2))")
+			require.NoError(t, err, "%s: a Keyword fn is evaluator-callable and must be accepted", mode.name)
+			assert.True(t, listOf(core.Nil{}, core.Nil{}).Equals(got), "(mapcar :k (list 1 2)) = %v, want (nil nil)", got)
+		})
+	}
+}
+
+// TestCLSort_KeyNilIdentity pins explicit :key nil: the nil keyword value
+// selects the identity projection, the key function runs 0 times, and the
+// result equals the same sort without :key.
+func TestCLSort_KeyNilIdentity(t *testing.T) {
+	modes := []struct {
+		name string
+		opts []runtime.EngineOption
+	}{
+		{name: "tree-walker", opts: []runtime.EngineOption{runtime.WithTreeWalker()}},
+		{name: "vm", opts: []runtime.EngineOption{runtime.WithBytecode()}},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			e := newEngine(t, mode.opts...)
+			ctx := context.Background()
+			keyCalls, predCalls := 0, 0
+			require.NoError(t, e.Bind("clkey", core.GoFunc{
+				Name: "clkey",
+				Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+					keyCalls++
+					return args[0], nil
+				},
+			}))
+			require.NoError(t, e.Bind("clpred", core.GoFunc{
+				Name: "clpred",
+				Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+					predCalls++
+					return core.Bool{V: args[0].(core.Int).V < args[1].(core.Int).V}, nil
+				},
+			}))
+
+			got, err := e.Eval(ctx, "cl-sort-key-nil", "(sort (list 3 1 2) #'clpred :key nil)")
+			require.NoError(t, err, ":key nil must select the identity projection")
+			assert.True(t, intList(1, 2, 3).Equals(got), "(sort (list 3 1 2) #'clpred :key nil) = %v, want (1 2 3)", got)
+			assert.Zero(t, keyCalls, ":key nil must run the key function 0 times")
+			assert.Greater(t, predCalls, 0, "the predicate must still compare elements")
+
+			plain, err := e.Eval(ctx, "cl-sort-key-nil", "(sort (list 3 1 2) #'clpred)")
+			require.NoError(t, err)
+			assert.True(t, got.Equals(plain), "sort with :key nil = %v, want the plain sort result %v", got, plain)
+
+			got, err = e.Eval(ctx, "cl-sort-key-nil", "(sort nil #'clpred :key nil)")
+			require.NoError(t, err, ":key nil over nil must yield the empty list")
+			assert.True(t, intList().Equals(got), "(sort nil #'clpred :key nil) = %v, want the empty list", got)
+			assert.Zero(t, keyCalls, "no key callback may run")
+			assert.Zero(t, predCalls, "no predicate callback may run over nil")
 		})
 	}
 }
