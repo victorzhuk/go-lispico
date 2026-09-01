@@ -8,18 +8,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/core/compiler"
-	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
-func TestBootstrapReusableEntriesExpandDeterministically(t *testing.T) {
+func TestBootstrapEntriesExpandDeterministically(t *testing.T) {
 	ctx := context.Background()
 	env1 := setupEnv(t)
 	env2 := setupEnv(t)
 	macro1 := core.NewEvaluator()
 	macro2 := core.NewEvaluator()
 
-	reusable := 0
 	for _, entry := range stdlibBootstrapEntries() {
 		forms1, err := core.Read(entry.source)
 		require.NoError(t, err)
@@ -33,24 +30,23 @@ func TestBootstrapReusableEntriesExpandDeterministically(t *testing.T) {
 			expanded2, err := macro2.MacroExpand(ctx, forms2[i], env2)
 			require.NoError(t, err)
 			assert.True(t, expanded1.Equals(expanded2), "expansion mismatch for %q", entry.source)
-			if entry.reusable {
-				reusable++
-				assertReusableBootstrapFormCompiles(t, expanded1)
-			}
-		}
-
-		if strings.HasPrefix(entry.source, "(defmacro ") {
-			assert.False(t, entry.reusable, "macro definitions capture their defining env")
 		}
 	}
-	assert.Equal(t, 0, reusable)
 }
 
-func assertReusableBootstrapFormCompiles(t *testing.T, form core.Value) {
-	t.Helper()
-	comp := compiler.NewCompiler("<stdlib-bootstrap-test>")
-	require.NoError(t, comp.Compile(form))
-	comp.Chunk().Emit(vm.OpReturn, 0)
-	comp.MarkCaptures()
-	require.NoError(t, comp.Chunk().Validate())
+// Every bootstrap entry is a macro definition, and a macro captures its
+// defining environment — so no entry can be published as a shared compiled
+// artifact, whatever reuse policy the loader grows.
+func TestBootstrapEntries_AllMacroDefinitionsNoReusePolicy(t *testing.T) {
+	entries := stdlibBootstrapEntries()
+	require.Len(t, entries, 5)
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.name)
+		assert.True(t, strings.HasPrefix(entry.source, "(defmacro "),
+			"bootstrap entry %q is not a top-level macro definition", entry.name)
+	}
+
+	assert.Equal(t, []string{"->", "->>", "as->", "if-let", "when-let"}, names)
 }
