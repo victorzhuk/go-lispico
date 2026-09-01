@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -587,9 +588,9 @@ func TestCollections_MapOps(t *testing.T) {
 
 	t.Run("get non-map subject", func(t *testing.T) {
 		err := evalErr(t, env, `(get 5 :k)`)
-		if err == nil {
-			t.Error("expected error from get on non-map")
-		}
+		var lerr *core.LispicoError
+		require.ErrorAs(t, err, &lerr)
+		require.Equal(t, "TypeError", lerr.Code)
 	})
 
 	t.Run("get-in nil subject", func(t *testing.T) {
@@ -640,6 +641,144 @@ func TestCollections_MapOps(t *testing.T) {
 	})
 }
 
+func TestCollections_Get_PresentNil(t *testing.T) {
+	env := setupEnv(t)
+
+	result := eval(t, env, `(get (hash-map :a nil) :a)`)
+	if _, ok := result.(core.Nil); !ok {
+		t.Errorf("expected stored nil, got %T %v", result, result)
+	}
+}
+
+// A present key is a successful lookup even when the stored value is nil, so
+// the default is not substituted.
+func TestCollections_Get_PresentNilWithDefault(t *testing.T) {
+	env := setupEnv(t)
+
+	result := eval(t, env, `(get (hash-map :a nil) :a :not-found)`)
+	if _, ok := result.(core.Nil); !ok {
+		t.Errorf("expected stored nil, got %T %v", result, result)
+	}
+}
+
+func TestCollections_Get_MissingKey(t *testing.T) {
+	env := setupEnv(t)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected core.Value
+	}{
+		{"no default", `(get (hash-map :a 1) :missing)`, core.Nil{}},
+		{"with default", `(get (hash-map :a 1) :missing :not-found)`, core.Keyword{V: "not-found"}},
+		{"nil default", `(get (hash-map :a 1) :missing nil)`, core.Nil{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := eval(t, env, tt.input)
+			if !result.Equals(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCollections_Get_NilSubject(t *testing.T) {
+	env := setupEnv(t)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected core.Value
+	}{
+		{"no default", `(get nil :k)`, core.Nil{}},
+		{"with default", `(get nil :k :not-found)`, core.Keyword{V: "not-found"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := eval(t, env, tt.input)
+			if !result.Equals(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// An unhashable key cannot be stored, so it is absent rather than a type
+// error: the lookup takes the miss path and honours the default.
+func TestCollections_Get_UnhashableKeyIsMissing(t *testing.T) {
+	env := setupEnv(t)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected core.Value
+	}{
+		{"list key", `(get (hash-map :a 1) (list 1 2))`, core.Nil{}},
+		{"vector key", `(get (hash-map :a 1) [1 2])`, core.Nil{}},
+		{"map key", `(get (hash-map :a 1) (hash-map :b 2))`, core.Nil{}},
+		{"function key", `(get (hash-map :a 1) +)`, core.Nil{}},
+		{"list key with default", `(get (hash-map :a 1) (list 1 2) :not-found)`, core.Keyword{V: "not-found"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := eval(t, env, tt.input)
+			if !result.Equals(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCollections_Get_NonMapSubjectTypeError(t *testing.T) {
+	env := setupEnv(t)
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"int", `(get 5 :k)`},
+		{"string", `(get "s" :k)`},
+		{"list", `(get (list 1) 0)`},
+		{"vector", `(get [1 2] 0)`},
+		// A type error is not a miss: the default never stands in for it.
+		{"with default", `(get 5 :k :not-found)`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := evalErr(t, env, tt.input)
+			var lerr *core.LispicoError
+			require.ErrorAs(t, err, &lerr)
+			require.Equal(t, "TypeError", lerr.Code)
+		})
+	}
+}
+
+func TestCollections_Get_ArityError(t *testing.T) {
+	env := setupEnv(t)
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"no args", `(get)`},
+		{"one arg", `(get (hash-map :a 1))`},
+		{"four args", `(get (hash-map :a 1) :a :not-found :extra)`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := evalErr(t, env, tt.input)
+			var lerr *core.LispicoError
+			require.ErrorAs(t, err, &lerr)
+			require.Equal(t, "ArityError", lerr.Code)
+		})
+	}
+}
 func TestHigherOrder_Map(t *testing.T) {
 	env := setupEnv(t)
 
@@ -839,14 +978,5 @@ func TestBootstrap_ThreadLast(t *testing.T) {
 	}
 	if list.Len() != 3 {
 		t.Errorf("expected 3 items, got %d", list.Len())
-	}
-}
-
-func TestBootstrap_GetIn(t *testing.T) {
-	env := setupEnv(t)
-
-	result := eval(t, env, `(get-in (hash-map :a (hash-map :b 1)) (list :a :b))`)
-	if !result.Equals(core.Int{V: 1}) {
-		t.Errorf("expected 1, got %v", result)
 	}
 }

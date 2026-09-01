@@ -252,3 +252,65 @@ func TestChargeGoFuncResultBytes_MixedIncrementalChargesFreshOnly(t *testing.T) 
 		})
 	}
 }
+
+// getUsage evaluates src against an engine holding a map whose :a entry is
+// payload and a "d" binding of the same payload, returning the alloc ledger
+// total. Nothing on this path scales with the payload's size except the
+// apply-site fallback charge, so two runs differing only in payload size
+// differ only by that charge.
+func getUsage(t *testing.T, bytecode bool, payload core.Value, budget int, src string) (int64, error) {
+	t.Helper()
+	m := core.NewHashMap()
+	require.NoError(t, m.Set(core.Keyword{V: "a"}, payload))
+
+	eng := newMeteringStdlibEngine(t, bytecode, meteringLimits(t, 1_000_000, budget))
+	require.NoError(t, eng.Bind("m", m))
+	require.NoError(t, eng.Bind("d", payload))
+	ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, budget)
+	_, err := eng.Eval(ctx, "borrowed-get", src)
+	return core.EvalMeterFrom(ctx).Snapshot().AllocationBytes, err
+}
+
+func TestBorrowed_GetReturnsStoredCollection(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const src = `(get m :a)`
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			tiny, err := getUsage(t, bytecode, core.String{V: "x"}, 16<<20, src)
+			require.NoError(t, err)
+			large, err := getUsage(t, bytecode, borrowedPayload(), 16<<20, src)
+			require.NoError(t, err)
+
+			assert.Equal(t, tiny, large,
+				"a stored value returned as-is must add zero result bytes to the ledger (tiny=%d large=%d)", tiny, large)
+
+			tight := int(tiny + borrowedShallowBytes()/2)
+			_, err = getUsage(t, bytecode, borrowedPayload(), tight, src)
+			require.NoError(t, err, "borrowed stored value must not trip a budget tighter than its shallow size")
+		})
+	}
+}
+
+func TestBorrowed_GetDefaultIsBorrowed(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const src = `(get m :missing d)`
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			tiny, err := getUsage(t, bytecode, core.String{V: "x"}, 16<<20, src)
+			require.NoError(t, err)
+			large, err := getUsage(t, bytecode, borrowedPayload(), 16<<20, src)
+			require.NoError(t, err)
+
+			assert.Equal(t, tiny, large,
+				"a caller-supplied default returned as-is must add zero result bytes to the ledger (tiny=%d large=%d)", tiny, large)
+
+			tight := int(tiny + borrowedShallowBytes()/2)
+			_, err = getUsage(t, bytecode, borrowedPayload(), tight, src)
+			require.NoError(t, err, "borrowed default must not trip a budget tighter than its shallow size")
+		})
+	}
+}
