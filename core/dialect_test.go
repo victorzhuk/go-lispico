@@ -270,7 +270,7 @@ func TestDialect_MutationInvalidatesCache(t *testing.T) {
 		adapter := GoFunc{Name: "noop", Fn: func(context.Context, Evaluator, []Value, *Env) (Value, error) {
 			return Nil{}, nil
 		}}
-		mutated := base.WithAdapter("noop", adapter)
+		mutated := base.WithAdapter("noop", "noop@1", adapter)
 		entry, ok := mutated.Vocab()["noop"]
 		if !ok || entry.Adapter == nil {
 			t.Fatal("WithAdapter must appear in the mutated copy's vocabulary")

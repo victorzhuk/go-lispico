@@ -118,6 +118,7 @@ type deltaOp struct {
 // A non-nil Adapter binds the visible name directly to that Value (an adapter).
 type VocabEntry struct {
 	Canonical string
+	AdapterID string
 	Adapter   Value
 }
 
@@ -232,9 +233,9 @@ func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
 // builtin rather than reimplement the operation. Calling WithAdapter on a
 // Dialect that already has vocabulary entries returns a new Dialect whose
 // vocab is a fresh copy plus the adapter — the receiver is not mutated.
-func (d Dialect) WithAdapter(name string, fn Value) Dialect {
+func (d Dialect) WithAdapter(name, semanticID string, value Value) Dialect {
 	d.vocab = copyVocab(d.vocab)
-	d.vocab[name] = VocabEntry{Adapter: fn}
+	d.vocab[name] = VocabEntry{AdapterID: semanticID, Adapter: value}
 	d.cache = nil
 	return d
 }
