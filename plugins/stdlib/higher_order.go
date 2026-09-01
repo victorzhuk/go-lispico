@@ -15,31 +15,17 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				return nil, fmt.Errorf("map: requires 2 arguments")
 			}
 
-			var items []core.Value
-			switch c := args[1].(type) {
-			case core.List:
-				items = c.ToSlice()
-			case core.Vector:
-				items = c.ToSlice()
+			switch args[1].(type) {
+			case core.List, core.Vector:
 			default:
 				return nil, fmt.Errorf("map: second argument must be collection")
 			}
 
-			results := make([]core.Value, len(items))
-			for i, item := range items {
-				r, err := eval.Apply(ctx, args[0], []core.Value{item}, env)
-				if err != nil {
-					return nil, err
-				}
-				results[i] = r
-			}
-
-			return core.NewList(results), nil
+			return MapSequences(ctx, eval, env, args[0], args[1:])
 		},
 	}, false); err != nil {
 		return err
 	}
-
 	if err := env.RegisterValue("filter", core.GoFunc{
 		Name: "filter",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
