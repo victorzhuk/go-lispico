@@ -45,9 +45,12 @@ func pathLen(tb testing.TB, path core.Value) int {
 	}
 }
 
-// TestGetIn_PathCursorDoesNotCopy pins get-in's per-call allocation count flat
-// across path lengths and representations: the cursor advances a List by Rest
-// and a Vector by index, so nothing path-sized is built before the walk.
+// TestGetIn_PathCursorDoesNotCopy pins get-in at zero allocations per call, at
+// every path length and representation: the cursor advances a List by Rest and
+// a Vector by index, so nothing path-sized is built before the walk. Zero is
+// the assertion that discriminates — a cursor materializing the path with
+// ToSlice costs exactly one allocation, flat in path length, so any cap above
+// zero would let it through.
 //
 // The budget bounds allocation count only. An indexed At() walk over a shared
 // list is quadratic in time, not in allocations, so it is invisible here —
@@ -75,9 +78,7 @@ func TestGetIn_PathCursorDoesNotCopy(t *testing.T) {
 
 	for _, rep := range reps {
 		t.Run(rep.name, func(t *testing.T) {
-			var base float64
-			var baseSize int
-			for i, n := range rep.sizes {
+			for _, n := range rep.sizes {
 				path := rep.build(n)
 				args := []core.Value{subject, path}
 
@@ -89,15 +90,7 @@ func TestGetIn_PathCursorDoesNotCopy(t *testing.T) {
 				allocs := testing.AllocsPerRun(100, func() {
 					_, _ = gf.Fn(ctx, nil, args, env)
 				})
-				t.Logf("%s path of %d keys: %.0f allocs/call", rep.name, n, allocs)
-				require.LessOrEqual(t, allocs, 8.0, "%s path of %d keys allocates %.0f per call", rep.name, n, allocs)
-
-				if i == 0 {
-					base, baseSize = allocs, n
-					continue
-				}
-				require.LessOrEqual(t, allocs, base,
-					"allocations grow with path length: %s %d keys=%.0f vs %d keys=%.0f", rep.name, n, allocs, baseSize, base)
+				require.Zero(t, allocs, "%s path of %d keys allocates %.0f per call", rep.name, n, allocs)
 			}
 		})
 	}
