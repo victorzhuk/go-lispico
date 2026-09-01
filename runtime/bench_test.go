@@ -28,16 +28,9 @@ func BenchmarkEngine_Creation(b *testing.B) {
 }
 
 func BenchmarkEngine_StartupStdlibBytecode(b *testing.B) {
-	b.Run("cache-disabled", func(b *testing.B) {
-		clearStdlibBootstrapCacheForTest()
-		restore := setStdlibBootstrapCacheDisabledForTest(true)
-		defer restore()
-		benchmarkEngineStartupStdlibBytecode(b)
-	})
-	b.Run("cache-warm", func(b *testing.B) {
-		clearStdlibBootstrapCacheForTest()
-		restore := setStdlibBootstrapCacheDisabledForTest(false)
-		defer restore()
+	// Both arms warm the immutable lazy template registry before timing, so
+	// the first iteration is not charged with template construction.
+	b.Run("lazy", func(b *testing.B) {
 		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 		if err != nil {
 			b.Fatal(err)
@@ -49,12 +42,9 @@ func BenchmarkEngine_StartupStdlibBytecode(b *testing.B) {
 		b.ResetTimer()
 		benchmarkEngineStartupStdlibBytecode(b)
 	})
-	// eager-warm reproduces the pre-lazy startup: stdlib fully executed into
-	// the root env at Use time (bootstrap artifact cache warm).
-	b.Run("eager-warm", func(b *testing.B) {
-		clearStdlibBootstrapCacheForTest()
-		restoreCache := setStdlibBootstrapCacheDisabledForTest(false)
-		defer restoreCache()
+	// eager reproduces the pre-lazy startup: stdlib fully executed into the
+	// root env at Use time.
+	b.Run("eager", func(b *testing.B) {
 		restoreLazy := SetStdlibLazyDisabledForTesting(true)
 		defer restoreLazy()
 		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
