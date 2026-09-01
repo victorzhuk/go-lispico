@@ -129,7 +129,7 @@ type SortLessFunc func(a, b core.Value) (bool, error)
 // ResourceLimitError win over any pending non-Terminal callback error.
 func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less SortLessFunc) ([]core.Value, error) {
 	b := core.NewBuiltinWorkBudget(ctx)
-	var pairs []sortPair
+	pairs := make([]sortPair, 0, len(items))
 	for _, v := range items {
 		if err := b.Step(); err != nil {
 			return finishSort(b, nil, err)
@@ -171,7 +171,7 @@ func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less S
 	if sortErr != nil {
 		return finishSort(b, nil, sortErr)
 	}
-	var sorted []core.Value
+	sorted := make([]core.Value, 0, len(pairs))
 	for i := range pairs {
 		if err := b.Step(); err != nil {
 			return finishSort(b, nil, err)
