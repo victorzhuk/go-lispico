@@ -37,7 +37,7 @@ func TestBootstrapEntriesExpandDeterministically(t *testing.T) {
 // Every bootstrap entry is a macro definition, and a macro captures its
 // defining environment — so no entry can be published as a shared compiled
 // artifact, whatever reuse policy the loader grows.
-func TestBootstrapEntries_AllMacroDefinitionsNoReusePolicy(t *testing.T) {
+func TestBootstrapEntries_MatchExpectedMacroInventory(t *testing.T) {
 	entries := stdlibBootstrapEntries()
 	require.Len(t, entries, 5)
 
@@ -53,4 +53,4 @@ func TestBootstrapEntries_AllMacroDefinitionsNoReusePolicy(t *testing.T) {
 
 // Unkeyed, so a regrown field breaks the build: the entry shape cannot
 // silently reacquire a reuse policy.
-var _ = bootstrapEntry{"->", "(defmacro -> [x & forms] x)"}
+var _ = bootstrapEntry{"", ""}

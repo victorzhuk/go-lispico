@@ -13,21 +13,6 @@ import (
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
-func TestStdlibBootstrap_TwoEnginesProduceIdenticalResults(t *testing.T) {
-	first := newBytecodeStdlibEngine(t)
-	firstResults := stdlibBootstrapResults(t, first)
-	require.NoError(t, first.Close())
-
-	second := newBytecodeStdlibEngine(t)
-	secondResults := stdlibBootstrapResults(t, second)
-	require.NoError(t, second.Close())
-
-	require.Len(t, firstResults, len(secondResults))
-	for i := range firstResults {
-		assert.True(t, firstResults[i].Equals(secondResults[i]), "result %d mismatch: first=%v second=%v", i, firstResults[i], secondResults[i])
-	}
-}
-
 func TestStdlibBootstrap_TwoEnginesProduceIdenticalResultsAcrossDialects(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -164,7 +149,7 @@ func TestStdlibBootstrap_UnloadPluginOneEngineLeavesOtherUsable(t *testing.T) {
 	assert.Contains(t, err.Error(), "undefined")
 }
 
-func TestStdlibBootstrap_DialectDefinitionsAreSeparated(t *testing.T) {
+func TestStdlibBootstrap_BothDialectsLoadInOneProcess(t *testing.T) {
 	cl := newBytecodeStdlibEngineWithOptions(t)
 	defer cl.Close()
 	clojureEng := newBytecodeStdlibEngineWithOptions(t, WithDialect(clojure.Dialect()))

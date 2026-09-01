@@ -28,8 +28,10 @@ func BenchmarkEngine_Creation(b *testing.B) {
 }
 
 func BenchmarkEngine_StartupStdlibBytecode(b *testing.B) {
-	// Both arms warm the immutable lazy template registry before timing, so
-	// the first iteration is not charged with template construction.
+	// The lazy arm's warm engine populates the shared template registry, so the
+	// first timed iteration is not charged with template construction. The eager
+	// arm disables that registry, so its warm engine buys only general process
+	// warm-up.
 	b.Run("lazy", func(b *testing.B) {
 		warm, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 		if err != nil {
