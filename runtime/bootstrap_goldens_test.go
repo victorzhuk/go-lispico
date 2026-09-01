@@ -28,7 +28,8 @@ var bootstrapGoldenNames = []struct {
 	{name: "get-in", macro: false},
 }
 
-// loadStdlibEngine builds a tree-walking engine under d, loads stdlib, and —
+// loadStdlibEngine builds an engine under d with the given evaluator options
+// (tree-walking by default), loads stdlib, and —
 // in lazy mode — forces every deferred binding through the enumeration sweep
 // (RootEnv().VarNames/FuncNames force their lazy layer), so cell assertions
 // observe the published state. The process-global lazy flag is restored
@@ -79,7 +80,9 @@ func assertKind(t *testing.T, mode, name string, val core.Value, macro bool) {
 // TestBootstrapDialectGoldens_Lisp2 pins, for all six bootstrap names in both
 // eager and lazy modes under the Lisp-2 (CL) dialect, that each definition
 // lands in the function cell — so it resolves in head position — and never
-// mirrors into the value cell.
+// mirrors into the value cell. The CL collection adapters and canonical map
+// must hold their function-cell bindings and goldens across tree-walker and
+// bytecode evaluators in both lazy modes.
 func TestBootstrapDialectGoldens_Lisp2(t *testing.T) {
 	for _, mode := range goldenModes {
 		t.Run(mode.name, func(t *testing.T) {
@@ -119,8 +122,8 @@ func TestBootstrapDialectGoldens_Lisp2(t *testing.T) {
 				eng := loadStdlibEngine(t, cl.Dialect(), mode.eager, em.opts...)
 				root := eng.RootEnv()
 				for _, name := range []string{"nth", "mapcar", "sort"} {
-					if _, ok := root.Get(name); !ok {
-						t.Errorf("%s/%s: %s must be bound in the root env", em.name, mode.name, name)
+					if _, ok := root.GetFunc(name); !ok {
+						t.Errorf("%s/%s: %s must be bound in the function cell", em.name, mode.name, name)
 					}
 				}
 				for _, g := range goldens {
