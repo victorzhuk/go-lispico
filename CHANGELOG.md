@@ -45,6 +45,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than as a bare activation, matching how the `v0.11.0` failure above
   was recorded.
 
+- **Breaking:** `get-in` is now a Go builtin rather than a bootstrap `defn`,
+  which changes three things beyond its semantics. It prints and compares as
+  a builtin — `core.GoFunc`, rendering as `#<builtin:get-in>` — where it was
+  a `core.Lambda`. On an empty-base dialect that declares a vocabulary, that
+  vocabulary is an allowlist over registered builtins, so `get-in` is now
+  stripped unless the vocabulary names it; as a `Lambda` it was exempt from
+  that pass. A bare `core.EmptyDialect()` with no vocabulary strips nothing
+  and leaves it bound. Under the CL dialect it now publishes into both the
+  value cell and the function cell, where the bootstrap `defn` filled only
+  the function cell. Callers on an empty base allowlist it:
+
+  ```go
+  d := core.EmptyDialect().
+      Vocabulary(map[string]string{"get-in": "get-in"})
+  ```
+
+- **Breaking:** `get-in` traversal changed with that rewrite. It takes an
+  optional third argument as the default. An empty path — `nil` or an empty
+  sequence — returns the subject unchanged and never consults the default. A
+  key present with a `nil` value at the final position is a successful
+  lookup, while a `nil` with keys still to walk is a miss. A non-map value
+  with keys still to walk is now a `TypeError` instead of the silent miss the
+  old `reduce`-over-`get` definition produced, and a default never replaces
+  an error. The path itself must be a list, a vector, or `nil`; anything else
+  is a `TypeError`, and a wrong argument count an `ArityError`.
+
+- `get` reports malformed calls as typed errors: a non-map subject as
+  `TypeError` and a wrong argument count as `ArityError`, both
+  `*core.LispicoError`, where both were previously plain untyped errors. Its
+  scope is now specified: maps plus `nil`, which reads as an empty map, with
+  lists, vectors, and strings rejected as `TypeError`. A key present but
+  holding `nil` returns that `nil` rather than the default, and a key that
+  cannot be hashed counts as missing rather than as an error.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added

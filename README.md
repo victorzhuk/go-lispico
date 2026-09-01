@@ -217,6 +217,67 @@ register its own IO primitives, so the pure-computation plugins (`stdlib`,
 | `net`    | frozen | HTTP client                                                      |
 | `exec`   | frozen | Shell execution and crypto                                       |
 
+### Map lookup
+
+The `stdlib` plugin provides `get` and `get-in` for reading values out of
+maps. Both take an optional trailing default. The examples below run on the
+default engine, whose CL dialect disables bracket literals, so maps and key
+paths are built with `hash-map`, `list`, and `vector`.
+
+`get` takes a map and a key:
+
+```lisp
+(get (hash-map :a 1 :b 2) :a)
+```
+
+evaluates to `1`. Lookup is map-only, with `nil` read as an empty map:
+`(get nil :a)` evaluates to `nil` and `(get nil :a 0)` to `0`. Lists,
+vectors, and strings are not lookup subjects — `(get (vector 10 20) 0)` and
+`(get "abc" 0)` both fail with `TypeError`, and a wrong argument count fails
+with `ArityError`.
+
+A missing key yields `nil`, or the default when one is supplied. A key that
+is present but holds `nil` is a hit, so the default is not substituted:
+
+```lisp
+(get (hash-map :a nil) :a 0)
+```
+
+evaluates to `nil`, where `(get (hash-map :a 1) :missing 0)` evaluates to
+`0`. A key that cannot be hashed — a list, vector, or map used as a key —
+counts as missing rather than as an error, so
+`(get (hash-map :a 1) (list 1 2) 0)` also evaluates to `0`.
+
+`get-in` walks a path of keys through nested maps. The path is a list, a
+vector, or `nil`:
+
+```lisp
+(get-in (hash-map :a (hash-map :b 1)) (list :a :b))
+```
+
+evaluates to `1`. An empty path — `nil` or an empty sequence — returns the
+subject unchanged and never consults the default, so
+`(get-in (hash-map :a 1) nil 99)` evaluates to `{:a 1}`.
+
+A miss short-circuits the rest of the path: an absent key, or a `nil` with
+keys still to walk, makes the whole lookup missing. So
+`(get-in (hash-map :a nil) (list :a :b) 0)` evaluates to `0`, while
+`(get-in (hash-map :a nil) (list :a) 0)` evaluates to `nil` — a `nil` at the
+final key is a successful lookup, as it is for `get`.
+
+Errors are never replaced by the default. A non-map value with keys still to
+walk fails with `TypeError`, so `(get-in (hash-map :a 1) (list :a :b) 0)`
+fails rather than yielding `0`. A path that is neither list, vector, nor
+`nil` fails with `TypeError`, and a wrong argument count with `ArityError`.
+Both lookups report these as `*core.LispicoError` carrying those codes.
+
+Under `clojure.Dialect()` bracket and map literals read, so the same lookup
+can be written directly:
+
+```lisp
+(get-in {:a {:b 1}} [:a :b])
+```
+
 ## Bytecode VM
 
 `runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (namely a `defmacro` nested inside a larger form, and `unquote-splicing`).
