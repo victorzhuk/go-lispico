@@ -98,3 +98,21 @@ func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn co
 	}
 	return core.NewList(results), nil
 }
+
+// SortKeyFunc projects an input element to a sort key. StableSort invokes it
+// at most once per element, in the original input order, when key is non-nil.
+type SortKeyFunc func(core.Value) (core.Value, error)
+
+// SortLessFunc reports whether a must sort before b. StableSort invokes it
+// through a scheduling wrapper that charges one Step per call; callback
+// execution itself never costs reductions.
+type SortLessFunc func(a, b core.Value) (bool, error)
+
+// StableSort returns items sorted stably by less under the optional key
+// projection, never mutating the caller's slice (the kernel sorts an
+// internal copy). The first callback error is latched and returned
+// unchanged; a mandatory Flush on every return path makes a Terminal
+// ResourceLimitError win over any pending non-Terminal callback error.
+func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less SortLessFunc) ([]core.Value, error) {
+	panic("not implemented")
+}
