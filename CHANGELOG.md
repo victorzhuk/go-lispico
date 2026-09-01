@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `core.Dialect.WithAdapter` now takes a semantic ID between
+  the adapter name and its value: `WithAdapter(name, semanticID, value)`. The
+  semantic ID participates in the dialect fingerprint, so adapters with the
+  same name but different semantics are no longer indistinguishable, and
+  fixed IDs make the CL surface hashable across processes. Callers carrying
+  the old two-argument form must supply an ID — for the Common Lisp dialect
+  the shipped IDs are `cl/nth@1`, `cl/mapcar@1`, and `cl/sort@1`:
+
+  ```go
+  d := core.FullDialect().
+      WithAdapter("nth", "cl/nth@1", nthFn)
+  ```
+
+- The CL collection adapters pin down their Common Lisp call shapes: `nth`
+  is index-first and answers `nil` beyond the end of a list or on `nil`;
+  `mapcar` walks any number of sequences to the shortest one's length; and
+  `sort` returns a fresh sorted sequence of the input type, leaving the
+  input untouched instead of destroying it as the Common Lisp standard
+  permits. Malformed options fail with exact error classes: wrong arity with
+  `ArityError`, an unknown or repeated keyword or a negative `nth` index
+  with `EvalError`, wrong argument types with `TypeError`. The first
+  callback error stops the traversal and no further callback runs; terminal
+  errors keep terminal precedence.
+
 - The release consumer gate passed on a published release for the first time,
   and `v0.12.0` carries the project's first stored `bench-vm.txt` baseline.
   The run evaluated 27 cells — thirteen `Goldset/*`, thirteen

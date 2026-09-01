@@ -85,6 +85,61 @@ dialects ship with the interpreter:
 The default engine uses `cl.Dialect()`. Pass `WithDialect(clojure.Dialect())`
 to opt in to the Clojure surface.
 
+### Common Lisp collections
+
+The CL dialect adapts `nth`, `mapcar`, and `sort` to their Common Lisp
+argument shapes. The `car`-family aliases (`first`, `rest`, ...) come from
+the standard vocabulary renaming; the collection adapters are registered
+under fixed semantic IDs `cl/nth@1`, `cl/mapcar@1`, and `cl/sort@1`.
+
+`nth` takes the index first and the sequence second. Indexing beyond the end
+of a list, or into `nil`, yields `nil` rather than an error:
+
+```lisp
+(nth 1 '(10 20 30))
+```
+
+evaluates to `20`; `(nth 5 '(1 2))` and `(nth 0 nil)` both evaluate to
+`nil`. A wrong argument count fails with `ArityError`, a negative index or
+an unknown option with `EvalError`, and a non-integer index or a sequence
+that is neither list nor `nil` with `TypeError`.
+
+`mapcar` accepts one function followed by any number of sequences. The
+shortest sequence terminates the traversal, so the result has that length:
+
+```lisp
+(mapcar #'+ '(1 2 3) '(10 20))
+```
+
+evaluates to the list `(11 22)`.
+
+`sort` returns a new sorted sequence of the same type as its input — list in,
+list out — and leaves the input untouched. This deviates deliberately from
+the Common Lisp standard, where `sort` is permitted to destroy its argument;
+Lispico values are immutable, so the result is a fresh sequence:
+
+```lisp
+(sort '(3 1 2) #'<)
+```
+
+evaluates to `(1 2 3)`. The predicate is a two-argument function applied to
+pairs; its truthiness (any non-`nil` value, including keywords) decides
+order, and the sort is stable: equivalent elements keep their input order.
+Key functions run exactly once per element, in original order, before any
+comparison. A `:key` option projects each element before comparison:
+
+```lisp
+(sort '("bb" "a" "ccc") #'< :key #'length)
+```
+
+evaluates to `("a" "bb" "ccc")`. A keyword other than `:key`, or a repeated
+`:key`, fails with `EvalError`; a leftover option without a value fails with
+`ArityError`. Callback errors stop the traversal immediately: the first
+error propagates unchanged and no callback or predicate call follows it.
+Terminal errors — resource limits and deadlines — keep their terminal
+precedence through the adapter and abort the enclosing evaluation.
+
+
 ## Installation
 
 ```bash
