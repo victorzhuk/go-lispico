@@ -1,5 +1,7 @@
 .PHONY: build test test-unit lint fmt profile profile-report
 
+GOTESTFLAGS ?= -timeout 2m
+
 # Mirrors the release gate's fixed run parameters (.github/workflows/release.yml)
 # so a captured profile is comparable to what the gate measures.
 PROFILE_GOMAXPROCS := 2
@@ -10,7 +12,7 @@ build:
 	go build -o bin/lispico ./cmd/lispico
 
 test:
-	go test ./...
+	go test $(GOTESTFLAGS) ./...
 
 test-unit: test
 
@@ -22,8 +24,8 @@ fmt:
 
 profile:
 	mkdir -p profiles
-	GOMAXPROCS=$(PROFILE_GOMAXPROCS) GOLDSET_MODE=eval go test ./internal/goldset/ -run '^$$' -bench . -benchtime=$(PROFILE_BENCHTIME) -benchmem -cpuprofile=profiles/eval.cpu.prof -memprofile=profiles/eval.mem.prof -o profiles/eval.test
-	GOMAXPROCS=$(PROFILE_GOMAXPROCS) GOLDSET_MODE=vm go test ./internal/goldset/ -run '^$$' -bench . -benchtime=$(PROFILE_BENCHTIME) -benchmem -cpuprofile=profiles/vm.cpu.prof -memprofile=profiles/vm.mem.prof -o profiles/vm.test
+	GOMAXPROCS=$(PROFILE_GOMAXPROCS) GOLDSET_MODE=eval go test $(GOTESTFLAGS) ./internal/goldset/ -run '^$$' -bench . -benchtime=$(PROFILE_BENCHTIME) -benchmem -cpuprofile=profiles/eval.cpu.prof -memprofile=profiles/eval.mem.prof -o profiles/eval.test
+	GOMAXPROCS=$(PROFILE_GOMAXPROCS) GOLDSET_MODE=vm go test $(GOTESTFLAGS) ./internal/goldset/ -run '^$$' -bench . -benchtime=$(PROFILE_BENCHTIME) -benchmem -cpuprofile=profiles/vm.cpu.prof -memprofile=profiles/vm.mem.prof -o profiles/vm.test
 
 # alloc_space (total allocation traffic), not the inuse_space default -- a
 # benchmark's objects are dead by the time the profile is written, so
