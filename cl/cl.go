@@ -40,14 +40,22 @@ var clNth = sync.OnceValue(func() core.Value {
 		Name: "nth",
 		Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("nth: requires 2 arguments")
+				return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("nth: expected 2 arguments (index list), got %d", len(args))}
 			}
 			idx, ok := args[0].(core.Int)
 			if !ok {
 				return nil, core.NewTypeError("integer", args[0])
 			}
+			if idx.V < 0 {
+				return nil, &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("nth: index must be non-negative, got %d", idx.V)}
+			}
 			if _, isNil := args[1].(core.Nil); isNil {
 				return core.Nil{}, nil
+			}
+			switch args[1].(type) {
+			case core.List:
+			default:
+				return nil, core.NewTypeError("list or nil", args[1])
 			}
 			val, outcome, err := stdlib.IndexedAccess(ctx, args[1], idx.V)
 			if err != nil {
@@ -59,7 +67,7 @@ var clNth = sync.OnceValue(func() core.Value {
 			case stdlib.AccessOutOfRange:
 				return core.Nil{}, nil
 			default:
-				return nil, fmt.Errorf("nth: expected collection, got %T", args[1])
+				return nil, core.NewTypeError("list or nil", args[1])
 			}
 		},
 	}
@@ -70,7 +78,14 @@ var clMapcar = sync.OnceValue(func() core.Value {
 		Name: "mapcar",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
-				return nil, fmt.Errorf("mapcar: requires a function and at least one sequence")
+				return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("mapcar: expected at least 2 arguments (function list), got %d", len(args))}
+			}
+			for _, seq := range args[1:] {
+				switch seq.(type) {
+				case core.List, core.Nil:
+				default:
+					return nil, core.NewTypeError("list or nil", seq)
+				}
 			}
 			return stdlib.MapSequences(ctx, eval, env, args[0], args[1:])
 		},
@@ -82,14 +97,22 @@ var clSort = sync.OnceValue(func() core.Value {
 		Name: "sort",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
-				return nil, fmt.Errorf("sort: requires a sequence and a predicate")
+				return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments", len(args))}
 			}
 			var keyFn core.Value
+			seenKey := false
 			for rest := args[2:]; len(rest) > 0; rest = rest[2:] {
 				kw, ok := rest[0].(core.Keyword)
-				if !ok || kw.V != "key" || len(rest) < 2 {
-					return nil, fmt.Errorf("sort: unsupported argument %v", rest[0])
+				if !ok || len(rest) < 2 {
+					return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments", len(args))}
 				}
+				if kw.V != "key" {
+					return nil, &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("sort: unknown keyword %v", kw)}
+				}
+				if seenKey {
+					return nil, &core.LispicoError{Code: "EvalError", Message: "sort: duplicate :key keyword"}
+				}
+				seenKey = true
 				keyFn = rest[1]
 			}
 
@@ -103,7 +126,7 @@ var clSort = sync.OnceValue(func() core.Value {
 			case core.Nil:
 				items = nil
 			default:
-				return nil, fmt.Errorf("sort: expected collection, got %T", seq)
+				return nil, core.NewTypeError("list, vector, or nil", seq)
 			}
 
 			var key stdlib.SortKeyFunc

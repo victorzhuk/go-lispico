@@ -116,32 +116,31 @@ type SortLessFunc func(a, b core.Value) (bool, error)
 // ResourceLimitError win over any pending non-Terminal callback error.
 func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less SortLessFunc) ([]core.Value, error) {
 	b := core.NewBuiltinWorkBudget(ctx)
-	sorted := make([]core.Value, len(items))
-	copy(sorted, items)
-	for i := range items {
-		sorted[i] = items[i]
+	pairs := make([]sortPair, len(items))
+	for i, v := range items {
+		pairs[i].val = v
 		if err := b.Step(); err != nil {
 			return finishSort(b, nil, err)
 		}
 	}
 
-	var keys []core.Value
-	if key != nil {
-		keys = make([]core.Value, len(sorted))
-		for i, v := range sorted {
-			k, err := key(v)
-			if err != nil {
-				return finishSort(b, nil, err)
-			}
-			keys[i] = k
-			if err := b.Step(); err != nil {
-				return finishSort(b, nil, err)
-			}
+	for i := range pairs {
+		if key == nil {
+			pairs[i].key = pairs[i].val
+			continue
+		}
+		k, err := key(pairs[i].val)
+		if err != nil {
+			return finishSort(b, nil, err)
+		}
+		pairs[i].key = k
+		if err := b.Step(); err != nil {
+			return finishSort(b, nil, err)
 		}
 	}
 
 	var sortErr error
-	sort.SliceStable(sorted, func(i, j int) bool {
+	sort.SliceStable(pairs, func(i, j int) bool {
 		if sortErr != nil {
 			return false
 		}
@@ -149,21 +148,34 @@ func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less S
 			sortErr = err
 			return false
 		}
-		a, c := sorted[i], sorted[j]
-		if keys != nil {
-			a, c = keys[i], keys[j]
-		}
-		ok, err := less(a, c)
+		ok, err := less(pairs[i].key, pairs[j].key)
 		if err != nil {
 			sortErr = err
 			return false
 		}
-		return ok
+		if !ok {
+			return false
+		}
+		ok, err = less(pairs[j].key, pairs[i].key)
+		if err != nil {
+			sortErr = err
+			return false
+		}
+		return !ok
 	})
 	if sortErr != nil {
 		return finishSort(b, nil, sortErr)
 	}
+	sorted := make([]core.Value, len(pairs))
+	for i := range pairs {
+		sorted[i] = pairs[i].val
+	}
 	return finishSort(b, sorted, nil)
+}
+
+type sortPair struct {
+	key core.Value
+	val core.Value
 }
 
 func finishSort(b *core.BuiltinWorkBudget, sorted []core.Value, err error) ([]core.Value, error) {

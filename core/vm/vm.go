@@ -796,7 +796,7 @@ func (vm *VM) apply(ctx context.Context, fn core.Value, args []core.Value, env *
 		}
 		return v, nil
 	default:
-		return nil, core.NewTypeError("callable", fn)
+		return nil, core.NewTypeError("function", fn)
 	}
 }
 
@@ -2086,7 +2086,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		}
 
 	default:
-		return core.NewTypeError("callable", fn)
+		return core.NewTypeError("function", fn)
 	}
 	return nil
 }
