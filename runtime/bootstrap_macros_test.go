@@ -81,7 +81,7 @@ func TestBootstrap_WhenLet(t *testing.T) {
 	assert.True(t, core.Nil{}.Equals(result))
 }
 
-func TestBootstrap_GetIn(t *testing.T) {
+func TestBuiltin_GetIn(t *testing.T) {
 	t.Parallel()
 	eng, err := New(nil)
 	require.NoError(t, err)
