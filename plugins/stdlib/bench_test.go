@@ -10,8 +10,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/core/compiler"
-	"github.com/victorzhuk/go-lispico/core/vm"
 )
 
 func mergeGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
@@ -242,12 +240,81 @@ func BenchmarkReverse_Large(b *testing.B) {
 	}
 }
 
+func getInGoFunc(tb testing.TB, env *core.Env) core.GoFunc {
+	tb.Helper()
+	fnVal, ok := env.Get("get-in")
+	if !ok {
+		tb.Fatal("get-in not registered")
+	}
+	gfn, ok := fnVal.(core.GoFunc)
+	if !ok {
+		tb.Fatalf("get-in is not a GoFunc: %T", fnVal)
+	}
+	return gfn
+}
+
+// buildNestedMap wraps a leaf in one map per key, so a lookup along keys walks
+// every one of them.
+func buildNestedMap(tb testing.TB, keys []core.Value) core.Value {
+	tb.Helper()
+	var subject core.Value = core.Int{V: 1}
+	for i := len(keys) - 1; i >= 0; i-- {
+		m := core.NewHashMap()
+		if err := m.Set(keys[i], subject); err != nil {
+			tb.Fatalf("build nested map: %v", err)
+		}
+		subject = m
+	}
+	return subject
+}
+
+// BenchmarkGetIn_ListPath walks an n-deep map along an n-key list path. Every
+// size here is past listFlatThreshold, so the path is a shared-tail chain —
+// the representation where advancing by an indexed At() would be O(n) per key
+// and the whole lookup quadratic. Informational only: not a gold-set cell and
+// not part of the release gate.
+func BenchmarkGetIn_ListPath(b *testing.B) {
+	for _, n := range []int{1000, 10000, 100000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			env := core.NewEnv(nil)
+			if err := New().Init(env); err != nil {
+				b.Fatalf("init stdlib: %v", err)
+			}
+			gfn := getInGoFunc(b, env)
+			keys := pathKeys(n)
+			args := []core.Value{buildNestedMap(b, keys), core.NewList(keys)}
+			ctx := context.Background()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := gfn.Fn(ctx, nil, args, env); err != nil {
+					b.Fatalf("get-in: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// lookupBootstrapEntry names its subject instead of indexing the entry slice,
+// so adding or removing an entry cannot silently repoint a phase benchmark at
+// a different kind of form.
+func lookupBootstrapEntry(tb testing.TB, name string) bootstrapEntry {
+	tb.Helper()
+	for _, entry := range stdlibBootstrapEntries() {
+		if entry.name == name {
+			return entry
+		}
+	}
+	tb.Fatalf("bootstrap entry %q not found", name)
+	return bootstrapEntry{}
+}
+
 func BenchmarkBootstrapPhases(b *testing.B) {
 	ctx := context.Background()
 	entries := stdlibBootstrapEntries()
 
 	b.Run("read", func(b *testing.B) {
-		source := entries[len(entries)-1].source
+		source := lookupBootstrapEntry(b, "when-let").source
 		for b.Loop() {
 			if _, err := core.Read(source); err != nil {
 				b.Fatal(err)
@@ -265,26 +332,6 @@ func BenchmarkBootstrapPhases(b *testing.B) {
 		macro := core.NewEvaluator()
 		for b.Loop() {
 			if _, err := macro.MacroExpand(ctx, forms[0], env); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-
-	b.Run("compile-validate", func(b *testing.B) {
-		source := entries[len(entries)-1].source
-		forms, err := core.Read(source)
-		if err != nil {
-			b.Fatal(err)
-		}
-		form := forms[0]
-		for b.Loop() {
-			comp := compiler.NewCompiler("<bench>")
-			if err := comp.Compile(form); err != nil {
-				b.Fatal(err)
-			}
-			comp.Chunk().Emit(vm.OpReturn, 0)
-			comp.MarkCaptures()
-			if err := comp.Chunk().Validate(); err != nil {
 				b.Fatal(err)
 			}
 		}
