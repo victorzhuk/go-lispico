@@ -56,21 +56,27 @@ func IndexedAccess(ctx context.Context, subject core.Value, idx int64) (core.Val
 }
 
 func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn core.Value, seqs []core.Value) (core.Value, error) {
-	slices := make([][]core.Value, len(seqs))
+	type cursor struct {
+		list  core.List
+		vec   core.Vector
+		isVec bool
+		len   int
+	}
+	cursors := make([]cursor, len(seqs))
 	n := -1
 	for i, s := range seqs {
 		switch c := s.(type) {
 		case core.List:
-			slices[i] = c.ToSlice()
+			cursors[i] = cursor{list: c, len: c.Len()}
 		case core.Vector:
-			slices[i] = c.ToSlice()
+			cursors[i] = cursor{vec: c, isVec: true, len: c.Len()}
 		case core.Nil:
-			slices[i] = nil
+			cursors[i] = cursor{len: 0}
 		default:
 			return nil, fmt.Errorf("map: unsupported sequence type %T", s)
 		}
-		if n < 0 || len(slices[i]) < n {
-			n = len(slices[i])
+		if n < 0 || cursors[i].len < n {
+			n = cursors[i].len
 		}
 	}
 	if n < 0 {
@@ -78,28 +84,33 @@ func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn co
 	}
 
 	b := core.NewBuiltinWorkBudget(ctx)
-	results := make([]core.Value, 0, n)
-	for i := 0; i < n; i++ {
-		if err := b.Step(); err != nil {
-			return nil, err
+	var results []core.Value
+	for i := range n {
+		args := make([]core.Value, len(cursors))
+		for j := range cursors {
+			if err := b.Step(); err != nil {
+				return nil, flushErr(b, err)
+			}
+			if cursors[j].isVec {
+				args[j] = cursors[j].vec.At(i)
+			} else {
+				args[j] = cursors[j].list.At(0)
+				cursors[j].list = cursors[j].list.Rest()
+			}
 		}
-		args := make([]core.Value, len(slices))
-		for j := range slices {
-			args[j] = slices[j][i]
+		if err := b.Step(); err != nil {
+			return nil, flushErr(b, err)
 		}
 		r, err := eval.Apply(ctx, fn, args, env)
 		if err != nil {
-			if ferr := b.Flush(); ferr != nil {
-				return nil, ferr
-			}
-			return nil, err
+			return nil, flushErr(b, err)
+		}
+		if err := b.Step(); err != nil {
+			return nil, flushErr(b, err)
 		}
 		results = append(results, r)
 	}
-	if err := b.Flush(); err != nil {
-		return nil, err
-	}
-	return core.NewList(results), nil
+	return core.NewList(results), flushErr(b, nil)
 }
 
 // SortKeyFunc projects an input element to a sort key. StableSort invokes it
@@ -118,12 +129,12 @@ type SortLessFunc func(a, b core.Value) (bool, error)
 // ResourceLimitError win over any pending non-Terminal callback error.
 func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less SortLessFunc) ([]core.Value, error) {
 	b := core.NewBuiltinWorkBudget(ctx)
-	pairs := make([]sortPair, len(items))
-	for i, v := range items {
-		pairs[i].val = v
+	var pairs []sortPair
+	for _, v := range items {
 		if err := b.Step(); err != nil {
 			return finishSort(b, nil, err)
 		}
+		pairs = append(pairs, sortPair{val: v})
 	}
 
 	for i := range pairs {
@@ -155,22 +166,17 @@ func StableSort(ctx context.Context, items []core.Value, key SortKeyFunc, less S
 			sortErr = err
 			return false
 		}
-		if !ok {
-			return false
-		}
-		ok, err = less(pairs[j].key, pairs[i].key)
-		if err != nil {
-			sortErr = err
-			return false
-		}
-		return !ok
+		return ok
 	})
 	if sortErr != nil {
 		return finishSort(b, nil, sortErr)
 	}
-	sorted := make([]core.Value, len(pairs))
+	var sorted []core.Value
 	for i := range pairs {
-		sorted[i] = pairs[i].val
+		if err := b.Step(); err != nil {
+			return finishSort(b, nil, err)
+		}
+		sorted = append(sorted, pairs[i].val)
 	}
 	return finishSort(b, sorted, nil)
 }
@@ -188,4 +194,11 @@ func finishSort(b *core.BuiltinWorkBudget, sorted []core.Value, err error) ([]co
 		return nil, err
 	}
 	return sorted, nil
+}
+
+func flushErr(b *core.BuiltinWorkBudget, err error) error {
+	if ferr := b.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
+		return ferr
+	}
+	return err
 }
