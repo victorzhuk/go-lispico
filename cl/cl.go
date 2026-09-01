@@ -26,7 +26,7 @@ import (
 	"sync"
 
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/plugins/stdlib"
+	"github.com/victorzhuk/go-lispico/internal/collections"
 )
 
 const (
@@ -57,14 +57,14 @@ var clNth = sync.OnceValue(func() core.Value {
 			default:
 				return nil, core.NewTypeError("list or nil", args[1])
 			}
-			val, outcome, err := stdlib.IndexedAccess(ctx, args[1], idx.V)
+			val, outcome, err := collections.IndexedAccess(ctx, args[1], idx.V)
 			if err != nil {
 				return nil, err
 			}
 			switch outcome {
-			case stdlib.AccessHit:
+			case collections.AccessHit:
 				return val, nil
-			case stdlib.AccessOutOfRange:
+			case collections.AccessOutOfRange:
 				return core.Nil{}, nil
 			default:
 				return nil, core.NewTypeError("list or nil", args[1])
@@ -87,7 +87,7 @@ var clMapcar = sync.OnceValue(func() core.Value {
 					return nil, core.NewTypeError("list or nil", seq)
 				}
 			}
-			return stdlib.MapSequences(ctx, eval, env, args[0], args[1:])
+			return collections.MapSequences(ctx, eval, env, args[0], args[1:])
 		},
 	}
 })
@@ -129,13 +129,13 @@ var clSort = sync.OnceValue(func() core.Value {
 				return nil, core.NewTypeError("list, vector, or nil", seq)
 			}
 
-			var key stdlib.SortKeyFunc
+			var key collections.SortKeyFunc
 			if keyFn != nil {
 				key = func(v core.Value) (core.Value, error) {
 					return eval.Apply(ctx, keyFn, []core.Value{v}, env)
 				}
 			}
-			sorted, err := stdlib.StableSort(ctx, items, key, func(a, b core.Value) (bool, error) {
+			sorted, err := collections.StableSort(ctx, items, key, func(a, b core.Value) (bool, error) {
 				r, err := eval.Apply(ctx, args[1], []core.Value{a, b}, env)
 				if err != nil {
 					return false, err

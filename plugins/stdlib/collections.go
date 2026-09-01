@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/internal/collections"
 )
 
 const defaultStdlibCollectionLen = 10_000_000
@@ -230,14 +231,14 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("nth: index must be integer")
 			}
 
-			val, outcome, err := IndexedAccess(ctx, args[0], idx.V)
+			val, outcome, err := collections.IndexedAccess(ctx, args[0], idx.V)
 			if err != nil {
 				return nil, err
 			}
 			switch outcome {
-			case AccessHit:
+			case collections.AccessHit:
 				return val, nil
-			case AccessOutOfRange:
+			case collections.AccessOutOfRange:
 				if len(args) == 3 {
 					return args[2], nil
 				}
@@ -604,8 +605,8 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, fmt.Errorf("sort: expected collection, got %T", args[0])
 			}
 
-			sorted, err := StableSort(ctx, sorted, nil, func(a, b core.Value) (bool, error) {
-				cmp, err := naturalCmp(a, b)
+			sorted, err := collections.StableSort(ctx, sorted, nil, func(a, b core.Value) (bool, error) {
+				cmp, err := collections.NaturalCmp(a, b)
 				if err != nil {
 					return false, err
 				}
@@ -796,34 +797,3 @@ func collectionLimit(env *core.Env) int {
 	return defaultStdlibCollectionLen
 }
 
-// naturalCmp orders two values of the same kind: numbers by numCmp, strings
-// and keywords lexicographically. Mixed kinds (beyond int/float) are an error.
-func naturalCmp(a, b core.Value) (int, error) {
-	if as, ok := a.(core.String); ok {
-		bs, ok := b.(core.String)
-		if !ok {
-			return 0, fmt.Errorf("sort: cannot compare %T with %T", a, b)
-		}
-		switch {
-		case as.V < bs.V:
-			return -1, nil
-		case as.V > bs.V:
-			return 1, nil
-		}
-		return 0, nil
-	}
-	if ak, ok := a.(core.Keyword); ok {
-		bk, ok := b.(core.Keyword)
-		if !ok {
-			return 0, fmt.Errorf("sort: cannot compare %T with %T", a, b)
-		}
-		switch {
-		case ak.V < bk.V:
-			return -1, nil
-		case ak.V > bk.V:
-			return 1, nil
-		}
-		return 0, nil
-	}
-	return numCmp("sort", a, b)
-}

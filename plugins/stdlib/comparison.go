@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/internal/collections"
 )
 
 func (p *Plugin) registerComparison(env *core.Env) error {
@@ -47,11 +48,11 @@ func orderingFunc(name string, ok func(cmp int) bool) func(context.Context, core
 		if len(args) == 0 {
 			return nil, fmt.Errorf("%s: requires at least 1 argument", name)
 		}
-		if _, err := toFloat(name, args[0]); err != nil {
+		if _, err := collections.ToFloat(name, args[0]); err != nil {
 			return nil, err
 		}
 		for i := 1; i < len(args); i++ {
-			cmp, err := numCmp(name, args[i-1], args[i])
+			cmp, err := collections.NumCmp(name, args[i-1], args[i])
 			if err != nil {
 				return nil, err
 			}
@@ -63,45 +64,3 @@ func orderingFunc(name string, ok func(cmp int) bool) func(context.Context, core
 	}
 }
 
-// numCmp compares two numbers, returning -1, 0, or 1. An int-int pair is
-// compared exactly; a mixed pair promotes to float like arithmetic does.
-func numCmp(name string, a, b core.Value) (int, error) {
-	ai, aInt := a.(core.Int)
-	bi, bInt := b.(core.Int)
-	if aInt && bInt {
-		switch {
-		case ai.V < bi.V:
-			return -1, nil
-		case ai.V > bi.V:
-			return 1, nil
-		}
-		return 0, nil
-	}
-
-	af, err := toFloat(name, a)
-	if err != nil {
-		return 0, err
-	}
-	bf, err := toFloat(name, b)
-	if err != nil {
-		return 0, err
-	}
-	switch {
-	case af < bf:
-		return -1, nil
-	case af > bf:
-		return 1, nil
-	}
-	return 0, nil
-}
-
-func toFloat(name string, v core.Value) (float64, error) {
-	switch n := v.(type) {
-	case core.Int:
-		return float64(n.V), nil
-	case core.Float:
-		return n.V, nil
-	default:
-		return 0, fmt.Errorf("%s: expected number, got %T", name, v)
-	}
-}

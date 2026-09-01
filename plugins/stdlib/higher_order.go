@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/internal/collections"
 )
 
 func (p *Plugin) registerHigherOrder(env *core.Env) error {
@@ -21,7 +22,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				return nil, fmt.Errorf("map: second argument must be collection")
 			}
 
-			return MapSequences(ctx, eval, env, args[0], args[1:])
+			return collections.MapSequences(ctx, eval, env, args[0], args[1:])
 		},
 	}, false); err != nil {
 		return err
