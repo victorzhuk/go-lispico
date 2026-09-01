@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 	"github.com/victorzhuk/go-lispico/runtime"
@@ -400,5 +401,25 @@ func TestCLAdapters_CanonicalParity(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, tc.want.Equals(got), "CL %q = %v, want %v", tc.clSrc, got, tc.want)
 		})
+	}
+}
+
+// TestCLAdapters_VocabIDs asserts the CL stock dialect binds nth, mapcar, and
+// sort through adapters under their fixed semantic IDs, not through canonical
+// renames.
+func TestCLAdapters_VocabIDs(t *testing.T) {
+	vocab := cl.Dialect().Vocab()
+	for name, id := range map[string]string{
+		"nth":    "cl/nth@1",
+		"mapcar": "cl/mapcar@1",
+		"sort":   "cl/sort@1",
+	} {
+		entry, ok := vocab[name]
+		if !assert.True(t, ok, "CL dialect must carry a %q vocab entry", name) {
+			continue
+		}
+		assert.Equal(t, id, entry.AdapterID, "CL %q must carry its fixed semantic ID", name)
+		assert.NotNil(t, entry.Adapter, "CL %q must bind an adapter value", name)
+		assert.Empty(t, entry.Canonical, "CL %q must not be a canonical rename", name)
 	}
 }
