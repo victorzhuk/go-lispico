@@ -55,6 +55,11 @@ func pathLen(tb testing.TB, path core.Value) int {
 // The budget bounds allocation count only. An indexed At() walk over a shared
 // list is quadratic in time, not in allocations, so it is invisible here —
 // BenchmarkGetIn_ListPath is what covers that shape.
+//
+// The first-key-miss cases stop the walk after one step, so they only rule out
+// up-front materialization. The deep cases run the same budget against a
+// subject nested to the full path depth, where the cursor advances once per
+// key — that is where a per-step allocation on the advance path shows up.
 func TestGetIn_PathCursorDoesNotCopy(t *testing.T) {
 	env := setupEnv(t)
 	gf := getInGoFunc(t, env)
@@ -91,6 +96,26 @@ func TestGetIn_PathCursorDoesNotCopy(t *testing.T) {
 					_, _ = gf.Fn(ctx, nil, args, env)
 				})
 				require.Zero(t, allocs, "%s path of %d keys allocates %.0f per call", rep.name, n, allocs)
+			}
+		})
+	}
+
+	for _, rep := range reps {
+		t.Run(rep.name+"-deep", func(t *testing.T) {
+			for _, n := range rep.sizes {
+				path := rep.build(n)
+				args := []core.Value{buildNestedMap(t, pathKeys(n)), path}
+
+				require.Equal(t, n, pathLen(t, path))
+				got, err := gf.Fn(ctx, nil, args, env)
+				require.NoError(t, err)
+				require.True(t, got.Equals(core.Int{V: 1}),
+					"path of %d keys must walk to the terminal value, got %v", n, got)
+
+				allocs := testing.AllocsPerRun(100, func() {
+					_, _ = gf.Fn(ctx, nil, args, env)
+				})
+				require.Zero(t, allocs, "%s deep path of %d keys allocates %.0f per call", rep.name, n, allocs)
 			}
 		})
 	}

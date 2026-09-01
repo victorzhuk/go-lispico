@@ -37,6 +37,17 @@ func getInSubjectMap(t *testing.T) *core.HashMap {
 	return m
 }
 
+// lispErrorCode reads the Code off any *core.LispicoError. resourceLimitErrorCode
+// stays with the resource-limit subtest it is named for, so a TypeError row does
+// not read as a resource-limit row.
+func lispErrorCode(t *testing.T, err error) string {
+	t.Helper()
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	return lerr.Code
+}
+
 func getInGoldenCorpus(t *testing.T) []getInGolden {
 	t.Helper()
 	return []getInGolden{
@@ -97,7 +108,7 @@ func runGetInGoldens(t *testing.T, label string, eng Engine) {
 		got, err := eng.Eval(ctx, "get-in-golden", g.src)
 		if g.code != "" {
 			require.Error(t, err, "%s/%s: %s must fail", label, g.name, g.src)
-			assert.Equal(t, g.code, resourceLimitErrorCode(t, err),
+			assert.Equal(t, g.code, lispErrorCode(t, err),
 				"%s/%s: %s must classify under %s", label, g.name, g.src, g.code)
 			continue
 		}
