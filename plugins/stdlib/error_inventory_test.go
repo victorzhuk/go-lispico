@@ -215,7 +215,7 @@ var errorInventory = []errorSite{
 	{Family: "Collections", Fn: "vals", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
 	{Family: "Collections", Fn: "contains?", File: fileCollection, Func: "registerCollections", Class: "ArityError", Reachable: true},
 	{Family: "Collections", Fn: "contains?", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
-	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "external-conversion", Reachable: true},
+	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "external-conversion", Reachable: false},
 	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
 	{Family: "Collections", Fn: "merge", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "dissoc", File: fileCollection, Func: "registerCollections", Class: "ArityError", Reachable: true},
