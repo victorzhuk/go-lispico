@@ -13,7 +13,7 @@ func ToFloat(name string, v core.Value) (float64, error) {
 	case core.Float:
 		return n.V, nil
 	default:
-		return 0, fmt.Errorf("%s: expected number, got %T", name, v)
+		return 0, typeErrorf("%s: expected number, got %T", name, v)
 	}
 }
 

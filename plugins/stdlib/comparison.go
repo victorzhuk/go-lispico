@@ -2,7 +2,6 @@ package stdlib
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/internal/collections"
@@ -13,7 +12,7 @@ func (p *Plugin) registerComparison(env *core.Env) error {
 		Name: "=",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
-				return nil, fmt.Errorf("=: requires at least 1 argument")
+				return nil, arityErrorf("=: requires at least 1 argument")
 			}
 			for _, arg := range args[1:] {
 				if !args[0].Equals(arg) {
@@ -46,7 +45,7 @@ func (p *Plugin) registerComparison(env *core.Env) error {
 func orderingFunc(name string, ok func(cmp int) bool) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
 	return func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 		if len(args) == 0 {
-			return nil, fmt.Errorf("%s: requires at least 1 argument", name)
+			return nil, arityErrorf("%s: requires at least 1 argument", name)
 		}
 		if _, err := collections.ToFloat(name, args[0]); err != nil {
 			return nil, err

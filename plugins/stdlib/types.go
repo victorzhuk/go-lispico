@@ -2,7 +2,6 @@ package stdlib
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -12,7 +11,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "type",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("type: requires 1 argument")
+				return nil, arityErrorf("type: requires 1 argument")
 			}
 			return args[0].Type(), nil
 		},
@@ -24,7 +23,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "nil?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("nil?: requires 1 argument")
+				return nil, arityErrorf("nil?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Nil)
 			return core.Bool{V: ok}, nil
@@ -37,7 +36,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "bool?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("bool?: requires 1 argument")
+				return nil, arityErrorf("bool?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Bool)
 			return core.Bool{V: ok}, nil
@@ -50,7 +49,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "int?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("int?: requires 1 argument")
+				return nil, arityErrorf("int?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Int)
 			return core.Bool{V: ok}, nil
@@ -63,7 +62,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "float?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("float?: requires 1 argument")
+				return nil, arityErrorf("float?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Float)
 			return core.Bool{V: ok}, nil
@@ -76,7 +75,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "string?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("string?: requires 1 argument")
+				return nil, arityErrorf("string?: requires 1 argument")
 			}
 			_, ok := args[0].(core.String)
 			return core.Bool{V: ok}, nil
@@ -89,7 +88,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "keyword?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("keyword?: requires 1 argument")
+				return nil, arityErrorf("keyword?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Keyword)
 			return core.Bool{V: ok}, nil
@@ -102,7 +101,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "symbol?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("symbol?: requires 1 argument")
+				return nil, arityErrorf("symbol?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Symbol)
 			return core.Bool{V: ok}, nil
@@ -115,7 +114,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "list?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("list?: requires 1 argument")
+				return nil, arityErrorf("list?: requires 1 argument")
 			}
 			_, ok := args[0].(core.List)
 			return core.Bool{V: ok}, nil
@@ -128,7 +127,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "vector?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("vector?: requires 1 argument")
+				return nil, arityErrorf("vector?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Vector)
 			return core.Bool{V: ok}, nil
@@ -141,7 +140,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "map?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("map?: requires 1 argument")
+				return nil, arityErrorf("map?: requires 1 argument")
 			}
 			_, ok := args[0].(*core.HashMap)
 			return core.Bool{V: ok}, nil
@@ -154,7 +153,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "fn?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("fn?: requires 1 argument")
+				return nil, arityErrorf("fn?: requires 1 argument")
 			}
 			return core.Bool{V: args[0].Type().V == "fn"}, nil
 		},
@@ -166,7 +165,7 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "macro?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("macro?: requires 1 argument")
+				return nil, arityErrorf("macro?: requires 1 argument")
 			}
 			_, ok := args[0].(core.Macro)
 			return core.Bool{V: ok}, nil
@@ -179,11 +178,11 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "str->keyword",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("str->keyword: requires 1 argument")
+				return nil, arityErrorf("str->keyword: requires 1 argument")
 			}
 			s, ok := args[0].(core.String)
 			if !ok {
-				return nil, fmt.Errorf("str->keyword: requires string argument")
+				return nil, typeErrorf("str->keyword: requires string argument")
 			}
 			return core.Keyword(s), nil
 		},
@@ -195,11 +194,11 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "keyword->str",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("keyword->str: requires 1 argument")
+				return nil, arityErrorf("keyword->str: requires 1 argument")
 			}
 			k, ok := args[0].(core.Keyword)
 			if !ok {
-				return nil, fmt.Errorf("keyword->str: requires keyword argument")
+				return nil, typeErrorf("keyword->str: requires keyword argument")
 			}
 			return core.String(k), nil
 		},
@@ -211,11 +210,11 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "int->float",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("int->float: requires 1 argument")
+				return nil, arityErrorf("int->float: requires 1 argument")
 			}
 			i, ok := args[0].(core.Int)
 			if !ok {
-				return nil, fmt.Errorf("int->float: requires integer argument")
+				return nil, typeErrorf("int->float: requires integer argument")
 			}
 			return core.Float{V: float64(i.V)}, nil
 		},
@@ -227,11 +226,11 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 		Name: "float->int",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("float->int: requires 1 argument")
+				return nil, arityErrorf("float->int: requires 1 argument")
 			}
 			f, ok := args[0].(core.Float)
 			if !ok {
-				return nil, fmt.Errorf("float->int: requires float argument")
+				return nil, typeErrorf("float->int: requires float argument")
 			}
 			return core.Int{V: int64(f.V)}, nil
 		},

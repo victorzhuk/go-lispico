@@ -2,7 +2,6 @@ package stdlib
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -31,7 +30,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 					}
 					floatSum += v.V
 				default:
-					return nil, fmt.Errorf("+: expected number, got %T", arg)
+					return nil, typeErrorf("+: expected number, got %T", arg)
 				}
 			}
 
@@ -48,7 +47,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "-",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
-				return nil, fmt.Errorf("-: requires at least 1 argument")
+				return nil, arityErrorf("-: requires at least 1 argument")
 			}
 
 			var intResult int64
@@ -62,7 +61,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 				floatResult = v.V
 				hasFloat = true
 			default:
-				return nil, fmt.Errorf("-: expected number, got %T", args[0])
+				return nil, typeErrorf("-: expected number, got %T", args[0])
 			}
 
 			if len(args) == 1 {
@@ -87,7 +86,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 					}
 					floatResult -= v.V
 				default:
-					return nil, fmt.Errorf("-: expected number, got %T", arg)
+					return nil, typeErrorf("-: expected number, got %T", arg)
 				}
 			}
 
@@ -126,7 +125,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 					}
 					floatProd *= v.V
 				default:
-					return nil, fmt.Errorf("*: expected number, got %T", arg)
+					return nil, typeErrorf("*: expected number, got %T", arg)
 				}
 			}
 
@@ -143,7 +142,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "/",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
-				return nil, fmt.Errorf("/: requires at least 2 arguments")
+				return nil, arityErrorf("/: requires at least 2 arguments")
 			}
 
 			var dividend float64
@@ -153,7 +152,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 			case core.Float:
 				dividend = v.V
 			default:
-				return nil, fmt.Errorf("/: expected number, got %T", args[0])
+				return nil, typeErrorf("/: expected number, got %T", args[0])
 			}
 
 			for _, arg := range args[1:] {
@@ -161,16 +160,16 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 				switch v := arg.(type) {
 				case core.Int:
 					if v.V == 0 {
-						return nil, fmt.Errorf("/: division by zero")
+						return nil, domainErrorf("/: division by zero")
 					}
 					divisor = float64(v.V)
 				case core.Float:
 					if v.V == 0 {
-						return nil, fmt.Errorf("/: division by zero")
+						return nil, domainErrorf("/: division by zero")
 					}
 					divisor = v.V
 				default:
-					return nil, fmt.Errorf("/: expected number, got %T", arg)
+					return nil, typeErrorf("/: expected number, got %T", arg)
 				}
 				dividend /= divisor
 			}
@@ -185,18 +184,18 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "mod",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("mod: requires 2 arguments")
+				return nil, arityErrorf("mod: requires 2 arguments")
 			}
 
 			a, ok1 := args[0].(core.Int)
 			b, ok2 := args[1].(core.Int)
 
 			if !ok1 || !ok2 {
-				return nil, fmt.Errorf("mod: requires integer arguments")
+				return nil, typeErrorf("mod: requires integer arguments")
 			}
 
 			if b.V == 0 {
-				return nil, fmt.Errorf("mod: division by zero")
+				return nil, domainErrorf("mod: division by zero")
 			}
 
 			return core.BoxInt(a.V % b.V), nil
@@ -209,18 +208,18 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "quot",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("quot: requires 2 arguments")
+				return nil, arityErrorf("quot: requires 2 arguments")
 			}
 
 			a, ok1 := args[0].(core.Int)
 			b, ok2 := args[1].(core.Int)
 
 			if !ok1 || !ok2 {
-				return nil, fmt.Errorf("quot: requires integer arguments")
+				return nil, typeErrorf("quot: requires integer arguments")
 			}
 
 			if b.V == 0 {
-				return nil, fmt.Errorf("quot: division by zero")
+				return nil, domainErrorf("quot: division by zero")
 			}
 
 			return core.BoxInt(a.V / b.V), nil
@@ -233,7 +232,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "pow",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("pow: requires 2 arguments")
+				return nil, arityErrorf("pow: requires 2 arguments")
 			}
 
 			var base, exp float64
@@ -244,7 +243,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 			case core.Float:
 				base = v.V
 			default:
-				return nil, fmt.Errorf("pow: expected number, got %T", args[0])
+				return nil, typeErrorf("pow: expected number, got %T", args[0])
 			}
 
 			switch v := args[1].(type) {
@@ -253,7 +252,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 			case core.Float:
 				exp = v.V
 			default:
-				return nil, fmt.Errorf("pow: expected number, got %T", args[1])
+				return nil, typeErrorf("pow: expected number, got %T", args[1])
 			}
 
 			return core.Float{V: math.Pow(base, exp)}, nil
@@ -264,28 +263,28 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 
 	if err := env.RegisterValue("sqrt", core.GoFunc{
 		Name: "sqrt",
-		Fn:   unaryMathFunc(math.Sqrt),
+		Fn:   unaryMathFunc("sqrt", math.Sqrt),
 	}, false); err != nil {
 		return err
 	}
 
 	if err := env.RegisterValue("abs", core.GoFunc{
 		Name: "abs",
-		Fn:   unaryMathFunc(math.Abs),
+		Fn:   unaryMathFunc("abs", math.Abs),
 	}, false); err != nil {
 		return err
 	}
 
 	if err := env.RegisterValue("floor", core.GoFunc{
 		Name: "floor",
-		Fn:   unaryMathFunc(math.Floor),
+		Fn:   unaryMathFunc("floor", math.Floor),
 	}, false); err != nil {
 		return err
 	}
 
 	if err := env.RegisterValue("ceil", core.GoFunc{
 		Name: "ceil",
-		Fn:   unaryMathFunc(math.Ceil),
+		Fn:   unaryMathFunc("ceil", math.Ceil),
 	}, false); err != nil {
 		return err
 	}
@@ -294,7 +293,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "zero?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("zero?: requires 1 argument")
+				return nil, arityErrorf("zero?: requires 1 argument")
 			}
 
 			switch v := args[0].(type) {
@@ -314,7 +313,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "pos?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("pos?: requires 1 argument")
+				return nil, arityErrorf("pos?: requires 1 argument")
 			}
 
 			switch v := args[0].(type) {
@@ -334,7 +333,7 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 		Name: "neg?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("neg?: requires 1 argument")
+				return nil, arityErrorf("neg?: requires 1 argument")
 			}
 
 			switch v := args[0].(type) {
@@ -352,24 +351,24 @@ func (p *Plugin) registerArithmetic(env *core.Env) error {
 
 	if err := env.RegisterValue("max", core.GoFunc{
 		Name: "max",
-		Fn:   minMaxFunc(true),
+		Fn:   minMaxFunc("max", true),
 	}, false); err != nil {
 		return err
 	}
 
 	if err := env.RegisterValue("min", core.GoFunc{
 		Name: "min",
-		Fn:   minMaxFunc(false),
+		Fn:   minMaxFunc("min", false),
 	}, false); err != nil {
 		return err
 	}
 	return nil
 }
 
-func unaryMathFunc(fn func(float64) float64) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+func unaryMathFunc(name string, fn func(float64) float64) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
 	return func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 		if len(args) != 1 {
-			return nil, fmt.Errorf("requires 1 argument")
+			return nil, arityErrorf("%s: requires 1 argument", name)
 		}
 
 		var x float64
@@ -379,17 +378,17 @@ func unaryMathFunc(fn func(float64) float64) func(context.Context, core.Evaluato
 		case core.Float:
 			x = v.V
 		default:
-			return nil, fmt.Errorf("expected number, got %T", args[0])
+			return nil, typeErrorf("%s: expected number, got %T", name, args[0])
 		}
 
 		return core.Float{V: fn(x)}, nil
 	}
 }
 
-func minMaxFunc(isMax bool) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+func minMaxFunc(name string, isMax bool) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
 	return func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 		if len(args) == 0 {
-			return nil, fmt.Errorf("requires at least 1 argument")
+			return nil, arityErrorf("%s: requires at least 1 argument", name)
 		}
 
 		var result float64
@@ -402,7 +401,7 @@ func minMaxFunc(isMax bool) func(context.Context, core.Evaluator, []core.Value, 
 			result = v.V
 			hasFloat = true
 		default:
-			return nil, fmt.Errorf("expected number, got %T", args[0])
+			return nil, typeErrorf("%s: expected number, got %T", name, args[0])
 		}
 
 		for _, arg := range args[1:] {
@@ -414,7 +413,7 @@ func minMaxFunc(isMax bool) func(context.Context, core.Evaluator, []core.Value, 
 				x = v.V
 				hasFloat = true
 			default:
-				return nil, fmt.Errorf("expected number, got %T", arg)
+				return nil, typeErrorf("%s: expected number, got %T", name, arg)
 			}
 
 			if isMax {
