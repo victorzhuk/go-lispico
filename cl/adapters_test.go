@@ -423,3 +423,145 @@ func TestCLAdapters_VocabIDs(t *testing.T) {
 		assert.Empty(t, entry.Canonical, "CL %q must not be a canonical rename", name)
 	}
 }
+
+// TestCLSort_GrammarBeforeCallbacks pins the exact CL sort grammar contract:
+// every malformed shape fails with a typed LispicoError and its exact message
+// BEFORE the predicate is applied even once. The predicate is a counting
+// GoFunc, so any callback attempt after a grammar/type rejection fails the
+// test.
+func TestCLSort_GrammarBeforeCallbacks(t *testing.T) {
+	modes := []struct {
+		name string
+		opts []runtime.EngineOption
+	}{
+		{name: "tree-walker", opts: []runtime.EngineOption{runtime.WithTreeWalker()}},
+		{name: "vm", opts: []runtime.EngineOption{runtime.WithBytecode()}},
+	}
+	cases := []struct {
+		name    string
+		src     string
+		code    string
+		message string
+	}{
+		{
+			name:    "missing predicate",
+			src:     `(sort (list 3 1 2))`,
+			code:    "ArityError",
+			message: "sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got 1 arguments",
+		},
+		{
+			name:    "extra positional in option slot",
+			src:     `(sort (list 3 1 2) #'clsort-pred 5)`,
+			code:    "ArityError",
+			message: "sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got 3 arguments",
+		},
+		{
+			name:    "dangling key keyword",
+			src:     `(sort (list 3 1 2) #'clsort-pred :key)`,
+			code:    "ArityError",
+			message: "sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got 3 arguments",
+		},
+		{
+			name:    "extra positional after key pair",
+			src:     `(sort (list 3 1 2) #'clsort-pred :key #'clsort-key 9)`,
+			code:    "ArityError",
+			message: "sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got 5 arguments",
+		},
+		{
+			name:    "unknown keyword",
+			src:     `(sort (list 3 1 2) #'clsort-pred :foo #'clsort-key)`,
+			code:    "EvalError",
+			message: "sort: unknown keyword :foo",
+		},
+		{
+			name:    "duplicate key keyword",
+			src:     `(sort (list 3 1 2) #'clsort-pred :key #'clsort-key :key #'clsort-key)`,
+			code:    "EvalError",
+			message: "sort: duplicate :key keyword",
+		},
+		{
+			name:    "subject not a sequence",
+			src:     `(sort 5 #'clsort-pred)`,
+			code:    "TypeError",
+			message: "expected list, vector, or nil, got core.Int",
+		},
+		{
+			name:    "predicate not callable",
+			src:     `(sort (list 3 1 2) 5)`,
+			code:    "TypeError",
+			message: "expected function, got core.Int",
+		},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			e := newEngine(t, mode.opts...)
+			predCalls := 0
+			require.NoError(t, e.Bind("clsort-pred", core.GoFunc{
+				Name: "clsort-pred",
+				Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+					predCalls++
+					return core.Int{V: 1}, nil
+				},
+			}))
+			require.NoError(t, e.Bind("clsort-key", core.GoFunc{
+				Name: "clsort-key",
+				Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+					return core.Int{V: 0}, nil
+				},
+			}))
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					before := predCalls
+					_, err := e.Eval(context.Background(), "cl-sort-grammar", tc.src)
+					require.Error(t, err, "%s: malformed sort must error", tc.name)
+					var le *core.LispicoError
+					require.ErrorAs(t, err, &le, "%s: error must be a typed *core.LispicoError, got %v", tc.name, err)
+					assert.Equal(t, tc.code, le.Code, "%s: error code", tc.name)
+					assert.Equal(t, tc.message, le.Message, "%s: error message", tc.name)
+					assert.Equal(t, before, predCalls, "%s: grammar/type validation must precede any predicate callback", tc.name)
+				})
+			}
+		})
+	}
+}
+
+// TestCLSort_Truthiness pins generalized predicate truthiness through the CL
+// sort adapter: a keyword result is truthy and nil is falsy, so both
+// orderings are expressible and the sort honors them.
+func TestCLSort_Truthiness(t *testing.T) {
+	modes := []struct {
+		name string
+		opts []runtime.EngineOption
+	}{
+		{name: "tree-walker", opts: []runtime.EngineOption{runtime.WithTreeWalker()}},
+		{name: "vm", opts: []runtime.EngineOption{runtime.WithBytecode()}},
+	}
+	cases := []struct {
+		name string
+		src  string
+		want core.Value
+	}{
+		{
+			name: "keyword is truthy",
+			src:  `(sort (list 3 1 2) (fn (a b) (if (< a b) :yes nil)))`,
+			want: core.NewList([]core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}),
+		},
+		{
+			name: "nil is falsy",
+			src:  `(sort (list 1 2 3) (fn (a b) (if (< a b) nil :yes)))`,
+			want: core.NewList([]core.Value{core.Int{V: 3}, core.Int{V: 2}, core.Int{V: 1}}),
+		},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			e := newEngine(t, mode.opts...)
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					got, err := e.Eval(context.Background(), "cl-sort-truthiness", tc.src)
+					require.NoError(t, err, "%s: %v", tc.src, err)
+					assert.True(t, tc.want.Equals(got), "%s => %v, want %v", tc.src, got, tc.want)
+				})
+			}
+		})
+	}
+}
