@@ -2,6 +2,8 @@ package cl_test
 
 import (
 	"context"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -565,4 +567,168 @@ func TestCLSort_Truthiness(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCLDocs_ExamplesParse pins the README's Common Lisp documentation to the
+// executable contract: the section carries at least four fenced lisp
+// examples, each parses under the CL dialect and evaluates on a stock CL
+// engine, no example uses bracket literals, the reader still rejects them,
+// and neither README nor the [Unreleased] changelog shows the retired
+// two-argument WithAdapter form while the changelog documents the
+// three-argument migration.
+func TestCLDocs_ExamplesParse(t *testing.T) {
+	readme, err := os.ReadFile("../README.md")
+	require.NoError(t, err, "README.md must be readable relative to the cl package")
+	src := string(readme)
+
+	section, ok := clDocSection(src, "Common Lisp")
+	require.True(t, ok, "README must document the Common Lisp dialect in its own section")
+
+	blocks := fencedLispBlocks(section)
+	require.GreaterOrEqual(t, len(blocks), 4, "Common Lisp section must carry at least 4 fenced lisp examples")
+
+	e := newEngine(t)
+	ctx := t.Context()
+	for i, block := range blocks {
+		clean := stripLispStrings(block)
+		require.NotContains(t, clean, "[", "example %d must not use bracket literals", i+1)
+		require.NotContains(t, clean, "{", "example %d must not use bracket literals", i+1)
+		if _, err := cl.Dialect().Read(block); err != nil {
+			t.Errorf("example %d must parse under the CL dialect: %v\n%s", i+1, err, block)
+			continue
+		}
+		if _, err := e.Eval(ctx, "docs", block); err != nil {
+			t.Errorf("example %d must evaluate on a stock CL engine: %v\n%s", i+1, err, block)
+		}
+	}
+
+	_, err = cl.Dialect().Read("(nth 0 [1 2 3])")
+	require.Error(t, err, "the CL reader must reject bracket literals")
+	var readErr *core.LispicoError
+	require.ErrorAs(t, err, &readErr)
+	require.Equal(t, "ReadError", readErr.Code)
+
+	for _, args := range adapterArgCounts(src) {
+		require.NotEqual(t, 2, args, "README must not show the retired two-argument WithAdapter(name, fn) form")
+	}
+
+	changelog, err := os.ReadFile("../CHANGELOG.md")
+	require.NoError(t, err, "CHANGELOG.md must be readable relative to the cl package")
+	unreleased, ok := changelogUnreleased(string(changelog))
+	require.True(t, ok, "CHANGELOG must carry an [Unreleased] section")
+	migrated := false
+	for _, args := range adapterArgCounts(unreleased) {
+		require.NotEqual(t, 2, args, "[Unreleased] must not show the retired two-argument WithAdapter(name, fn) form")
+		if args >= 3 {
+			migrated = true
+		}
+	}
+	require.True(t, migrated, "[Unreleased] must document the WithAdapter(name, semanticID, fn) migration with a three-argument example")
+}
+
+// clDocSection returns the body of the README section whose heading mentions
+// name, ending at the next heading of the same or higher level.
+func clDocSection(src, name string) (string, bool) {
+	head := regexp.MustCompile(`(?m)^(#{2,6})\s+(.+)$`)
+	matches := head.FindAllStringSubmatchIndex(src, -1)
+	start, level := -1, 0
+	for _, m := range matches {
+		lv := m[3] - m[2]
+		if start < 0 {
+			if strings.Contains(strings.ToLower(src[m[4]:m[5]]), strings.ToLower(name)) {
+				start, level = m[2], lv
+			}
+			continue
+		}
+		if lv <= level {
+			return src[start:m[2]], true
+		}
+	}
+	if start >= 0 {
+		return src[start:], true
+	}
+	return "", false
+}
+
+func fencedLispBlocks(src string) []string {
+	re := regexp.MustCompile("(?s)```lisp\n(.*?)```")
+	matches := re.FindAllStringSubmatch(src, -1)
+	blocks := make([]string, 0, len(matches))
+	for _, m := range matches {
+		blocks = append(blocks, m[1])
+	}
+	return blocks
+}
+
+// stripLispStrings removes double-quoted string literal contents so bracket
+// checks see only code structure.
+func stripLispStrings(src string) string {
+	var b strings.Builder
+	inStr := false
+	for i := 0; i < len(src); i++ {
+		ch := src[i]
+		if inStr {
+			if ch == '\\' {
+				i++
+			} else if ch == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inStr = true
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
+}
+
+// adapterArgCounts counts the top-level arguments of every WithAdapter call
+// site in src, balancing nested delimiters and skipping string literals.
+func adapterArgCounts(src string) []int {
+	const marker = "WithAdapter("
+	var counts []int
+	for pos := 0; ; {
+		idx := strings.Index(src[pos:], marker)
+		if idx < 0 {
+			return counts
+		}
+		j := pos + idx + len(marker)
+		depth, args, inStr := 1, 1, false
+		for ; j < len(src) && depth > 0; j++ {
+			ch := src[j]
+			switch {
+			case inStr:
+				if ch == '\\' {
+					j++
+				} else if ch == '"' {
+					inStr = false
+				}
+			case ch == '"':
+				inStr = true
+			case ch == '(' || ch == '[' || ch == '{':
+				depth++
+			case ch == ')':
+				depth--
+			case ch == ',' && depth == 1:
+				args++
+			}
+		}
+		counts = append(counts, args)
+		pos = j
+	}
+}
+
+func changelogUnreleased(src string) (string, bool) {
+	const head = "## [Unreleased]"
+	start := strings.Index(src, head)
+	if start < 0 {
+		return "", false
+	}
+	rest := src[start+len(head):]
+	if end := strings.Index(rest, "\n## "); end >= 0 {
+		return rest[:end], true
+	}
+	return rest, true
 }
