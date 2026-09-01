@@ -158,12 +158,12 @@ func TestCLAdapters_EmptyAndNil(t *testing.T) {
 
 	got, err = e.Eval(ctx, "mapcar", "(mapcar #'f nil)")
 	require.NoError(t, err)
-	assert.True(t, (core.Nil{}).Equals(got), "(mapcar #'f nil) = %v, want nil", got)
+	assert.True(t, intList().Equals(got), "(mapcar #'f nil) = %v, want the empty list", got)
 	assert.Zero(t, calls, "mapcar over nil must not call the callback")
 
 	got, err = e.Eval(ctx, "sort", "(sort nil #'f)")
 	require.NoError(t, err)
-	assert.True(t, (core.Nil{}).Equals(got), "(sort nil #'f) = %v, want nil", got)
+	assert.True(t, intList().Equals(got), "(sort nil #'f) = %v, want the empty list", got)
 	assert.Zero(t, calls, "sort of nil must not call the predicate")
 }
 
@@ -354,8 +354,12 @@ func TestCLSort_Immutability(t *testing.T) {
 	_, err = e.Eval(ctx, "bind", "(def vs #(3 1 2))")
 	require.NoError(t, err)
 
-	_, err = e.Eval(ctx, "sort", "(sort vs #'<)")
+	vec, err := e.Eval(ctx, "sort", "(sort vs #'<)")
 	require.NoError(t, err)
+	sortedVec, ok := vec.(core.Vector)
+	require.True(t, ok, "sorting a vector must return a Vector, got %T", vec)
+	assert.True(t, core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}, core.Int{V: 3}}).Equals(sortedVec),
+		"(sort vs #'<) = %v, want #(1 2 3)", vec)
 
 	got, err = e.Eval(ctx, "read", "vs")
 	require.NoError(t, err)
