@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -900,4 +901,147 @@ func TestMetering_MapStillChargedByApplySiteFallback(t *testing.T) {
 				"map result must still be charged via the apply-site fallback (base=%d, mapped=%d)", base, mapped)
 		})
 	}
+}
+
+// getInDeepLevels is chosen so a full-depth walk crosses the 128-unit sync
+// boundary of core.BuiltinWorkBudget; a shorter path never charges the
+// traversal's reductions in a batch.
+const getInDeepLevels = 200
+
+// getInReductionCeiling is calibrated against the measured ledger: it clears
+// the 2-key control and sits under the getInDeepLevels-key traversal, so only
+// the traversal's own reductions can exhaust it.
+const getInReductionCeiling = 64
+
+// getInDeepMap builds a getInDeepLevels-deep chain of maps, every level keyed
+// :k and resolvable. Built in Go and bound, so no reader or construction cost
+// enters the measured ledger.
+func getInDeepMap(t *testing.T, levels int) *core.HashMap {
+	t.Helper()
+	cur := core.Value(core.Int{V: 1})
+	var top *core.HashMap
+	for range levels {
+		m := core.NewHashMap()
+		require.NoError(t, m.Set(core.Keyword{V: "k"}, cur))
+		cur, top = m, m
+	}
+	return top
+}
+
+func getInPath(n int) core.List {
+	keys := make([]core.Value, n)
+	for i := range keys {
+		keys[i] = core.Keyword{V: "k"}
+	}
+	return core.NewList(keys)
+}
+
+func bindGetInFixtures(t *testing.T, eng Engine) {
+	t.Helper()
+	require.NoError(t, eng.Bind("m", getInDeepMap(t, getInDeepLevels)))
+	require.NoError(t, eng.Bind("deep-path", getInPath(getInDeepLevels)))
+	require.NoError(t, eng.Bind("two-path", getInPath(2)))
+	require.NoError(t, eng.Bind("one-path", getInPath(1)))
+}
+
+func newGetInEngine(t *testing.T, bytecode bool, limits ResourceLimits) Engine {
+	t.Helper()
+	eng := newMeteringStdlibEngine(t, bytecode, limits)
+	bindGetInFixtures(t, eng)
+	return eng
+}
+
+// TestGetIn_ReductionBudgetExhausted pins the traversal's reduction cost as
+// the thing that trips the budget: the 2-key control and the deep walk differ
+// only in path length, run on the same engine configuration under the same
+// ceiling, and only the deep walk fails.
+func TestGetIn_ReductionBudgetExhausted(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const deepSrc = `(get-in m deep-path)`
+	const shortSrc = `(get-in m two-path)`
+
+	used := func(t *testing.T, bytecode bool, src string) int64 {
+		t.Helper()
+		eng := newGetInEngine(t, bytecode, meteringLimits(t, 1_000_000, 1<<30))
+		ctx := core.EnsureEvalState(context.Background())
+		_, err := eng.Eval(ctx, "get-in-calibration", src)
+		require.NoError(t, err)
+		return core.EvalMeterFrom(ctx).Snapshot().Reductions
+	}
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			shortUsed := used(t, bytecode, shortSrc)
+			deepUsed := used(t, bytecode, deepSrc)
+
+			assert.Greater(t, getInReductionCeiling, int(shortUsed),
+				"calibrated ceiling must clear the 2-key control (short=%d deep=%d)", shortUsed, deepUsed)
+			assert.Less(t, getInReductionCeiling, int(deepUsed),
+				"calibrated ceiling must sit under the %d-key traversal (short=%d deep=%d)", getInDeepLevels, shortUsed, deepUsed)
+
+			eng := newGetInEngine(t, bytecode, meteringLimits(t, getInReductionCeiling, 1<<30))
+
+			_, err := eng.Eval(context.Background(), "get-in-short", shortSrc)
+			require.NoError(t, err, "the 2-key control must fit the calibrated budget")
+
+			_, err = eng.Eval(context.Background(), "get-in-deep", deepSrc)
+			assert.True(t, isResourceLimit(t, err),
+				"the %d-key traversal must exhaust the calibrated budget, got %v", getInDeepLevels, err)
+		})
+	}
+}
+
+// TestGetIn_VMDeadlineExpiredBeforeLookup drives a VM run whose deadline is
+// already past when the lookup is entered. The mark builtin sitting directly
+// in front of the lookup is the attribution control: it proves the run
+// reached the lookup rather than failing on a preceding instruction, and the
+// headroom arm proves the same engine, sleeper and builtin succeed when the
+// deadline has not expired.
+func TestGetIn_VMDeadlineExpiredBeforeLookup(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const timeout = 300 * time.Millisecond
+
+	eng, err := New(nil,
+		WithBytecode(),
+		WithDialect(clojure.Dialect()),
+		WithTimeout(timeout),
+		WithResourceLimits(meteringLimits(t, 1_000_000, 1<<30)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	require.NoError(t, eng.Use(stdlib.New()))
+	bindGetInFixtures(t, eng)
+
+	var sleepFor time.Duration
+	var reached bool
+	require.NoError(t, eng.Bind("sleeper", core.GoFunc{
+		Name: "sleeper",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			time.Sleep(sleepFor)
+			return core.Nil{}, nil
+		},
+	}))
+	require.NoError(t, eng.Bind("mark", core.GoFunc{
+		Name: "mark",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			reached = true
+			return core.Nil{}, nil
+		},
+	}))
+
+	t.Run("headroom", func(t *testing.T) {
+		sleepFor, reached = timeout/10, false
+		_, err := eng.Eval(context.Background(), "get-in-headroom", `(do (sleeper) (mark) (get-in m one-path))`)
+		require.True(t, reached, "control must reach the lookup")
+		require.NoError(t, err, "a lookup with deadline headroom must succeed")
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		sleepFor, reached = 2*timeout, false
+		_, err := eng.Eval(context.Background(), "get-in-expired", `(do (sleeper) (mark) (get-in m deep-path))`)
+		require.True(t, reached, "the run must reach the lookup, else the error is not the lookup's")
+		assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected context.DeadlineExceeded, got %v", err)
+	})
 }

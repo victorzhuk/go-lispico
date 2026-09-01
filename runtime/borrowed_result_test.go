@@ -314,3 +314,40 @@ func TestBorrowed_GetDefaultIsBorrowed(t *testing.T) {
 		})
 	}
 }
+
+// TestBorrowed_GetInStoredValueAndEmptyPathSubject covers both of get-in's
+// borrowed returns: a stored value handed back from a resolved path, and the
+// subject itself handed back for the empty path. Neither may enter the result
+// ledger, so a payload 4096 times larger must not move the total or trip a
+// budget tighter than its shallow size.
+func TestBorrowed_GetInStoredValueAndEmptyPathSubject(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"stored value", `(get-in m (list :a))`},
+		{"empty path subject", `(get-in d (list))`},
+	}
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					tiny, err := getUsage(t, bytecode, core.String{V: "x"}, 16<<20, tc.src)
+					require.NoError(t, err)
+					large, err := getUsage(t, bytecode, borrowedPayload(), 16<<20, tc.src)
+					require.NoError(t, err)
+
+					assert.Equal(t, tiny, large,
+						"a borrowed get-in result must add zero result bytes to the ledger (tiny=%d large=%d)", tiny, large)
+
+					tight := int(tiny + borrowedShallowBytes()/2)
+					_, err = getUsage(t, bytecode, borrowedPayload(), tight, tc.src)
+					require.NoError(t, err, "borrowed get-in result must not trip a budget tighter than its shallow size")
+				})
+			}
+		})
+	}
+}

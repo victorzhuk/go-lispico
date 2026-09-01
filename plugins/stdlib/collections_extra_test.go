@@ -397,3 +397,99 @@ func TestRange_CancelledMidBuild(t *testing.T) {
 		assert.Less(t, list.Len(), 1000, "range must not complete the list on mid-build cancel")
 	}
 }
+
+// getInDeepLevels is chosen so a full-depth walk crosses the 128-unit sync
+// boundary of core.BuiltinWorkBudget: below it the traversal never observes
+// the eval state and the cancellation arms would assert nothing.
+const getInDeepLevels = 200
+
+// getInDeepSubject builds a getInDeepLevels-deep chain of maps, every level
+// keyed :k and resolvable, so a getInDeepLevels-key path takes one budget
+// step per level instead of stopping early on a miss.
+func getInDeepSubject(t *testing.T) *core.HashMap {
+	t.Helper()
+	cur := core.Value(core.Int{V: 1})
+	var top *core.HashMap
+	for range getInDeepLevels {
+		m := core.NewHashMap()
+		require.NoError(t, m.Set(core.Keyword{V: "k"}, cur))
+		cur, top = m, m
+	}
+	return top
+}
+
+func getInKeyPath(n int) core.List {
+	keys := make([]core.Value, n)
+	for i := range keys {
+		keys[i] = core.Keyword{V: "k"}
+	}
+	return core.NewList(keys)
+}
+
+func getInBuiltin(t *testing.T, env *core.Env) core.GoFunc {
+	t.Helper()
+	v, ok := env.Get("get-in")
+	require.True(t, ok, "get-in must be registered")
+	gf, ok := v.(core.GoFunc)
+	require.True(t, ok, "get-in must be a core.GoFunc, got %T", v)
+	return gf
+}
+
+// TestGetIn_CancelledContextStopsTraversal invokes the registered get-in
+// GoFunc directly with an already-cancelled caller context. The walk crosses
+// the budget's sync boundary at step 128, where the caller's cancellation is
+// latched and the traversal aborts without a value.
+func TestGetIn_CancelledContextStopsTraversal(t *testing.T) {
+	env := setupEnv(t)
+	gf := getInBuiltin(t, env)
+
+	ctx, cancel := context.WithCancel(core.EnsureEvalState(context.Background()))
+	cancel()
+
+	args := []core.Value{getInDeepSubject(t), getInKeyPath(getInDeepLevels)}
+	v, err := gf.Fn(ctx, core.NewEvaluator(), args, env)
+	require.Error(t, err, "a cancelled caller must abort a %d-key traversal", getInDeepLevels)
+	assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled, got %v", err)
+	assert.Nil(t, v, "an aborted lookup must not return a value")
+}
+
+// TestGetIn_EmptyPathIgnoresCancelledContext pins the contrast row: an empty
+// path performs no work, so the budget's flush is a documented no-op and the
+// subject comes back even though the caller is cancelled.
+func TestGetIn_EmptyPathIgnoresCancelledContext(t *testing.T) {
+	env := setupEnv(t)
+	gf := getInBuiltin(t, env)
+
+	ctx, cancel := context.WithCancel(core.EnsureEvalState(context.Background()))
+	cancel()
+	require.ErrorIs(t, ctx.Err(), context.Canceled, "the arm needs a live cancellation to mean anything")
+
+	subject := getInDeepSubject(t)
+	v, err := gf.Fn(ctx, core.NewEvaluator(), []core.Value{subject, core.NewList(nil)}, env)
+	require.NoError(t, err, "an empty path records no work, so its flush stays a no-op")
+	assert.Same(t, subject, v, "the empty path returns the subject itself")
+}
+
+// TestGetIn_ExpiredEvalDeadlineStopsTraversal drives the deadline branch of
+// the budget sync: the parent context stays live throughout, so only the
+// engine-owned eval deadline can have stopped the walk.
+func TestGetIn_ExpiredEvalDeadlineStopsTraversal(t *testing.T) {
+	env := setupEnv(t)
+	gf := getInBuiltin(t, env)
+
+	base := core.EnsureEvalState(context.Background())
+	ctx := core.WithEvalDeadline(base, time.Now().Add(-time.Millisecond))
+
+	args := []core.Value{getInDeepSubject(t), getInKeyPath(getInDeepLevels)}
+	v, err := gf.Fn(ctx, core.NewEvaluator(), args, env)
+	require.Error(t, err, "an expired eval deadline must abort a %d-key traversal", getInDeepLevels)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected context.DeadlineExceeded, got %v", err)
+	assert.Nil(t, v, "an aborted lookup must not return a value")
+	assert.NoError(t, base.Err(), "the parent context must stay live: the deadline alone stopped the walk")
+
+	// Contrast on the same expired deadline: an empty path records no work,
+	// so nothing ever consults the deadline and the subject comes back.
+	v, err = gf.Fn(ctx, core.NewEvaluator(), []core.Value{args[0], core.NewList(nil)}, env)
+	require.NoError(t, err, "an empty path records no work, so the expired deadline is never consulted")
+	assert.Same(t, args[0], v, "the empty path returns the subject itself")
+}
