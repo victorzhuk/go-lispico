@@ -647,11 +647,12 @@ func TestCLSort_KeyNilIdentity(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, got.Equals(plain), "sort with :key nil = %v, want the plain sort result %v", got, plain)
 
+			predCallsBeforeEmpty := predCalls
 			got, err = e.Eval(ctx, "cl-sort-key-nil", "(sort nil #'clpred :key nil)")
 			require.NoError(t, err, ":key nil over nil must yield the empty list")
 			assert.True(t, intList().Equals(got), "(sort nil #'clpred :key nil) = %v, want the empty list", got)
 			assert.Zero(t, keyCalls, "no key callback may run")
-			assert.Zero(t, predCalls, "no predicate callback may run over nil")
+			assert.Equal(t, predCallsBeforeEmpty, predCalls, "no predicate callback may run over nil")
 		})
 	}
 }
