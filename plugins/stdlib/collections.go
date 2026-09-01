@@ -391,30 +391,25 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, lookupArityError("get", len(args))
 			}
 
+			result := core.Value(core.Nil{})
+			if len(args) == 3 {
+				result = args[2]
+			}
+
 			switch m := args[0].(type) {
 			case *core.HashMap:
 				if v, found := m.Get(args[1]); found {
-					if err := chargeBorrowedResult(ctx); err != nil {
-						return nil, err
-					}
-					return v, nil
+					result = v
 				}
 			case core.Nil:
 			default:
 				return nil, lookupTypeError("get", "map", args[0])
 			}
 
-			if len(args) == 3 {
-				if err := chargeBorrowedResult(ctx); err != nil {
-					return nil, err
-				}
-				return args[2], nil
-			}
-
 			if err := chargeBorrowedResult(ctx); err != nil {
 				return nil, err
 			}
-			return core.Nil{}, nil
+			return result, nil
 		},
 	}, false); err != nil {
 		return err

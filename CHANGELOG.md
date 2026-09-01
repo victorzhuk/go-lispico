@@ -77,7 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scope is now specified: maps plus `nil`, which reads as an empty map, with
   lists, vectors, and strings rejected as `TypeError`. A key present but
   holding `nil` returns that `nil` rather than the default, and a key that
-  cannot be hashed counts as missing rather than as an error.
+  cannot be hashed counts as missing rather than as an error. It also reports
+  its result as borrowed from the subject rather than allocated, charging zero
+  result-allocation bytes where the apply site previously charged the returned
+  value's shallow size, so consumers metering `MaxAllocationBytes` see a lower
+  charge for `get` than before.
 
 ## [0.12.0] - 2026-07-31
 
