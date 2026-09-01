@@ -123,8 +123,12 @@ func TestStableSort_NaturalOrderAndMixedKind(t *testing.T) {
 		if err == nil {
 			t.Fatalf("StableSort mixed-kind: want error, got nil result %v", out)
 		}
-		if !strings.HasPrefix(err.Error(), "sort: ") {
-			t.Fatalf("StableSort mixed-kind: want prefix %q, got %q", "sort: ", err.Error())
+		var le *core.LispicoError
+		if !errors.As(err, &le) {
+			t.Fatalf("StableSort mixed-kind: want *core.LispicoError, got %T: %v", err, err)
+		}
+		if !strings.HasPrefix(le.Message, "sort: ") {
+			t.Fatalf("StableSort mixed-kind: want message prefix %q, got %q", "sort: ", le.Message)
 		}
 		if core.IsTerminalEvalError(err) {
 			t.Fatalf("StableSort mixed-kind: want non-terminal, got terminal %v", err)
