@@ -449,6 +449,11 @@ func (d Dialect) resolveUncached() (map[string]formFn, error) {
 	if d.base == baseFull {
 		maps.Copy(table, kernel)
 	}
+	for name, entry := range d.vocab {
+		if entry.Adapter != nil && entry.AdapterID == "" {
+			return nil, fmt.Errorf("dialect: adapter %q has no semantic ID", name)
+		}
+	}
 	for _, op := range d.ops {
 		switch op.kind {
 		case opAdd:
@@ -506,10 +511,7 @@ func (d Dialect) fingerprintUncached() string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			entry := d.vocab[k]
-			fmt.Fprintf(h, "|v:%s:%s:", k, entry.Canonical)
-			if entry.Adapter != nil {
-				fmt.Fprintf(h, "%T", entry.Adapter)
-			}
+			fmt.Fprintf(h, "|v:%s:%s:%s", k, entry.Canonical, entry.AdapterID)
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
