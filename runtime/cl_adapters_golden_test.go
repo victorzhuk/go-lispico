@@ -52,11 +52,11 @@ func TestCLAdapters_EmptyBaseNoAdapters(t *testing.T) {
 		})
 	}
 
-
 	got, err = e.Eval(ctx, "control", "(if true 7 8)")
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 7}.Equals(got), "allowlisted special forms remain callable")
 }
+
 // clAdapterGoldenCase is one hand-derived literal: the source evaluates to
 // want under its dialect, independent of evaluator and stdlib-lazy mode.
 type clAdapterGoldenCase struct {

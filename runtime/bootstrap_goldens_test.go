@@ -17,8 +17,8 @@ import (
 // names with the kind each definition source binds (defmacro -> core.Macro,
 // defn -> core.Lambda).
 var bootstrapGoldenNames = []struct {
-	name   string
-	macro  bool
+	name  string
+	macro bool
 }{
 	{name: "->", macro: true},
 	{name: "->>", macro: true},
