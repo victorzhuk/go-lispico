@@ -316,6 +316,7 @@ func TestCLSort_CallbackOrderAndCount(t *testing.T) {
 	require.NoError(t, e.RootEnv().SetBoth("pstop", core.GoFunc{
 		Name: "pstop",
 		Fn: func(ctx context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			events = append(events, "pstop:"+args[0].String()+","+args[1].String())
 			pCalls++
 			if pCalls == 2 {
 				return nil, core.NewTypeError("int", core.Int{V: 1})
