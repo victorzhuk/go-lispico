@@ -419,3 +419,55 @@ func TestStableSort_BudgetBound(t *testing.T) {
 		}
 	})
 }
+
+// countingLessFunc returns a strict core.Int ordering that counts every
+// invocation.
+func countingLessFunc(count *int) func(a, b core.Value) (bool, error) {
+	return func(a, b core.Value) (bool, error) {
+		*count++
+		return a.(core.Int).V < b.(core.Int).V, nil
+	}
+}
+
+// TestStableSort_OneLessCallPerComparison pins one Step and exactly one
+// less invocation per comparator call. With key=nil and n=8 the total is
+// 16+c units (8 copy + c comparator + 8 result), so 16+c succeeds and
+// 15+c trips at the final Flush; a kernel that called less twice per
+// comparison or left the copy/result phases uncharged would pass under
+// 15+c.
+func TestStableSort_OneLessCallPerComparison(t *testing.T) {
+	const n = 8
+	items := shuffledIntItems(n)
+
+	c := 0
+	t.Run("generous budget records comparator count", func(t *testing.T) {
+		out, err := StableSort(context.Background(), items, nil, countingLessFunc(&c))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if err := sortedAscendingInt(out); err != nil {
+			t.Fatalf("output not ascending 1..%d: %v", n, err)
+		}
+		if c == 0 {
+			t.Fatal("expected at least one less invocation")
+		}
+	})
+
+	t.Run("budget covering copy comparator and result succeeds", func(t *testing.T) {
+		out, err := StableSort(core.WithEvalResourceLimits(context.Background(), 16+c, 1<<30), items, nil, countingLessFunc(new(int)))
+		if err != nil {
+			t.Fatalf("expected success under budget %d, got error: %v", 16+c, err)
+		}
+		if err := sortedAscendingInt(out); err != nil {
+			t.Fatalf("output not ascending 1..%d: %v", n, err)
+		}
+	})
+
+	t.Run("budget one under total trips at final flush", func(t *testing.T) {
+		out, err := StableSort(core.WithEvalResourceLimits(context.Background(), 15+c, 1<<30), items, nil, countingLessFunc(new(int)))
+		assertTerminalLimit(t, err)
+		if out != nil {
+			t.Fatalf("want nil result on terminal, got %v", out)
+		}
+	})
+}

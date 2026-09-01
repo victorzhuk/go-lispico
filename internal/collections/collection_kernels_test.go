@@ -3,6 +3,7 @@ package collections
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -314,20 +315,62 @@ func TestMapSequences_BudgetPerTuple(t *testing.T) {
 	fn := core.String{V: "callback"}
 	sentinel := errors.New("callback sentinel")
 
-	t.Run("one step per tuple charges the reduction budget", func(t *testing.T) {
+	t.Run("k+2 units per tuple charge the reduction budget", func(t *testing.T) {
 		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
 		_, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 100, 1<<30), ev, env, fn, []core.Value{core.NewList(intItems(200))})
 		assertTerminalLimit(t, err)
 	})
 
-	t.Run("budget above tuple count succeeds", func(t *testing.T) {
+	t.Run("budget 600 covers k+2 total and succeeds", func(t *testing.T) {
 		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
-		_, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 256, 1<<30), ev, env, fn, []core.Value{core.NewList(intItems(200))})
+		res, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 600, 1<<30), ev, env, fn, []core.Value{core.NewList(intItems(200))})
 		if err != nil {
-			t.Fatalf("expected success under budget 256, got error: %v", err)
+			t.Fatalf("expected success under budget 600, got error: %v", err)
 		}
 		if len(ev.calls) != 200 {
 			t.Fatalf("expected 200 Applies, got %d", len(ev.calls))
+		}
+		lst, ok := res.(core.List)
+		if !ok || lst.Len() != 200 {
+			t.Fatalf("expected 200-element core.List result, got %T", res)
+		}
+	})
+
+	t.Run("budget 599 trips at final flush", func(t *testing.T) {
+		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		_, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 599, 1<<30), ev, env, fn, []core.Value{core.NewList(intItems(200))})
+		assertTerminalLimit(t, err)
+	})
+
+	t.Run("two sequences charge two read units per tuple", func(t *testing.T) {
+		seqs := []core.Value{
+			core.NewList(intItems(2)),
+			core.NewVector([]core.Value{core.Int{V: 10}, core.Int{V: 20}}),
+		}
+		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		res, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 8, 1<<30), ev, env, fn, seqs)
+		if err != nil {
+			t.Fatalf("expected success under budget 8, got error: %v", err)
+		}
+		if len(ev.calls) != 2 {
+			t.Fatalf("expected 2 Applies, got %d", len(ev.calls))
+		}
+		lst, ok := res.(core.List)
+		if !ok || lst.Len() != 2 {
+			t.Fatalf("expected 2-element core.List result, got %T", res)
+		}
+
+		ev = &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		_, err = MapSequences(core.WithEvalResourceLimits(context.Background(), 7, 1<<30), ev, env, fn, seqs)
+		assertTerminalLimit(t, err)
+	})
+
+	t.Run("terminal during alignment stops before the next callback", func(t *testing.T) {
+		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		_, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 100, 1<<30), ev, env, fn, []core.Value{core.NewList(intItems(200))})
+		assertTerminalLimit(t, err)
+		if len(ev.calls) != 42 {
+			t.Fatalf("expected 42 Applies before the 128th unit stops the kernel, got %d", len(ev.calls))
 		}
 	})
 
@@ -340,5 +383,62 @@ func TestMapSequences_BudgetPerTuple(t *testing.T) {
 		if core.IsTerminalEvalError(err) {
 			t.Fatalf("callback error must not be masked as terminal: %v", err)
 		}
+	})
+}
+
+// TestMapSequences_LongFirstNilNoEagerCopy pins shortest discovery via
+// Len only: a 100k-element list followed by a nil or one-element list
+// must not copy the long sequence, so the whole call allocates under
+// 4 KiB.
+func TestMapSequences_LongFirstNilNoEagerCopy(t *testing.T) {
+	env := core.NewEnv(nil)
+	fn := core.String{V: "callback"}
+
+	t.Run("nil after long list allocates under 4KiB", func(t *testing.T) {
+		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		seqs := []core.Value{core.NewList(intItems(100_000)), core.Nil{}}
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		res, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 1, 1<<30), ev, env, fn, seqs)
+		runtime.ReadMemStats(&after)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(ev.calls) != 0 {
+			t.Fatalf("expected 0 Applies, got %d", len(ev.calls))
+		}
+		lst, ok := res.(core.List)
+		if !ok || lst.Len() != 0 {
+			t.Fatalf("expected empty core.List result, got %T", res)
+		}
+		if delta := after.TotalAlloc - before.TotalAlloc; delta >= 4096 {
+			t.Fatalf("expected allocation under 4096 bytes, got %d", delta)
+		}
+	})
+
+	t.Run("one-element shortest bounds work and allocation", func(t *testing.T) {
+		ev := &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		seqs := []core.Value{core.NewList(intItems(100_000)), core.NewList(intItems(1))}
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		res, err := MapSequences(core.WithEvalResourceLimits(context.Background(), 4, 1<<30), ev, env, fn, seqs)
+		runtime.ReadMemStats(&after)
+		if err != nil {
+			t.Fatalf("expected success under budget 4, got error: %v", err)
+		}
+		if len(ev.calls) != 1 {
+			t.Fatalf("expected exactly 1 Apply, got %d", len(ev.calls))
+		}
+		lst, ok := res.(core.List)
+		if !ok || lst.Len() != 1 {
+			t.Fatalf("expected 1-element core.List result, got %T", res)
+		}
+		if delta := after.TotalAlloc - before.TotalAlloc; delta >= 4096 {
+			t.Fatalf("expected allocation under 4096 bytes, got %d", delta)
+		}
+
+		ev = &scriptedEval{returns: []core.Value{core.Int{V: 0}}}
+		_, err = MapSequences(core.WithEvalResourceLimits(context.Background(), 3, 1<<30), ev, env, fn, seqs)
+		assertTerminalLimit(t, err)
 	})
 }
