@@ -195,6 +195,9 @@ var errorInventory = []errorSite{
 	{Family: "Collections", Fn: "conj", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "conj", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "conj", File: fileCollection, Func: "registerCollections", Class: "ArityError", Reachable: true},
+	// Unlike the four wrapping conversion sites, this one hands HashMap.Assoc's
+	// plain error straight back with no stdlib context — a live defect a later
+	// seam fixes, not a variant of the conversion contract.
 	{Family: "Collections", Fn: "conj", File: fileCollection, Func: "registerCollections", Class: "external-conversion", Reachable: true},
 	{Family: "Collections", Fn: "conj", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "conj", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
@@ -226,7 +229,10 @@ var errorInventory = []errorSite{
 	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "ArityError", Reachable: true},
 	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "TypeError", Reachable: true},
 	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "EvalError", Reachable: true},
-	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "EvalError", Reachable: true},
+	// core.NewResourceLimitError is already Terminal (IsTerminalEvalError is true
+	// for CodeResourceLimit); a Terminal error must never be flattened into
+	// EvalError or made catchable.
+	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "range", File: fileCollection, Func: "registerCollections", Class: "terminal-passthrough", Reachable: true},
@@ -237,9 +243,11 @@ var errorInventory = []errorSite{
 	{Family: "Collections", Fn: "get-in", File: fileCollection, Func: "getInLookup", Class: "TypeError", Reachable: true},
 	{Family: "Collections", Fn: "get-in", File: fileCollection, Func: "getInResult", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "get-in", File: fileCollection, Func: "getInResult", Class: "terminal-passthrough", Reachable: true},
-	{Family: "Collections", Fn: "list concat vector hash-map merge range", File: fileCollection, Func: "chargeCollectionResult", Class: "EvalError", Reachable: true},
+	// The length-limit rows here raise core.NewResourceLimitError, which is already
+	// Terminal and must not be reclassified into a catchable EvalError.
 	{Family: "Collections", Fn: "list concat vector hash-map merge range", File: fileCollection, Func: "chargeCollectionResult", Class: "terminal-passthrough", Reachable: true},
-	{Family: "Collections", Fn: "cons conj assoc dissoc", File: fileCollection, Func: "chargeConsResult", Class: "EvalError", Reachable: true},
+	{Family: "Collections", Fn: "list concat vector hash-map merge range", File: fileCollection, Func: "chargeCollectionResult", Class: "terminal-passthrough", Reachable: true},
+	{Family: "Collections", Fn: "cons conj assoc dissoc", File: fileCollection, Func: "chargeConsResult", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "cons conj assoc dissoc", File: fileCollection, Func: "chargeConsResult", Class: "terminal-passthrough", Reachable: true},
 
 	{Family: "Bootstrap", Fn: "stdlib bootstrap", File: fileBootstrap, Func: "loadBootstrap", Class: "TypeError", Reachable: true},
@@ -261,6 +269,8 @@ var errorInventory = []errorSite{
 	{Family: "Collections", Fn: "sort", File: fileKernels, Func: "StableSort", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "sort", File: fileKernels, Func: "StableSort", Class: "callback-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "sort", File: fileKernels, Func: "StableSort", Class: "terminal-passthrough", Reachable: true},
+	// The latched sortErr can also carry a Terminal error from b.Step(), so this
+	// site must never be wrapped or reclassified.
 	{Family: "Collections", Fn: "sort", File: fileKernels, Func: "StableSort", Class: "callback-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "sort", File: fileKernels, Func: "StableSort", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Collections", Fn: "sort", File: fileKernels, Func: "finishSort", Class: "terminal-passthrough", Reachable: true},
@@ -275,7 +285,9 @@ var errorInventory = []errorSite{
 	{Family: "CL adapters", Fn: "nth", File: fileCL, Func: "clNth", Class: "EvalError", Reachable: true},
 	{Family: "CL adapters", Fn: "nth", File: fileCL, Func: "clNth", Class: "TypeError", Reachable: true},
 	{Family: "CL adapters", Fn: "nth", File: fileCL, Func: "clNth", Class: "terminal-passthrough", Reachable: true},
-	{Family: "CL adapters", Fn: "nth", File: fileCL, Func: "clNth", Class: "TypeError", Reachable: true},
+	// Dead for the same reason as MapSequences' default: args[1] is already narrowed
+	// to core.List, so IndexedAccess cannot report AccessUnsupported.
+	{Family: "CL adapters", Fn: "nth", File: fileCL, Func: "clNth", Class: "TypeError", Reachable: false},
 	{Family: "CL adapters", Fn: "mapcar", File: fileCL, Func: "clMapcar", Class: "ArityError", Reachable: true},
 	{Family: "CL adapters", Fn: "mapcar", File: fileCL, Func: "clMapcar", Class: "TypeError", Reachable: true},
 	{Family: "CL adapters", Fn: "mapcar", File: fileCL, Func: "clMapcar", Class: "TypeError", Reachable: true},
@@ -351,8 +363,9 @@ func TestErrorInventoryCoversRegistrationSurface(t *testing.T) {
 		}
 	}
 	sort.Strings(uncovered)
-	// str is the only total builtin: it concatenates whatever it is given and
-	// has no error-return site to inventory.
+	// Infallible-builtin allowance: str concatenates whatever it is given and returns
+	// nil on every path, so it has no error-return site to inventory. A later change
+	// that gives it a failure path breaks this assertion, which is the point.
 	require.Equal(t, []string{"str"}, uncovered)
 }
 
