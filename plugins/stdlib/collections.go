@@ -40,8 +40,8 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			if !sharesLast {
 				var result []core.Value
 				for _, arg := range args {
-					if err := appendCollectionElems(&result, arg); err != nil {
-						return nil, fmt.Errorf("concat: %w", err)
+					if err := appendCollectionElems("concat", &result, arg); err != nil {
+						return nil, err
 					}
 				}
 				res := core.NewList(result)
@@ -53,8 +53,8 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			var prefix []core.Value
 			for _, arg := range args[:len(args)-1] {
-				if err := appendCollectionElems(&prefix, arg); err != nil {
-					return nil, fmt.Errorf("concat: %w", err)
+				if err := appendCollectionElems("concat", &prefix, arg); err != nil {
+					return nil, err
 				}
 			}
 			res := baseList
@@ -77,7 +77,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "reverse",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("reverse: requires 1 argument")
+				return nil, arityErrorf("reverse: requires 1 argument")
 			}
 
 			var items []core.Value
@@ -87,7 +87,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case core.Vector:
 				items = c.ToSlice()
 			default:
-				return nil, fmt.Errorf("reverse: expected collection, got %T", args[0])
+				return nil, typeErrorf("reverse: expected collection, got %T", args[0])
 			}
 			result := make([]core.Value, len(items))
 			for i, v := range items {
@@ -116,13 +116,13 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "hash-map",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args)%2 != 0 {
-				return nil, fmt.Errorf("hash-map: requires even number of arguments")
+				return nil, arityErrorf("hash-map: requires even number of arguments")
 			}
 
 			m := core.NewHashMap()
 			for i := 0; i < len(args); i += 2 {
 				if err := m.Set(args[i], args[i+1]); err != nil {
-					return nil, fmt.Errorf("hash-map: %w", err)
+					return nil, wrapCause("hash-map", err)
 				}
 			}
 			if err := core.CheckConstructionDepth(m, env); err != nil {
@@ -138,7 +138,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "first",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("first: requires 1 argument")
+				return nil, arityErrorf("first: requires 1 argument")
 			}
 
 			switch c := args[0].(type) {
@@ -155,7 +155,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case core.Nil:
 				return core.Nil{}, nil
 			default:
-				return nil, fmt.Errorf("first: expected collection, got %T", args[0])
+				return nil, typeErrorf("first: expected collection, got %T", args[0])
 			}
 		},
 	}, false); err != nil {
@@ -166,7 +166,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "rest",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("rest: requires 1 argument")
+				return nil, arityErrorf("rest: requires 1 argument")
 			}
 
 			switch c := args[0].(type) {
@@ -184,7 +184,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case core.Nil:
 				return core.NewList([]core.Value{}), nil
 			default:
-				return nil, fmt.Errorf("rest: expected collection, got %T", args[0])
+				return nil, typeErrorf("rest: expected collection, got %T", args[0])
 			}
 		},
 	}, false); err != nil {
@@ -195,7 +195,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "last",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("last: requires 1 argument")
+				return nil, arityErrorf("last: requires 1 argument")
 			}
 
 			switch c := args[0].(type) {
@@ -212,7 +212,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case core.Nil:
 				return core.Nil{}, nil
 			default:
-				return nil, fmt.Errorf("last: expected collection, got %T", args[0])
+				return nil, typeErrorf("last: expected collection, got %T", args[0])
 			}
 		},
 	}, false); err != nil {
@@ -223,12 +223,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "nth",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 || len(args) > 3 {
-				return nil, fmt.Errorf("nth: requires 2 or 3 arguments")
+				return nil, arityErrorf("nth: requires 2 or 3 arguments")
 			}
 
 			idx, ok := args[1].(core.Int)
 			if !ok {
-				return nil, fmt.Errorf("nth: index must be integer")
+				return nil, typeErrorf("nth: index must be integer")
 			}
 
 			val, outcome, err := collections.IndexedAccess(ctx, args[0], idx.V)
@@ -242,9 +242,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				if len(args) == 3 {
 					return args[2], nil
 				}
-				return nil, fmt.Errorf("nth: index out of bounds")
+				return nil, domainErrorf("nth: index out of bounds")
 			default:
-				return nil, fmt.Errorf("nth: expected collection, got %T", args[0])
+				return nil, typeErrorf("nth: expected collection, got %T", args[0])
 			}
 		},
 	}, false); err != nil {
@@ -255,7 +255,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "count",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("count: requires 1 argument")
+				return nil, arityErrorf("count: requires 1 argument")
 			}
 
 			switch c := args[0].(type) {
@@ -270,7 +270,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case core.Nil:
 				return core.Int{V: 0}, nil
 			default:
-				return nil, fmt.Errorf("count: expected collection, got %T", args[0])
+				return nil, typeErrorf("count: expected collection, got %T", args[0])
 			}
 		},
 	}, false); err != nil {
@@ -281,7 +281,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "cons",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("cons: requires 2 arguments")
+				return nil, arityErrorf("cons: requires 2 arguments")
 			}
 
 			switch c := args[1].(type) {
@@ -301,7 +301,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				}
 				return res, nil
 			default:
-				return nil, fmt.Errorf("cons: expected collection, got %T", args[1])
+				return nil, typeErrorf("cons: expected collection, got %T", args[1])
 			}
 		},
 	}, false); err != nil {
@@ -312,7 +312,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "conj",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
-				return nil, fmt.Errorf("conj: requires at least 2 arguments")
+				return nil, arityErrorf("conj: requires at least 2 arguments")
 			}
 
 			switch c := args[0].(type) {
@@ -339,11 +339,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return res, nil
 			case *core.HashMap:
 				if len(args) != 3 {
-					return nil, fmt.Errorf("conj on map requires key and value")
+					return nil, arityErrorf("conj on map requires key and value")
 				}
 				res, allocated, err := c.Assoc(args[1], args[2])
 				if err != nil {
-					return nil, err
+					return nil, wrapCause("conj", err)
 				}
 				// See assoc's WHY comment below: charge the path this call
 				// copied plus the inserted value, not the shared remainder.
@@ -353,7 +353,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				}
 				return res, nil
 			default:
-				return nil, fmt.Errorf("conj: expected collection, got %T", args[0])
+				return nil, typeErrorf("conj: expected collection, got %T", args[0])
 			}
 		},
 	}, false); err != nil {
@@ -364,7 +364,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "empty?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("empty?: requires 1 argument")
+				return nil, arityErrorf("empty?: requires 1 argument")
 			}
 
 			switch c := args[0].(type) {
@@ -428,12 +428,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "assoc",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 3 || len(args)%2 == 0 {
-				return nil, fmt.Errorf("assoc: requires odd number of arguments (map + keyvals)")
+				return nil, arityErrorf("assoc: requires odd number of arguments (map + keyvals)")
 			}
 
 			m, ok := args[0].(*core.HashMap)
 			if !ok {
-				return nil, fmt.Errorf("assoc: expected map, got %T", args[0])
+				return nil, typeErrorf("assoc: expected map, got %T", args[0])
 			}
 
 			result := m
@@ -443,7 +443,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				var allocated int64
 				result, allocated, err = result.Assoc(args[i], args[i+1])
 				if err != nil {
-					return nil, fmt.Errorf("assoc: %w", err)
+					return nil, wrapCause("assoc", err)
 				}
 				// Only what this call allocated: the copied path, plus the
 				// inserted value, which is new to the ledger. The rest of the
@@ -473,12 +473,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "keys",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("keys: requires 1 argument")
+				return nil, arityErrorf("keys: requires 1 argument")
 			}
 
 			m, ok := args[0].(*core.HashMap)
 			if !ok {
-				return nil, fmt.Errorf("keys: expected map, got %T", args[0])
+				return nil, typeErrorf("keys: expected map, got %T", args[0])
 			}
 
 			items := make([]core.Value, 0, m.Len())
@@ -496,12 +496,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "vals",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("vals: requires 1 argument")
+				return nil, arityErrorf("vals: requires 1 argument")
 			}
 
 			m, ok := args[0].(*core.HashMap)
 			if !ok {
-				return nil, fmt.Errorf("vals: expected map, got %T", args[0])
+				return nil, typeErrorf("vals: expected map, got %T", args[0])
 			}
 
 			items := make([]core.Value, 0, m.Len())
@@ -519,12 +519,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "contains?",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 2 {
-				return nil, fmt.Errorf("contains?: requires 2 arguments")
+				return nil, arityErrorf("contains?: requires 2 arguments")
 			}
 
 			m, ok := args[0].(*core.HashMap)
 			if !ok {
-				return nil, fmt.Errorf("contains?: expected map, got %T", args[0])
+				return nil, typeErrorf("contains?: expected map, got %T", args[0])
 			}
 
 			_, found := m.Get(args[1])
@@ -548,11 +548,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 						}
 					})
 					if err != nil {
-						return nil, fmt.Errorf("merge: %w", err)
+						return nil, wrapCause("merge", err)
 					}
 				case core.Nil:
 				default:
-					return nil, fmt.Errorf("merge: expected map, got %T", arg)
+					return nil, typeErrorf("merge: expected map, got %T", arg)
 				}
 			}
 			if err := chargeCollectionResult(ctx, env, "merge", result, core.ValueDeepBytes(result)); err != nil {
@@ -568,12 +568,12 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "dissoc",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 {
-				return nil, fmt.Errorf("dissoc: requires at least 1 argument")
+				return nil, arityErrorf("dissoc: requires at least 1 argument")
 			}
 
 			m, ok := args[0].(*core.HashMap)
 			if !ok {
-				return nil, fmt.Errorf("dissoc: expected map, got %T", args[0])
+				return nil, typeErrorf("dissoc: expected map, got %T", args[0])
 			}
 
 			result := m
@@ -583,7 +583,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				var allocated int64
 				result, allocated, err = result.Dissoc(k)
 				if err != nil {
-					return nil, fmt.Errorf("dissoc: %w", err)
+					return nil, wrapCause("dissoc", err)
 				}
 				bytes += allocated
 			}
@@ -603,7 +603,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "sort",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) != 1 {
-				return nil, fmt.Errorf("sort: requires 1 argument")
+				return nil, arityErrorf("sort: requires 1 argument")
 			}
 
 			var sorted []core.Value
@@ -615,7 +615,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case core.Nil:
 				return core.NewList([]core.Value{}), nil
 			default:
-				return nil, fmt.Errorf("sort: expected collection, got %T", args[0])
+				return nil, typeErrorf("sort: expected collection, got %T", args[0])
 			}
 
 			sorted, err := collections.StableSort(ctx, sorted, nil, func(a, b core.Value) (bool, error) {
@@ -639,14 +639,14 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "range",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 1 || len(args) > 3 {
-				return nil, fmt.Errorf("range: requires 1 to 3 arguments")
+				return nil, arityErrorf("range: requires 1 to 3 arguments")
 			}
 
 			bounds := make([]int64, len(args))
 			for i, arg := range args {
 				n, ok := arg.(core.Int)
 				if !ok {
-					return nil, fmt.Errorf("range: requires integer arguments, got %T", arg)
+					return nil, typeErrorf("range: requires integer arguments, got %T", arg)
 				}
 				bounds[i] = n.V
 			}
@@ -660,7 +660,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			case 3:
 				start, end, step = bounds[0], bounds[1], bounds[2]
 				if step == 0 {
-					return nil, fmt.Errorf("range: step must not be zero")
+					return nil, domainErrorf("range: step must not be zero")
 				}
 			}
 
@@ -713,7 +713,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 // appendCollectionElems appends arg's elements to *dst — List and Vector via
 // ToSlice, a single O(n) walk, never an indexed At() loop (O(n) per call on
 // a shared List, O(n^2) total across the loop).
-func appendCollectionElems(dst *[]core.Value, arg core.Value) error {
+func appendCollectionElems(name string, dst *[]core.Value, arg core.Value) error {
 	switch c := arg.(type) {
 	case core.List:
 		*dst = append(*dst, c.ToSlice()...)
@@ -721,7 +721,7 @@ func appendCollectionElems(dst *[]core.Value, arg core.Value) error {
 		*dst = append(*dst, c.ToSlice()...)
 	case core.Nil:
 	default:
-		return fmt.Errorf("expected collection, got %T", arg)
+		return typeErrorf("%s: expected collection, got %T", name, arg)
 	}
 	return nil
 }

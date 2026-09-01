@@ -2,11 +2,32 @@ package stdlib
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
+
+// wantTypedError asserts the classified Code alongside the diagnostic text.
+// Error() no longer reports that text verbatim: typed construction prefixes
+// the Code, so Message is where the pre-migration wording now lives.
+func wantTypedError(t *testing.T, err error, code, msg string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected error %q, got nil", msg)
+	}
+	var le *core.LispicoError
+	if !errors.As(err, &le) {
+		t.Fatalf("expected *core.LispicoError, got %T: %v", err, err)
+	}
+	if le.Code != code {
+		t.Errorf("expected code %q, got %q", code, le.Code)
+	}
+	if le.Message != msg {
+		t.Errorf("expected message %q, got %q", msg, le.Message)
+	}
+}
 
 func TestNth_Characterization(t *testing.T) {
 	env := setupEnv(t)
@@ -35,25 +56,20 @@ func TestNth_Characterization(t *testing.T) {
 		tests := []struct {
 			name  string
 			input string
+			code  string
 			want  string
 		}{
-			{"zero args", "(nth)", "nth: requires 2 or 3 arguments"},
-			{"four args", "(nth '(1) 0 2 3)", "nth: requires 2 or 3 arguments"},
-			{"float index", `(nth '(1 2) 1.5)`, "nth: index must be integer"},
-			{"past end", "(nth '(1 2) 5)", "nth: index out of bounds"},
-			{"negative index", "(nth '(1 2) -1)", "nth: index out of bounds"},
-			{"int subject", "(nth 5 0)", "nth: expected collection, got core.Int"},
-			{"nil subject", "(nth nil 0)", "nth: expected collection, got core.Nil"},
+			{"zero args", "(nth)", "ArityError", "nth: requires 2 or 3 arguments"},
+			{"four args", "(nth '(1) 0 2 3)", "ArityError", "nth: requires 2 or 3 arguments"},
+			{"float index", `(nth '(1 2) 1.5)`, "TypeError", "nth: index must be integer"},
+			{"past end", "(nth '(1 2) 5)", "EvalError", "nth: index out of bounds"},
+			{"negative index", "(nth '(1 2) -1)", "EvalError", "nth: index out of bounds"},
+			{"int subject", "(nth 5 0)", "TypeError", "nth: expected collection, got core.Int"},
+			{"nil subject", "(nth nil 0)", "TypeError", "nth: expected collection, got core.Nil"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := evalErr(t, env, tt.input)
-				if err == nil {
-					t.Fatalf("expected error %q, got nil", tt.want)
-				}
-				if err.Error() != tt.want {
-					t.Errorf("expected error %q, got %q", tt.want, err.Error())
-				}
+				wantTypedError(t, evalErr(t, env, tt.input), tt.code, tt.want)
 			})
 		}
 	})
@@ -130,20 +146,15 @@ func TestMap_Characterization(t *testing.T) {
 		tests := []struct {
 			name  string
 			input string
+			code  string
 			want  string
 		}{
-			{"zero args", "(map count2)", "map: requires 2 arguments"},
-			{"three args", "(map count2 (list 1) 2)", "map: requires 2 arguments"},
+			{"zero args", "(map count2)", "ArityError", "map: requires 2 arguments"},
+			{"three args", "(map count2 (list 1) 2)", "ArityError", "map: requires 2 arguments"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := evalErr(t, env, tt.input)
-				if err == nil {
-					t.Fatalf("expected error %q, got nil", tt.want)
-				}
-				if err.Error() != tt.want {
-					t.Errorf("expected error %q, got %q", tt.want, err.Error())
-				}
+				wantTypedError(t, evalErr(t, env, tt.input), tt.code, tt.want)
 			})
 		}
 	})
@@ -153,20 +164,15 @@ func TestMap_Characterization(t *testing.T) {
 		tests := []struct {
 			name  string
 			input string
+			code  string
 			want  string
 		}{
-			{"nil second", "(map count2 nil)", "map: second argument must be collection"},
-			{"int second", "(map count2 5)", "map: second argument must be collection"},
+			{"nil second", "(map count2 nil)", "TypeError", "map: second argument must be collection"},
+			{"int second", "(map count2 5)", "TypeError", "map: second argument must be collection"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := evalErr(t, env, tt.input)
-				if err == nil {
-					t.Fatalf("expected error %q, got nil", tt.want)
-				}
-				if err.Error() != tt.want {
-					t.Errorf("expected error %q, got %q", tt.want, err.Error())
-				}
+				wantTypedError(t, evalErr(t, env, tt.input), tt.code, tt.want)
 			})
 		}
 	})
@@ -210,23 +216,18 @@ func TestSort_Characterization(t *testing.T) {
 		tests := []struct {
 			name  string
 			input string
+			code  string
 			want  string
 		}{
-			{"zero args", "(sort)", "sort: requires 1 argument"},
-			{"two args", "(sort [1] [2])", "sort: requires 1 argument"},
-			{"int subject", "(sort 5)", "sort: expected collection, got core.Int"},
-			{"keyword subject", "(sort :k)", "sort: expected collection, got core.Keyword"},
-			{"mixed kinds", `(sort [1 "a"])`, "sort: cannot compare core.String with core.Int"},
+			{"zero args", "(sort)", "ArityError", "sort: requires 1 argument"},
+			{"two args", "(sort [1] [2])", "ArityError", "sort: requires 1 argument"},
+			{"int subject", "(sort 5)", "TypeError", "sort: expected collection, got core.Int"},
+			{"keyword subject", "(sort :k)", "TypeError", "sort: expected collection, got core.Keyword"},
+			{"mixed kinds", `(sort [1 "a"])`, "EvalError", "sort: cannot compare core.String with core.Int"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := evalErr(t, env, tt.input)
-				if err == nil {
-					t.Fatalf("expected error %q, got nil", tt.want)
-				}
-				if err.Error() != tt.want {
-					t.Errorf("expected error %q, got %q", tt.want, err.Error())
-				}
+				wantTypedError(t, evalErr(t, env, tt.input), tt.code, tt.want)
 			})
 		}
 	})

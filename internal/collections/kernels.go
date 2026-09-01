@@ -4,7 +4,6 @@ package collections
 
 import (
 	"context"
-	"fmt"
 	"sort"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -73,7 +72,7 @@ func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn co
 		case core.Nil:
 			cursors[i] = cursor{len: 0}
 		default:
-			return nil, fmt.Errorf("map: unsupported sequence type %T", s)
+			return nil, typeErrorf("map: unsupported sequence type %T", s)
 		}
 		if n < 0 || cursors[i].len < n {
 			n = cursors[i].len

@@ -1,8 +1,6 @@
 package collections
 
 import (
-	"fmt"
-
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -55,7 +53,7 @@ func NaturalCmp(a, b core.Value) (int, error) {
 	if as, ok := a.(core.String); ok {
 		bs, ok := b.(core.String)
 		if !ok {
-			return 0, fmt.Errorf("sort: cannot compare %T with %T", a, b)
+			return 0, domainErrorf("sort: cannot compare %T with %T", a, b)
 		}
 		switch {
 		case as.V < bs.V:
@@ -68,7 +66,7 @@ func NaturalCmp(a, b core.Value) (int, error) {
 	if ak, ok := a.(core.Keyword); ok {
 		bk, ok := b.(core.Keyword)
 		if !ok {
-			return 0, fmt.Errorf("sort: cannot compare %T with %T", a, b)
+			return 0, domainErrorf("sort: cannot compare %T with %T", a, b)
 		}
 		switch {
 		case ak.V < bk.V:
