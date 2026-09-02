@@ -194,15 +194,25 @@ func TestCLAdapters_EagerLazy_Goldens(t *testing.T) {
 }
 
 // TestCLAdapters_LowReductionBudget pins the terminal budget behavior: a
-// 600-element sort under a 300-reduction ceiling must surface a Terminal
+// 599-element sort under a 300-reduction ceiling must surface a Terminal
 // ResourceLimitError from the kernel's mandatory budget sync.
 func TestCLAdapters_LowReductionBudget(t *testing.T) {
 	eng := newGoldenEngine(t, cl.Dialect(), true,
 		WithBytecode(),
 		WithResourceLimits(ResourceLimits{MaxReductions: 300, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}),
 	)
-	_, err := eng.Eval(context.Background(), "cl-budget", `(sort (range 1 600) (fn (a b) (< a b)))`)
-	require.Error(t, err, "a 600-element sort under a 300-reduction budget must Terminal")
+	// The subject is bound prebuilt so that no builtin's construction charge
+	// can cross the ceiling ahead of the sort under test. Measured: reaching
+	// the bound symbol costs 4 reductions and completing this sort needs
+	// 24855, so under a 300 ceiling the Terminal can only come from sort's
+	// own budget.
+	elems := make([]core.Value, 599)
+	for i := range elems {
+		elems[i] = core.Int{V: int64(len(elems) - i)}
+	}
+	require.NoError(t, eng.Bind("lowbudget-subject", core.NewList(elems)))
+	_, err := eng.Eval(context.Background(), "cl-budget", `(sort lowbudget-subject (fn (a b) (< a b)))`)
+	require.Error(t, err, "a 599-element sort under a 300-reduction budget must Terminal")
 	var le *core.LispicoError
 	require.ErrorAs(t, err, &le, "error must be a typed *core.LispicoError, got %v", err)
 	assert.True(t, core.IsTerminalEvalError(err), "low Reduction budget must be terminal, got %v", err)
