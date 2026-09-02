@@ -381,3 +381,42 @@ func TestSort_KernelWorkNotDoubleCharged(t *testing.T) {
 			"sort work phase %q is budgeted against %s: the kernel already charges that work, so a second row double-charges it", got.PhaseLabel, kernelFile)
 	}
 }
+
+// The collection-length ceiling on hash-map's result is NEW as of this change:
+// routing the result charge through chargeCollectionResult put hash-map under
+// the same limit merge already enforced, closing an inconsistency where one
+// map-returning builtin ignored the collection limit. The ordering is
+// deliberate too — the length check runs before the structural-depth walk, so
+// when both limits are breached the length message is the one that surfaces.
+// Both are pinned here because nothing else runs these builtins under narrow
+// limits.
+
+func TestHashMap_RespectsCollectionLimit(t *testing.T) {
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = 2
+	err := evalErrUnder(t, ev, setupEnv(t), "(hash-map :a 1 :b 2 :c 3)")
+	requireResourceLimit(t, err)
+	require.ErrorContains(t, err, "hash-map length 3 exceeds collection limit 2")
+}
+
+func TestHashMap_LengthLimitPrecedesDepthLimit(t *testing.T) {
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = 1
+	ev.MaxStructuralDepth = 1
+	err := evalErrUnder(t, ev, setupEnv(t), "(hash-map :a (list 1) :b (list 2))")
+	requireResourceLimit(t, err)
+	require.ErrorContains(t, err, "hash-map length 2 exceeds collection limit 1")
+	require.NotContains(t, err.Error(), "structural depth limit",
+		"the length check runs first, so the depth message must not be the one that surfaces")
+}
+
+// TestMerge_RespectsCollectionLimit is the consistency claim that justifies
+// keeping hash-map's new ceiling: merge returns a *HashMap under the same
+// limit and has always enforced it.
+func TestMerge_RespectsCollectionLimit(t *testing.T) {
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = 2
+	err := evalErrUnder(t, ev, setupEnv(t), "(merge {:a 1 :b 2} {:c 3})")
+	requireResourceLimit(t, err)
+	require.ErrorContains(t, err, "merge length 3 exceeds collection limit 2")
+}
