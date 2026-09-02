@@ -106,11 +106,19 @@ var invOpaqueQualified = map[string]bool{
 }
 
 // invOpaqueMethods are the HashMap methods of the same set. They are matched on
-// the method name alone: the receiver's type needs a type checker, which this
-// scan deliberately does without.
+// the method name alone, because a receiver's type needs a type checker and this
+// scan deliberately does without one.
+//
+// Get and Set are deliberately absent: core.Env carries methods of both names,
+// so matching them by bare name flags env.Get and env.Set as opaque callees. The
+// cost of leaving them out is nil — both are log-time single-node HAMT lookups,
+// bounded dispatch rather than scalable work, and wherever they run at scale
+// they sit inside a loop the phase detection already reports. Each is the
+// opposite and is the one that earns its place: it hides a whole traversal
+// inside the callee with no loop visible at the call site. If HashMap.Get ever
+// needs covering, resolve receiver types with go/types; do not restore the bare
+// name and do not special-case the receiver's identifier.
 var invOpaqueMethods = map[string]bool{
-	"Set":    true,
-	"Get":    true,
 	"Assoc":  true,
 	"Dissoc": true,
 	"Each":   true,
