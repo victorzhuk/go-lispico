@@ -38,18 +38,38 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				return nil, typeErrorf("filter: second argument must be collection")
 			}
 
+			budget := core.NewBuiltinWorkBudget(ctx)
+			// seqInput copied the whole subject before the loop is entered, so
+			// that copy is billed here on top of the per-element work.
+			for range items {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+			}
+
 			var results []core.Value
 			for _, item := range items {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				r, err := eval.Apply(ctx, args[0], []core.Value{item}, env)
 				if err != nil {
-					return nil, err
+					return finishBuiltin(budget, nil, err)
 				}
 				if isTruthy(r) {
+					if err := budget.Step(); err != nil {
+						return finishBuiltin(budget, nil, err)
+					}
 					results = append(results, item)
 				}
 			}
 
-			return core.NewList(results), nil
+			// Every retained element is borrowed from the subject; only the list
+			// holding them is new.
+			if err := chargeFreshContainer(ctx, core.ListShallowBytes(len(results))); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, core.NewList(results), nil)
 		},
 	}, false); err != nil {
 		return err
@@ -83,15 +103,32 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				startIdx = 1
 			}
 
-			for _, item := range items[startIdx:] {
-				var err error
-				acc, err = eval.Apply(ctx, args[0], []core.Value{acc, item}, env)
-				if err != nil {
-					return nil, err
+			budget := core.NewBuiltinWorkBudget(ctx)
+			// seqInput copied the whole subject before the fold is entered, so
+			// that copy is billed here on top of the per-element work.
+			for range items {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
 				}
 			}
 
-			return acc, nil
+			for _, item := range items[startIdx:] {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+				var err error
+				acc, err = eval.Apply(ctx, args[0], []core.Value{acc, item}, env)
+				if err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+			}
+
+			// The accumulator is either an element of the subject or what the
+			// last callback dispatch already accounted for.
+			if err := chargeBorrowedResult(ctx); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, acc, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -112,8 +149,36 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				return nil, typeErrorf("apply: last argument must be collection, got %T", last)
 			}
 
-			callArgs := append(args[1:len(args)-1], tail...)
-			return eval.Apply(ctx, fn, callArgs, env)
+			budget := core.NewBuiltinWorkBudget(ctx)
+			// seqInput copied the tail out of the subject, and the assembly
+			// below copies it once more into the callee's own slice.
+			for range tail {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+			}
+			for range len(args) - 2 + len(tail) {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+			}
+
+			// The caller still owns the backing array behind args — under the VM
+			// it is a window into the value stack — so the call arguments are
+			// copied at exact capacity rather than appended onto a reslice of it.
+			callArgs := make([]core.Value, 0, len(args)-2+len(tail))
+			callArgs = append(callArgs, args[1:len(args)-1]...)
+			callArgs = append(callArgs, tail...)
+
+			res, err := eval.Apply(ctx, fn, callArgs, env)
+			if err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			// The callee's dispatch already accounted for what it returned.
+			if err := chargeBorrowedResult(ctx); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, res, nil)
 		},
 	}, false); err != nil {
 		return err
