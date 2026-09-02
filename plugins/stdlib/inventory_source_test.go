@@ -82,6 +82,40 @@ var invEnvEvaluatorAllow = map[string]bool{
 	"plugins/stdlib/bootstrap.go:loadBootstrap": true,
 }
 
+// invOpaqueQualified are the package-qualified callees whose cost the builtin
+// cannot see. Each must be replaced by an interruptible kernel, rejected before
+// entry by a deterministic bound, or recorded as a bounded exception with proof
+// and a maximum.
+var invOpaqueQualified = map[string]bool{
+	"strings.Split":                    true,
+	"strings.Join":                     true,
+	"strings.ReplaceAll":               true,
+	"strings.ToUpper":                  true,
+	"strings.ToLower":                  true,
+	"strings.TrimSpace":                true,
+	"strings.Contains":                 true,
+	"strings.HasPrefix":                true,
+	"strings.HasSuffix":                true,
+	"fmt.Sprintf":                      true,
+	"strconv.ParseInt":                 true,
+	"strconv.ParseFloat":               true,
+	"sort.SliceStable":                 true,
+	"core.ValueDeepBytes":              true,
+	"core.CheckConstructionDepthWith":  true,
+	"core.CheckNestedElementDepthWith": true,
+}
+
+// invOpaqueMethods are the HashMap methods of the same set. They are matched on
+// the method name alone: the receiver's type needs a type checker, which this
+// scan deliberately does without.
+var invOpaqueMethods = map[string]bool{
+	"Set":    true,
+	"Get":    true,
+	"Assoc":  true,
+	"Dissoc": true,
+	"Each":   true,
+}
+
 // invResultClassNeedsCharge marks the classes that hand the caller fresh
 // allocation, so the row must say how much.
 var invResultClassNeedsCharge = map[string]bool{
@@ -101,6 +135,7 @@ type invSourceFn struct {
 	phases      []string
 	branches    []string
 	evaluators  []string
+	libCalls    []string
 	opaqueCalls []string
 	unflushed   []string
 	hasLoop     bool
@@ -118,8 +153,11 @@ type invSourceFn struct {
 //	DUPLICATE_ROW                 two rows record the same phase or branch
 //	HELPER_ONLY_LOOP              a budgeted row whose function holds neither a
 //	                              loop nor a budget
-//	OPAQUE_CALL                   an evaluator callback inside a loop with no
-//	                              budgeted or callback-owned row
+//	OPAQUE_CALL                   either an opaque library callee in a function
+//	                              with no budgeted, bounded-exception or
+//	                              trusted-host row, or an evaluator callback
+//	                              inside a loop with no budgeted or
+//	                              callback-owned row
 //	MISSING_PROOF                 a bounded-exception row without Proof or MaxWork
 //	TRUSTED_HOST_NOT_VALUE_METHOD a trusted-host Proof naming no allowed callee
 //	UNFLUSHED_RETURN              a budget holder returning without settling it
@@ -265,6 +303,31 @@ func invCalleeName(call *ast.CallExpr) string {
 	return ""
 }
 
+// invOpaqueCalleeName names the opaque callee a call invokes, or "" for
+// anything else. Matching is on the selector shape and the []rune conversion,
+// never on a substring, so strings.Contains matches and a lookalike such as
+// mystrings.ContainsFold does not.
+func invOpaqueCalleeName(call *ast.CallExpr) string {
+	switch fn := call.Fun.(type) {
+	case *ast.ArrayType:
+		if fn.Len == nil {
+			if elt, ok := fn.Elt.(*ast.Ident); ok && elt.Name == "rune" {
+				return "[]rune"
+			}
+		}
+	case *ast.SelectorExpr:
+		if pkg, ok := fn.X.(*ast.Ident); ok {
+			if qualified := pkg.Name + "." + fn.Sel.Name; invOpaqueQualified[qualified] {
+				return qualified
+			}
+		}
+		if invOpaqueMethods[fn.Sel.Name] {
+			return "." + fn.Sel.Name
+		}
+	}
+	return ""
+}
+
 func invSelectorCallName(e ast.Expr) (string, bool) {
 	call, ok := e.(*ast.CallExpr)
 	if !ok {
@@ -393,6 +456,9 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 		case *ast.CallExpr:
 			if invCalleeName(x) == "NewBuiltinWorkBudget" {
 				budgets = append(budgets, x.Pos())
+			}
+			if callee := invOpaqueCalleeName(x); callee != "" {
+				sf.libCalls = append(sf.libCalls, invLabel(callee, fset, x.Pos()))
 			}
 			sel, ok := x.Fun.(*ast.SelectorExpr)
 			if !ok {
@@ -641,6 +707,12 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 			for _, label := range sf.evaluators {
 				out = append(out, invFinding("ENV_EVALUATOR_IN_BUILTIN", sf.file, sf.name, label,
 					"a registered builtin must not reach the environment's evaluator"))
+			}
+		}
+		if !invHasDisposition(rowsByFunc[key], "budgeted", "bounded-exception", "trusted-host") {
+			for _, label := range sf.libCalls {
+				out = append(out, invFinding("OPAQUE_CALL", sf.file, sf.name, label,
+					"opaque callee with no budgeted, bounded-exception or trusted-host row"))
 			}
 		}
 		if !invHasDisposition(rowsByFunc[key], "callback-owned", "budgeted") {
