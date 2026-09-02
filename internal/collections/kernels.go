@@ -109,7 +109,15 @@ func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn co
 		}
 		results = append(results, r)
 	}
-	return core.NewList(results), flushErr(b, nil)
+	if err := flushErr(b, nil); err != nil {
+		return nil, err
+	}
+	// Both callers return this call directly, so charging the container here
+	// bills it exactly once for either of them.
+	if err := chargeFreshList(ctx, len(results)); err != nil {
+		return nil, err
+	}
+	return core.NewList(results), nil
 }
 
 // SortKeyFunc projects an input element to a sort key. StableSort invokes it
