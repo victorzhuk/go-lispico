@@ -3177,9 +3177,10 @@ var ResultBranches = []ResultBranch{
 		Class:       "borrowed",
 	},
 	// finishBuiltin is the same helper on the stdlib side, and carries the
-	// families whose builtins reach it. Its rows stay unreconciled until the
-	// string family flips: plugins/stdlib/charges.go is owned by four seams and
-	// waits for the last of them, though no string builtin calls this helper.
+	// families whose builtins reach it. Three families here against four on the
+	// file gate is not a mismatch: the row is per-function, the gate per-file,
+	// and plugins/stdlib/types.go reaches charges.go through
+	// chargeBorrowedResult rather than through this helper.
 	{
 		Families:    []string{"numeric", "collection", "higher-order"},
 		Fn:          "* + - / < <= = > >= apply assoc concat conj cons dissoc filter hash-map keys last list max merge min range reduce rest reverse sort vals vector",

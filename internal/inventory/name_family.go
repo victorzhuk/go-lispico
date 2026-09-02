@@ -2,8 +2,10 @@ package inventory
 
 // NameFamily assigns every registered builtin name and CL adapter id to exactly
 // one family. It is total over RegisteredNames and CLAdapterIDs: a name missing
-// here is a name no seam owns. "support" never appears — it covers helper files,
-// which register nothing.
+// here is a name no seam owns. "support" never appears here: it gates files
+// whose rows are family-agnostic, not files that merely register nothing —
+// plugins/stdlib/charges.go and internal/collections/order.go register nothing
+// either and are gated on the families that reach them.
 var NameFamily = map[string]string{
 	"*":     "numeric",
 	"+":     "numeric",
