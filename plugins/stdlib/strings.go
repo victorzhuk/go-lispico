@@ -66,18 +66,14 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			}
 			coll := args[1]
 
-			var parts []string
-			switch c := coll.(type) {
-			case core.List:
-				for _, item := range c.ToSlice() {
-					parts = append(parts, toString(item))
-				}
-			case core.Vector:
-				for _, item := range c.ToSlice() {
-					parts = append(parts, toString(item))
-				}
-			default:
+			items, ok := seqInput(coll)
+			if !ok {
 				return nil, typeErrorf("string/join: expected collection, got %T", coll)
+			}
+
+			parts := make([]string, 0, len(items))
+			for _, item := range items {
+				parts = append(parts, toString(item))
 			}
 
 			return core.String{V: strings.Join(parts, sep.V)}, nil
