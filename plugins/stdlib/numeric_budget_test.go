@@ -281,7 +281,7 @@ func TestEquals_HostValueIsTrustedBoundary(t *testing.T) {
 		}
 		require.Equalf(t, []string{"numeric"}, got.Families, "%s/%s: families", wantFn, wantLabel)
 		require.Equalf(t, "plugins/stdlib/comparison.go", got.File, "%s/%s: file", wantFn, wantLabel)
-		require.Equalf(t, "registerComparison", got.Func, "%s/%s: func", wantFn, wantLabel)
+		require.Equalf(t, "equalsAll", got.Func, "%s/%s: func", wantFn, wantLabel)
 		require.Equalf(t, "trusted-host", got.Disposition, "%s/%s: disposition", wantFn, wantLabel)
 		return
 	}

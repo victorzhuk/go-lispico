@@ -69,6 +69,48 @@ func TestEqualsBounded_StepsPerComparedNode(t *testing.T) {
 	})
 }
 
+// nestedList (core/depth_test.go) wraps an Int in depth layers of List, so the
+// innermost scalar is the node boundedEquals reaches at exactly that depth.
+//
+// TestEqualsBounded_MatchesEqualsAtDepthLimit pins EqualsBounded to the same
+// structural depth cap Value.Equals enforces through boundedEquals. Without
+// one, = flips false to true past DefaultMaxStructuralDepth and stops agreeing
+// with core's own equality on the same pair, and the only remaining backstop is
+// the reduction ceiling — millions of Go stack frames away.
+//
+// The expectation is read from Equals rather than hardcoded, so the test tracks
+// the cap instead of duplicating it.
+func TestEqualsBounded_MatchesEqualsAtDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	atCap, pastCap := DefaultMaxStructuralDepth, DefaultMaxStructuralDepth+1
+	if !nestedList(atCap).Equals(nestedList(atCap)) || nestedList(pastCap).Equals(nestedList(pastCap)) {
+		t.Fatalf("depths %d and %d no longer straddle the Equals depth cap: the parity check below would prove nothing", atCap, pastCap)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		depth int
+	}{
+		{"atCap", atCap},
+		{"pastCap", pastCap},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a, b := nestedList(tt.depth), nestedList(tt.depth)
+			want := a.Equals(b)
+			budget := NewBuiltinWorkBudget(budgetCtx(context.Background(), DefaultMaxReductions))
+			got, err := EqualsBounded(a, b, budget)
+			if err != nil {
+				t.Fatalf("EqualsBounded at nesting depth %d: unexpected error %v", tt.depth, err)
+			}
+			if got != want {
+				t.Fatalf("EqualsBounded at nesting depth %d = %v, want %v: it must honour the same structural depth cap Value.Equals enforces", tt.depth, got, want)
+			}
+		})
+	}
+}
+
 // TestEqualsBounded_HostValueNotStepped pins the trusted-host boundary: the
 // default branch charges the entry unit for the node and nothing for whatever
 // the host's own Equals walks inside, and reports that Equals result unchanged.
