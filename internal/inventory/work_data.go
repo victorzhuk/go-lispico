@@ -297,4 +297,211 @@ var WorkPhases = []WorkPhase{
 		PhaseLabel:  "retyped view dispatch",
 		Disposition: "none-bounded-dispatch",
 	},
+
+	// Collection family, part one: the eight construction and traversal
+	// builtins. Every phase whose cost grows with the input charges the
+	// caller's budget one unit per element copied or constructed.
+
+	{
+		Families:    []string{"collection"},
+		Fn:          "list",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "argument budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "list",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "argument copy",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "argument budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "argument copy",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "concat",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "flatten budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "concat",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "flatten walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "concat",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "prefix walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "concat",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "shared-tail cons walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "concat",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "appendCollectionElems",
+		PhaseLabel:  "element copy",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "reverse",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "reverse budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "reverse",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "subject copy",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "reverse",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "reverse walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "hash-map",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "pair budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "hash-map",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "pair walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "merge",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "merge budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "merge",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "source entry walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "sort",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "sort budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "sort",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "subject copy",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "range",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "generation budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "range",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "bounds walk",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "range",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "generation walk",
+		Disposition: "budgeted",
+	},
+
+	// The two core walks the builtins cannot preempt. Each is bounded by a
+	// ceiling the result had to clear before the walk could start.
+
+	{
+		Families:    []string{"collection"},
+		Fn:          "hash-map list merge range vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "result deep sizing",
+		Disposition: "bounded-exception",
+		Proof: "core.ValueDeepBytes walks the finished result once. Its node " +
+			"count is bounded by the allocation ledger it reports into: every " +
+			"node already in the result cost at least core.MeterScalarBytes " +
+			"(16) when it was built, so a result that fits under " +
+			"core.DefaultMaxAllocationBytes carries at most " +
+			"core.DefaultMaxAllocationBytes/16 nodes. A structure past that " +
+			"bound cannot exist, because building it would have failed the " +
+			"ledger first.",
+		MaxWork: 4_194_304,
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "concat hash-map list merge range vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "chargeCollectionResult",
+		PhaseLabel:  "construction depth walk",
+		Disposition: "bounded-exception",
+		Proof: "core.CheckConstructionDepthWith descends at most " +
+			"core.DefaultMaxStructuralDepth+1 levels before reporting the " +
+			"limit: the walk stops at the first level past the ceiling " +
+			"instead of finishing the structure.",
+		MaxWork: 1_025,
+	},
 }

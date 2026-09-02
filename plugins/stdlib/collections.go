@@ -14,11 +14,19 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("list", core.GoFunc{
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			res := core.NewList(append([]core.Value(nil), args...))
-			if err := chargeCollectionResult(ctx, eval, "list", res, core.ValueDeepBytes(res)); err != nil {
-				return nil, err
+			budget := core.NewBuiltinWorkBudget(ctx)
+			items := make([]core.Value, len(args))
+			for i, arg := range args {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+				items[i] = arg
 			}
-			return res, nil
+			res := core.NewList(items)
+			if err := chargeCollectionResult(ctx, eval, "list", res, core.ValueDeepBytes(res)); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, res, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -28,8 +36,13 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "concat",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) == 0 {
+				if err := chargeFreshContainer(ctx, core.ListShallowBytes(0)); err != nil {
+					return nil, err
+				}
 				return core.NewList(nil), nil
 			}
+
+			budget := core.NewBuiltinWorkBudget(ctx)
 
 			// The last argument extends without copying when it's a List:
 			// every earlier argument's elements get Cons'd onto it in
@@ -40,21 +53,21 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			if !sharesLast {
 				var result []core.Value
 				for _, arg := range args {
-					if err := appendCollectionElems("concat", &result, arg); err != nil {
-						return nil, err
+					if err := appendCollectionElems(budget, "concat", &result, arg); err != nil {
+						return finishBuiltin(budget, nil, err)
 					}
 				}
 				res := core.NewList(result)
 				if err := chargeCollectionResult(ctx, eval, "concat", res, core.ListShallowBytes(len(result))); err != nil {
-					return nil, err
+					return finishBuiltin(budget, nil, err)
 				}
-				return res, nil
+				return finishBuiltin(budget, res, nil)
 			}
 
 			var prefix []core.Value
 			for _, arg := range args[:len(args)-1] {
-				if err := appendCollectionElems("concat", &prefix, arg); err != nil {
-					return nil, err
+				if err := appendCollectionElems(budget, "concat", &prefix, arg); err != nil {
+					return finishBuiltin(budget, nil, err)
 				}
 			}
 			res := baseList
@@ -65,9 +78,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				bytes += b
 			}
 			if err := chargeCollectionResult(ctx, eval, "concat", res, bytes); err != nil {
-				return nil, err
+				return finishBuiltin(budget, nil, err)
 			}
-			return res, nil
+			return finishBuiltin(budget, res, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -84,11 +97,29 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			if !ok {
 				return nil, typeErrorf("reverse: expected collection, got %T", args[0])
 			}
+
+			budget := core.NewBuiltinWorkBudget(ctx)
+			// seqInput copied the whole subject in one ToSlice call. That walk
+			// is invisible to the budget unless it is charged here, so the
+			// copy is billed before the reversal it feeds.
+			for range items {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+			}
 			result := make([]core.Value, len(items))
 			for i, v := range items {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				result[len(items)-1-i] = v
 			}
-			return core.NewList(result), nil
+			// The result borrows every element from the subject, so only the
+			// container it allocated is new to the ledger.
+			if err := chargeFreshContainer(ctx, core.ListShallowBytes(len(result))); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, core.NewList(result), nil)
 		},
 	}, false); err != nil {
 		return err
@@ -97,11 +128,19 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("vector", core.GoFunc{
 		Name: "vector",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
-			res := core.NewVector(append([]core.Value(nil), args...))
-			if err := chargeCollectionResult(ctx, eval, "vector", res, core.ValueDeepBytes(res)); err != nil {
-				return nil, err
+			budget := core.NewBuiltinWorkBudget(ctx)
+			items := make([]core.Value, len(args))
+			for i, arg := range args {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+				items[i] = arg
 			}
-			return res, nil
+			res := core.NewVector(items)
+			if err := chargeCollectionResult(ctx, eval, "vector", res, core.ValueDeepBytes(res)); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, res, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -114,16 +153,23 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, arityErrorf("hash-map: requires even number of arguments")
 			}
 
+			budget := core.NewBuiltinWorkBudget(ctx)
 			m := core.NewHashMap()
 			for i := 0; i < len(args); i += 2 {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				if err := m.Set(args[i], args[i+1]); err != nil {
-					return nil, wrapCause("hash-map", err)
+					return finishBuiltin(budget, nil, wrapCause("hash-map", err))
 				}
 			}
-			if err := core.CheckConstructionDepthWith(m, eval); err != nil {
-				return nil, err
+			// Every entry holds an argument the map now owns, so the result is
+			// charged deeply: the apply site's shallow fallback would bill the
+			// header alone and miss the whole payload.
+			if err := chargeCollectionResult(ctx, eval, "hash-map", m, core.ValueDeepBytes(m)); err != nil {
+				return finishBuiltin(budget, nil, err)
 			}
-			return m, nil
+			return finishBuiltin(budget, m, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -545,28 +591,41 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	if err := env.RegisterValue("merge", core.GoFunc{
 		Name: "merge",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			budget := core.NewBuiltinWorkBudget(ctx)
 			result := core.NewHashMap()
 			for _, arg := range args {
 				switch m := arg.(type) {
 				case *core.HashMap:
-					var err error
+					// Each cannot be stopped part way, so both failures latch
+					// and the remaining entries fall through untouched. They
+					// stay apart because a budget error must reach the caller
+					// as itself: wrapping it would hide the cancellation or
+					// deadline that produced it.
+					var stepErr, setErr error
 					m.Each(func(k, v core.Value) {
-						if err == nil {
-							err = result.Set(k, v)
+						if stepErr != nil || setErr != nil {
+							return
 						}
+						if stepErr = budget.Step(); stepErr != nil {
+							return
+						}
+						setErr = result.Set(k, v)
 					})
-					if err != nil {
-						return nil, wrapCause("merge", err)
+					if stepErr != nil {
+						return finishBuiltin(budget, nil, stepErr)
+					}
+					if setErr != nil {
+						return finishBuiltin(budget, nil, wrapCause("merge", setErr))
 					}
 				case core.Nil:
 				default:
-					return nil, typeErrorf("merge: expected map, got %T", arg)
+					return finishBuiltin(budget, nil, typeErrorf("merge: expected map, got %T", arg))
 				}
 			}
 			if err := chargeCollectionResult(ctx, eval, "merge", result, core.ValueDeepBytes(result)); err != nil {
-				return nil, err
+				return finishBuiltin(budget, nil, err)
 			}
-			return result, nil
+			return finishBuiltin(budget, result, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -614,19 +673,32 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, arityErrorf("sort: requires 1 argument")
 			}
 
-			var sorted []core.Value
+			var subject []core.Value
 			switch c := args[0].(type) {
 			case core.List:
-				sorted = c.ToSlice()
+				subject = c.ToSlice()
 			case core.Vector:
-				sorted = c.ToSlice()
+				subject = c.ToSlice()
 			case core.Nil:
+				if err := chargeFreshContainer(ctx, core.ListShallowBytes(0)); err != nil {
+					return nil, err
+				}
 				return core.NewList([]core.Value{}), nil
 			default:
 				return nil, typeErrorf("sort: expected collection, got %T", args[0])
 			}
 
-			sorted, err := collections.StableSort(ctx, sorted, nil, func(a, b core.Value) (bool, error) {
+			budget := core.NewBuiltinWorkBudget(ctx)
+			// The ToSlice copy above happens before the kernel is entered, and
+			// StableSort charges only the work it does itself, so this walk is
+			// stdlib's to bill. Charging the kernel again here would double it.
+			for range subject {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+			}
+
+			sorted, err := collections.StableSort(ctx, subject, nil, func(a, b core.Value) (bool, error) {
 				cmp, err := collections.NaturalCmp(a, b)
 				if err != nil {
 					return false, err
@@ -634,10 +706,15 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return cmp < 0, nil
 			})
 			if err != nil {
-				return nil, err
+				return finishBuiltin(budget, nil, err)
 			}
 
-			return core.NewList(sorted), nil
+			// Every element is borrowed from the subject; only the list holding
+			// them is new.
+			if err := chargeFreshContainer(ctx, core.ListShallowBytes(len(sorted))); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, core.NewList(sorted), nil)
 		},
 	}, false); err != nil {
 		return err
@@ -695,11 +772,18 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			budget := core.NewBuiltinWorkBudget(ctx)
 			items := make([]core.Value, 0, count)
 			cur := start
 			for k := uint64(0); k < count; k++ {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+				// The budget syncs once per batch, which is coarser than the
+				// one-element granularity range's cancellation contract
+				// requires, so the caller's own context is still probed here.
 				if err := ctx.Err(); err != nil {
-					return nil, err
+					return finishBuiltin(budget, nil, err)
 				}
 				items = append(items, core.Int{V: cur})
 				if k+1 < count {
@@ -708,9 +792,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			}
 			res := core.NewList(items)
 			if err := chargeCollectionResult(ctx, eval, "range", res, core.ValueDeepBytes(res)); err != nil {
-				return nil, err
+				return finishBuiltin(budget, nil, err)
 			}
-			return res, nil
+			return finishBuiltin(budget, res, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -718,18 +802,27 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 	return nil
 }
 
-// appendCollectionElems appends arg's elements to *dst — List and Vector via
-// ToSlice, a single O(n) walk, never an indexed At() loop (O(n) per call on
-// a shared List, O(n^2) total across the loop).
-func appendCollectionElems(name string, dst *[]core.Value, arg core.Value) error {
+// appendCollectionElems appends arg's elements to *dst, one budget unit per
+// element — List and Vector are read through ToSlice, a single O(n) walk,
+// never an indexed At() loop (O(n) per call on a shared List, O(n^2) total
+// across the loop).
+func appendCollectionElems(budget *core.BuiltinWorkBudget, name string, dst *[]core.Value, arg core.Value) error {
+	var elems []core.Value
 	switch c := arg.(type) {
 	case core.List:
-		*dst = append(*dst, c.ToSlice()...)
+		elems = c.ToSlice()
 	case core.Vector:
-		*dst = append(*dst, c.ToSlice()...)
+		elems = c.ToSlice()
 	case core.Nil:
+		return nil
 	default:
 		return typeErrorf("%s: expected collection, got %T", name, arg)
+	}
+	for _, v := range elems {
+		if err := budget.Step(); err != nil {
+			return err
+		}
+		*dst = append(*dst, v)
 	}
 	return nil
 }
