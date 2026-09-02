@@ -80,13 +80,8 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, arityErrorf("reverse: requires 1 argument")
 			}
 
-			var items []core.Value
-			switch c := args[0].(type) {
-			case core.List:
-				items = c.ToSlice()
-			case core.Vector:
-				items = c.ToSlice()
-			default:
+			items, ok := seqInput(args[0])
+			if !ok {
 				return nil, typeErrorf("reverse: expected collection, got %T", args[0])
 			}
 			result := make([]core.Value, len(items))
@@ -231,9 +226,14 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, typeErrorf("nth: index must be integer")
 			}
 
-			val, outcome, err := collections.IndexedAccess(ctx, args[0], idx.V)
-			if err != nil {
-				return nil, err
+			var val core.Value
+			outcome := collections.AccessOutOfRange
+			if _, isNil := args[0].(core.Nil); !isNil {
+				var err error
+				val, outcome, err = collections.IndexedAccess(ctx, args[0], idx.V)
+				if err != nil {
+					return nil, err
+				}
 			}
 			switch outcome {
 			case collections.AccessHit:
