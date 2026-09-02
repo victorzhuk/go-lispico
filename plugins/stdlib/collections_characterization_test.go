@@ -41,6 +41,7 @@ func TestNth_Characterization(t *testing.T) {
 			{"list middle", `(nth '(1 2 3) 1)`, core.Int{V: 2}},
 			{"vector first", `(nth [1 2] 0)`, core.Int{V: 1}},
 			{"default past end", `(nth '(1 2 3) 10 :nf)`, core.Keyword{V: "nf"}},
+			{"nil default", `(nth nil 0 :nf)`, core.Keyword{V: "nf"}},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -65,7 +66,7 @@ func TestNth_Characterization(t *testing.T) {
 			{"past end", "(nth '(1 2) 5)", "EvalError", "nth: index out of bounds"},
 			{"negative index", "(nth '(1 2) -1)", "EvalError", "nth: index out of bounds"},
 			{"int subject", "(nth 5 0)", "TypeError", "nth: expected collection, got core.Int"},
-			{"nil subject", "(nth nil 0)", "TypeError", "nth: expected collection, got core.Nil"},
+			{"nil subject", "(nth nil 0)", "EvalError", "nth: index out of bounds"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
