@@ -2,6 +2,7 @@ package stdlib
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -296,8 +297,28 @@ func TestApply_DoesNotMutateCallerArguments(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, wantCallArgs, got, "apply must pass the leading arguments followed by the last collection's elements")
-		require.Equal(t, want, stack,
-			"apply overwrote its caller's argument window: assembling call arguments must copy at exact capacity, never append into slots the caller still owns")
+		// require.Equal falls through to reflect.DeepEqual, which holds for func
+		// values only when both are nil, so a window holding the callee GoFunc is
+		// never deeply equal to a clone of itself and a whole-slice comparison
+		// here can never pass for any behaviour. Every slot is compared instead,
+		// slot 0 by the callee's own identity.
+		require.Lenf(t, stack, len(want),
+			"apply resized its caller's argument window to %d slots, want %d", len(stack), len(want))
+		for i := range want {
+			if i == 0 {
+				got, ok := stack[i].(core.GoFunc)
+				require.Truef(t, ok,
+					"apply overwrote its caller's argument window at slot %d: want the callee, got %#v", i, stack[i])
+				require.Equalf(t, callee.Name, got.Name,
+					"apply overwrote its caller's argument window at slot %d: the callee slot now names %q", i, got.Name)
+				require.Equalf(t, reflect.ValueOf(callee.Fn).Pointer(), reflect.ValueOf(got.Fn).Pointer(),
+					"apply overwrote its caller's argument window at slot %d: the callee slot holds a different function", i)
+				continue
+			}
+			require.Truef(t, want[i].Equals(stack[i]),
+				"apply overwrote its caller's argument window at slot %d: got %v, want %v; assembling call arguments must copy at exact capacity, never append into slots the caller still owns",
+				i, stack[i], want[i])
+		}
 	})
 
 	modes := []struct {
