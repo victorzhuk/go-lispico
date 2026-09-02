@@ -284,7 +284,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, arityErrorf("cons: requires 2 arguments")
 			}
 
-			switch c := args[1].(type) {
+			base := args[1]
+			if _, isNil := base.(core.Nil); isNil {
+				base = core.NewList(nil)
+			}
+			switch c := base.(type) {
 			case core.List:
 				res, bytes := c.Cons(args[0])
 				if err := chargeConsResult(ctx, eval, "cons", res, bytes, args[0]); err != nil {
@@ -315,7 +319,11 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				return nil, arityErrorf("conj: requires at least 2 arguments")
 			}
 
-			switch c := args[0].(type) {
+			base := args[0]
+			if _, isNil := base.(core.Nil); isNil {
+				base = core.NewList(nil)
+			}
+			switch c := base.(type) {
 			case core.List:
 				// conj prepends args[1:] onto c in order — equivalent to
 				// consing them on one at a time starting from the last, so
