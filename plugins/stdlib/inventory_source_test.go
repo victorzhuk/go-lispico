@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	gotoken "go/token"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -16,12 +17,20 @@ import (
 // invScopeFiles are the non-test sources the inventory reconciles against.
 // core/ and plugins/json are deliberately outside it: neither registers a
 // stdlib builtin, and neither is edited by this migration.
+//
+// The charges.go entries name files later seams create. A listed file that
+// does not exist yet is skipped, so the set is gated on existence rather than
+// pinned to a count and a new seam inherits reconciliation without editing
+// this file.
 var invScopeFiles = []string{
+	"cl/charges.go",
 	"cl/cl.go",
+	"internal/collections/charges.go",
 	"internal/collections/errors.go",
 	"internal/collections/kernels.go",
 	"internal/collections/order.go",
 	"plugins/stdlib/arithmetic.go",
+	"plugins/stdlib/charges.go",
 	"plugins/stdlib/bootstrap.go",
 	"plugins/stdlib/collections.go",
 	"plugins/stdlib/comparison.go",
@@ -37,12 +46,15 @@ var invScopeFiles = []string{
 // A file is reconciled only once every family named here is migrated, so a
 // helper shared by two families waits for the later of the two.
 var invFileFamilies = map[string][]string{
+	"cl/charges.go":                   {"cl-adapter"},
 	"cl/cl.go":                        {"cl-adapter"},
+	"internal/collections/charges.go": {"collection", "higher-order", "cl-adapter"},
 	"internal/collections/errors.go":  {"support"},
 	"internal/collections/kernels.go": {"collection", "higher-order", "cl-adapter"},
-	"internal/collections/order.go":   {"numeric", "collection", "cl-adapter"},
+	"internal/collections/order.go":   {"numeric", "collection"},
 	"plugins/stdlib/arithmetic.go":    {"numeric"},
 	"plugins/stdlib/bootstrap.go":     {"support"},
+	"plugins/stdlib/charges.go":       {"collection", "types", "higher-order", "string"},
 	"plugins/stdlib/collections.go":   {"collection"},
 	"plugins/stdlib/comparison.go":    {"numeric"},
 	"plugins/stdlib/control.go":       {"higher-order"},
@@ -222,7 +234,11 @@ func invScanSources(root string) (map[string]*invSourceFn, error) {
 	fset := gotoken.NewFileSet()
 	parsed := make(map[string]*ast.File, len(invScopeFiles))
 	for _, rel := range invScopeFiles {
-		f, err := parser.ParseFile(fset, filepath.Join(root, filepath.FromSlash(rel)), nil, 0)
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -234,6 +250,9 @@ func invScanSources(root string) (map[string]*invSourceFn, error) {
 	// newly added helper from reading as an unflushed return.
 	flushHelpers := make(map[string]bool)
 	for _, rel := range invScopeFiles {
+		if parsed[rel] == nil {
+			continue
+		}
 		for _, decl := range parsed[rel].Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -247,6 +266,9 @@ func invScanSources(root string) (map[string]*invSourceFn, error) {
 
 	out := make(map[string]*invSourceFn)
 	for _, rel := range invScopeFiles {
+		if parsed[rel] == nil {
+			continue
+		}
 		for _, decl := range parsed[rel].Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -531,6 +553,11 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 
 	for _, key := range invSortedFuncKeys(funcs) {
 		sf := funcs[key]
+		if len(sf.families) == 0 {
+			out = append(out, invFinding("MISSING_REGISTRATION", sf.file, sf.name, "families",
+				"in-scope function resolves to no family; add its file to invFileFamilies"))
+			continue
+		}
 		if !invGated(sf.families, migrated) {
 			continue
 		}
@@ -602,6 +629,11 @@ func reconcileResult(root string, branches []inventory.ResultBranch, migrated ma
 
 	for _, key := range invSortedFuncKeys(funcs) {
 		sf := funcs[key]
+		if len(sf.families) == 0 {
+			out = append(out, invFinding("MISSING_REGISTRATION", sf.file, sf.name, "families",
+				"in-scope function resolves to no family; add its file to invFileFamilies"))
+			continue
+		}
 		if !invGated(sf.families, migrated) {
 			continue
 		}

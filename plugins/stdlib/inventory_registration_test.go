@@ -57,13 +57,52 @@ func invStringSet(values []string) map[string]bool {
 	return set
 }
 
+// invNamesTrustedCallee matches whole tokens, not substrings: a proof that
+// merely mentions a callee in prose, or names a lookalike such as .EqualsFold,
+// is not evidence that the phase leans on a bounded value method.
 func invNamesTrustedCallee(proof string) bool {
-	for _, callee := range invTrustedHostCallees {
-		if strings.Contains(proof, callee) {
-			return true
+	for _, token := range strings.Fields(proof) {
+		token = strings.TrimLeft(token, "([{\"'`")
+		token = strings.TrimRight(token, ".,;:)]}\"'`")
+		for _, callee := range invTrustedHostCallees {
+			if token == callee {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// invSupportOnly reports whether a row belongs solely to the support family.
+// Nothing in support is registered under a Lisp name, so such a row names none.
+func invSupportOnly(families []string) bool {
+	return len(families) == 1 && families[0] == "support"
+}
+
+// invCheckRowNames enforces the Fn contract: a support-only row carries an
+// empty Fn, and every other row names at least one known builtin or adapter id.
+// Whatever it names is folded into covered.
+func invCheckRowNames(t *testing.T, families []string, fn, site string, known, covered map[string]bool) {
+	t.Helper()
+
+	if invSupportOnly(families) {
+		if fn != "" {
+			t.Errorf("%s: support-only row names %q; support registers nothing, so Fn must be empty", site, fn)
+		}
+		return
+	}
+
+	names := invRowNames(fn)
+	if len(names) == 0 {
+		t.Errorf("%s: row names no builtin; only a support-only row may leave Fn empty", site)
+		return
+	}
+	for _, name := range names {
+		if !known[name] {
+			t.Errorf("%s: %q is neither a registered name nor an adapter id", site, name)
+		}
+		covered[name] = true
+	}
 }
 
 func invRowKey(parts ...string) string {
@@ -76,18 +115,14 @@ func TestWorkInventory_CoversEveryRegisteredName(t *testing.T) {
 	seen := make(map[string]bool)
 
 	for _, row := range inventory.WorkPhases {
+		site := row.File + ":" + row.Func + ":" + row.PhaseLabel
 		key := invRowKey(row.Fn, row.File, row.Func, row.PhaseLabel)
 		if seen[key] {
-			t.Errorf("%s:%s:%s: duplicate WorkPhases row for %q", row.File, row.Func, row.PhaseLabel, row.Fn)
+			t.Errorf("%s: duplicate WorkPhases row for %q", site, row.Fn)
 		}
 		seen[key] = true
 
-		for _, name := range invRowNames(row.Fn) {
-			if !known[name] {
-				t.Errorf("%s:%s:%s: %q is neither a registered name nor an adapter id", row.File, row.Func, row.PhaseLabel, name)
-			}
-			covered[name] = true
-		}
+		invCheckRowNames(t, row.Families, row.Fn, site, known, covered)
 	}
 
 	for _, name := range invMigratedNames() {
@@ -105,20 +140,16 @@ func TestResultInventory_CoversEveryRegisteredName(t *testing.T) {
 	seen := make(map[string]bool)
 
 	for _, row := range inventory.ResultBranches {
+		site := row.File + ":" + row.Func + ":" + row.BranchLabel
 		key := invRowKey(row.Fn, row.File, row.Func, row.BranchLabel)
 		if seen[key] {
-			t.Errorf("%s:%s:%s: duplicate ResultBranches row for %q", row.File, row.Func, row.BranchLabel, row.Fn)
+			t.Errorf("%s: duplicate ResultBranches row for %q", site, row.Fn)
 		}
 		seen[key] = true
 
-		for _, name := range invRowNames(row.Fn) {
-			if !known[name] {
-				t.Errorf("%s:%s:%s: %q is neither a registered name nor an adapter id", row.File, row.Func, row.BranchLabel, name)
-			}
-			covered[name] = true
-		}
+		invCheckRowNames(t, row.Families, row.Fn, site, known, covered)
 		if !classes[row.Class] {
-			t.Errorf("%s:%s:%s: class %q is not a declared result class", row.File, row.Func, row.BranchLabel, row.Class)
+			t.Errorf("%s: class %q is not a declared result class", site, row.Class)
 		}
 	}
 
