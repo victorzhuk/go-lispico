@@ -16,7 +16,7 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 			}
 
 			switch args[1].(type) {
-			case core.List, core.Vector:
+			case core.List, core.Vector, core.Nil:
 			default:
 				return nil, typeErrorf("map: second argument must be collection")
 			}
@@ -33,13 +33,8 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				return nil, arityErrorf("filter: requires 2 arguments")
 			}
 
-			var items []core.Value
-			switch c := args[1].(type) {
-			case core.List:
-				items = c.ToSlice()
-			case core.Vector:
-				items = c.ToSlice()
-			default:
+			items, ok := seqInput(args[1])
+			if !ok {
 				return nil, typeErrorf("filter: second argument must be collection")
 			}
 
@@ -67,18 +62,13 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 				return nil, arityErrorf("reduce: requires 2 or 3 arguments")
 			}
 
-			var items []core.Value
 			collIdx := 1
 			if len(args) == 3 {
 				collIdx = 2
 			}
 
-			switch c := args[collIdx].(type) {
-			case core.List:
-				items = c.ToSlice()
-			case core.Vector:
-				items = c.ToSlice()
-			default:
+			items, ok := seqInput(args[collIdx])
+			if !ok {
 				return nil, typeErrorf("reduce: last argument must be collection")
 			}
 
@@ -117,13 +107,8 @@ func (p *Plugin) registerHigherOrder(env *core.Env) error {
 			fn := args[0]
 			last := args[len(args)-1]
 
-			var tail []core.Value
-			switch c := last.(type) {
-			case core.List:
-				tail = c.ToSlice()
-			case core.Vector:
-				tail = c.ToSlice()
-			default:
+			tail, ok := seqInput(last)
+			if !ok {
 				return nil, typeErrorf("apply: last argument must be collection, got %T", last)
 			}
 
