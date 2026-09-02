@@ -398,14 +398,21 @@ func TestCL_UnknownKeywordMessageBounded(t *testing.T) {
 
 	t.Run("long-keyword-is-bounded", func(t *testing.T) {
 		var calls int
-		long := strings.Repeat("×", 10000)
+		// U+1D6FC encodes to utf8.UTFMax bytes, so this payload drives the
+		// format's precision to its widest possible output — the worst case is
+		// the case under test rather than one the bound merely covers.
+		long := strings.Repeat("\U0001D6FC", 10000)
 		_, err := clbDirect(t, sortFn, items, clbNaturalLess(&calls), core.Keyword{V: long}, core.Nil{})
 		require.Error(t, err, "an unknown keyword must be rejected")
 		var le *core.LispicoError
 		require.ErrorAs(t, err, &le, "the rejection must be a typed *core.LispicoError, got %v", err)
-		t.Logf("long-keyword message: %d bytes for a %d-rune keyword", len(le.Message), utf8.RuneCountInString(long))
+		t.Logf("long-keyword message: %d bytes / %d runes for a %d-rune keyword",
+			len(le.Message), utf8.RuneCountInString(le.Message), utf8.RuneCountInString(long))
 
-		bound := len(prefix) + 200*utf8.UTFMax
+		// core.Keyword renders as ":" + V (core/types.go:161), so the 200 runes
+		// the precision keeps are the 1-byte colon plus 199 runes of at most
+		// utf8.UTFMax bytes: 22 + 1 + 796 = 819.
+		bound := len(prefix) + 1 + 199*utf8.UTFMax
 		assert.LessOrEqualf(t, len(le.Message), bound,
 			"a %d-rune keyword must not produce a message that grows with it: got %d bytes, ceiling %d", utf8.RuneCountInString(long), len(le.Message), bound)
 		assert.True(t, strings.HasPrefix(le.Message, prefix), "the bounded message must keep its diagnostic prefix, got %q", le.Message)
