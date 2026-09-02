@@ -1,6 +1,7 @@
 package stdlib
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	gotoken "go/token"
@@ -189,6 +190,11 @@ var invSweepDirs = []string{"cl", "internal/collections", "plugins/stdlib"}
 // The scope list otherwise validates only its own entries, so a seam that adds
 // a file would leave its phases and result branches reconciled by nothing —
 // work added with no disposition and no failing test.
+//
+// A sweep directory that does not exist is skipped rather than reported: the
+// reconcilers also run against a fixture root, which carries none of the
+// package dirs, and a missing dir is not evidence of an unscoped file. Every
+// other walk failure still surfaces.
 func invSweepUnscopedFiles(root string) []string {
 	scoped := make(map[string]bool, len(invScopeFiles))
 	for _, rel := range invScopeFiles {
@@ -198,6 +204,9 @@ func invSweepUnscopedFiles(root string) []string {
 	var out []string
 	for _, dir := range invSweepDirs {
 		base := filepath.Join(root, filepath.FromSlash(dir))
+		if _, statErr := os.Stat(base); errors.Is(statErr, fs.ErrNotExist) {
+			continue
+		}
 		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -222,7 +231,7 @@ func invSweepUnscopedFiles(root string) []string {
 			}
 			return nil
 		})
-		if err != nil {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			out = append(out, invFinding("UNSCOPED_FILE", dir, "-", "-", "scope sweep failed: "+err.Error()))
 		}
 	}
