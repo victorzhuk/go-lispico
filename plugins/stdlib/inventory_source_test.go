@@ -125,6 +125,18 @@ var invOpaqueMethods = map[string]bool{
 	"Each":   true,
 }
 
+// invSharedKernels are the kernels whose result is the calling builtin's own
+// result. Each charges for that result once, and the charge stays exact only
+// while every caller returns the call directly.
+//
+// IndexedAccess and StableSort are deliberately absent: neither hands back the
+// builtin's return shape — one yields an access outcome the caller must branch
+// on, the other a slice the caller must wrap — so capturing them is forced and
+// the wrapping allocation is the caller's own result branch to charge.
+var invSharedKernels = map[string]bool{
+	"collections.MapSequences": true,
+}
+
 // invResultClassNeedsCharge marks the classes that hand the caller fresh
 // allocation, so the row must say how much.
 var invResultClassNeedsCharge = map[string]bool{
@@ -147,6 +159,7 @@ type invSourceFn struct {
 	libCalls    []string
 	opaqueCalls []string
 	unflushed   []string
+	wrapped     []string
 	hasLoop     bool
 	hasBudget   bool
 	stepInLoop  bool
@@ -178,14 +191,15 @@ type invSourceFn struct {
 //	                              without naming a ChargeExpr
 //	PREPOST_ONLY_DISPOSITION      a budgeted loop charging no Step inside its body
 //	ENV_EVALUATOR_IN_BUILTIN      a builtin reaching the environment's evaluator
-//
-// WRAPPED_KERNEL_RESULT belongs to a later seam and is never produced here.
+//	WRAPPED_KERNEL_RESULT         a caller binding a shared kernel's result and
+//	                              returning it later, so the kernel's single
+//	                              charge stops covering the caller's own result
 func invFinding(code, file, fn, label, detail string) string {
 	return code + " " + file + ":" + fn + ":" + label + ": " + detail
 }
 
-// invLatch is one binding of an identifier to a Step or Flush result, together
-// with the source range over which that binding is live. Exemption 3 is keyed
+// invLatch is one binding of an identifier to a call result, together with the
+// source range over which that binding is live. Exemption 3 is keyed
 // on the binding, not on the identifier's name: these functions rebind err
 // repeatedly, and a name-keyed set lets an err produced by a charge helper
 // inherit the exemption a budget error earned elsewhere in the same function.
@@ -377,6 +391,25 @@ func invOpaqueCalleeName(call *ast.CallExpr) string {
 	return ""
 }
 
+// invSharedKernelName names the shared kernel a call invokes, or "" for
+// anything else. Matching is on the package-qualified selector, so
+// collections.MapSequences matches while a same-named method or a helper in
+// another package does not.
+func invSharedKernelName(call *ast.CallExpr) string {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	if qualified := pkg.Name + "." + sel.Sel.Name; invSharedKernels[qualified] {
+		return qualified
+	}
+	return ""
+}
+
 func invSelectorCallName(e ast.Expr) (string, bool) {
 	call, ok := e.(*ast.CallExpr)
 	if !ok {
@@ -454,22 +487,97 @@ func invScanSources(root string) (map[string]*invSourceFn, error) {
 			continue
 		}
 		for _, decl := range parsed[rel].Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
+			for _, unit := range invDeclUnits(decl) {
+				out[invFuncKey(rel, unit.name)] = invAnalyzeFunc(fset, rel, unit, flushHelpers)
 			}
-			sf := invAnalyzeFunc(fset, rel, fn, flushHelpers)
-			out[invFuncKey(rel, fn.Name.Name)] = sf
 		}
 	}
 	return out, nil
 }
 
-func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHelpers map[string]bool) *invSourceFn {
+// invUnit is one analyzable body under the name reconciliation knows it by. A
+// package-level var contributes one too: a builtin bound to a var — every CL
+// adapter is — carries no FuncDecl for a row's Func field to name, and a scan
+// reading declarations alone reconciles such a file against nothing.
+type invUnit struct {
+	name  string
+	ftype *ast.FuncType
+	body  *ast.BlockStmt
+}
+
+func invDeclUnits(decl ast.Decl) []invUnit {
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Body == nil {
+			return nil
+		}
+		return []invUnit{{name: d.Name.Name, ftype: d.Type, body: d.Body}}
+	case *ast.GenDecl:
+		if d.Tok != gotoken.VAR {
+			return nil
+		}
+		var out []invUnit
+		for _, spec := range d.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				if lit := invUnitLit(vs.Values[i]); lit != nil {
+					out = append(out, invUnit{name: name.Name, ftype: lit.Type, body: lit.Body})
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// invUnitLit picks the closure a var initialiser contributes: the literal held
+// by a core.GoFunc's Fn field, which is the builtin body, and otherwise the
+// outermost literal. Taking an adapter's outer literal instead would attribute
+// the return that constructs the GoFunc as a result branch of the builtin.
+func invUnitLit(value ast.Expr) *ast.FuncLit {
+	var outer, builtin *ast.FuncLit
+	ast.Inspect(value, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncLit:
+			if outer == nil {
+				outer = x
+			}
+		case *ast.CompositeLit:
+			if builtin != nil || invTypeString(x.Type) != "core.GoFunc" {
+				return true
+			}
+			for _, elt := range x.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				if key, isIdent := kv.Key.(*ast.Ident); !isIdent || key.Name != "Fn" {
+					continue
+				}
+				if lit, isLit := kv.Value.(*ast.FuncLit); isLit {
+					builtin = lit
+				}
+			}
+		}
+		return true
+	})
+	if builtin != nil {
+		return builtin
+	}
+	return outer
+}
+
+func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelpers map[string]bool) *invSourceFn {
 	sf := &invSourceFn{
 		file:     rel,
-		name:     fn.Name.Name,
-		families: invFamiliesOf(rel, fn.Name.Name),
+		name:     unit.name,
+		families: invFamiliesOf(rel, unit.name),
 	}
 
 	var lits []*ast.FuncLit
@@ -478,9 +586,10 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 	var flushes []gotoken.Pos
 	var returns []*ast.ReturnStmt
 	var latches []invLatch
+	var kernelBinds []invLatch
 
 	var stack []ast.Node
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	ast.Inspect(unit.body, func(n ast.Node) bool {
 		if n == nil {
 			stack = stack[:len(stack)-1]
 			return true
@@ -499,6 +608,15 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 		case *ast.AssignStmt:
 			if len(x.Rhs) != 1 {
 				return true
+			}
+			if call, isCall := x.Rhs[0].(*ast.CallExpr); isCall && invSharedKernelName(call) != "" {
+				// Only the first result: the kernel's value is the caller's
+				// result, its error is not.
+				if start, end := invBindingScope(stack, x); end != gotoken.NoPos {
+					if id, isIdent := x.Lhs[0].(*ast.Ident); isIdent && id.Name != "_" {
+						kernelBinds = append(kernelBinds, invLatch{name: id.Name, start: start, end: end})
+					}
+				}
 			}
 			name, ok := invSelectorCallName(x.Rhs[0])
 			if !ok || (name != "Step" && name != "Flush") {
@@ -558,7 +676,7 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 		return best
 	}
 	enclosing := func(p gotoken.Pos) *ast.FuncType {
-		best := fn.Type
+		best := unit.ftype
 		var bestPos gotoken.Pos
 		for _, lit := range lits {
 			if lit.Pos() <= p && p <= lit.End() && lit.Pos() > bestPos {
@@ -568,7 +686,7 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 		return best
 	}
 
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	ast.Inspect(unit.body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -605,6 +723,26 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 		}
 	}
 	sort.Strings(sf.branches)
+
+	// A shared kernel charges its result once, and that charge covers the caller
+	// only while the caller returns the call. Binding the value and returning it
+	// later leaves the caller's own result outside the kernel's charge.
+	for _, ret := range returns {
+		if len(ret.Results) == 0 {
+			continue
+		}
+		id, ok := ret.Results[0].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		for _, bind := range kernelBinds {
+			if bind.name == id.Name && bind.start <= ret.Pos() && ret.Pos() <= bind.end {
+				sf.wrapped = append(sf.wrapped, invLabel("wrapped-kernel-result", fset, ret.Pos()))
+				break
+			}
+		}
+	}
+	sort.Strings(sf.wrapped)
 
 	// Each function that CREATES a budget is its own holder scope, checked
 	// against its own budget and its own flushes. A closure that creates none
@@ -840,6 +978,10 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 			out = append(out, invFinding("UNFLUSHED_RETURN", sf.file, sf.name, label,
 				"a budget holder must leave through a flush helper so the budget is always settled"))
 		}
+		for _, label := range sf.wrapped {
+			out = append(out, invFinding("WRAPPED_KERNEL_RESULT", sf.file, sf.name, label,
+				"a shared kernel's result must be returned directly, so its single charge covers the caller's result"))
+		}
 	}
 
 	out = append(out, invSweepUnscopedFiles(root)...)
@@ -1037,5 +1179,330 @@ func TestStdlibSources_NoEnvEvaluatorInBuiltins(t *testing.T) {
 		if !matched[entry] {
 			t.Errorf("env.Evaluator allowlist entry %s matches no site; delete it", entry)
 		}
+	}
+}
+
+// invUnitsByFile counts the analyzable units the scan attributes to each
+// in-scope file.
+func invUnitsByFile(funcs map[string]*invSourceFn) map[string]int {
+	out := make(map[string]int, len(invScopeFiles))
+	for _, sf := range funcs {
+		out[sf.file]++
+	}
+	return out
+}
+
+// invFilesWithoutUnits reports in-scope files the scan reads nothing out of. A
+// file the analyzer cannot see is reconciled by nothing: its phases and result
+// branches pass every check because none of them ever runs against it.
+//
+// A listed file that does not exist yet is skipped, matching invScanSources.
+func invFilesWithoutUnits(root string) []string {
+	funcs, err := invScanSources(root)
+	if err != nil {
+		return []string{invFinding("MISSING_REGISTRATION", "-", "-", "-", "source scan failed: "+err.Error())}
+	}
+
+	counts := invUnitsByFile(funcs)
+	var out []string
+	for _, rel := range invScopeFiles {
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); statErr != nil {
+			continue
+		}
+		if counts[rel] == 0 {
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// invSyntheticRoot writes synthetic sources under a temporary scan root, keyed
+// by their in-scope path. The reconcilers take a root, so a check can be driven
+// onto a shape the real tree does not carry without editing the real tree.
+func invSyntheticRoot(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, src := range files {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	return root
+}
+
+func invUnitNames(funcs map[string]*invSourceFn, file string) []string {
+	var out []string
+	for _, sf := range funcs {
+		if sf.file == file {
+			out = append(out, sf.name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// invGoFuncConstructionLines finds, by text rather than by the analyzer's own
+// matcher, the lines on which a var initialiser returns the constructed
+// builtin. Those returns belong to the wrapper that builds the GoFunc, never to
+// the builtin body, so no result branch may be attributed to one.
+func invGoFuncConstructionLines(t *testing.T, path string) []int {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out []int
+	for i, line := range strings.Split(string(src), "\n") {
+		if strings.TrimSpace(line) == "return core.GoFunc{" {
+			out = append(out, i+1)
+		}
+	}
+	return out
+}
+
+// TestInventorySource_CLAdapterVarsAreAnalyzed pins that the CL adapters reach
+// the analyzer at all. All three are bound to package-level vars, so a scan
+// that reads only FuncDecls sees an empty cl/cl.go and reconciles the family
+// against nothing the moment it is marked migrated.
+func TestInventorySource_CLAdapterVarsAreAnalyzed(t *testing.T) {
+	root := moduleRoot(t)
+	funcs, err := invScanSources(root)
+	if err != nil {
+		t.Fatalf("scan sources: %v", err)
+	}
+
+	names := invUnitNames(funcs, "cl/cl.go")
+	if len(names) == 0 {
+		t.Fatal("cl/cl.go yields no analyzable units")
+	}
+
+	for _, want := range []string{"clNth", "clMapcar", "clSort"} {
+		sf, ok := funcs[invFuncKey("cl/cl.go", want)]
+		if !ok {
+			t.Errorf("adapter %s is invisible to the scan; cl/cl.go units: %v", want, names)
+			continue
+		}
+		if len(sf.branches) == 0 {
+			t.Errorf("adapter %s yields no result branches", want)
+		}
+	}
+
+	// The body attributed to an adapter is the builtin's own, not the wrapper
+	// that constructs it: the wrapper's return hands back a GoFunc, which is no
+	// result branch of the builtin.
+	construction := invGoFuncConstructionLines(t, filepath.Join(root, "cl", "cl.go"))
+	if len(construction) == 0 {
+		t.Fatal("cl/cl.go carries no GoFunc construction return; the attribution check would be vacuous")
+	}
+	for _, line := range construction {
+		label := "return@" + strconv.Itoa(line)
+		for _, name := range names {
+			sf := funcs[invFuncKey("cl/cl.go", name)]
+			for _, branch := range sf.branches {
+				if branch == label {
+					t.Errorf("unit %s attributes the GoFunc construction return %s as a result branch", name, label)
+				}
+			}
+		}
+	}
+}
+
+// TestInventorySource_ScopedFilesYieldUnits guards the defect the CL adapters
+// exposed: a file listed as in-scope that the analyzer reads nothing out of is
+// reconciled by nothing, silently.
+func TestInventorySource_ScopedFilesYieldUnits(t *testing.T) {
+	for _, rel := range invFilesWithoutUnits(moduleRoot(t)) {
+		t.Errorf("in-scope file %s yields no analyzable unit, so nothing reconciles it", rel)
+	}
+}
+
+func TestInventorySource_UnreadableScopedFileIsReported(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "file the analyzer reads nothing out of",
+			src:  "package stdlib\n\nconst mapArity = 2\n",
+			want: true,
+		},
+		{
+			name: "file carrying a function",
+			src:  "package stdlib\n\nfunc mapArity() int { return 2 }\n",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := invSyntheticRoot(t, map[string]string{"plugins/stdlib/higher_order.go": tt.src})
+			got := false
+			for _, rel := range invFilesWithoutUnits(root) {
+				if rel == "plugins/stdlib/higher_order.go" {
+					got = true
+				}
+			}
+			if got != tt.want {
+				t.Errorf("reported as unit-free = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestInventorySource_VarUnitBodies pins which package-level vars become units
+// and which body each contributes. The lookalike case holds the matcher to the
+// GoFunc type: a composite literal from another package carrying an Fn field is
+// not a builtin, and folding one in would silently drop its wrapper's return.
+func TestInventorySource_VarUnitBodies(t *testing.T) {
+	tests := []struct {
+		name     string
+		src      string
+		units    []string
+		branches map[string][]string
+	}{
+		{
+			name: "adapter var is a unit named after the var",
+			src: "package cl\n" +
+				"\n" +
+				"var clProbe = sync.OnceValue(func() core.Value {\n" +
+				"\treturn core.GoFunc{\n" +
+				"\t\tName: \"probe\",\n" +
+				"\t\tFn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {\n" +
+				"\t\t\treturn core.Nil{}, nil\n" +
+				"\t\t},\n" +
+				"\t}\n" +
+				"})\n",
+			units:    []string{"clProbe"},
+			branches: map[string][]string{"clProbe": {"return@7"}},
+		},
+		{
+			name: "var without a closure is no unit",
+			src: "package cl\n" +
+				"\n" +
+				"var clNames = []string{\"nth\", \"mapcar\"}\n" +
+				"\n" +
+				"func helper() core.Value {\n" +
+				"\treturn core.Nil{}\n" +
+				"}\n",
+			units:    []string{"helper"},
+			branches: map[string][]string{"helper": {"return@6"}},
+		},
+		{
+			name: "closure inside a function adds no unit",
+			src: "package cl\n" +
+				"\n" +
+				"func register() core.Value {\n" +
+				"\tfn := func() core.Value { return core.Nil{} }\n" +
+				"\treturn fn()\n" +
+				"}\n",
+			units:    []string{"register"},
+			branches: map[string][]string{"register": {"return@4", "return@5"}},
+		},
+		{
+			name: "GoFunc lookalike keeps the outer literal",
+			src: "package cl\n" +
+				"\n" +
+				"var clProbe = sync.OnceValue(func() core.Value {\n" +
+				"\treturn other.GoFunc{\n" +
+				"\t\tFn: func(ctx context.Context) (core.Value, error) {\n" +
+				"\t\t\treturn core.Nil{}, nil\n" +
+				"\t\t},\n" +
+				"\t}\n" +
+				"})\n",
+			units:    []string{"clProbe"},
+			branches: map[string][]string{"clProbe": {"return@4", "return@6"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := invSyntheticRoot(t, map[string]string{"cl/cl.go": tt.src})
+			funcs, err := invScanSources(root)
+			if err != nil {
+				t.Fatalf("scan sources: %v", err)
+			}
+			if got := invUnitNames(funcs, "cl/cl.go"); strings.Join(got, ",") != strings.Join(tt.units, ",") {
+				t.Fatalf("units = %v, want %v", got, tt.units)
+			}
+			for name, want := range tt.branches {
+				sf := funcs[invFuncKey("cl/cl.go", name)]
+				if got := strings.Join(sf.branches, ","); got != strings.Join(want, ",") {
+					t.Errorf("unit %s branches = %v, want %v", name, sf.branches, want)
+				}
+			}
+		})
+	}
+}
+
+// TestReconcileWork_WrappedKernelResult drives reconcileWork on synthetic
+// sources because every caller in the tree returns the kernel call directly,
+// which is the shape the finding exists to keep. The lookalikes hold the
+// matcher to the package-qualified callee: a same-named helper elsewhere shares
+// none of the kernel's charging contract.
+func TestReconcileWork_WrappedKernelResult(t *testing.T) {
+	const (
+		head = "package stdlib\n" +
+			"\n" +
+			"func mapBuiltin(ctx context.Context, eval core.Evaluator, env *core.Env, args []core.Value) (core.Value, error) {\n"
+		tail = "}\n"
+	)
+
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "kernel result bound and returned later",
+			body: "\tout, err := collections.MapSequences(ctx, eval, env, args[0], args[1:])\n" +
+				"\tif err != nil {\n" +
+				"\t\treturn nil, err\n" +
+				"\t}\n" +
+				"\treturn out, nil\n",
+			want: true,
+		},
+		{
+			name: "kernel call returned directly",
+			body: "\treturn collections.MapSequences(ctx, eval, env, args[0], args[1:])\n",
+			want: false,
+		},
+		{
+			name: "lookalike package",
+			body: "\tout, err := seqs.MapSequences(ctx, eval, env, args[0], args[1:])\n" +
+				"\treturn out, err\n",
+			want: false,
+		},
+		{
+			name: "lookalike callee",
+			body: "\tout, err := collections.MapSequencesInto(ctx, eval, env, args[0], args[1:])\n" +
+				"\treturn out, err\n",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := invSyntheticRoot(t, map[string]string{"plugins/stdlib/higher_order.go": head + tt.body + tail})
+			findings := reconcileWork(root, nil, map[string]bool{"higher-order": true})
+
+			got := false
+			for _, finding := range findings {
+				if invFindingCode(finding) == "WRAPPED_KERNEL_RESULT" {
+					got = true
+				}
+			}
+			if got != tt.want {
+				t.Errorf("WRAPPED_KERNEL_RESULT = %v, want %v; findings: %q", got, tt.want, findings)
+			}
+			if other := len(findings); got && other != 1 {
+				t.Errorf("want the wrapped-kernel finding alone, got %d: %q", other, findings)
+			}
+		})
 	}
 }
