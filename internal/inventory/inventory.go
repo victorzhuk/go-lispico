@@ -38,7 +38,12 @@ var Families = []string{
 	"support",
 }
 
-// Dispositions enumerates the valid values of WorkPhase.Disposition.
+// Dispositions enumerates the valid values of WorkPhase.Disposition. Every
+// other value asserts something — a ceiling, an inherited bound, or that there
+// is no work that scales — and none of them can say a phase is unbounded,
+// known and owned by a named change; forcing such a phase into
+// bounded-exception is what produced the false ceiling "unbounded-tracked"
+// replaces.
 var Dispositions = []string{
 	"budgeted",
 	"bounded-exception",
@@ -46,6 +51,7 @@ var Dispositions = []string{
 	"callback-owned",
 	"load-time",
 	"none-bounded-dispatch",
+	"unbounded-tracked",
 }
 
 // ResultClasses enumerates the valid values of ResultBranch.Class.

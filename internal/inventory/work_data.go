@@ -480,16 +480,19 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "collectionBuiltins",
 		PhaseLabel:  "result deep sizing",
-		Disposition: "bounded-exception",
-		Proof: "core.ValueDeepBytes walks the finished result once. Its node " +
-			"count is bounded by the allocation ledger it reports into: every " +
-			"node already in the result cost at least core.MeterScalarBytes " +
-			"(16) when it was built, so a result that fits under " +
-			"core.DefaultMaxAllocationBytes carries at most " +
-			"core.DefaultMaxAllocationBytes/16 nodes. A structure past that " +
-			"bound cannot exist, because building it would have failed the " +
-			"ledger first.",
-		MaxWork: 4_194_304,
+		Disposition: "unbounded-tracked",
+		Proof: "core.ValueDeepBytes walks the finished result once, as a tree and " +
+			"not as a graph, so a node reached by two references is visited " +
+			"twice while the ledger charged it once. This core shares structure " +
+			"by design: core.List.Cons on a shared-tail list returns " +
+			"core.ListShallowBytes(1) whatever the list's length, and " +
+			"plugins/stdlib/collections.go's cons charges exactly that, so " +
+			"consing a list onto itself doubles the walk for a constant charge. " +
+			"Measured: consing a ten-element list onto itself 26 times costs " +
+			"1040 ledger bytes while core.ValueDeepBytes reports 24159191024 " +
+			"and String renders 1476395007 characters. The allocation ledger " +
+			"therefore does not bound this walk and no static ceiling replaces " +
+			"it. Owned by core-value-walk-sharing-bound.",
 	},
 	{
 		Families:    []string{"collection"},
