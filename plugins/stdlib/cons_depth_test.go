@@ -17,6 +17,8 @@ func TestCollections_ConsDepthEscalationStillCaught(t *testing.T) {
 	for _, tc := range []struct{ name, expr string }{
 		{"cons wraps accumulator", `(cons acc (quote ()))`},
 		{"conj wraps accumulator", `(conj [] acc)`},
+		{"cons wraps accumulator onto nil", `(cons acc nil)`},
+		{"conj onto nil", `(conj nil acc)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupEnv(t)
