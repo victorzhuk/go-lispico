@@ -193,25 +193,77 @@ func TestCLAdapters_EagerLazy_Goldens(t *testing.T) {
 	}
 }
 
-// TestCLAdapters_LowReductionBudget pins the terminal budget behavior: a
-// 599-element sort under a 300-reduction ceiling must surface a Terminal
-// ResourceLimitError from the kernel's mandatory budget sync.
+// TestCLAdapters_LowReductionBudget pins both reduction-budget sites a CL sort
+// crosses, one sub-test each: the adapter's own copy of the subject, and the
+// shared kernel's mandatory sync inside StableSort. Each sub-test carries a
+// marker for the site it isolates, so a change that moves the crossing point
+// from one site to the other cannot pass both.
+//
+// Every figure below was measured by sweeping MaxReductions for the lowest
+// ceiling a form gets past, never computed.
 func TestCLAdapters_LowReductionBudget(t *testing.T) {
-	eng := newGoldenEngine(t, cl.Dialect(), true,
-		WithBytecode(),
-		WithResourceLimits(ResourceLimits{MaxReductions: 300, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}),
-	)
-	// Measured over these 599 elements: reaching the bound subject costs 4
-	// reductions and completing this sort needs 24855, so under a 300 ceiling
-	// the Terminal can only come from sort's own budget.
-	bindPrebuiltSubject(t, eng, "lowbudget-subject", 599)
-	_, err := eng.Eval(context.Background(), "cl-budget", `(sort lowbudget-subject (fn (a b) (< a b)))`)
-	require.Error(t, err, "a 599-element sort under a 300-reduction budget must Terminal")
-	var le *core.LispicoError
-	require.ErrorAs(t, err, &le, "error must be a typed *core.LispicoError, got %v", err)
-	assert.Equal(t, core.CodeResourceLimit, le.Code,
-		"the crossed reduction ceiling must classify under %s, got %s", core.CodeResourceLimit, le.Code)
-	assert.True(t, core.IsTerminalEvalError(err), "low Reduction budget must be terminal, got %v", err)
+	newBudgetEngine := func(t *testing.T, maxReductions int) Engine {
+		eng := newGoldenEngine(t, cl.Dialect(), true,
+			WithBytecode(),
+			WithResourceLimits(ResourceLimits{MaxReductions: maxReductions, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}),
+		)
+		bindPrebuiltSubject(t, eng, "lowbudget-subject", 599)
+		return eng
+	}
+
+	t.Run("adapter-copy-walk", func(t *testing.T) {
+		// Over these 599 elements reaching the bound subject costs 4
+		// reductions, the adapter's copy walk and its Flush need 609, and
+		// completing the sort needs 25454. A 300 ceiling is crossed inside the
+		// copy, before the kernel is ever entered.
+		eng := newBudgetEngine(t, 300)
+		_, err := eng.Eval(context.Background(), "cl-budget", `(sort lowbudget-subject (fn (a b) (< a b)))`)
+		require.Error(t, err, "a 599-element sort under a 300-reduction budget must Terminal")
+		var le *core.LispicoError
+		require.ErrorAs(t, err, &le, "error must be a typed *core.LispicoError, got %v", err)
+		assert.Equal(t, core.CodeResourceLimit, le.Code,
+			"the crossed reduction ceiling must classify under %s, got %s", core.CodeResourceLimit, le.Code)
+		assert.True(t, core.IsTerminalEvalError(err), "low Reduction budget must be terminal, got %v", err)
+
+		// Site marker: the callable check sits immediately after the copy's
+		// Flush, so a non-callable predicate discriminates the two sites --
+		// TypeError means the copy finished, ResourceLimitError means it did
+		// not. Measured, that probe turns over between 608 and 609.
+		_, probeErr := newBudgetEngine(t, 300).Eval(context.Background(), "cl-budget-site", `(sort lowbudget-subject 42)`)
+		var probe *core.LispicoError
+		require.ErrorAs(t, probeErr, &probe, "the site probe must be a typed *core.LispicoError, got %v", probeErr)
+		assert.Equal(t, core.CodeResourceLimit, probe.Code,
+			"the ceiling must cross inside the copy walk, before the callable check, got %s", probe.Code)
+	})
+
+	t.Run("kernel-mandatory-sync", func(t *testing.T) {
+		// With this counting predicate the comparator is first reached at 1122
+		// and the whole sort completes at 19541, so a 10000 ceiling clears the
+		// adapter's copy and is crossed inside StableSort.
+		eng := newBudgetEngine(t, 10000)
+		var predCalls int
+		require.NoError(t, eng.Bind("lowbudget-pred", core.GoFunc{
+			Name: "lowbudget-pred",
+			Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+				predCalls++
+				a, aok := args[0].(core.Int)
+				b, bok := args[1].(core.Int)
+				return core.Bool{V: aok && bok && a.V < b.V}, nil
+			},
+		}))
+		_, err := eng.Eval(context.Background(), "cl-budget-kernel", `(sort lowbudget-subject #'lowbudget-pred)`)
+		require.Error(t, err, "a 599-element sort under a 10000-reduction budget must Terminal")
+		var le *core.LispicoError
+		require.ErrorAs(t, err, &le, "error must be a typed *core.LispicoError, got %v", err)
+		assert.Equal(t, core.CodeResourceLimit, le.Code,
+			"the crossed reduction ceiling must classify under %s, got %s", core.CodeResourceLimit, le.Code)
+		assert.True(t, core.IsTerminalEvalError(err), "low Reduction budget must be terminal, got %v", err)
+		// Site marker: the predicate runs only from the kernel's comparator, so
+		// a positive count proves the Terminal is the kernel's own and not the
+		// adapter's copy.
+		assert.Greater(t, predCalls, 0,
+			"the kernel comparator must have run before the ceiling crossed, got %d calls", predCalls)
+	})
 }
 
 // TestCLAdapters_LateVMDeadline pins the Terminal-wins precedence at the
