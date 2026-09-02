@@ -902,6 +902,8 @@ func chargeConsResult(ctx context.Context, env *core.Env, name string, res core.
 	return core.ChargeGoFuncResultBytes(ctx, bytes)
 }
 
+func seqInput(v core.Value) ([]core.Value, bool) { panic("not implemented") }
+
 func collectionLen(v core.Value) (int, bool) {
 	switch c := v.(type) {
 	case core.List:

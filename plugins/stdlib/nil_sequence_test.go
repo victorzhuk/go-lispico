@@ -184,3 +184,55 @@ func TestNilSequence_ValueModelUnchanged(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) { assertRow(t, env, row) })
 	}
 }
+
+// callSeqInput turns a panic from the adapter into a test failure so the
+// remaining rows and tests still report.
+func callSeqInput(t *testing.T, v core.Value) (got []core.Value, ok bool) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("seqInput(%v) panicked: %v", v, r)
+		}
+	}()
+	return seqInput(v)
+}
+
+func TestSeqInput_AcceptedAndRejectedTypes(t *testing.T) {
+	one, two := core.Int{V: 1}, core.Int{V: 2}
+	rows := []struct {
+		name string
+		in   core.Value
+		ok   bool
+		want []core.Value
+	}{
+		{"Nil", core.Nil{}, true, nil},
+		{"List", core.NewList([]core.Value{one, two}), true, []core.Value{one, two}},
+		{"Vector", core.NewVector([]core.Value{one, two}), true, []core.Value{one, two}},
+		{"Bool", core.Bool{V: true}, false, nil},
+		{"Int", core.Int{V: 5}, false, nil},
+		{"Float", core.Float{V: 1.5}, false, nil},
+		{"String", core.String{V: "s"}, false, nil},
+		{"Symbol", core.Symbol{V: "s"}, false, nil},
+		{"Keyword", core.Keyword{V: "k"}, false, nil},
+		{"HashMap", core.NewHashMap(), false, nil},
+		{"GoFunc", core.GoFunc{Name: "f"}, false, nil},
+		{"Lambda", core.Lambda{Name: "l"}, false, nil},
+		{"Macro", core.Macro{Name: "m"}, false, nil},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			got, ok := callSeqInput(t, row.in)
+			if ok != row.ok {
+				t.Fatalf("seqInput(%s): ok = %v, want %v", row.name, ok, row.ok)
+			}
+			if len(got) != len(row.want) {
+				t.Fatalf("seqInput(%s): got %d elements, want %d", row.name, len(got), len(row.want))
+			}
+			for i, w := range row.want {
+				if !w.Equals(got[i]) {
+					t.Errorf("seqInput(%s)[%d] = %v, want %v", row.name, i, got[i], w)
+				}
+			}
+		})
+	}
+}

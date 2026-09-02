@@ -245,9 +245,9 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 	got := eval(t, env, "(concat [1 2] [3 4])")
 	require.Equal(t, "(1 2 3 4)", got.String())
 
-	limitEnv := setupEnv(t)
-	limitEnv.SetEvaluator(collectionLimitEvaluator{limit: 3})
-	err = evalErr(t, limitEnv, "(concat [1 2] [3 4])")
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = 3
+	err = evalErrUnder(t, ev, setupEnv(t), "(concat [1 2] [3 4])")
 	requireResourceLimit(t, err)
 
 	hugeListItems := make([]core.Value, 256)
@@ -269,6 +269,8 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 		builtin string
 		args    []core.Value
 	}{
+		{"list", "list", hugeListItems},
+		{"vector", "vector", hugeVectorItems},
 		{"concat", "concat", []core.Value{hugeList, hugeList}},
 		// cons and conj onto an existing List are excluded here: hugeList
 		// is already above the shared-tail threshold, so extending it
@@ -290,7 +292,6 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 	}
 
 	lenLimitEnv := setupEnv(t)
-	lenLimitEnv.SetEvaluator(collectionLimitEvaluator{limit: 3})
 	for _, tt := range []struct {
 		name    string
 		builtin string
@@ -302,7 +303,7 @@ func TestCollections_AuditCountDrivenBuildersBounded(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fn := collectionGoFunc(t, lenLimitEnv, tt.builtin)
-			_, err := fn.Fn(t.Context(), nil, tt.args, lenLimitEnv)
+			_, err := fn.Fn(t.Context(), collectionLimitEvaluator{limit: 3}, tt.args, lenLimitEnv)
 			requireResourceLimit(t, err)
 		})
 	}
