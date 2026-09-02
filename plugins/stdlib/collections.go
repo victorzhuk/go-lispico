@@ -23,8 +23,9 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 // here rather than in the registrar so no work budget is ever opened in a
 // function that also returns after it: every budget below belongs to the call
 // that opened it and is settled through a finish helper on the way out. A
-// budget opened ahead of a type switch spans every arm, including the arms
-// that step nothing, so no arm can leave it unsettled.
+// budget is opened inside the arm that steps it, and that arm is placed last
+// so no arm can follow a budget and leave it unsettled — an arm that walks
+// nothing then opens none, and pays for none.
 func collectionBuiltins() []core.GoFunc {
 	return []core.GoFunc{
 		{
@@ -220,23 +221,30 @@ func collectionBuiltins() []core.GoFunc {
 					return nil, arityErrorf("rest: requires 1 argument")
 				}
 
-				budget := core.NewBuiltinWorkBudget(ctx)
 				switch c := args[0].(type) {
 				case core.List:
 					// Rest hands back a shared tail or a reslice of the subject's own
 					// backing, so the caller ends up owning nothing the ledger has not
 					// already seen.
 					if err := chargeBorrowedResult(ctx); err != nil {
-						return finishBuiltin(budget, nil, err)
+						return nil, err
 					}
-					return finishBuiltin(budget, c.Rest(), nil)
+					return c.Rest(), nil
+				case core.Nil:
+					if err := chargeFreshContainer(ctx, core.ListShallowBytes(0)); err != nil {
+						return nil, err
+					}
+					return core.NewList([]core.Value{}), nil
+				default:
+					return nil, typeErrorf("rest: expected collection, got %T", args[0])
 				case core.Vector:
 					if c.Len() <= 1 {
 						if err := chargeFreshContainer(ctx, core.ListShallowBytes(0)); err != nil {
-							return finishBuiltin(budget, nil, err)
+							return nil, err
 						}
-						return finishBuiltin(budget, core.NewList([]core.Value{}), nil)
+						return core.NewList([]core.Value{}), nil
 					}
+					budget := core.NewBuiltinWorkBudget(ctx)
 					items := make([]core.Value, c.Len()-1)
 					for i := 1; i < c.Len(); i++ {
 						if err := budget.Step(); err != nil {
@@ -250,13 +258,6 @@ func collectionBuiltins() []core.GoFunc {
 						return finishBuiltin(budget, nil, err)
 					}
 					return finishBuiltin(budget, core.NewList(items), nil)
-				case core.Nil:
-					if err := chargeFreshContainer(ctx, core.ListShallowBytes(0)); err != nil {
-						return finishBuiltin(budget, nil, err)
-					}
-					return finishBuiltin(budget, core.NewList([]core.Value{}), nil)
-				default:
-					return finishBuiltin(budget, nil, typeErrorf("rest: expected collection, got %T", args[0]))
 				}
 			},
 		},
@@ -268,15 +269,27 @@ func collectionBuiltins() []core.GoFunc {
 					return nil, arityErrorf("last: requires 1 argument")
 				}
 
-				budget := core.NewBuiltinWorkBudget(ctx)
 				switch c := args[0].(type) {
+				case core.Vector:
+					if c.Len() == 0 {
+						return core.Nil{}, nil
+					}
+					if err := chargeBorrowedResult(ctx); err != nil {
+						return nil, err
+					}
+					return c.At(c.Len() - 1), nil
+				case core.Nil:
+					return core.Nil{}, nil
+				default:
+					return nil, typeErrorf("last: expected collection, got %T", args[0])
 				case core.List:
 					if c.Len() == 0 {
-						return finishBuiltin(budget, core.Nil{}, nil)
+						return core.Nil{}, nil
 					}
 					// At walks one node per index on the shared representation and
 					// cannot be stopped once it starts, so the whole traversal is
 					// charged before it runs.
+					budget := core.NewBuiltinWorkBudget(ctx)
 					for range c.Len() {
 						if err := budget.Step(); err != nil {
 							return finishBuiltin(budget, nil, err)
@@ -286,18 +299,6 @@ func collectionBuiltins() []core.GoFunc {
 						return finishBuiltin(budget, nil, err)
 					}
 					return finishBuiltin(budget, c.At(c.Len()-1), nil)
-				case core.Vector:
-					if c.Len() == 0 {
-						return finishBuiltin(budget, core.Nil{}, nil)
-					}
-					if err := chargeBorrowedResult(ctx); err != nil {
-						return finishBuiltin(budget, nil, err)
-					}
-					return finishBuiltin(budget, c.At(c.Len()-1), nil)
-				case core.Nil:
-					return finishBuiltin(budget, core.Nil{}, nil)
-				default:
-					return finishBuiltin(budget, nil, typeErrorf("last: expected collection, got %T", args[0]))
 				}
 			},
 		},
@@ -378,15 +379,17 @@ func collectionBuiltins() []core.GoFunc {
 				if _, isNil := base.(core.Nil); isNil {
 					base = core.NewList(nil)
 				}
-				budget := core.NewBuiltinWorkBudget(ctx)
 				switch c := base.(type) {
 				case core.List:
 					res, bytes := c.Cons(args[0])
 					if err := chargeConsResult(ctx, eval, "cons", res, bytes, args[0]); err != nil {
-						return finishBuiltin(budget, nil, err)
+						return nil, err
 					}
-					return finishBuiltin(budget, res, nil)
+					return res, nil
+				default:
+					return nil, typeErrorf("cons: expected collection, got %T", args[1])
 				case core.Vector:
+					budget := core.NewBuiltinWorkBudget(ctx)
 					items := make([]core.Value, c.Len()+1)
 					items[0] = args[0]
 					for i, v := range c.ToSlice() {
@@ -400,8 +403,6 @@ func collectionBuiltins() []core.GoFunc {
 						return finishBuiltin(budget, nil, err)
 					}
 					return finishBuiltin(budget, res, nil)
-				default:
-					return finishBuiltin(budget, nil, typeErrorf("cons: expected collection, got %T", args[1]))
 				}
 			},
 		},
@@ -417,7 +418,6 @@ func collectionBuiltins() []core.GoFunc {
 				if _, isNil := base.(core.Nil); isNil {
 					base = core.NewList(nil)
 				}
-				budget := core.NewBuiltinWorkBudget(ctx)
 				switch c := base.(type) {
 				case core.List:
 					// conj prepends args[1:] onto c in order — equivalent to
@@ -431,10 +431,28 @@ func collectionBuiltins() []core.GoFunc {
 						bytes += b
 					}
 					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[1:]...); err != nil {
-						return finishBuiltin(budget, nil, err)
+						return nil, err
 					}
-					return finishBuiltin(budget, res, nil)
+					return res, nil
+				case *core.HashMap:
+					if len(args) != 3 {
+						return nil, arityErrorf("conj on map requires key and value")
+					}
+					res, allocated, err := c.Assoc(args[1], args[2])
+					if err != nil {
+						return nil, wrapCause("conj", err)
+					}
+					// See assoc's WHY comment below: charge the path this call
+					// copied plus the inserted value, not the shared remainder.
+					bytes := allocated + core.ValueDeepBytes(args[2])
+					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[2]); err != nil {
+						return nil, err
+					}
+					return res, nil
+				default:
+					return nil, typeErrorf("conj: expected collection, got %T", args[0])
 				case core.Vector:
+					budget := core.NewBuiltinWorkBudget(ctx)
 					for range args[1:] {
 						if err := budget.Step(); err != nil {
 							return finishBuiltin(budget, nil, err)
@@ -445,23 +463,6 @@ func collectionBuiltins() []core.GoFunc {
 						return finishBuiltin(budget, nil, err)
 					}
 					return finishBuiltin(budget, res, nil)
-				case *core.HashMap:
-					if len(args) != 3 {
-						return finishBuiltin(budget, nil, arityErrorf("conj on map requires key and value"))
-					}
-					res, allocated, err := c.Assoc(args[1], args[2])
-					if err != nil {
-						return finishBuiltin(budget, nil, wrapCause("conj", err))
-					}
-					// See assoc's WHY comment below: charge the path this call
-					// copied plus the inserted value, not the shared remainder.
-					bytes := allocated + core.ValueDeepBytes(args[2])
-					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[2]); err != nil {
-						return finishBuiltin(budget, nil, err)
-					}
-					return finishBuiltin(budget, res, nil)
-				default:
-					return finishBuiltin(budget, nil, typeErrorf("conj: expected collection, got %T", args[0]))
 				}
 			},
 		},
