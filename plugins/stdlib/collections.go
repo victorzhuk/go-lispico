@@ -748,12 +748,6 @@ func lookupTypeError(name, expected string, got core.Value) *core.LispicoError {
 	return &core.LispicoError{Code: "TypeError", Message: fmt.Sprintf("%s: expected %s, got %T", name, expected, got)}
 }
 
-// chargeBorrowedResult marks a result the caller borrowed from its subject
-// rather than allocated, so the apply site does not charge its shallow size.
-func chargeBorrowedResult(ctx context.Context) error {
-	return core.ChargeGoFuncResultBytes(ctx, 0)
-}
-
 // getInLookup walks a key path through nested maps. A key found holding nil
 // is a hit: that nil is carried on and only reads as missing once a further
 // key has to be looked up inside it. An empty path is a hit on the subject
