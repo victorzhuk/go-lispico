@@ -182,6 +182,35 @@ func invFinding(code, file, fn, label, detail string) string {
 	return code + " " + file + ":" + fn + ":" + label + ": " + detail
 }
 
+// invLatch is one binding of an identifier to a Step or Flush result, together
+// with the source range over which that binding is live. Exemption 3 is keyed
+// on the binding, not on the identifier's name: these functions rebind err
+// repeatedly, and a name-keyed set lets an err produced by a charge helper
+// inherit the exemption a budget error earned elsewhere in the same function.
+type invLatch struct {
+	name  string
+	start gotoken.Pos
+	end   gotoken.Pos
+}
+
+// invBindingScope returns the range over which the assignment's bindings are
+// live. An if-statement initialiser is live for the whole statement, which is
+// what makes `if err := b.Step(); err != nil { return nil, err }` exempt; any
+// other assignment is live from itself to the end of its block.
+func invBindingScope(stack []ast.Node, assign *ast.AssignStmt) (gotoken.Pos, gotoken.Pos) {
+	if len(stack) >= 2 {
+		if ifStmt, ok := stack[len(stack)-2].(*ast.IfStmt); ok && ifStmt.Init == ast.Stmt(assign) {
+			return ifStmt.Pos(), ifStmt.End()
+		}
+	}
+	for i := len(stack) - 2; i >= 0; i-- {
+		if block, ok := stack[i].(*ast.BlockStmt); ok {
+			return assign.End(), block.End()
+		}
+	}
+	return gotoken.NoPos, gotoken.NoPos
+}
+
 // invSweepDirs are the package directories the scope sweep walks. core/ and
 // plugins/json stay out: both are deliberately outside the migration, so a
 // finding naming either would be wrong.
@@ -446,9 +475,16 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 	var budgets []gotoken.Pos
 	var flushes []gotoken.Pos
 	var returns []*ast.ReturnStmt
-	latched := make(map[string]bool)
+	var latches []invLatch
 
+	var stack []ast.Node
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+
 		switch x := n.(type) {
 		case *ast.FuncLit:
 			lits = append(lits, x)
@@ -466,9 +502,13 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 			if !ok || (name != "Step" && name != "Flush") {
 				return true
 			}
+			start, end := invBindingScope(stack, x)
+			if end == gotoken.NoPos {
+				return true
+			}
 			for _, lhs := range x.Lhs {
 				if id, ok := lhs.(*ast.Ident); ok {
-					latched[id.Name] = true
+					latches = append(latches, invLatch{name: id.Name, start: start, end: end})
 				}
 			}
 		case *ast.CallExpr:
@@ -569,6 +609,21 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 	// is not a holder, so its returns are never checked — that is the narrow
 	// shape exemption 2 was written for, the sort comparator that returns bool
 	// and never sees the budget.
+	// A return propagates a latched budget error only when a live Step/Flush
+	// binding of that name covers it, in its own holder scope.
+	isLatched := func(name string, at gotoken.Pos) bool {
+		holder := holderOf(at)
+		for _, l := range latches {
+			if l.name != name || at < l.start || at > l.end {
+				continue
+			}
+			if holderOf(l.start) == holder {
+				return true
+			}
+		}
+		return false
+	}
+
 	budgetsBy := map[*ast.FuncLit][]gotoken.Pos{}
 	for _, pos := range budgets {
 		holder := holderOf(pos)
@@ -592,7 +647,7 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 					first = pos
 				}
 			}
-			if invReturnSettlesBudget(ret, first, flushesBy[holder], latched, flushHelpers) {
+			if invReturnSettlesBudget(ret, first, flushesBy[holder], isLatched, flushHelpers) {
 				continue
 			}
 			sf.unflushed = append(sf.unflushed, invLabel("return", fset, ret.Pos()))
@@ -610,7 +665,10 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 //  1. the return lexically precedes the budget, so no budget exists yet;
 //  2. the return belongs to a closure that creates no budget of its own — the
 //     caller scopes those out and they never reach here;
-//  3. the return propagates an already-latched Step or Flush error;
+//  3. the return propagates a Step or Flush error whose binding is still live
+//     at that return, in the same holder scope — an identifier rebound from a
+//     charge helper or a conversion is not latched, however often the same name
+//     is bound from the budget elsewhere;
 //  4. the error position is a flush helper call, which settles on the way out;
 //  5. the return carries no error and an inline Flush already ran on the path,
 //     the shape a three-result kernel is forced into because no two-result
@@ -622,7 +680,7 @@ func invReturnSettlesBudget(
 	ret *ast.ReturnStmt,
 	firstBudget gotoken.Pos,
 	flushes []gotoken.Pos,
-	latched map[string]bool,
+	latched func(name string, at gotoken.Pos) bool,
 	flushHelpers map[string]bool,
 ) bool {
 	if ret.Pos() < firstBudget {
@@ -637,7 +695,7 @@ func invReturnSettlesBudget(
 		return true
 	}
 	if id, ok := last.(*ast.Ident); ok {
-		if latched[id.Name] {
+		if latched(id.Name, ret.Pos()) {
 			return true
 		}
 		if id.Name == "nil" {
