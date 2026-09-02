@@ -902,7 +902,18 @@ func chargeConsResult(ctx context.Context, env *core.Env, name string, res core.
 	return core.ChargeGoFuncResultBytes(ctx, bytes)
 }
 
-func seqInput(v core.Value) ([]core.Value, bool) { panic("not implemented") }
+func seqInput(v core.Value) ([]core.Value, bool) {
+	switch c := v.(type) {
+	case core.List:
+		return c.ToSlice(), true
+	case core.Vector:
+		return c.ToSlice(), true
+	case core.Nil:
+		return nil, true
+	default:
+		return nil, false
+	}
+}
 
 func collectionLen(v core.Value) (int, bool) {
 	switch c := v.(type) {
