@@ -503,13 +503,17 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 		}
 		return false
 	}
-	inLit := func(p gotoken.Pos) bool {
+	// holderOf returns the innermost closure containing p, or nil for the
+	// declared body itself. Budget ownership is scoped by it: a builtin body is
+	// a closure, so a registrar that merely encloses one owns no budget.
+	holderOf := func(p gotoken.Pos) *ast.FuncLit {
+		var best *ast.FuncLit
 		for _, lit := range lits {
-			if lit.Pos() <= p && p <= lit.End() {
-				return true
+			if lit.Pos() <= p && p <= lit.End() && (best == nil || lit.Pos() > best.Pos()) {
+				best = lit
 			}
 		}
-		return false
+		return best
 	}
 	enclosing := func(p gotoken.Pos) *ast.FuncType {
 		best := fn.Type
@@ -560,15 +564,35 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 	}
 	sort.Strings(sf.branches)
 
-	if len(budgets) > 0 {
-		first := budgets[0]
-		for _, pos := range budgets {
-			if pos < first {
-				first = pos
-			}
+	// Each function that CREATES a budget is its own holder scope, checked
+	// against its own budget and its own flushes. A closure that creates none
+	// is not a holder, so its returns are never checked — that is the narrow
+	// shape exemption 2 was written for, the sort comparator that returns bool
+	// and never sees the budget.
+	budgetsBy := map[*ast.FuncLit][]gotoken.Pos{}
+	for _, pos := range budgets {
+		holder := holderOf(pos)
+		budgetsBy[holder] = append(budgetsBy[holder], pos)
+	}
+	if len(budgetsBy) > 0 {
+		flushesBy := map[*ast.FuncLit][]gotoken.Pos{}
+		for _, pos := range flushes {
+			holder := holderOf(pos)
+			flushesBy[holder] = append(flushesBy[holder], pos)
 		}
 		for _, ret := range returns {
-			if invReturnSettlesBudget(ret, first, flushes, latched, flushHelpers, inLit) {
+			holder := holderOf(ret.Pos())
+			scoped := budgetsBy[holder]
+			if len(scoped) == 0 {
+				continue
+			}
+			first := scoped[0]
+			for _, pos := range scoped {
+				if pos < first {
+					first = pos
+				}
+			}
+			if invReturnSettlesBudget(ret, first, flushesBy[holder], latched, flushHelpers) {
 				continue
 			}
 			sf.unflushed = append(sf.unflushed, invLabel("return", fset, ret.Pos()))
@@ -584,21 +608,24 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, fn *ast.FuncDecl, flushHe
 // correct:
 //
 //  1. the return lexically precedes the budget, so no budget exists yet;
-//  2. the return belongs to a nested closure, which never sees the budget;
+//  2. the return belongs to a closure that creates no budget of its own — the
+//     caller scopes those out and they never reach here;
 //  3. the return propagates an already-latched Step or Flush error;
 //  4. the error position is a flush helper call, which settles on the way out;
 //  5. the return carries no error and an inline Flush already ran on the path,
 //     the shape a three-result kernel is forced into because no two-result
 //     finish helper can express it.
+//
+// firstBudget and flushes belong to the holder scope this return sits in, never
+// to an enclosing or sibling function.
 func invReturnSettlesBudget(
 	ret *ast.ReturnStmt,
 	firstBudget gotoken.Pos,
 	flushes []gotoken.Pos,
 	latched map[string]bool,
 	flushHelpers map[string]bool,
-	inLit func(gotoken.Pos) bool,
 ) bool {
-	if ret.Pos() < firstBudget || inLit(ret.Pos()) {
+	if ret.Pos() < firstBudget {
 		return true
 	}
 
