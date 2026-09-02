@@ -15,7 +15,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "list",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			res := core.NewList(append([]core.Value(nil), args...))
-			if err := chargeCollectionResult(ctx, env, "list", res, core.ValueDeepBytes(res)); err != nil {
+			if err := chargeCollectionResult(ctx, eval, "list", res, core.ValueDeepBytes(res)); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -45,7 +45,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					}
 				}
 				res := core.NewList(result)
-				if err := chargeCollectionResult(ctx, env, "concat", res, core.ListShallowBytes(len(result))); err != nil {
+				if err := chargeCollectionResult(ctx, eval, "concat", res, core.ListShallowBytes(len(result))); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -64,7 +64,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				res, b = res.Cons(prefix[i])
 				bytes += b
 			}
-			if err := chargeCollectionResult(ctx, env, "concat", res, bytes); err != nil {
+			if err := chargeCollectionResult(ctx, eval, "concat", res, bytes); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -103,7 +103,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 		Name: "vector",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			res := core.NewVector(append([]core.Value(nil), args...))
-			if err := chargeCollectionResult(ctx, env, "vector", res, core.ValueDeepBytes(res)); err != nil {
+			if err := chargeCollectionResult(ctx, eval, "vector", res, core.ValueDeepBytes(res)); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -125,7 +125,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					return nil, wrapCause("hash-map", err)
 				}
 			}
-			if err := core.CheckConstructionDepth(m, env); err != nil {
+			if err := core.CheckConstructionDepthWith(m, eval); err != nil {
 				return nil, err
 			}
 			return m, nil
@@ -287,7 +287,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			switch c := args[1].(type) {
 			case core.List:
 				res, bytes := c.Cons(args[0])
-				if err := chargeConsResult(ctx, env, "cons", res, bytes, args[0]); err != nil {
+				if err := chargeConsResult(ctx, eval, "cons", res, bytes, args[0]); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -296,7 +296,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				items[0] = args[0]
 				copy(items[1:], c.ToSlice())
 				res := core.NewList(items)
-				if err := chargeConsResult(ctx, env, "cons", res, core.ListShallowBytes(len(items)), args[0]); err != nil {
+				if err := chargeConsResult(ctx, eval, "cons", res, core.ListShallowBytes(len(items)), args[0]); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -327,13 +327,13 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					res, b = res.Cons(args[i])
 					bytes += b
 				}
-				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[1:]...); err != nil {
+				if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[1:]...); err != nil {
 					return nil, err
 				}
 				return res, nil
 			case core.Vector:
 				res, bytes := c.Conj(args[1:]...)
-				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[1:]...); err != nil {
+				if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[1:]...); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -348,7 +348,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				// See assoc's WHY comment below: charge the path this call
 				// copied plus the inserted value, not the shared remainder.
 				bytes := allocated + core.ValueDeepBytes(args[2])
-				if err := chargeConsResult(ctx, env, "conj", res, bytes, args[2]); err != nil {
+				if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[2]); err != nil {
 					return nil, err
 				}
 				return res, nil
@@ -460,7 +460,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			for i := 2; i < len(args); i += 2 {
 				inserted = append(inserted, args[i])
 			}
-			if err := chargeConsResult(ctx, env, "assoc", result, bytes, inserted...); err != nil {
+			if err := chargeConsResult(ctx, eval, "assoc", result, bytes, inserted...); err != nil {
 				return nil, err
 			}
 			return result, nil
@@ -555,7 +555,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 					return nil, typeErrorf("merge: expected map, got %T", arg)
 				}
 			}
-			if err := chargeCollectionResult(ctx, env, "merge", result, core.ValueDeepBytes(result)); err != nil {
+			if err := chargeCollectionResult(ctx, eval, "merge", result, core.ValueDeepBytes(result)); err != nil {
 				return nil, err
 			}
 			return result, nil
@@ -590,7 +590,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 
 			// No newElems: removing a key cannot deepen the map, so the
 			// construction-depth walk is skipped entirely.
-			if err := chargeConsResult(ctx, env, "dissoc", result, bytes); err != nil {
+			if err := chargeConsResult(ctx, eval, "dissoc", result, bytes); err != nil {
 				return nil, err
 			}
 			return result, nil
@@ -680,7 +680,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 			if span%stepMag != 0 {
 				count++
 			}
-			maxLen := collectionLimit(env)
+			maxLen := collectionLimit(eval)
 			if count > uint64(maxLen) {
 				return nil, core.NewResourceLimitError(fmt.Sprintf("range length %d exceeds collection limit %d", count, maxLen))
 			}
@@ -699,7 +699,7 @@ func (p *Plugin) registerCollections(env *core.Env) error {
 				}
 			}
 			res := core.NewList(items)
-			if err := chargeCollectionResult(ctx, env, "range", res, core.ValueDeepBytes(res)); err != nil {
+			if err := chargeCollectionResult(ctx, eval, "range", res, core.ValueDeepBytes(res)); err != nil {
 				return nil, err
 			}
 			return res, nil
@@ -850,14 +850,14 @@ func (c *keyPathCursor) next() (core.Value, bool) {
 // Callers decide what bytes means: the full deep size for a fresh builder
 // assembling unrelated values, or just what an operation newly allocated
 // when it derives its result from an existing collection.
-func chargeCollectionResult(ctx context.Context, env *core.Env, name string, res core.Value, bytes int64) error {
+func chargeCollectionResult(ctx context.Context, eval core.Evaluator, name string, res core.Value, bytes int64) error {
 	if n, ok := collectionLen(res); ok {
-		maxLen := collectionLimit(env)
+		maxLen := collectionLimit(eval)
 		if n > maxLen {
 			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
 		}
 	}
-	if err := core.CheckConstructionDepth(res, env); err != nil {
+	if err := core.CheckConstructionDepthWith(res, eval); err != nil {
 		return err
 	}
 	return core.ChargeGoFuncResultBytes(ctx, bytes)
@@ -881,9 +881,9 @@ func isNestedCollection(v core.Value) bool {
 // a scalar can't increase a list's nesting, so it only pays
 // CheckConstructionDepth's O(n) walk when at least one of the newly
 // introduced elements could itself nest.
-func chargeConsResult(ctx context.Context, env *core.Env, name string, res core.Value, bytes int64, newElems ...core.Value) error {
+func chargeConsResult(ctx context.Context, eval core.Evaluator, name string, res core.Value, bytes int64, newElems ...core.Value) error {
 	if n, ok := collectionLen(res); ok {
-		maxLen := collectionLimit(env)
+		maxLen := collectionLimit(eval)
 		if n > maxLen {
 			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
 		}
@@ -894,7 +894,7 @@ func chargeConsResult(ctx context.Context, env *core.Env, name string, res core.
 			// being extended was depth-checked when it was built, so
 			// re-walking it here would cost the accumulated size on every
 			// call and make a loop that conses collections quadratic.
-			if err := core.CheckNestedElementDepth(e, env); err != nil {
+			if err := core.CheckNestedElementDepthWith(e, eval); err != nil {
 				return err
 			}
 		}
@@ -928,15 +928,10 @@ func collectionLen(v core.Value) (int, bool) {
 	}
 }
 
-func collectionLimit(env *core.Env) int {
-	if env == nil {
-		return defaultStdlibCollectionLen
-	}
-	if ev := env.Evaluator(); ev != nil {
-		if cl, ok := ev.(core.CollectionLimiter); ok {
-			if n := cl.CollectionLimit(); n > 0 {
-				return n
-			}
+func collectionLimit(eval core.Evaluator) int {
+	if cl, ok := eval.(core.CollectionLimiter); ok {
+		if n := cl.CollectionLimit(); n > 0 {
+			return n
 		}
 	}
 	return defaultStdlibCollectionLen
