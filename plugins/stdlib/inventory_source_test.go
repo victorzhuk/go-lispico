@@ -237,6 +237,96 @@ func invBindingScope(stack []ast.Node, assign *ast.AssignStmt) (gotoken.Pos, got
 	return gotoken.NoPos, gotoken.NoPos
 }
 
+// invSettle is one point at which the budget is settled, recorded as the
+// statement holding it and the block or case clause that statement belongs to.
+// A return in that scope at or after the statement has the settle behind it; a
+// return before it, or in a sibling branch, does not.
+type invSettle struct {
+	stmt  gotoken.Pos
+	start gotoken.Pos
+	end   gotoken.Pos
+}
+
+func invSettledBefore(at gotoken.Pos, settles []invSettle) bool {
+	for _, s := range settles {
+		if s.start <= at && at <= s.end && at >= s.stmt {
+			return true
+		}
+	}
+	return false
+}
+
+// invCallSettles reports whether a call leaves the budget settled: an inline
+// Flush on a live budget binding, or any call handed one as an argument. The
+// receiver counts for Flush alone, because Step shares it and settles nothing.
+func invCallSettles(call *ast.CallExpr, budgets []invLatch) bool {
+	for _, arg := range call.Args {
+		if id, ok := arg.(*ast.Ident); ok && invLiveBinding(budgets, id.Name, call.Pos()) {
+			return true
+		}
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Flush" {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && invLiveBinding(budgets, id.Name, call.Pos())
+}
+
+func invLiveBinding(bindings []invLatch, name string, at gotoken.Pos) bool {
+	for _, b := range bindings {
+		if b.name == name && at >= b.start && at <= b.end {
+			return true
+		}
+	}
+	return false
+}
+
+// invErrorActedOn reports whether the call's error result is read: bound by an
+// if-initialiser, which is the check itself, or carried out through a return. A
+// settle whose error nobody reads reports nothing, so it settles nothing.
+func invErrorActedOn(stack []ast.Node) bool {
+	for i := len(stack) - 2; i >= 0; i-- {
+		switch node := stack[i].(type) {
+		case *ast.ReturnStmt:
+			return true
+		case *ast.AssignStmt:
+			if i == 0 {
+				return false
+			}
+			ifStmt, ok := stack[i-1].(*ast.IfStmt)
+			return ok && ifStmt.Init == ast.Stmt(node)
+		case *ast.BlockStmt:
+			return false
+		}
+	}
+	return false
+}
+
+// invSettleScope returns the innermost statement scope holding the call. The
+// innermost one, not the widest: a settle reached only down one branch settles
+// that branch, and promoting it to the enclosing statement would hand the
+// exemption to returns the settle never runs before.
+func invSettleScope(stack []ast.Node) (invSettle, bool) {
+	for i := len(stack) - 2; i >= 0; i-- {
+		var start, end gotoken.Pos
+		switch scope := stack[i].(type) {
+		case *ast.BlockStmt:
+			start, end = scope.Pos(), scope.End()
+		case *ast.CaseClause:
+			start, end = scope.Pos(), scope.End()
+		default:
+			continue
+		}
+		stmt, ok := stack[i+1].(ast.Stmt)
+		if !ok {
+			return invSettle{}, false
+		}
+		return invSettle{stmt: stmt.Pos(), start: start, end: end}, true
+	}
+	return invSettle{}, false
+}
+
 // invSweepDirs are the package directories the scope sweep walks. core/ and
 // plugins/json stay out: both are deliberately outside the migration, so a
 // finding naming either would be wrong.
@@ -657,7 +747,9 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 	var lits []*ast.FuncLit
 	var loops []ast.Node
 	var budgets []gotoken.Pos
+	var budgetVars []invLatch
 	var flushes []gotoken.Pos
+	var settles []invSettle
 	var returns []*ast.ReturnStmt
 	var latches []invLatch
 
@@ -683,11 +775,22 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 				return true
 			}
 			name, ok := invSelectorCallName(x.Rhs[0])
-			if !ok || (name != "Step" && name != "Flush") {
+			if !ok {
 				return true
 			}
 			start, end := invBindingScope(stack, x)
 			if end == gotoken.NoPos {
+				return true
+			}
+			if name == "NewBuiltinWorkBudget" {
+				for _, lhs := range x.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						budgetVars = append(budgetVars, invLatch{name: id.Name, start: start, end: end})
+					}
+				}
+				return true
+			}
+			if name != "Step" && name != "Flush" {
 				return true
 			}
 			for _, lhs := range x.Lhs {
@@ -698,6 +801,11 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 		case *ast.CallExpr:
 			if invCalleeName(x) == "NewBuiltinWorkBudget" {
 				budgets = append(budgets, x.Pos())
+			}
+			if invCallSettles(x, budgetVars) && invErrorActedOn(stack) {
+				if scope, ok := invSettleScope(stack); ok {
+					settles = append(settles, scope)
+				}
 			}
 			if callee := invOpaqueCalleeName(x); callee != "" {
 				sf.libCalls = append(sf.libCalls, invLabel(callee, fset, x.Pos()))
@@ -848,6 +956,11 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 			holder := holderOf(pos)
 			flushesBy[holder] = append(flushesBy[holder], pos)
 		}
+		settlesBy := map[*ast.FuncLit][]invSettle{}
+		for _, scope := range settles {
+			holder := holderOf(scope.start)
+			settlesBy[holder] = append(settlesBy[holder], scope)
+		}
 		for _, ret := range returns {
 			holder := holderOf(ret.Pos())
 			scoped := budgetsBy[holder]
@@ -860,7 +973,7 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 					first = pos
 				}
 			}
-			if invReturnSettlesBudget(ret, first, flushesBy[holder], isLatched, flushHelpers) {
+			if invReturnSettlesBudget(ret, first, flushesBy[holder], settlesBy[holder], isLatched, flushHelpers) {
 				continue
 			}
 			sf.unflushed = append(sf.unflushed, invLabel("return", fset, ret.Pos()))
@@ -872,7 +985,7 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 }
 
 // invReturnSettlesBudget reports whether a return inside a budget holder leaves
-// the budget settled. Five shapes do, and each guards code that is already
+// the budget settled. Six shapes do, and each guards code that is already
 // correct:
 //
 //  1. the return lexically precedes the budget, so no budget exists yet;
@@ -885,18 +998,27 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 //  4. the error position is a flush helper call, which settles on the way out;
 //  5. the return carries no error and an inline Flush already ran on the path,
 //     the shape a three-result kernel is forced into because no two-result
-//     finish helper can express it.
+//     finish helper can express it;
+//  6. a settle already stands ahead of the return in its own block — an inline
+//     Flush of the budget, or a call handed the budget identifier, whose error
+//     the caller acts on. Matching that shape rather than a list of names is
+//     what keeps a settle helper added later from reading as an unflushed
+//     return on the day it lands.
 //
-// firstBudget and flushes belong to the holder scope this return sits in, never
-// to an enclosing or sibling function.
+// firstBudget, flushes and settles belong to the holder scope this return sits
+// in, never to an enclosing or sibling function.
 func invReturnSettlesBudget(
 	ret *ast.ReturnStmt,
 	firstBudget gotoken.Pos,
 	flushes []gotoken.Pos,
+	settles []invSettle,
 	latched func(name string, at gotoken.Pos) bool,
 	flushHelpers map[string]bool,
 ) bool {
 	if ret.Pos() < firstBudget {
+		return true
+	}
+	if invSettledBefore(ret.Pos(), settles) {
 		return true
 	}
 
@@ -1386,6 +1508,96 @@ func TestInventorySource_CLAdapterVarsAreAnalyzed(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// invSyntheticHolder is a budget holder with a settle shape spliced in, used to
+// drive the settle rule onto shapes the real tree does not carry. The splice
+// point sits after the budgeted loop and before the final return, so a settle
+// there stands ahead of that return and a non-settle does not.
+const (
+	invSyntheticHolderHead = `package stdlib
+
+var syntheticBuiltin = core.GoFunc{
+	Name: "synthetic",
+	Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+		b := core.NewBuiltinWorkBudget(ctx)
+		for range args {
+			if err := b.Step(); err != nil {
+				return nil, err
+			}
+		}
+`
+	invSyntheticHolderTail = `		return args[0], nil
+	},
+}
+`
+)
+
+// TestInventorySource_SettleShapeIsNotAnyCall holds the settle rule to the two
+// halves that are easy to lose at once. A holder that settles nothing must
+// still be reported, and a checked call handed something other than the budget
+// must not stand in for a settle — a rule widened to accept any preceding call
+// passes the settle cases and then reports nothing at all.
+//
+// The settling cases name a helper no synthetic file declares, so nothing here
+// reaches the flush-helper set: what the rule recognises is the shape, not a
+// name.
+func TestInventorySource_SettleShapeIsNotAnyCall(t *testing.T) {
+	tests := []struct {
+		name  string
+		guard string
+		want  bool
+	}{
+		{
+			name: "no settle at all",
+			want: true,
+		},
+		{
+			name: "checked call handed something other than the budget",
+			guard: `		if err := unrelated(ctx); err != nil {
+			return nil, err
+		}
+`,
+			want: true,
+		},
+		{
+			name: "checked call handed the budget",
+			guard: `		if err := settleWork(b, nil); err != nil {
+			return nil, err
+		}
+`,
+		},
+		{
+			name: "inline flush ahead of a return carrying an error",
+			guard: `		if err := b.Flush(); err != nil {
+			return nil, err
+		}
+		if len(args) == 0 {
+			return nil, typeErrorf("synthetic")
+		}
+`,
+		},
+	}
+
+	const rel = "plugins/stdlib/collections.go"
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := invSyntheticRoot(t, map[string]string{
+				rel: invSyntheticHolderHead + tt.guard + invSyntheticHolderTail,
+			})
+			funcs, err := invScanSources(root)
+			if err != nil {
+				t.Fatalf("scan sources: %v", err)
+			}
+			sf, ok := funcs[invFuncKey(rel, "syntheticBuiltin")]
+			if !ok {
+				t.Fatal("synthetic builtin is invisible to the scan")
+			}
+			if got := len(sf.unflushed) > 0; got != tt.want {
+				t.Errorf("UNFLUSHED_RETURN = %v, want %v; unflushed returns: %v", got, tt.want, sf.unflushed)
+			}
+		})
 	}
 }
 
