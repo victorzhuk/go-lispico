@@ -59,16 +59,18 @@ var WorkPhases = []WorkPhase{
 		Func:        "domainErrorf",
 		PhaseLabel:  "message format",
 		Disposition: "bounded-exception",
-		Proof: "The bound does not hold universally. Six of the eight call sites " +
-			"format no verb at all, and the first assert branch in " +
-			"plugins/stdlib/control.go passes core.String.V to a %s, which copies " +
-			"a string the caller already holds. The eighth, the fallback assert " +
-			"branch in the same file, passes an arbitrary core.Value to a %v: " +
+		Proof: "The bound does not hold universally. Seven of the nine call sites " +
+			"format no verb at all and render in constant time; MaxWork is the " +
+			"ceiling for those seven only. The two exceptions are both assert " +
+			"branches in plugins/stdlib/control.go. The first passes core.String.V " +
+			"to a %s: the message is linear in a user-supplied string, and no cap " +
+			"on core.String length exists in core or plugins/stdlib, so it can " +
+			"exceed MaxWork. The second passes an arbitrary core.Value to a %v: " +
 			"core.boundedString caps structural depth at " +
 			"core.DefaultMaxStructuralDepth but never caps breadth, so a wide " +
-			"List, Vector or HashMap is rendered element by element and the cost " +
-			"scales with the container. MaxWork is the ceiling for every other " +
-			"site. assert belongs to the higher-order family; that seam owns the fix.",
+			"List, Vector or HashMap renders element by element and the cost " +
+			"scales with the container. assert belongs to the higher-order family; " +
+			"that seam owns both fixes.",
 		MaxWork: 256,
 	},
 	{
