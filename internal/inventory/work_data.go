@@ -62,15 +62,18 @@ var WorkPhases = []WorkPhase{
 		Proof: "The bound does not hold universally. Seven of the nine call sites " +
 			"format no verb at all and render in constant time; MaxWork is the " +
 			"ceiling for those seven only. The two exceptions are both assert " +
-			"branches in plugins/stdlib/control.go. The first passes core.String.V " +
-			"to a %s: the message is linear in a user-supplied string, and no cap " +
-			"on core.String length exists in core or plugins/stdlib, so it can " +
-			"exceed MaxWork. The second passes an arbitrary core.Value to a %v: " +
-			"core.boundedString caps structural depth at " +
-			"core.DefaultMaxStructuralDepth but never caps breadth, so a wide " +
-			"List, Vector or HashMap renders element by element and the cost " +
-			"scales with the container. assert belongs to the higher-order family; " +
-			"that seam owns both fixes.",
+			"branches in plugins/stdlib/control.go, and they no longer read " +
+			"alike. control.go:29 passes core.String.V to a %.200s: fmt " +
+			"truncates a %s operand at its precision without reading past it, " +
+			"so the work is flat in the operand rather than linear - measured " +
+			"258 B/op alike for operands of 1e3, 1e5 and 1e7 bytes - and the " +
+			"render is bounded, though by its own 818-byte message ceiling and " +
+			"not by MaxWork. control.go:31 passes an arbitrary core.Value to a " +
+			"%.200v: that precision caps only what is emitted, so the render " +
+			"behind it still walks the whole operand and stays unbounded. Both " +
+			"branches belong to the higher-order family and carry their own " +
+			"rows there, where the value branch is the one recorded " +
+			"unbounded-tracked.",
 		MaxWork: 256,
 	},
 	{
@@ -1075,19 +1078,23 @@ var WorkPhases = []WorkPhase{
 		PhaseLabel:  "unknown keyword message format",
 		Disposition: "bounded-exception",
 		Proof: "The precision in \"sort: unknown keyword %.200v\" caps the " +
-			"emitted message at 822 bytes - the 22-byte literal plus 200 " +
-			"runes at utf8.UTFMax - and caps nothing else: core.Keyword's " +
-			"String (core/types.go:161) builds \":\" + V in full before fmt " +
-			"truncates the result, so the render is linear in V. Measured " +
-			"1282, 106849 and 10003359 B/op for V of 1e3, 1e5 and 1e7 " +
-			"bytes. It is bounded all the same, because a Keyword is a " +
-			"scalar that cannot share substructure: the ledger charges it " +
+			"emitted message at 819 bytes: core.Keyword's String " +
+			"(core/types.go:161) returns \":\" + V, so the first of the 200 " +
+			"runes the precision keeps is a 1-byte colon rather than a rune " +
+			"at utf8.UTFMax, and the ceiling is the 22-byte literal plus " +
+			"that colon plus the remaining 199 runes. It caps nothing else: " +
+			"that String builds \":\" + V in full before fmt truncates the " +
+			"result, so the render is linear in V. Measured 1282, 106849 " +
+			"and 10003359 B/op for V of 1e3, 1e5 and 1e7 bytes. It is " +
+			"bounded all the same, because a Keyword is a scalar that " +
+			"cannot share substructure: the ledger charges it " +
 			"core.StringShallowBytes, core.MeterStringHeaderBytes (16) plus " +
 			"one byte per byte of V, so a Keyword that fits under " +
 			"core.DefaultMaxAllocationBytes carries at most 67108848 bytes " +
-			"of V, exactly as the ledger bounds count's rune scan. A longer " +
-			"one cannot exist: building it would have failed the ledger " +
-			"first.",
+			"of V, exactly as the ledger bounds count's rune scan. MaxWork " +
+			"is that ledger bound on the render, a different quantity from " +
+			"the 819-byte ceiling on what is emitted. A longer Keyword " +
+			"cannot exist: building it would have failed the ledger first.",
 		MaxWork: 67_108_848,
 	},
 

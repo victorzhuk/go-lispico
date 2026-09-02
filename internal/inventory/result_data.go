@@ -2360,7 +2360,7 @@ var ResultBranches = []ResultBranch{
 	},
 	{
 		Families:    []string{"collection"},
-		Fn:          "reverse sort",
+		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
 		BranchLabel: "list elements return",
@@ -2368,7 +2368,7 @@ var ResultBranches = []ResultBranch{
 	},
 	{
 		Families:    []string{"collection"},
-		Fn:          "reverse sort",
+		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
 		BranchLabel: "vector elements return",
@@ -2376,7 +2376,7 @@ var ResultBranches = []ResultBranch{
 	},
 	{
 		Families:    []string{"collection"},
-		Fn:          "reverse sort",
+		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
 		BranchLabel: "nil elements return",
@@ -2384,7 +2384,7 @@ var ResultBranches = []ResultBranch{
 	},
 	{
 		Families:    []string{"collection"},
-		Fn:          "reverse sort",
+		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
 		BranchLabel: "unsupported subject return",
