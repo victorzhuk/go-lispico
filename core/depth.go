@@ -15,7 +15,11 @@ type ConstructionDepthEvaluator interface {
 }
 
 func CheckConstructionDepth(v Value, env *Env) error {
-	return checkDepthAt(v, 0, env)
+	return CheckConstructionDepthWith(v, envEvaluator(env))
+}
+
+func CheckConstructionDepthWith(v Value, eval Evaluator) error {
+	return checkDepthAt(v, 0, eval)
 }
 
 // CheckNestedElementDepth checks v as an element placed one level inside a
@@ -28,22 +32,26 @@ func CheckConstructionDepth(v Value, env *Env) error {
 // rather than by the accumulated result, which is what stops a loop that
 // conses collections from being quadratic.
 func CheckNestedElementDepth(v Value, env *Env) error {
-	return checkDepthAt(v, 1, env)
+	return CheckNestedElementDepthWith(v, envEvaluator(env))
 }
 
-func checkDepthAt(v Value, depth int, env *Env) error {
-	limit := DefaultMaxStructuralDepth
-	if env != nil {
-		if ev := env.Evaluator(); ev != nil {
-			if de, ok := ev.(ConstructionDepthEvaluator); ok {
-				if n := de.ConstructionDepthLimit(); n > 0 {
-					limit = n
-				}
-			}
-		}
-	}
-	if limit <= 0 {
+func CheckNestedElementDepthWith(v Value, eval Evaluator) error {
+	return checkDepthAt(v, 1, eval)
+}
+
+func envEvaluator(env *Env) Evaluator {
+	if env == nil {
 		return nil
+	}
+	return env.Evaluator()
+}
+
+func checkDepthAt(v Value, depth int, eval Evaluator) error {
+	limit := DefaultMaxStructuralDepth
+	if de, ok := eval.(ConstructionDepthEvaluator); ok {
+		if n := de.ConstructionDepthLimit(); n > 0 {
+			limit = n
+		}
 	}
 	if constructionDepthExceeded(v, depth, limit) {
 		return &LispicoError{Code: CodeResourceLimit, Message: fmt.Sprintf("structural depth limit %d exceeded", limit)}
@@ -330,12 +338,4 @@ func boundedNodeCount(v Value, depth int) int {
 	default:
 		return 1
 	}
-}
-
-func CheckConstructionDepthWith(v Value, eval Evaluator) error {
-	panic("not implemented")
-}
-
-func CheckNestedElementDepthWith(v Value, eval Evaluator) error {
-	panic("not implemented")
 }
