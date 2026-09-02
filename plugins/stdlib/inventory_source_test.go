@@ -914,6 +914,80 @@ func TestWorkInventory_MatchesSource(t *testing.T) {
 	}
 }
 
+// TestReconcileWork_UnboundedTrackedRowsNameTheirChange drives reconcileWork on
+// synthetic rows because the recorded inventory cannot reach UNTRACKED_UNBOUNDED:
+// a real row is written unbounded-tracked together with its change id, so the
+// finding would sit unexercised and rot into a guard that no longer guards.
+// The lookalike case is the one that rots first — it holds the matcher to whole
+// tokens, and a substring search would accept it.
+func TestReconcileWork_UnboundedTrackedRowsNameTheirChange(t *testing.T) {
+	root := moduleRoot(t)
+
+	const (
+		file  = "plugins/stdlib/collections.go"
+		fn    = "collectionBuiltins"
+		label = "synthetic unbounded phase"
+	)
+
+	tests := []struct {
+		name    string
+		proof   string
+		maxWork int64
+		want    bool
+	}{
+		{
+			name:  "no change named",
+			proof: "core.ValueDeepBytes walks the result as a tree, so the ledger does not bound it.",
+			want:  true,
+		},
+		{
+			name:  "tracking change named",
+			proof: "core.ValueDeepBytes walks the result as a tree. Owned by core-value-walk-sharing-bound.",
+			want:  false,
+		},
+		{
+			name:  "lookalike token named",
+			proof: "Owned by core-value-walk-sharing-boundary.",
+			want:  true,
+		},
+		{
+			name:    "tracking change named but a ceiling stated",
+			proof:   "Owned by core-value-walk-sharing-bound.",
+			maxWork: 4_194_304,
+			want:    true,
+		},
+	}
+
+	want := invFinding("UNTRACKED_UNBOUNDED", file, fn, label, "")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := []inventory.WorkPhase{{
+				Families:    []string{"collection"},
+				Fn:          "list",
+				File:        file,
+				Func:        fn,
+				PhaseLabel:  label,
+				Disposition: "unbounded-tracked",
+				Proof:       tt.proof,
+				MaxWork:     tt.maxWork,
+			}}
+
+			// Nothing is migrated, so the per-function loop is skipped whole and the
+			// only findings left for this site are the per-row switch's own.
+			got := false
+			for _, finding := range reconcileWork(root, rows, map[string]bool{}) {
+				if strings.HasPrefix(finding, want) {
+					got = true
+				}
+			}
+			if got != tt.want {
+				t.Errorf("UNTRACKED_UNBOUNDED = %v, want %v for Proof %q with MaxWork %d",
+					got, tt.want, tt.proof, tt.maxWork)
+			}
+		})
+	}
+}
+
 func TestResultInventory_MatchesSource(t *testing.T) {
 	for _, finding := range reconcileResult(moduleRoot(t), inventory.ResultBranches, inventory.FamilyMigrated) {
 		t.Error(finding)
