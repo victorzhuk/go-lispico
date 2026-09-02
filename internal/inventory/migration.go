@@ -7,8 +7,8 @@ var FamilyMigrated = map[string]bool{
 	"numeric":      true,
 	"types":        true,
 	"collection":   true,
-	"higher-order": false,
+	"higher-order": true,
 	"string":       false,
-	"cl-adapter":   false,
+	"cl-adapter":   true,
 	"support":      true,
 }
