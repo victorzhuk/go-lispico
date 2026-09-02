@@ -3149,8 +3149,9 @@ var ResultBranches = []ResultBranch{
 	},
 
 	// finishAdapter settles the budget on the way out and adds nothing of its
-	// own: a terminal flush error outranks a pending one, and otherwise the
-	// adapter's own error or value comes straight back.
+	// own: a terminal flush error outranks a pending one. Both error paths
+	// return a nil value, so only the settled value is a result the caller
+	// ends up owning.
 	{
 		Families:    []string{"cl-adapter"},
 		Fn:          "cl/sort@1",
@@ -3165,7 +3166,7 @@ var ResultBranches = []ResultBranch{
 		File:        "cl/charges.go",
 		Func:        "finishAdapter",
 		BranchLabel: "pending error return",
-		Class:       "borrowed",
+		Class:       "scalar-singleton",
 	},
 	{
 		Families:    []string{"cl-adapter"},
@@ -3193,7 +3194,7 @@ var ResultBranches = []ResultBranch{
 		File:        "plugins/stdlib/charges.go",
 		Func:        "finishBuiltin",
 		BranchLabel: "pending error return",
-		Class:       "borrowed",
+		Class:       "scalar-singleton",
 	},
 	{
 		Families:    []string{"numeric", "collection", "higher-order"},
