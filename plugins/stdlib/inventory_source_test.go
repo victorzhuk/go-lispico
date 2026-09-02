@@ -155,8 +155,9 @@ type invSourceFn struct {
 // invFinding formats one reconciliation finding as
 // "<CODE> <file>:<func>:<label>: <detail>". The code set is closed:
 //
-//	MISSING_REGISTRATION          source holds a phase or branch with no row, or
-//	                              a row names a function the source no longer has
+//	MISSING_REGISTRATION          a function carries fewer rows than it has
+//	                              detected phases or branches, or a row names a
+//	                              function the source no longer has
 //	UNSCOPED_FILE                 a production file invScopeFiles never lists, so
 //	                              nothing reconciles it
 //	DUPLICATE_ROW                 two rows record the same phase or branch
@@ -716,9 +717,13 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 		if !invGated(sf.families, migrated) {
 			continue
 		}
-		if len(sf.phases) > 0 && len(rowsByFunc[key]) == 0 {
+		// Counted, not merely present: a function with five phases and one row
+		// leaves four stretches of work owned by nobody, which is four missing
+		// entries however many rows exist. Labels stay the coder's to choose,
+		// so this compares counts and never names.
+		if got, want := len(rowsByFunc[key]), len(sf.phases); got < want {
 			out = append(out, invFinding("MISSING_REGISTRATION", sf.file, sf.name, sf.phases[0],
-				"detected work phase with no WorkPhases row"))
+				strconv.Itoa(want)+" work phases detected, "+strconv.Itoa(got)+" WorkPhases rows recorded"))
 		}
 		if !invEnvEvaluatorAllow[key] {
 			for _, label := range sf.evaluators {
@@ -799,9 +804,9 @@ func reconcileResult(root string, branches []inventory.ResultBranch, migrated ma
 		if !invGated(sf.families, migrated) {
 			continue
 		}
-		if len(sf.branches) > 0 && rowsByFunc[key] == 0 {
+		if got, want := rowsByFunc[key], len(sf.branches); got < want {
 			out = append(out, invFinding("MISSING_REGISTRATION", sf.file, sf.name, sf.branches[0],
-				"detected result branch with no ResultBranches row"))
+				strconv.Itoa(want)+" result branches detected, "+strconv.Itoa(got)+" ResultBranches rows recorded"))
 		}
 	}
 
