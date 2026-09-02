@@ -168,13 +168,26 @@ func TestMap_Characterization(t *testing.T) {
 			code  string
 			want  string
 		}{
-			{"nil second", "(map count2 nil)", "TypeError", "map: second argument must be collection"},
 			{"int second", "(map count2 5)", "TypeError", "map: second argument must be collection"},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				wantTypedError(t, evalErr(t, env, tt.input), tt.code, tt.want)
 			})
+		}
+	})
+
+	t.Run("nil input", func(t *testing.T) {
+		env, c := newCounterEnv(t)
+		got := eval(t, env, `(map count2 nil)`)
+		if !core.NewList(nil).Equals(got) {
+			t.Fatalf("expected (), got %v", got)
+		}
+		if _, ok := got.(core.List); !ok {
+			t.Fatalf("expected core.List result for nil input, got %T", got)
+		}
+		if len(c.calls) != 0 {
+			t.Errorf("expected 0 callbacks, got %d", len(c.calls))
 		}
 	})
 }
