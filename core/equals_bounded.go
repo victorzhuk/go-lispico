@@ -5,6 +5,19 @@ package core
 // returned unchanged: settling it against a builtin's own error precedence is
 // the caller's job.
 func EqualsBounded(a, b Value, budget *BuiltinWorkBudget) (bool, error) {
+	return equalsBounded(a, b, budget, 0)
+}
+
+// equalsBounded carries the structural depth so the walk stops exactly where
+// boundedEquals stops: that function is what List, Vector and HashMap Equals
+// run, so a comparison outrunning it would answer differently from core's own
+// equality on the same pair and would recurse with no bound. The cap is tested
+// before the step because a node past it is refused rather than compared, and
+// charging for it would bill work the walk never did.
+func equalsBounded(a, b Value, budget *BuiltinWorkBudget, depth int) (bool, error) {
+	if depth > DefaultMaxStructuralDepth {
+		return false, nil
+	}
 	if err := budget.Step(); err != nil {
 		return false, err
 	}
@@ -23,7 +36,7 @@ func EqualsBounded(a, b Value, budget *BuiltinWorkBudget) (bool, error) {
 				return true, nil
 			}
 			y, _ := bc.next()
-			eq, err := EqualsBounded(x, y, budget)
+			eq, err := equalsBounded(x, y, budget, depth+1)
 			if err != nil {
 				return false, err
 			}
@@ -37,7 +50,7 @@ func EqualsBounded(a, b Value, budget *BuiltinWorkBudget) (bool, error) {
 			return false, nil
 		}
 		for i := 0; i < av.Len(); i++ {
-			eq, err := EqualsBounded(av.At(i), bv.At(i), budget)
+			eq, err := equalsBounded(av.At(i), bv.At(i), budget, depth+1)
 			if err != nil {
 				return false, err
 			}
@@ -62,7 +75,7 @@ func EqualsBounded(a, b Value, budget *BuiltinWorkBudget) (bool, error) {
 				equal = false
 				return
 			}
-			eq, err := EqualsBounded(e.v, other, budget)
+			eq, err := equalsBounded(e.v, other, budget, depth+1)
 			if err != nil {
 				walkErr = err
 				return

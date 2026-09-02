@@ -275,6 +275,9 @@ func subtractNumbers(ctx context.Context, args []core.Value) (core.Value, error)
 	var floatResult float64
 	hasFloat := false
 
+	if err := budget.Step(); err != nil {
+		return finishBuiltin(budget, nil, err)
+	}
 	switch v := args[0].(type) {
 	case core.Int:
 		intResult = v.V
@@ -367,6 +370,9 @@ func divideNumbers(ctx context.Context, args []core.Value) (core.Value, error) {
 	}
 
 	var dividend float64
+	if err := budget.Step(); err != nil {
+		return finishBuiltin(budget, nil, err)
+	}
 	switch v := args[0].(type) {
 	case core.Int:
 		dividend = float64(v.V)
@@ -432,6 +438,9 @@ func minMaxFunc(name string, isMax bool) func(context.Context, core.Evaluator, [
 		var result float64
 		hasFloat := false
 
+		if err := budget.Step(); err != nil {
+			return finishBuiltin(budget, nil, err)
+		}
 		switch v := args[0].(type) {
 		case core.Int:
 			result = float64(v.V)

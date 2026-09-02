@@ -230,7 +230,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"numeric"},
 		Fn:          "=",
 		File:        "plugins/stdlib/comparison.go",
-		Func:        "registerComparison",
+		Func:        "equalsAll",
 		PhaseLabel:  "host-equals-boundary",
 		Disposition: "trusted-host",
 		Proof: "= compares through core.EqualsBounded, which charges one Step " +

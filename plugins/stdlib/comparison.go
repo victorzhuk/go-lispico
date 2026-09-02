@@ -38,6 +38,9 @@ func equalsAll(ctx context.Context, args []core.Value) (core.Value, error) {
 	if len(args) == 0 {
 		return finishBuiltin(budget, nil, arityErrorf("=: requires at least 1 argument"))
 	}
+	if err := budget.Step(); err != nil {
+		return finishBuiltin(budget, nil, err)
+	}
 	for _, arg := range args[1:] {
 		if err := budget.Step(); err != nil {
 			return finishBuiltin(budget, nil, err)
@@ -61,6 +64,9 @@ func orderingFunc(name string, ok func(cmp int) bool) func(context.Context, core
 
 		if len(args) == 0 {
 			return finishBuiltin(budget, nil, arityErrorf("%s: requires at least 1 argument", name))
+		}
+		if err := budget.Step(); err != nil {
+			return finishBuiltin(budget, nil, err)
 		}
 		if _, err := collections.ToFloat(name, args[0]); err != nil {
 			return finishBuiltin(budget, nil, err)
