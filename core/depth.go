@@ -331,3 +331,11 @@ func boundedNodeCount(v Value, depth int) int {
 		return 1
 	}
 }
+
+func CheckConstructionDepthWith(v Value, eval Evaluator) error {
+	panic("not implemented")
+}
+
+func CheckNestedElementDepthWith(v Value, eval Evaluator) error {
+	panic("not implemented")
+}
