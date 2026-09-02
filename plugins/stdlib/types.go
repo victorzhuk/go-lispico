@@ -184,6 +184,9 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 			if !ok {
 				return nil, typeErrorf("str->keyword: requires string argument")
 			}
+			if err := chargeBorrowedResult(ctx); err != nil {
+				return nil, err
+			}
 			return core.Keyword(s), nil
 		},
 	}, false); err != nil {
@@ -199,6 +202,9 @@ func (p *Plugin) registerTypes(env *core.Env) error {
 			k, ok := args[0].(core.Keyword)
 			if !ok {
 				return nil, typeErrorf("keyword->str: requires keyword argument")
+			}
+			if err := chargeBorrowedResult(ctx); err != nil {
+				return nil, err
 			}
 			return core.String(k), nil
 		},

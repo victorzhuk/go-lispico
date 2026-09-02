@@ -4,8 +4,8 @@ package inventory
 // family once its rows land. "support" starts true: nothing in it needs
 // migrating.
 var FamilyMigrated = map[string]bool{
-	"numeric":      false,
-	"types":        false,
+	"numeric":      true,
+	"types":        true,
 	"collection":   false,
 	"higher-order": false,
 	"string":       false,
