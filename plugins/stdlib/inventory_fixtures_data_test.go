@@ -3,8 +3,9 @@ package stdlib
 import "github.com/victorzhuk/go-lispico/internal/inventory"
 
 // These accessors carry the fixture data the sealed fixture assertions read.
-// Each case records every phase and every branch its source holds except the
-// one defect the case exists to catch, so each yields exactly one finding.
+// A case's rows must cover every phase and every branch its source holds,
+// because the reconcilers count rows per function: any shortfall raises a
+// second finding and drowns the one defect the case exists to catch.
 
 // fixtureFile is the scoped path every case reuses. A path outside
 // invScopeFiles is never scanned, and one outside invFileFamilies resolves to
@@ -277,6 +278,14 @@ func fixtureResults(caseName string) []inventory.ResultBranch {
 				Fn:          "count",
 				File:        fixtureFile,
 				Func:        "countAll",
+				BranchLabel: "post-walk error return",
+				Class:       "scalar-singleton",
+			},
+			{
+				Families:    []string{"collection"},
+				Fn:          "count",
+				File:        fixtureFile,
+				Func:        "countAll",
 				BranchLabel: "count return",
 				Class:       "scalar-singleton",
 			},
@@ -290,6 +299,14 @@ func fixtureResults(caseName string) []inventory.ResultBranch {
 				File:        fixtureFile,
 				Func:        "lastOf",
 				BranchLabel: "error return",
+				Class:       "scalar-singleton",
+			},
+			{
+				Families:    []string{"collection"},
+				Fn:          "last",
+				File:        fixtureFile,
+				Func:        "lastOf",
+				BranchLabel: "flush error return",
 				Class:       "scalar-singleton",
 			},
 			{
