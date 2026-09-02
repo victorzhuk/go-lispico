@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/internal/inventory"
 )
 
 // cbUnitCount sits above the 128-unit batch interval of core's builtin work
@@ -41,6 +42,13 @@ func cbMap(t *testing.T, n int) *core.HashMap {
 // seam whose cost grows with its input. concat gets Vector arguments on
 // purpose: a trailing List takes the shared-tail path, which already charges
 // per Cons, so only the flatten path is exercised here.
+//
+// The sort arms of the three interruption tests, and range's cancellation arm,
+// are green before the migration: StableSort already owns and charges the sort
+// kernel, and range already checks its caller's ctx per iteration. They stay
+// here as non-regression guards. sort's ownership change is asserted through
+// the inventory instead, in TestSort_ResultBranchIsFreshContainer and
+// TestSort_ToSliceCopyIsBudgeted.
 func cbBuilders(t *testing.T) []struct {
 	name string
 	args []core.Value
@@ -155,6 +163,11 @@ func TestRange_TerminalOnExpiredDeadlineMidLoop(t *testing.T) {
 // TestSort_ResultChargesContainerOnly: sort returns a fresh List over elements
 // it borrowed from its subject, so its result charge is the container and
 // nothing else. Widening every element 4096-fold must not move the ledger.
+//
+// The total is invariant by design: the callee's explicit charge equals the
+// apply-site fallback it replaces, so this is green before the migration and
+// must stay green after it. The ownership change it cannot see is asserted in
+// TestSort_ResultBranchIsFreshContainer.
 func TestSort_ResultChargesContainerOnly(t *testing.T) {
 	env := setupEnv(t)
 	fn := collectionGoFunc(t, env, "sort")
@@ -306,4 +319,65 @@ func TestCollectionBuild_ValuesAndErrorsUnchanged(t *testing.T) {
 		requireResourceLimit(t, err)
 		require.ErrorContains(t, err, "structural depth limit 1 exceeded")
 	})
+}
+
+// sort's ledger total and its interruption behaviour are unchanged by design,
+// so no meter assertion can tell the intended end state from the current one.
+// What moves is ownership: the callee declares its own result, suppressing the
+// apply-site fallback, and the pre-kernel copy gets its own budgeted phase.
+// The inventory is where that is checkable.
+
+// TestSort_ResultBranchIsFreshContainer: sort returns a List it allocated over
+// elements borrowed from its subject, so the inventory must classify that
+// branch as a fresh container stating its own charge expression, rather than
+// leave the apply-site fallback owning the result.
+func TestSort_ResultBranchIsFreshContainer(t *testing.T) {
+	const (
+		wantFn    = "sort"
+		wantLabel = "sorted list"
+	)
+	for _, got := range inventory.ResultBranches {
+		if got.Fn != wantFn || got.BranchLabel != wantLabel {
+			continue
+		}
+		require.Equalf(t, "plugins/stdlib/collections.go", got.File, "%s/%s: file", wantFn, wantLabel)
+		require.Equalf(t, "fresh-container", got.Class, "%s/%s: class", wantFn, wantLabel)
+		require.NotEmptyf(t, got.ChargeExpr, "%s/%s: a fresh container must state the quantity it charges", wantFn, wantLabel)
+		return
+	}
+	t.Fatalf("inventory.ResultBranches has no row Fn %q BranchLabel %q: sort's result is still owned by the apply-site fallback", wantFn, wantLabel)
+}
+
+// TestSort_ToSliceCopyIsBudgeted: the ToSlice copy of the subject happens
+// before StableSort is entered and grows with the subject, so it is stdlib's
+// own work and must be recorded as budgeted.
+func TestSort_ToSliceCopyIsBudgeted(t *testing.T) {
+	const (
+		wantFn    = "sort"
+		wantLabel = "subject copy"
+	)
+	for _, got := range inventory.WorkPhases {
+		if got.Fn != wantFn || got.PhaseLabel != wantLabel {
+			continue
+		}
+		require.Equalf(t, "plugins/stdlib/collections.go", got.File, "%s/%s: file", wantFn, wantLabel)
+		require.Equalf(t, "budgeted", got.Disposition, "%s/%s: disposition", wantFn, wantLabel)
+		return
+	}
+	t.Fatalf("inventory.WorkPhases has no row Fn %q PhaseLabel %q: the pre-kernel copy sort performs is unrecorded", wantFn, wantLabel)
+}
+
+// TestSort_KernelWorkNotDoubleCharged: internal/collections.StableSort already
+// charges the comparison kernel. A budgeted stdlib phase naming that file would
+// bill the same work a second time, which is the double charge this migration
+// forbids. Green before and after; it exists to stay that way.
+func TestSort_KernelWorkNotDoubleCharged(t *testing.T) {
+	const kernelFile = "internal/collections/kernels.go"
+	for _, got := range inventory.WorkPhases {
+		if got.Fn != "sort" || got.Disposition != "budgeted" {
+			continue
+		}
+		require.NotEqualf(t, kernelFile, got.File,
+			"sort work phase %q is budgeted against %s: the kernel already charges that work, so a second row double-charges it", got.PhaseLabel, kernelFile)
+	}
 }
