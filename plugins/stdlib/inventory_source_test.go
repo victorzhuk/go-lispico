@@ -170,6 +170,8 @@ type invSourceFn struct {
 //	                              callback-owned row
 //	MISSING_PROOF                 a bounded-exception row without Proof or MaxWork
 //	TRUSTED_HOST_NOT_VALUE_METHOD a trusted-host Proof naming no allowed callee
+//	UNTRACKED_UNBOUNDED           an unbounded-tracked row without a Proof naming
+//	                              its tracking change, or one that states a MaxWork
 //	UNFLUSHED_RETURN              a budget holder returning without settling it
 //	DUPLICATE_CALLBACK_CHARGE     a second callback-owned row for one callback
 //	UNCLASSIFIED_RESULT_BRANCH    a row whose Class is unknown, or which allocates
@@ -768,6 +770,11 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 				out = append(out, invFinding("MISSING_PROOF", row.File, row.Func, row.PhaseLabel,
 					"a bounded-exception phase needs both Proof and MaxWork"))
 			}
+		case "unbounded-tracked":
+			if row.Proof == "" || !invNamesTrackedChange(row.Proof) || row.MaxWork != 0 {
+				out = append(out, invFinding("UNTRACKED_UNBOUNDED", row.File, row.Func, row.PhaseLabel,
+					"an unbounded phase needs a Proof naming its tracking change and no MaxWork"))
+			}
 		case "trusted-host":
 			if !invNamesTrustedCallee(row.Proof) {
 				out = append(out, invFinding("TRUSTED_HOST_NOT_VALUE_METHOD", row.File, row.Func, row.PhaseLabel,
@@ -816,10 +823,11 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 					"a registered builtin must not reach the environment's evaluator"))
 			}
 		}
-		if !invHasDisposition(rowsByFunc[key], "budgeted", "bounded-exception", "trusted-host") {
+		if !invHasDisposition(rowsByFunc[key],
+			"budgeted", "bounded-exception", "trusted-host", "unbounded-tracked") {
 			for _, label := range sf.libCalls {
 				out = append(out, invFinding("OPAQUE_CALL", sf.file, sf.name, label,
-					"opaque callee with no budgeted, bounded-exception or trusted-host row"))
+					"opaque callee with no budgeted, bounded-exception, trusted-host or unbounded-tracked row"))
 			}
 		}
 		if !invHasDisposition(rowsByFunc[key], "callback-owned", "budgeted") {

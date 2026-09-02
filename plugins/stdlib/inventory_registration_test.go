@@ -13,6 +13,11 @@ import (
 // bound instead of needing a budget of its own.
 var invTrustedHostCallees = []string{".Equals", ".String", ".Type", "core.EqualsBounded"}
 
+// invTrackedChanges are the changes that own an unbounded phase. A row that
+// defers its bound has to name one, so "unbounded" is a tracked defect with an
+// owner rather than a shrug.
+var invTrackedChanges = []string{"core-value-walk-sharing-bound"}
+
 // invKnownNames is the closed set of names a row may name: every registered
 // builtin plus every CL adapter id.
 func invKnownNames() map[string]bool {
@@ -57,21 +62,25 @@ func invStringSet(values []string) map[string]bool {
 	return set
 }
 
-// invNamesTrustedCallee matches whole tokens, not substrings: a proof that
-// merely mentions a callee in prose, or names a lookalike such as .EqualsFold,
-// is not evidence that the phase leans on a bounded value method.
-func invNamesTrustedCallee(proof string) bool {
+// invNamesToken matches whole tokens, not substrings: a proof that merely
+// mentions a name in prose, or names a lookalike such as .EqualsFold, is not
+// evidence that the phase leans on the thing named.
+func invNamesToken(proof string, allowed []string) bool {
 	for _, token := range strings.Fields(proof) {
 		token = strings.TrimLeft(token, "([{\"'`")
 		token = strings.TrimRight(token, ".,;:)]}\"'`")
-		for _, callee := range invTrustedHostCallees {
-			if token == callee {
+		for _, want := range allowed {
+			if token == want {
 				return true
 			}
 		}
 	}
 	return false
 }
+
+func invNamesTrustedCallee(proof string) bool { return invNamesToken(proof, invTrustedHostCallees) }
+
+func invNamesTrackedChange(proof string) bool { return invNamesToken(proof, invTrackedChanges) }
 
 // invSupportOnly reports whether a row belongs solely to the support family.
 // Nothing in support is registered under a Lisp name, so such a row names none.
@@ -168,17 +177,30 @@ func TestResultInventory_CoversEveryRegisteredName(t *testing.T) {
 
 // TestWorkInventory_BoundedExceptionsCarryProofAndMaxWork keeps the escape
 // hatch expensive: a phase that opts out of the budget has to state the bound
-// it relies on and where that bound comes from.
+// it relies on and where that bound comes from, and a phase that has no bound
+// at all has to name the change that will remove it.
 func TestWorkInventory_BoundedExceptionsCarryProofAndMaxWork(t *testing.T) {
 	for _, row := range inventory.WorkPhases {
-		if row.Disposition != "bounded-exception" {
-			continue
-		}
-		if row.Proof == "" {
-			t.Errorf("%s:%s:%s: bounded-exception carries no Proof", row.File, row.Func, row.PhaseLabel)
-		}
-		if row.MaxWork == 0 {
-			t.Errorf("%s:%s:%s: bounded-exception carries no MaxWork", row.File, row.Func, row.PhaseLabel)
+		switch row.Disposition {
+		case "bounded-exception":
+			if row.Proof == "" {
+				t.Errorf("%s:%s:%s: bounded-exception carries no Proof", row.File, row.Func, row.PhaseLabel)
+			}
+			if row.MaxWork == 0 {
+				t.Errorf("%s:%s:%s: bounded-exception carries no MaxWork", row.File, row.Func, row.PhaseLabel)
+			}
+		case "unbounded-tracked":
+			if row.Proof == "" {
+				t.Errorf("%s:%s:%s: unbounded-tracked carries no Proof", row.File, row.Func, row.PhaseLabel)
+			}
+			if !invNamesTrackedChange(row.Proof) {
+				t.Errorf("%s:%s:%s: unbounded-tracked Proof names no change in %s",
+					row.File, row.Func, row.PhaseLabel, strings.Join(invTrackedChanges, ", "))
+			}
+			if row.MaxWork != 0 {
+				t.Errorf("%s:%s:%s: unbounded-tracked must not state a MaxWork; there is no ceiling to state",
+					row.File, row.Func, row.PhaseLabel)
+			}
 		}
 	}
 }
