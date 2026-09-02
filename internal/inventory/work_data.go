@@ -843,4 +843,350 @@ var WorkPhases = []WorkPhase{
 		PhaseLabel:  "registrar walk",
 		Disposition: "load-time",
 	},
+
+	// Higher-order family. filter, reduce and apply each open a budget and
+	// walk their subject twice: seqInput copies the whole sequence before the
+	// loop is entered, so that copy is billed alongside the per-element work.
+	// map opens none - collections.MapSequences owns both the walk and the
+	// charge for what it builds.
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "map",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "kernel delegation",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "filter",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "subject budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "filter",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "subject copy walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "filter",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "predicate walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "reduce",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "subject budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "reduce",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "subject copy walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "reduce",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "fold walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "apply",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "argument budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "apply",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "tail copy walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "apply",
+		File:        "plugins/stdlib/higher_order.go",
+		Func:        "registerHigherOrder",
+		PhaseLabel:  "argument assembly walk",
+		Disposition: "budgeted",
+	},
+
+	// assert's two failure messages read alike and are not. The %.200s branch
+	// truncates its operand before anything reads it; the %.200v branch caps
+	// only what is emitted, and the render behind that cap walks a value that
+	// can share substructure.
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "assert",
+		File:        "plugins/stdlib/control.go",
+		Func:        "registerControl",
+		PhaseLabel:  "string failure message format",
+		Disposition: "bounded-exception",
+		Proof: "The operand of \"assertion failed: %.200s\" is a core.String's " +
+			"own bytes, and fmt truncates a %s operand at its precision " +
+			"without reading past it, so the work is flat in the operand " +
+			"rather than linear: measured 258 B/op alike for operands of " +
+			"1e3, 1e5 and 1e7 bytes. MaxWork is the message ceiling, the " +
+			"18-byte literal plus 200 runes at utf8.UTFMax.",
+		MaxWork: 818,
+	},
+	{
+		Families:    []string{"higher-order"},
+		Fn:          "assert",
+		File:        "plugins/stdlib/control.go",
+		Func:        "registerControl",
+		PhaseLabel:  "value failure message format",
+		Disposition: "unbounded-tracked",
+		Proof: "The precision in \"assertion failed: %.200v\" caps the emitted " +
+			"message and nothing else: the render behind it walks the whole " +
+			"operand before fmt truncates the result. That operand is an " +
+			"arbitrary core.Value, so the walk descends a tree whose nodes " +
+			"may be reached by more than one reference while the ledger " +
+			"charged each of them once, and no ceiling can be stated for it. " +
+			"Read the precision as a bound on output, never as one on work. " +
+			"Owned by core-value-walk-sharing-bound.",
+	},
+
+	// CL adapter family. Each adapter renders its own error messages through
+	// fmt.Sprintf, so each states the ceiling that render runs under.
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/nth@1",
+		File:        "cl/cl.go",
+		Func:        "clNth",
+		PhaseLabel:  "arity message format",
+		Disposition: "bounded-exception",
+		Proof: "The literal carries one %d over len(args), a Go int, and no " +
+			"other verb; no operand is a core.Value, so nothing is " +
+			"traversed and the message renders in constant time. MaxWork is " +
+			"the message ceiling, the 44-byte literal plus the 20 bytes an " +
+			"int renders to at most.",
+		MaxWork: 64,
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/nth@1",
+		File:        "cl/cl.go",
+		Func:        "clNth",
+		PhaseLabel:  "index message format",
+		Disposition: "bounded-exception",
+		Proof: "The literal carries one %d over core.Int's V, an int64, and " +
+			"no other verb; no operand is a core.Value, so nothing is " +
+			"traversed and the message renders in constant time. MaxWork is " +
+			"the message ceiling, the 37-byte literal plus the 20 bytes an " +
+			"int64 renders to at most.",
+		MaxWork: 57,
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/mapcar@1",
+		File:        "cl/cl.go",
+		Func:        "clMapcar",
+		PhaseLabel:  "sequence type check walk",
+		Disposition: "bounded-exception",
+		Proof: "The walk reads one type tag per sequence operand and never " +
+			"looks inside one, so it holds no Step of its own. Its length " +
+			"is the operand count, which the allocation ledger bounds: the " +
+			"operands arrive as slots of a charged sequence - the call form " +
+			"the reader billed, or the list apply spreads, billed at " +
+			"core.MeterValueSlotBytes (16) a slot - so a call that fits " +
+			"under core.DefaultMaxAllocationBytes carries at most " +
+			"core.DefaultMaxAllocationBytes/16 operands, which is MaxWork. " +
+			"The same shape in the collection family charges a Step per " +
+			"argument; this one does not yet.",
+		MaxWork: 4_194_304,
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/mapcar@1",
+		File:        "cl/cl.go",
+		Func:        "clMapcar",
+		PhaseLabel:  "arity message format",
+		Disposition: "bounded-exception",
+		Proof: "The literal carries one %d over len(args), a Go int, and no " +
+			"other verb; no operand is a core.Value, so nothing is " +
+			"traversed and the message renders in constant time. MaxWork is " +
+			"the message ceiling, the 59-byte literal plus the 20 bytes an " +
+			"int renders to at most.",
+		MaxWork: 79,
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/cl.go",
+		Func:        "clSort",
+		PhaseLabel:  "subject budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/cl.go",
+		Func:        "clSort",
+		PhaseLabel:  "keyword pair walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/cl.go",
+		Func:        "clSort",
+		PhaseLabel:  "subject copy walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/cl.go",
+		Func:        "clSort",
+		PhaseLabel:  "arity message format",
+		Disposition: "bounded-exception",
+		Proof: "Both arity sites share one literal carrying a single %d over " +
+			"len(args), a Go int; no operand is a core.Value, so nothing is " +
+			"traversed and either message renders in constant time. MaxWork " +
+			"is the message ceiling, the 94-byte literal plus the 20 bytes " +
+			"an int renders to at most.",
+		MaxWork: 114,
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/cl.go",
+		Func:        "clSort",
+		PhaseLabel:  "unknown keyword message format",
+		Disposition: "bounded-exception",
+		Proof: "The precision in \"sort: unknown keyword %.200v\" caps the " +
+			"emitted message at 822 bytes - the 22-byte literal plus 200 " +
+			"runes at utf8.UTFMax - and caps nothing else: core.Keyword's " +
+			"String (core/types.go:161) builds \":\" + V in full before fmt " +
+			"truncates the result, so the render is linear in V. Measured " +
+			"1282, 106849 and 10003359 B/op for V of 1e3, 1e5 and 1e7 " +
+			"bytes. It is bounded all the same, because a Keyword is a " +
+			"scalar that cannot share substructure: the ledger charges it " +
+			"core.StringShallowBytes, core.MeterStringHeaderBytes (16) plus " +
+			"one byte per byte of V, so a Keyword that fits under " +
+			"core.DefaultMaxAllocationBytes carries at most 67108848 bytes " +
+			"of V, exactly as the ledger bounds count's rune scan. A longer " +
+			"one cannot exist: building it would have failed the ledger " +
+			"first.",
+		MaxWork: 67_108_848,
+	},
+
+	// Shared collection kernels. Each holds the budget for the walk it owns,
+	// so the adapters above bill only what they do before entering one.
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "nth cl/nth@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "IndexedAccess",
+		PhaseLabel:  "list cursor budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "nth cl/nth@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "IndexedAccess",
+		PhaseLabel:  "list cursor walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "nth cl/nth@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "IndexedAccess",
+		PhaseLabel:  "vector index budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order", "cl-adapter"},
+		Fn:          "map cl/mapcar@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "MapSequences",
+		PhaseLabel:  "element budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order", "cl-adapter"},
+		Fn:          "map cl/mapcar@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "MapSequences",
+		PhaseLabel:  "cursor setup walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order", "cl-adapter"},
+		Fn:          "map cl/mapcar@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "MapSequences",
+		PhaseLabel:  "argument assembly walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"higher-order", "cl-adapter"},
+		Fn:          "map cl/mapcar@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "MapSequences",
+		PhaseLabel:  "callback dispatch walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "sort cl/sort@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "StableSort",
+		PhaseLabel:  "pair budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "sort cl/sort@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "StableSort",
+		PhaseLabel:  "pair build walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "sort cl/sort@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "StableSort",
+		PhaseLabel:  "key projection walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "sort cl/sort@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "StableSort",
+		PhaseLabel:  "comparison scheduling",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection", "cl-adapter"},
+		Fn:          "sort cl/sort@1",
+		File:        "internal/collections/kernels.go",
+		Func:        "StableSort",
+		PhaseLabel:  "output copy walk",
+		Disposition: "budgeted",
+	},
 }
