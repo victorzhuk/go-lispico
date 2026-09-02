@@ -471,8 +471,11 @@ var WorkPhases = []WorkPhase{
 		Disposition: "budgeted",
 	},
 
-	// The two core walks the builtins cannot preempt. Each is bounded by a
-	// ceiling the result had to clear before the walk could start.
+	// The two core walks the builtins cannot preempt. Neither is bounded:
+	// both descend a value as a tree while the ledger charges a shared node
+	// once, and this core shares structure by design, so a node reached by
+	// two references is walked once per reference.
+	// Owned by core-value-walk-sharing-bound.
 
 	{
 		Families:    []string{"collection"},
@@ -500,12 +503,18 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "chargeCollectionResult",
 		PhaseLabel:  "construction depth walk",
-		Disposition: "bounded-exception",
-		Proof: "core.CheckConstructionDepthWith descends at most " +
-			"core.DefaultMaxStructuralDepth+1 levels before reporting the " +
-			"limit: the walk stops at the first level past the ceiling " +
-			"instead of finishing the structure.",
-		MaxWork: 1_025,
+		Disposition: "unbounded-tracked",
+		Proof: "core.CheckConstructionDepthWith caps the depth of the descent, " +
+			"not the number of nodes it visits. constructionDepthExceeded " +
+			"(core/depth.go:69) iterates every element at every level and " +
+			"recurses into each collection-typed one, and returns early only " +
+			"when the limit actually trips; a wide, shallow structure never " +
+			"trips it and is walked whole, once per reference, while the " +
+			"ledger charged each shared node once. Measured: a ten-element " +
+			"list consed onto itself 26 times sits at nesting depth 27, far " +
+			"under core.DefaultMaxStructuralDepth, and takes 1.677s for 1040 " +
+			"ledger bytes, doubling per cons (3.3us, 132us, 6.8ms, 563ms, " +
+			"1.68s). Owned by core-value-walk-sharing-bound.",
 	},
 
 	// Collection family, part two: the lookup, indexed-access and persistent
@@ -803,16 +812,24 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "chargeConsResult",
 		PhaseLabel:  "nested element depth walk",
-		Disposition: "bounded-exception",
+		Disposition: "unbounded-tracked",
 		Proof: "The loop runs once per newly introduced element - the " +
 			"arguments the caller wrote, already billed one Step each by " +
-			"the builtin that called in - and " +
-			"core.CheckNestedElementDepthWith descends at most " +
-			"core.DefaultMaxStructuralDepth+1 levels before reporting the " +
-			"limit, stopping at the first level past the ceiling instead of " +
-			"finishing the structure. The fmt.Sprintf on the length-limit " +
-			"path renders one %s and two %d and costs constant time.",
-		MaxWork: 1_025,
+			"the builtin that called in - so the walk never revisits the " +
+			"accumulated result. Each walk is itself unbounded: " +
+			"core.CheckNestedElementDepthWith is checkDepthAt(v, 1, eval) " +
+			"over constructionDepthExceeded (core/depth.go:38), the same " +
+			"function the construction depth walk runs and differing only " +
+			"in starting depth, which does not change the node count. Its " +
+			"limit caps the depth of the descent, not the number of nodes " +
+			"visited, and a newly introduced element may itself share " +
+			"substructure, in which case a node reached by two references " +
+			"is visited twice while the ledger charged it once. Measured: " +
+			"a ten-element list consed onto itself 26 times sits at nesting " +
+			"depth 27, far under core.DefaultMaxStructuralDepth, and takes " +
+			"1.677s for 1040 ledger bytes. The fmt.Sprintf on the " +
+			"length-limit path renders one %s and two %d and costs constant " +
+			"time. Owned by core-value-walk-sharing-bound.",
 	},
 
 	// The registrar walks the table above once while the plugin loads,
