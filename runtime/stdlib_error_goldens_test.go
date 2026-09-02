@@ -166,11 +166,13 @@ func TestStdlibErrors_TerminalNotCatchable(t *testing.T) {
 				WithResourceLimits(ResourceLimits{MaxReductions: 300, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}))
 			eng := loadStdlibEngine(t, clojure.Dialect(), true, opts...)
 
-			// Measured over these 599 elements: reaching the bound subject
-			// through try costs at most 12 reductions and completing this
-			// sort needs 7713 under the tree-walker and 7725 under the VM, so
-			// under a 300 ceiling the Terminal can only come from sort's own
-			// budget.
+			// Re-measured over these 599 elements by sweeping MaxReductions for
+			// the lowest ceiling each form completes under, cross-checked
+			// against the eval meter's ledger (both instruments agreed
+			// exactly): reaching the bound subject through try costs 1
+			// reduction under the tree-walker and 12 under the VM, and
+			// completing this sort needs 7713 and 7725 respectively, so under a
+			// 300 ceiling the Terminal can only come from sort's own budget.
 			bindPrebuiltSubject(t, eng, "budget-subject", 599)
 
 			got, err := eng.Eval(context.Background(), "terminal-budget", "(try (sort budget-subject) (catch e :caught))")
