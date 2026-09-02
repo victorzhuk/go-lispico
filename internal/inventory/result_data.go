@@ -2359,7 +2359,7 @@ var ResultBranches = []ResultBranch{
 		Class:       "borrowed",
 	},
 	{
-		Families:    []string{"collection"},
+		Families:    []string{"collection", "higher-order", "string"},
 		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
@@ -2367,7 +2367,7 @@ var ResultBranches = []ResultBranch{
 		Class:       "borrowed",
 	},
 	{
-		Families:    []string{"collection"},
+		Families:    []string{"collection", "higher-order", "string"},
 		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
@@ -2375,7 +2375,7 @@ var ResultBranches = []ResultBranch{
 		Class:       "borrowed",
 	},
 	{
-		Families:    []string{"collection"},
+		Families:    []string{"collection", "higher-order", "string"},
 		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
@@ -2383,7 +2383,7 @@ var ResultBranches = []ResultBranch{
 		Class:       "scalar-singleton",
 	},
 	{
-		Families:    []string{"collection"},
+		Families:    []string{"collection", "higher-order", "string"},
 		Fn:          "apply filter reduce reverse string/join",
 		File:        "plugins/stdlib/collections.go",
 		Func:        "seqInput",
@@ -3145,6 +3145,62 @@ var ResultBranches = []ResultBranch{
 		File:        "internal/collections/kernels.go",
 		Func:        "finishSort",
 		BranchLabel: "settled slice return",
+		Class:       "borrowed",
+	},
+
+	// finishAdapter settles the budget on the way out and adds nothing of its
+	// own: a terminal flush error outranks a pending one, and otherwise the
+	// adapter's own error or value comes straight back.
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/charges.go",
+		Func:        "finishAdapter",
+		BranchLabel: "flush error return",
+		Class:       "scalar-singleton",
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/charges.go",
+		Func:        "finishAdapter",
+		BranchLabel: "pending error return",
+		Class:       "borrowed",
+	},
+	{
+		Families:    []string{"cl-adapter"},
+		Fn:          "cl/sort@1",
+		File:        "cl/charges.go",
+		Func:        "finishAdapter",
+		BranchLabel: "settled value return",
+		Class:       "borrowed",
+	},
+	// finishBuiltin is the same helper on the stdlib side, and carries the
+	// families whose builtins reach it. Its rows stay unreconciled until the
+	// string family flips: plugins/stdlib/charges.go is owned by four seams and
+	// waits for the last of them, though no string builtin calls this helper.
+	{
+		Families:    []string{"numeric", "collection", "higher-order"},
+		Fn:          "* + - / < <= = > >= apply assoc concat conj cons dissoc filter hash-map keys last list max merge min range reduce rest reverse sort vals vector",
+		File:        "plugins/stdlib/charges.go",
+		Func:        "finishBuiltin",
+		BranchLabel: "flush error return",
+		Class:       "scalar-singleton",
+	},
+	{
+		Families:    []string{"numeric", "collection", "higher-order"},
+		Fn:          "* + - / < <= = > >= apply assoc concat conj cons dissoc filter hash-map keys last list max merge min range reduce rest reverse sort vals vector",
+		File:        "plugins/stdlib/charges.go",
+		Func:        "finishBuiltin",
+		BranchLabel: "pending error return",
+		Class:       "borrowed",
+	},
+	{
+		Families:    []string{"numeric", "collection", "higher-order"},
+		Fn:          "* + - / < <= = > >= apply assoc concat conj cons dissoc filter hash-map keys last list max merge min range reduce rest reverse sort vals vector",
+		File:        "plugins/stdlib/charges.go",
+		Func:        "finishBuiltin",
+		BranchLabel: "settled value return",
 		Class:       "borrowed",
 	},
 }
