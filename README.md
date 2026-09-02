@@ -278,6 +278,79 @@ can be written directly:
 (get-in {:a {:b 1}} [:a :b])
 ```
 
+### Nil at sequence boundaries
+
+The `stdlib` sequence builtins read `nil` as an empty input, but only at a
+closed set of argument positions. At each position below, `nil` observes zero
+elements and yields exactly what the operation yields for an empty list; no
+other operation or position gains this behavior. `nth` and `sort` name the
+kernel builtins, which the default CL dialect replaces with the adapters
+described under "Common Lisp collections".
+
+| Operation                 | `nil` position               | Result                                            |
+| ------------------------- | ---------------------------- | ------------------------------------------------- |
+| `first`, `last`           | argument 1                   | `nil`                                             |
+| `rest`, `reverse`, `sort` | argument 1                   | empty list                                        |
+| `count`                   | argument 1                   | `0`                                               |
+| `empty?`                  | argument 1                   | `true`                                            |
+| `concat`                  | any sequence argument        | contributes no elements                           |
+| `nth`                     | argument 1                   | the default if given, else out-of-bounds `EvalError` |
+| `cons`                    | argument 2                   | one-element list                                  |
+| `conj`                    | argument 1                   | list semantics, as onto an empty list             |
+| `map`, `filter`           | argument 2                   | empty list; function never called                 |
+| `reduce`                  | final argument, both arities | `nil`, or the initial value; function never called |
+| `apply`                   | final argument only          | zero tail arguments                               |
+| `string/join`             | argument 2                   | `""`                                              |
+
+The examples run on the default engine, so functions are passed with `#'`:
+
+```lisp
+(cons 1 nil)
+```
+
+evaluates to `(1)`, and `(conj nil 1 2)` to `(1 2)`, the same list
+`(conj '() 1 2)` builds. `(append (list 1) nil (list 2))` — `concat` under
+its CL name — evaluates to `(1 2)`. `(count nil)` evaluates to `0`,
+`(empty? nil)` to `true`, `(first nil)` and `(last nil)` to `nil`, and
+`(rest nil)` and `(reverse nil)` to an empty list.
+
+Higher-order operations receive no elements, so their function never runs:
+
+```lisp
+(reduce #'+ 0 nil)
+```
+
+evaluates to `0`, `(map #'count nil)` to an empty list, and
+`(apply #'+ 1 2 nil)` to `3` — `+` is called with the explicit arguments
+only. `(string/join "," nil)` evaluates to `""`.
+
+Under `clojure.Dialect()`, where `nth` is the kernel builtin, `nil` follows
+empty-list bounds: `(nth nil 0 :missing)` evaluates to `:missing`, and
+`(nth nil 0)` fails with the same index-out-of-bounds `EvalError` as
+`(nth '() 0)`. The CL `nth`, `mapcar`, and `sort` adapters keep their own
+shapes and normalize them before reaching the shared kernel, so
+`(nth 0 nil)` on the default engine evaluates to `nil` as documented above.
+
+Two-argument `reduce` over `nil` follows the empty-list rule as well:
+
+```lisp
+(reduce #'+ nil)
+```
+
+evaluates to `nil`, as `(reduce #'+ '())` does, and `+` is never called.
+This deliberately differs from Clojure, where an empty two-argument `reduce`
+calls `(f)` with no arguments.
+
+This is a boundary rule, not an identity: `nil` is not the empty list.
+`(nil? '())` and `(list? nil)` both evaluate to `false`, `(= nil '())` to
+`false`, `nil` prints as `nil` where the empty list prints as `()`, and
+truthiness is unchanged — `(if '() 1 2)` evaluates to `1`, `(if nil 1 2)` to
+`2`. Map-only operations — `assoc`, `dissoc`, `keys`, `vals`, `contains?`,
+`merge` — are outside the matrix and unchanged; `get` and `get-in` read
+`nil` as an empty map as described above. A non-collection value that is not
+`nil` still fails at these positions with the operation's `TypeError`, except
+`empty?`, which evaluates to `false` for a scalar.
+
 ## Bytecode VM
 
 `runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (namely a `defmacro` nested inside a larger form, and `unquote-splicing`).

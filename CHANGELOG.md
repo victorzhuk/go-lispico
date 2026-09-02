@@ -127,6 +127,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source position — `Line` and `Col` remain reader-only. Which inputs succeed
   and which fail is unchanged.
 
+- **Breaking:** `nil` in the sequence position of `reverse`, kernel `nth`,
+  `cons`, `conj`, `map`, `filter`, `reduce`, `apply`, and `string/join` now
+  reads as an empty input and yields the operation's empty-list result, where
+  each of these previously failed with `TypeError`. The positions are fixed:
+  argument 1 of `reverse`, `nth`, and `conj`; argument 2 of `cons`, `map`,
+  `filter`, and `string/join`; the final sequence argument of both `reduce`
+  arities; and only the final expanded argument of `apply`. So `(cons 1 nil)`
+  is `(1)`, `(conj nil 1 2)` is `(1 2)`, `(map f nil)` and `(filter f nil)`
+  are empty lists with `f` never called, `(reduce f init nil)` is `init` and
+  `(reduce f nil)` is `nil` — unlike Clojure, `f` is not called with no
+  arguments — `(apply f 1 2 nil)` calls `f` with `1` and `2`,
+  `(string/join "," nil)` is `""`, and `(nth nil 0)` reports the same
+  index-out-of-bounds `EvalError` as `(nth '() 0)`, or the default when one
+  is given. `first`, `rest`, `last`, `count`, `empty?`, kernel `sort`, and
+  `concat` already accepted `nil` and are unchanged, as are the CL `nth`,
+  `mapcar`, and `sort` adapters, the map-only operations, and every unlisted
+  position. `nil` is still not the empty list: type predicates, equality,
+  printing, and truthiness are untouched, and a non-collection value other
+  than `nil` still fails with `TypeError`. A host that caught `TypeError`
+  from these calls to treat `nil` as empty no longer receives it.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added
