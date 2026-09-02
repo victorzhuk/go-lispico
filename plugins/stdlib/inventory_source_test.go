@@ -47,6 +47,11 @@ var invScopeFiles = []string{
 // invFileFamilies gives every in-scope file the families whose seams own it.
 // A file is reconciled only once every family named here is migrated, so a
 // helper shared by two families waits for the later of the two.
+//
+// Ownership is not a free choice: a file that registers builtins owns the
+// families of the names it binds and nothing more, and a helper file owns the
+// families of the files that call into it. TestInventorySource_FileFamiliesMatchCallers
+// derives both from the source and fails on a family this table adds or drops.
 var invFileFamilies = map[string][]string{
 	"cl/charges.go":                   {"cl-adapter"},
 	"cl/cl.go":                        {"cl-adapter"},
@@ -56,7 +61,7 @@ var invFileFamilies = map[string][]string{
 	"internal/collections/order.go":   {"numeric", "collection"},
 	"plugins/stdlib/arithmetic.go":    {"numeric"},
 	"plugins/stdlib/bootstrap.go":     {"support"},
-	"plugins/stdlib/charges.go":       {"collection", "types", "higher-order", "string"},
+	"plugins/stdlib/charges.go":       {"numeric", "types", "collection", "higher-order"},
 	"plugins/stdlib/collections.go":   {"collection"},
 	"plugins/stdlib/comparison.go":    {"numeric"},
 	"plugins/stdlib/control.go":       {"higher-order"},
@@ -1895,5 +1900,264 @@ func TestInventorySource_UnclassifiedKernelIsReported(t *testing.T) {
 				t.Errorf("reported as unclassified = %v, want %v; got %v", got, tt.want, invUnclassifiedKernels(root))
 			}
 		})
+	}
+}
+
+// invAdapterFile declares the CL adapters. CLAdapterIDs carries no file, and
+// the family derivation needs one seed site for cl-adapter;
+// TestInventorySource_CLAdapterVarsAreAnalyzed pins that the three adapters do
+// live here.
+const invAdapterFile = "cl/cl.go"
+
+// invSupportOwned are the in-scope files registered builtins do reach but that
+// no seam owns: they were migrated ahead of every family, so their gate is
+// "support" rather than the families of their callers. Nothing in the source
+// separates them from a helper a seam does own — both are plain functions
+// called out of builtin bodies — so the designation is recorded here rather
+// than derived, and the guard below fails on an entry that has stopped
+// describing a file registered builtins reach.
+var invSupportOwned = map[string]string{
+	"internal/collections/errors.go": "error builders every family reaches, migrated ahead of every seam",
+	"plugins/stdlib/errors.go":       "error builders every family reaches, migrated ahead of every seam",
+}
+
+func invPkgDir(rel string) string {
+	if i := strings.LastIndex(rel, "/"); i >= 0 {
+		return rel[:i]
+	}
+	return "."
+}
+
+// invRegisteredFamilies is the family set a file owns by binding builtins. A
+// registering file is pinned to it and absorbs nothing from its callers, which
+// is why plugins/stdlib/collections.go stays {collection} although strings.go
+// and higher_order.go both call seqInput out of it.
+func invRegisteredFamilies(rel string) map[string]bool {
+	out := map[string]bool{}
+	names := inventory.RegisteredNames[rel]
+	if rel == invAdapterFile {
+		names = append(append([]string{}, names...), inventory.CLAdapterIDs...)
+	}
+	for _, name := range names {
+		if family := inventory.NameFamily[name]; family != "" {
+			out[family] = true
+		}
+	}
+	return out
+}
+
+// invFileCallEdges reports, per in-scope file, the in-scope files it calls
+// into. Resolution is by package and name and deliberately without a type
+// checker: a bare identifier resolves against the calling file's own package,
+// and a selector only when its qualifier is an in-scope package that file
+// imports. A method call on a value resolves to nothing, which is what keeps
+// env.Get, b.Step and p.loadBootstrap out of the graph; only non-method
+// declarations are targets, because only those a bare identifier can name.
+func invFileCallEdges(root string) (map[string]map[string]bool, error) {
+	fset := gotoken.NewFileSet()
+	parsed := make(map[string]*ast.File, len(invScopeFiles))
+	dirs := map[string]bool{}
+	for _, rel := range invScopeFiles {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		parsed[rel] = f
+		dirs[invPkgDir(rel)] = true
+	}
+
+	declaredIn := map[string]string{}
+	for rel, f := range parsed {
+		dir := invPkgDir(rel)
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil {
+				continue
+			}
+			declaredIn[dir+":"+fn.Name.Name] = rel
+		}
+	}
+
+	edges := map[string]map[string]bool{}
+	for rel, f := range parsed {
+		dir := invPkgDir(rel)
+		aliases := map[string]string{}
+		for _, imp := range f.Imports {
+			path, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			for candidate := range dirs {
+				if path != candidate && !strings.HasSuffix(path, "/"+candidate) {
+					continue
+				}
+				name := path[strings.LastIndex(path, "/")+1:]
+				if imp.Name != nil {
+					name = imp.Name.Name
+				}
+				aliases[name] = candidate
+			}
+		}
+
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var targetDir, name string
+			switch fn := call.Fun.(type) {
+			case *ast.Ident:
+				targetDir, name = dir, fn.Name
+			case *ast.SelectorExpr:
+				qualifier, isIdent := fn.X.(*ast.Ident)
+				if !isIdent {
+					return true
+				}
+				resolved, inScope := aliases[qualifier.Name]
+				if !inScope {
+					return true
+				}
+				targetDir, name = resolved, fn.Sel.Name
+			default:
+				return true
+			}
+			to, ok := declaredIn[targetDir+":"+name]
+			if !ok || to == rel {
+				return true
+			}
+			if edges[rel] == nil {
+				edges[rel] = map[string]bool{}
+			}
+			edges[rel][to] = true
+			return true
+		})
+	}
+	return edges, nil
+}
+
+// invDerivedFileFamilies derives each in-scope file's owning families from the
+// source: registering files from the names they bind, every other file from the
+// files that call into it, to a fixpoint. A file nothing reaches derives the
+// empty set, which is what "support" records.
+func invDerivedFileFamilies(root string) (map[string]map[string]bool, error) {
+	edges, err := invFileCallEdges(root)
+	if err != nil {
+		return nil, err
+	}
+
+	derived := map[string]map[string]bool{}
+	pinned := map[string]bool{}
+	for _, rel := range invScopeFiles {
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); statErr != nil {
+			continue
+		}
+		families := invRegisteredFamilies(rel)
+		derived[rel] = families
+		pinned[rel] = len(families) > 0
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for from, tos := range edges {
+			for to := range tos {
+				if pinned[to] || derived[to] == nil {
+					continue
+				}
+				for family := range derived[from] {
+					if !derived[to][family] {
+						derived[to][family] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return derived, nil
+}
+
+// invFamilyList renders a family set in the order inventory.Families declares,
+// so a failure message reads the same way the tables are written. A value
+// outside that set is a typo rather than a family, and is appended so the
+// message still names it.
+func invFamilyList(set map[string]bool) []string {
+	known := invStringSet(inventory.Families)
+	out := make([]string, 0, len(set))
+	for _, family := range inventory.Families {
+		if set[family] {
+			out = append(out, family)
+		}
+	}
+	var extra []string
+	for family := range set {
+		if !known[family] {
+			extra = append(extra, family)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
+}
+
+// TestInventorySource_FileFamiliesMatchCallers is the check whose absence let
+// invFileFamilies drift: every other reconciler rule reads that table to decide
+// whether a file is reconciled at all, and nothing validated the table itself.
+// It fails in both directions — a family the source reaches that the entry
+// omits leaves the file reconciled too early, and a family no caller has leaves
+// it waiting on a seam that will never touch it.
+func TestInventorySource_FileFamiliesMatchCallers(t *testing.T) {
+	root := moduleRoot(t)
+	derived, err := invDerivedFileFamilies(root)
+	if err != nil {
+		t.Fatalf("derive file families: %v", err)
+	}
+
+	scoped := invStringSet(invScopeFiles)
+	for rel := range invFileFamilies {
+		if !scoped[rel] {
+			t.Errorf("invFileFamilies names %s, which invScopeFiles does not list; delete it", rel)
+		}
+	}
+	for rel := range invSupportOwned {
+		if _, ok := invFileFamilies[rel]; !ok {
+			t.Errorf("invSupportOwned names %s, which invFileFamilies does not carry; delete it", rel)
+		}
+		if _, ok := derived[rel]; ok && len(derived[rel]) == 0 {
+			t.Errorf("invSupportOwned names %s, which no registered builtin reaches; the empty-derivation rule already covers it", rel)
+		}
+	}
+
+	for _, rel := range invScopeFiles {
+		want, ok := derived[rel]
+		if !ok {
+			continue
+		}
+		reason := ""
+		switch {
+		case len(want) == 0:
+			reason = "no registered builtin reaches it"
+			want = map[string]bool{"support": true}
+		case invSupportOwned[rel] != "":
+			reason = invSupportOwned[rel]
+			want = map[string]bool{"support": true}
+		default:
+			reason = "reached by " + strings.Join(invFamilyList(want), ", ")
+		}
+
+		recorded := invStringSet(invFileFamilies[rel])
+		for _, family := range invFamilyList(want) {
+			if !recorded[family] {
+				t.Errorf("invFileFamilies[%q] omits family %q; %s, so the gate opens before that seam lands (want %v)",
+					rel, family, reason, invFamilyList(want))
+			}
+		}
+		for _, family := range invFamilyList(recorded) {
+			if !want[family] {
+				t.Errorf("invFileFamilies[%q] names family %q that no caller gives it; %s, so the file waits on a seam that never touches it (want %v)",
+					rel, family, reason, invFamilyList(want))
+			}
+		}
 	}
 }
