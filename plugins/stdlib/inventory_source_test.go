@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	gotoken "go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,8 +108,79 @@ type invSourceFn struct {
 	stepInLoop  bool
 }
 
+// invFinding formats one reconciliation finding as
+// "<CODE> <file>:<func>:<label>: <detail>". The code set is closed:
+//
+//	MISSING_REGISTRATION          source holds a phase or branch with no row, or
+//	                              a row names a function the source no longer has
+//	UNSCOPED_FILE                 a production file invScopeFiles never lists, so
+//	                              nothing reconciles it
+//	DUPLICATE_ROW                 two rows record the same phase or branch
+//	HELPER_ONLY_LOOP              a budgeted row whose function holds neither a
+//	                              loop nor a budget
+//	OPAQUE_CALL                   an evaluator callback inside a loop with no
+//	                              budgeted or callback-owned row
+//	MISSING_PROOF                 a bounded-exception row without Proof or MaxWork
+//	TRUSTED_HOST_NOT_VALUE_METHOD a trusted-host Proof naming no allowed callee
+//	UNFLUSHED_RETURN              a budget holder returning without settling it
+//	DUPLICATE_CALLBACK_CHARGE     a second callback-owned row for one callback
+//	UNCLASSIFIED_RESULT_BRANCH    a row whose Class is unknown, or which allocates
+//	                              without naming a ChargeExpr
+//	PREPOST_ONLY_DISPOSITION      a budgeted loop charging no Step inside its body
+//	ENV_EVALUATOR_IN_BUILTIN      a builtin reaching the environment's evaluator
+//
+// WRAPPED_KERNEL_RESULT belongs to a later seam and is never produced here.
 func invFinding(code, file, fn, label, detail string) string {
 	return code + " " + file + ":" + fn + ":" + label + ": " + detail
+}
+
+// invSweepDirs are the package directories the scope sweep walks. core/ and
+// plugins/json stay out: both are deliberately outside the migration, so a
+// finding naming either would be wrong.
+var invSweepDirs = []string{"cl", "internal/collections", "plugins/stdlib"}
+
+// invSweepUnscopedFiles reports production files invScopeFiles never lists.
+// The scope list otherwise validates only its own entries, so a seam that adds
+// a file would leave its phases and result branches reconciled by nothing —
+// work added with no disposition and no failing test.
+func invSweepUnscopedFiles(root string) []string {
+	scoped := make(map[string]bool, len(invScopeFiles))
+	for _, rel := range invScopeFiles {
+		scoped[rel] = true
+	}
+
+	var out []string
+	for _, dir := range invSweepDirs {
+		base := filepath.Join(root, filepath.FromSlash(dir))
+		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if path != base && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".")) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			rel = filepath.ToSlash(rel)
+			if !scoped[rel] {
+				out = append(out, invFinding("UNSCOPED_FILE", rel, "-", "-",
+					"production file is absent from invScopeFiles, so no seam reconciles it"))
+			}
+			return nil
+		})
+		if err != nil {
+			out = append(out, invFinding("UNSCOPED_FILE", dir, "-", "-", "scope sweep failed: "+err.Error()))
+		}
+	}
+	return out
 }
 
 func invFuncKey(file, fn string) string {
@@ -583,6 +655,7 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 		}
 	}
 
+	out = append(out, invSweepUnscopedFiles(root)...)
 	sort.Strings(out)
 	return out
 }
@@ -643,6 +716,7 @@ func reconcileResult(root string, branches []inventory.ResultBranch, migrated ma
 		}
 	}
 
+	out = append(out, invSweepUnscopedFiles(root)...)
 	sort.Strings(out)
 	return out
 }
