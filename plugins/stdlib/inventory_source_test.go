@@ -1910,12 +1910,20 @@ func TestInventorySource_UnclassifiedKernelIsReported(t *testing.T) {
 const invAdapterFile = "cl/cl.go"
 
 // invSupportOwned are the in-scope files registered builtins do reach but that
-// no seam owns: they were migrated ahead of every family, so their gate is
-// "support" rather than the families of their callers. Nothing in the source
-// separates them from a helper a seam does own — both are plain functions
-// called out of builtin bodies — so the designation is recorded here rather
-// than derived, and the guard below fails on an entry that has stopped
-// describing a file registered builtins reach.
+// no seam owns. The criterion is not "registers nothing" — charges.go,
+// kernels.go and order.go register nothing either — it is whether a seam ever
+// migrates the file's rows. These two carry bounded-exception disclosures about
+// message formatting, and no seam migrates a message format, so their
+// dispositions do not move as families do. A file holding work whose budgeting
+// and classification a seam actively changes is caller-derived instead, and
+// waits for the last family that owns that work.
+//
+// Caller-deriving plugins/stdlib/errors.go would gate it on string and stop
+// reconciling its 4 WorkPhases and 5 ResultBranches rows: a correction that
+// loses live coverage is not a correction. Nothing in the source separates the
+// two shapes, so the designation is recorded here rather than derived, and the
+// guard below fails on an entry that has stopped describing a file registered
+// builtins reach.
 var invSupportOwned = map[string]string{
 	"internal/collections/errors.go": "error builders every family reaches, migrated ahead of every seam",
 	"plugins/stdlib/errors.go":       "error builders every family reaches, migrated ahead of every seam",
@@ -2043,6 +2051,12 @@ func invFileCallEdges(root string) (map[string]map[string]bool, error) {
 // source: registering files from the names they bind, every other file from the
 // files that call into it, to a fixpoint. A file nothing reaches derives the
 // empty set, which is what "support" records.
+//
+// Propagation is file-granular by choice, not by approximation: invFileFamilies
+// keys files, so a per-call-site derivation would be finer than the gate it
+// feeds and could never be enforced. internal/collections/charges.go inheriting
+// the whole of kernels.go's set is the right answer at the granularity that
+// exists; a finer rule needs per-symbol gating, which does not.
 func invDerivedFileFamilies(root string) (map[string]map[string]bool, error) {
 	edges, err := invFileCallEdges(root)
 	if err != nil {
