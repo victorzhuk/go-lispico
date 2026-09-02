@@ -32,11 +32,33 @@ func lbSharedList(n int) core.List {
 	return core.NewList(items)
 }
 
+// lbRequireResultBranch fails unless the inventory records a branch of class
+// for fn. Rows are matched on Fn and Class and never on BranchLabel: the label
+// is the coder's to choose, the classification is the contract.
+func lbRequireResultBranch(t *testing.T, fn, class string) {
+	t.Helper()
+	for _, got := range inventory.ResultBranches {
+		if !slices.Contains(strings.Fields(got.Fn), fn) || got.Class != class {
+			continue
+		}
+		require.Equalf(t, "plugins/stdlib/collections.go", got.File, "%s/%s: file", fn, got.BranchLabel)
+		if class == "fresh-container" {
+			require.NotEmptyf(t, got.ChargeExpr, "%s/%s: a fresh container must state the quantity it charges", fn, got.BranchLabel)
+		}
+		return
+	}
+	t.Fatalf("inventory.ResultBranches has no %s row for %s: that branch is still owned by the apply-site fallback", class, fn)
+}
+
 // TestBorrowed_FirstLastNthRestAreZeroByte: every branch here hands back a
-// value its subject already owned, so widening the payload 4096-fold must not
-// move the ledger, and the wide run must still clear a budget tighter than the
-// payload's own shallow size. That second half is what separates a genuinely
-// borrowed branch from one that is merely cheap.
+// value its subject already owned, so the ledger must not grow with the
+// quantity the branch never allocated, and the wide run must still clear a
+// budget tighter than that quantity. The tight budget is what separates a
+// genuinely borrowed branch from one that is merely cheap.
+//
+// first, last and nth borrow an element, so their discriminating axis is the
+// element's payload. rest borrows a tail, whose shallow size grows with the
+// subject's length and never with its elements, so its axis is length instead.
 func TestBorrowed_FirstLastNthRestAreZeroByte(t *testing.T) {
 	env := setupEnv(t)
 
@@ -53,7 +75,6 @@ func TestBorrowed_FirstLastNthRestAreZeroByte(t *testing.T) {
 		{"last", "last", func(p core.Value) []core.Value { return []core.Value{subject(p)} }},
 		{"nth hit", "nth", func(p core.Value) []core.Value { return []core.Value{subject(p), core.Int{V: 0}} }},
 		{"nth default", "nth", func(p core.Value) []core.Value { return []core.Value{subject(p), core.Int{V: 99}, p} }},
-		{"rest", "rest", func(p core.Value) []core.Value { return []core.Value{subject(p)} }},
 	}
 
 	payloadShallow := core.StringShallowBytes(cbWideLen)
@@ -77,12 +98,52 @@ func TestBorrowed_FirstLastNthRestAreZeroByte(t *testing.T) {
 				arm.builtin, tight, payloadShallow)
 		})
 	}
+
+	t.Run("rest length axis", func(t *testing.T) {
+		fn := collectionGoFunc(t, env, "rest")
+		ints := func(n int) []core.Value {
+			vs := make([]core.Value, n)
+			for i := range vs {
+				vs[i] = core.Int{V: int64(i)}
+			}
+			return vs
+		}
+
+		// Both subjects are built before the measured window opens, so the only
+		// length-dependent quantity inside it is the tail rest hands back.
+		short, err := cbApplyCharge(t, env, fn, 1<<30, core.NewList(ints(2)))
+		require.NoError(t, err)
+		long, err := cbApplyCharge(t, env, fn, 1<<30, core.NewList(ints(cbUnitCount)))
+		require.NoError(t, err)
+
+		require.Equalf(t, short, long,
+			"rest over a %d-element list charged %d bytes against %d over a 2-element one: a borrowed tail must add zero bytes to the ledger",
+			cbUnitCount, long, short)
+
+		tailShallow := core.ListShallowBytes(cbUnitCount - 1)
+		tight := int(short + (tailShallow-core.ListShallowBytes(1))/2)
+		_, err = cbApplyCharge(t, env, fn, tight, core.NewList(ints(cbUnitCount)))
+		require.NoErrorf(t, err,
+			"rest: a borrowed tail must not trip a %d-byte budget, tighter than the %d-byte shallow size of the tail it hands back",
+			tight, tailShallow)
+	})
+
+	// The ledger probe above goes green the moment the branch stops charging;
+	// the row is what keeps that disposition recorded rather than incidental.
+	t.Run("rest list tail is borrowed", func(t *testing.T) {
+		lbRequireResultBranch(t, "rest", "borrowed")
+	})
 }
 
 // TestFresh_KeysValsVectorRestChargeContainerOnly: each of these branches
 // allocates a List over elements it borrowed from its subject, so the ledger
 // must carry the container it allocated and nothing else — the same total for a
 // 1-byte payload as for a 4096-byte one.
+//
+// That total is invariant by design: the callee's explicit charge equals the
+// apply-site fallback it replaces, so the ledger arms are green before the
+// migration and must stay green after it. The ownership change no meter can see
+// is pinned by the result-branch rows instead.
 func TestFresh_KeysValsVectorRestChargeContainerOnly(t *testing.T) {
 	env := setupEnv(t)
 	const n = 4
@@ -132,6 +193,14 @@ func TestFresh_KeysValsVectorRestChargeContainerOnly(t *testing.T) {
 				arm.builtin, wide, cbWideLen, tiny)
 		})
 	}
+
+	t.Run("fresh container rows", func(t *testing.T) {
+		for _, name := range []string{"keys", "vals", "rest"} {
+			t.Run(name, func(t *testing.T) {
+				lbRequireResultBranch(t, name, "fresh-container")
+			})
+		}
+	})
 }
 
 // TestLast_TerminalOnSharedListUnderLowReductions: last reaches its element
