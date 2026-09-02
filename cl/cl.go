@@ -113,17 +113,17 @@ var clSort = sync.OnceValue(func() core.Value {
 			budget := core.NewBuiltinWorkBudget(ctx)
 			for rest := args[2:]; len(rest) > 0; rest = rest[2:] {
 				if err := budget.Step(); err != nil {
-					return nil, err
+					return finishAdapter(budget, nil, err)
 				}
 				kw, ok := rest[0].(core.Keyword)
 				if !ok || len(rest) < 2 {
-					return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments", len(args))}
+					return finishAdapter(budget, nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments", len(args))})
 				}
 				if kw.V != "key" {
-					return nil, &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("sort: unknown keyword %.200v", kw)}
+					return finishAdapter(budget, nil, &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("sort: unknown keyword %.200v", kw)})
 				}
 				if seenKey {
-					return nil, &core.LispicoError{Code: "EvalError", Message: "sort: duplicate :key keyword"}
+					return finishAdapter(budget, nil, &core.LispicoError{Code: "EvalError", Message: "sort: duplicate :key keyword"})
 				}
 				seenKey = true
 				keyFn = rest[1]
@@ -139,7 +139,7 @@ var clSort = sync.OnceValue(func() core.Value {
 			case core.Nil:
 				items = nil
 			default:
-				return nil, core.NewTypeError("list, vector, or nil", seq)
+				return finishAdapter(budget, nil, core.NewTypeError("list, vector, or nil", seq))
 			}
 
 			// ToSlice copies the whole sequence before the kernel is entered and
@@ -147,7 +147,7 @@ var clSort = sync.OnceValue(func() core.Value {
 			// the adapter's to bill.
 			for range items {
 				if err := budget.Step(); err != nil {
-					return nil, err
+					return finishAdapter(budget, nil, err)
 				}
 			}
 			if err := budget.Flush(); err != nil {
@@ -155,13 +155,13 @@ var clSort = sync.OnceValue(func() core.Value {
 			}
 
 			if !isCallable(args[1]) {
-				return nil, core.NewTypeError("function", args[1])
+				return finishAdapter(budget, nil, core.NewTypeError("function", args[1]))
 			}
 			if keyFn != nil {
 				if _, nilKey := keyFn.(core.Nil); nilKey {
 					keyFn = nil
 				} else if !isCallable(keyFn) {
-					return nil, core.NewTypeError("function", keyFn)
+					return finishAdapter(budget, nil, core.NewTypeError("function", keyFn))
 				}
 			}
 			var key collections.SortKeyFunc
@@ -178,21 +178,21 @@ var clSort = sync.OnceValue(func() core.Value {
 				return core.IsTruthy(r), nil
 			})
 			if err != nil {
-				return nil, err
+				return finishAdapter(budget, nil, err)
 			}
 			// Every element is borrowed from the subject; only the sequence
 			// holding them is new.
 			switch seq.(type) {
 			case core.Vector:
 				if err := chargeFreshSequence(ctx, len(sorted), true); err != nil {
-					return nil, err
+					return finishAdapter(budget, nil, err)
 				}
-				return core.NewVector(sorted), nil
+				return finishAdapter(budget, core.NewVector(sorted), nil)
 			default:
 				if err := chargeFreshSequence(ctx, len(sorted), false); err != nil {
-					return nil, err
+					return finishAdapter(budget, nil, err)
 				}
-				return core.NewList(sorted), nil
+				return finishAdapter(budget, core.NewList(sorted), nil)
 			}
 		},
 	}

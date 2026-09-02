@@ -6,6 +6,19 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+// finishAdapter settles the budget before anything leaves the adapter. A
+// terminal sync error outranks a pending non-terminal one, so cancellation and
+// deadline expiry cannot be masked by an ordinary adapter failure.
+func finishAdapter(b *core.BuiltinWorkBudget, v core.Value, err error) (core.Value, error) {
+	if ferr := b.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
+		return nil, ferr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
 // chargeFreshSequence charges the apply site for a sequence the adapter
 // allocated itself. The concrete container decides the shallow size, so the
 // caller states which one it built rather than the size it costs.
