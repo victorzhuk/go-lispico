@@ -128,14 +128,23 @@ var invOpaqueMethods = map[string]bool{
 // invSharedKernels are the kernels whose result is the calling builtin's own
 // result. Each charges for that result once, and the charge stays exact only
 // while every caller returns the call directly.
-//
-// IndexedAccess and StableSort are deliberately absent: neither hands back the
-// builtin's return shape — one yields an access outcome the caller must branch
-// on, the other a slice the caller must wrap — so capturing them is forced and
-// the wrapping allocation is the caller's own result branch to charge.
 var invSharedKernels = map[string]bool{
 	"collections.MapSequences": true,
 }
+
+// invNonSharedKernels are the exported kernels that hand a value back without
+// being a shared kernel, each with the reason it cannot be one. Every exported
+// kernel yielding a value must appear here or in invSharedKernels, so a kernel
+// added later cannot arrive unclassified and inherit no rule.
+var invNonSharedKernels = map[string]string{
+	"IndexedAccess": "yields an access outcome the caller must branch on, so the value is never the caller's own result",
+	"StableSort":    "yields a slice the caller must wrap, so the wrapping allocation is the caller's own result branch",
+}
+
+// invKernelDir is the package the kernels live in. The classification guard
+// walks the directory rather than invScopeFiles, so a kernel added in a file no
+// seam has listed yet is still enumerated.
+const invKernelDir = "internal/collections"
 
 // invResultClassNeedsCharge marks the classes that hand the caller fresh
 // allocation, so the row must say how much.
@@ -191,15 +200,16 @@ type invSourceFn struct {
 //	                              without naming a ChargeExpr
 //	PREPOST_ONLY_DISPOSITION      a budgeted loop charging no Step inside its body
 //	ENV_EVALUATOR_IN_BUILTIN      a builtin reaching the environment's evaluator
-//	WRAPPED_KERNEL_RESULT         a caller binding a shared kernel's result and
-//	                              returning it later, so the kernel's single
-//	                              charge stops covering the caller's own result
+//	WRAPPED_KERNEL_RESULT         a shared kernel call that is not the sole
+//	                              result expression of a return statement, so
+//	                              the kernel's single charge and the value the
+//	                              caller returns can drift apart
 func invFinding(code, file, fn, label, detail string) string {
 	return code + " " + file + ":" + fn + ":" + label + ": " + detail
 }
 
-// invLatch is one binding of an identifier to a call result, together with the
-// source range over which that binding is live. Exemption 3 is keyed
+// invLatch is one binding of an identifier to a Step or Flush result, together
+// with the source range over which that binding is live. Exemption 3 is keyed
 // on the binding, not on the identifier's name: these functions rebind err
 // repeatedly, and a name-keyed set lets an err produced by a charge helper
 // inherit the exemption a budget error earned elsewhere in the same function.
@@ -342,6 +352,70 @@ func invYieldsValue(ft *ast.FuncType) bool {
 		}
 	}
 	return false
+}
+
+// invYieldsKernelResult reports whether a function hands the caller a value
+// plus an error. That is the shape whose charge attribution the sole-return
+// rule governs, so it is the shape the classification guard enumerates; a
+// comparator returning (int, error) yields nothing a caller can return onward.
+func invYieldsKernelResult(ft *ast.FuncType) bool {
+	if ft == nil || ft.Results == nil || len(ft.Results.List) < 2 {
+		return false
+	}
+	switch invTypeString(ft.Results.List[0].Type) {
+	case "core.Value", "[]core.Value":
+	default:
+		return false
+	}
+	last := ft.Results.List[len(ft.Results.List)-1]
+	return invTypeString(last.Type) == "error"
+}
+
+// invUnclassifiedKernels reports exported kernels that yield a value without a
+// classification: either a shared kernel whose result is the caller's own, or
+// an invNonSharedKernels entry saying why it is not one.
+func invUnclassifiedKernels(root string) []string {
+	base := filepath.Join(root, filepath.FromSlash(invKernelDir))
+	if _, statErr := os.Stat(base); errors.Is(statErr, fs.ErrNotExist) {
+		return nil
+	}
+
+	fset := gotoken.NewFileSet()
+	var out []string
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != base {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !fn.Name.IsExported() || !invYieldsKernelResult(fn.Type) {
+				continue
+			}
+			if invSharedKernels[f.Name.Name+"."+fn.Name.Name] || invNonSharedKernels[fn.Name.Name] != "" {
+				continue
+			}
+			out = append(out, fn.Name.Name)
+		}
+		return nil
+	})
+	if err != nil {
+		out = append(out, "kernel scan failed: "+err.Error())
+	}
+	sort.Strings(out)
+	return out
 }
 
 func invTakesBudget(ft *ast.FuncType) bool {
@@ -586,7 +660,6 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 	var flushes []gotoken.Pos
 	var returns []*ast.ReturnStmt
 	var latches []invLatch
-	var kernelBinds []invLatch
 
 	var stack []ast.Node
 	ast.Inspect(unit.body, func(n ast.Node) bool {
@@ -608,15 +681,6 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 		case *ast.AssignStmt:
 			if len(x.Rhs) != 1 {
 				return true
-			}
-			if call, isCall := x.Rhs[0].(*ast.CallExpr); isCall && invSharedKernelName(call) != "" {
-				// Only the first result: the kernel's value is the caller's
-				// result, its error is not.
-				if start, end := invBindingScope(stack, x); end != gotoken.NoPos {
-					if id, isIdent := x.Lhs[0].(*ast.Ident); isIdent && id.Name != "_" {
-						kernelBinds = append(kernelBinds, invLatch{name: id.Name, start: start, end: end})
-					}
-				}
 			}
 			name, ok := invSelectorCallName(x.Rhs[0])
 			if !ok || (name != "Step" && name != "Flush") {
@@ -724,24 +788,33 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 	}
 	sort.Strings(sf.branches)
 
-	// A shared kernel charges its result once, and that charge covers the caller
-	// only while the caller returns the call. Binding the value and returning it
-	// later leaves the caller's own result outside the kernel's charge.
-	for _, ret := range returns {
-		if len(ret.Results) == 0 {
-			continue
+	// A shared kernel call must be the sole result expression of a return, the
+	// same rule core holds ChargeGoFuncResultBytes to and for the same reason: a
+	// call bound to a variable and used later lets the kernel's single charge
+	// and the value actually returned drift apart under a later control-flow
+	// change nobody noticed at the call site. Enumerating the bad shapes instead
+	// is how the next one gets missed.
+	allowedKernelCalls := map[ast.Node]bool{}
+	ast.Inspect(unit.body, func(n ast.Node) bool {
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			return true
 		}
-		id, ok := ret.Results[0].(*ast.Ident)
+		if call, ok := ret.Results[0].(*ast.CallExpr); ok && invSharedKernelName(call) != "" {
+			allowedKernelCalls[call] = true
+		}
+		return true
+	})
+	ast.Inspect(unit.body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
 		if !ok {
-			continue
+			return true
 		}
-		for _, bind := range kernelBinds {
-			if bind.name == id.Name && bind.start <= ret.Pos() && ret.Pos() <= bind.end {
-				sf.wrapped = append(sf.wrapped, invLabel("wrapped-kernel-result", fset, ret.Pos()))
-				break
-			}
+		if kernel := invSharedKernelName(call); kernel != "" && !allowedKernelCalls[call] {
+			sf.wrapped = append(sf.wrapped, invLabel(kernel, fset, call.Pos()))
 		}
-	}
+		return true
+	})
 	sort.Strings(sf.wrapped)
 
 	// Each function that CREATES a budget is its own holder scope, checked
@@ -939,6 +1012,14 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 
 	for _, key := range invSortedFuncKeys(funcs) {
 		sf := funcs[key]
+		// Ungated, unlike everything below it: how a caller spends a kernel's
+		// result is a property of the calling shape, not of migration state, and
+		// a check that switches on in the same commit as the edit it guards has
+		// never run against the un-edited tree.
+		for _, label := range sf.wrapped {
+			out = append(out, invFinding("WRAPPED_KERNEL_RESULT", sf.file, sf.name, label,
+				"a shared kernel call must be the sole result expression of a return statement"))
+		}
 		if len(sf.families) == 0 {
 			out = append(out, invFinding("MISSING_REGISTRATION", sf.file, sf.name, "families",
 				"in-scope function resolves to no family; add its file to invFileFamilies"))
@@ -977,10 +1058,6 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 		for _, label := range sf.unflushed {
 			out = append(out, invFinding("UNFLUSHED_RETURN", sf.file, sf.name, label,
 				"a budget holder must leave through a flush helper so the budget is always settled"))
-		}
-		for _, label := range sf.wrapped {
-			out = append(out, invFinding("WRAPPED_KERNEL_RESULT", sf.file, sf.name, label,
-				"a shared kernel's result must be returned directly, so its single charge covers the caller's result"))
 		}
 	}
 
@@ -1441,10 +1518,13 @@ func TestInventorySource_VarUnitBodies(t *testing.T) {
 }
 
 // TestReconcileWork_WrappedKernelResult drives reconcileWork on synthetic
-// sources because every caller in the tree returns the kernel call directly,
-// which is the shape the finding exists to keep. The lookalikes hold the
-// matcher to the package-qualified callee: a same-named helper elsewhere shares
-// none of the kernel's charging contract.
+// sources because every caller in the tree already returns the kernel call
+// directly, which is the shape the finding exists to keep. Nothing is marked
+// migrated in any case: the rule is a property of the calling shape, so it must
+// fire whether or not the family has moved.
+//
+// The lookalikes hold the matcher to the package-qualified callee: a same-named
+// helper elsewhere shares none of the kernel's charging contract.
 func TestReconcileWork_WrappedKernelResult(t *testing.T) {
 	const (
 		head = "package stdlib\n" +
@@ -1465,6 +1545,26 @@ func TestReconcileWork_WrappedKernelResult(t *testing.T) {
 				"\t\treturn nil, err\n" +
 				"\t}\n" +
 				"\treturn out, nil\n",
+			want: true,
+		},
+		{
+			name: "kernel result bound and rewrapped",
+			body: "\tout, err := collections.MapSequences(ctx, eval, env, args[0], args[1:])\n" +
+				"\tif err != nil {\n" +
+				"\t\treturn nil, err\n" +
+				"\t}\n" +
+				"\treturn core.NewList([]core.Value{out}), nil\n",
+			want: true,
+		},
+		{
+			name: "kernel error discarded",
+			body: "\tout, _ := collections.MapSequences(ctx, eval, env, args[0], args[1:])\n" +
+				"\treturn out, nil\n",
+			want: true,
+		},
+		{
+			name: "kernel call returned beside another result",
+			body: "\treturn core.Nil{}, collections.MapSequences(ctx, eval, env, args[0], args[1:])\n",
 			want: true,
 		},
 		{
@@ -1489,7 +1589,7 @@ func TestReconcileWork_WrappedKernelResult(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := invSyntheticRoot(t, map[string]string{"plugins/stdlib/higher_order.go": head + tt.body + tail})
-			findings := reconcileWork(root, nil, map[string]bool{"higher-order": true})
+			findings := reconcileWork(root, nil, map[string]bool{})
 
 			got := false
 			for _, finding := range findings {
@@ -1502,6 +1602,85 @@ func TestReconcileWork_WrappedKernelResult(t *testing.T) {
 			}
 			if other := len(findings); got && other != 1 {
 				t.Errorf("want the wrapped-kernel finding alone, got %d: %q", other, findings)
+			}
+		})
+	}
+}
+
+// TestInventorySource_SharedKernelsCalledOnlyAsReturn is ungated on purpose and
+// mirrors core's TestChargeGoFuncResultBytesCalledOnlyAsReturn: a kernel call
+// bound to a variable and used later lets the kernel's single charge and the
+// value actually returned drift apart under a later control-flow change nobody
+// noticed at the call site. Both are the same idea over a different callee.
+func TestInventorySource_SharedKernelsCalledOnlyAsReturn(t *testing.T) {
+	funcs, err := invScanSources(moduleRoot(t))
+	if err != nil {
+		t.Fatalf("scan sources: %v", err)
+	}
+	for _, key := range invSortedFuncKeys(funcs) {
+		sf := funcs[key]
+		for _, label := range sf.wrapped {
+			t.Error(invFinding("WRAPPED_KERNEL_RESULT", sf.file, sf.name, label,
+				"a shared kernel call must be the sole result expression of a return statement"))
+		}
+	}
+}
+
+// TestInventorySource_ExportedKernelsAreClassified keeps invSharedKernels from
+// rotting into a hand-maintained list nothing forces entries into: a kernel
+// added later inherits no rule at all until someone classifies it.
+func TestInventorySource_ExportedKernelsAreClassified(t *testing.T) {
+	for _, name := range invUnclassifiedKernels(moduleRoot(t)) {
+		t.Errorf("exported kernel %s yields a value but appears in neither invSharedKernels nor invNonSharedKernels", name)
+	}
+}
+
+func TestInventorySource_UnclassifiedKernelIsReported(t *testing.T) {
+	const head = "package collections\n\n"
+
+	tests := []struct {
+		name string
+		decl string
+		want bool
+	}{
+		{
+			name: "new kernel yielding a value",
+			decl: "func NewKernel(ctx context.Context, subject core.Value) (core.Value, error) { return subject, nil }\n",
+			want: true,
+		},
+		{
+			name: "new kernel yielding a slice",
+			decl: "func NewSliceKernel(ctx context.Context, items []core.Value) ([]core.Value, error) { return items, nil }\n",
+			want: true,
+		},
+		{
+			name: "kernel already listed as shared",
+			decl: "func MapSequences(ctx context.Context, subject core.Value) (core.Value, error) { return subject, nil }\n",
+			want: false,
+		},
+		{
+			name: "kernel listed with its exclusion reason",
+			decl: "func StableSort(ctx context.Context, items []core.Value) ([]core.Value, error) { return items, nil }\n",
+			want: false,
+		},
+		{
+			name: "unexported kernel",
+			decl: "func newKernel(ctx context.Context, subject core.Value) (core.Value, error) { return subject, nil }\n",
+			want: false,
+		},
+		{
+			name: "comparator lookalike",
+			decl: "func NewCmp(a, b core.Value) (int, error) { return 0, nil }\n",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := invSyntheticRoot(t, map[string]string{"internal/collections/kernels.go": head + tt.decl})
+			got := len(invUnclassifiedKernels(root)) > 0
+			if got != tt.want {
+				t.Errorf("reported as unclassified = %v, want %v; got %v", got, tt.want, invUnclassifiedKernels(root))
 			}
 		})
 	}
