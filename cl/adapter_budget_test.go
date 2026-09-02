@@ -173,27 +173,35 @@ func clbPrefix(v int) string {
 	return string(digits)
 }
 
-// TestCL_NthResultIsZeroByte: CL nth never allocates its result. A hit returns
-// a member stored in the subject list and every out-of-range shape returns the
-// shared core.Nil{} singleton, so both branches must classify the return as
-// borrowed and neither may reach the apply-site fallback.
+// TestCL_NthResultIsZeroByte: CL nth never allocates its result, but its two
+// branches reach that through different result classes.
 //
-// The wide/narrow pair is the discriminator: an unclassified hit is charged
-// ValueShallowBytes of whatever it happened to return, so widening the member
-// 4096-fold moves the ledger.
+// A hit returns a member stored in the subject list, so it is wholly borrowed
+// and must be marked as such — the apply-site fallback never sees it. The
+// out-of-range branches return core.Nil{}, a shared scalar singleton, which
+// allocates nothing and is billed by the central shallow fallback instead: the
+// adapter must not mark it. stdlib's first/last/nth agree — their Nil arms
+// return unmarked — and one value shape may not carry two classifications
+// across the two families.
+//
+// The wide/narrow pair is the discriminator on the hit branch: an unclassified
+// hit is charged ValueShallowBytes of whatever it happened to return, so
+// widening the member 4096-fold moves the ledger.
 func TestCL_NthResultIsZeroByte(t *testing.T) {
 	nth := clbAdapter(t, "nth")
 	wideList := listOf(core.String{V: strings.Repeat("x", clbWideLen)}, core.Int{V: 1})
 	narrowList := listOf(core.String{V: "x"}, core.Int{V: 1})
+	singleton := core.ValueShallowBytes(core.Nil{})
 
 	cases := []struct {
 		name string
 		args []core.Value
+		want int64
 	}{
-		{"hit/wide-member", []core.Value{core.Int{V: 0}, wideList}},
-		{"hit/narrow-member", []core.Value{core.Int{V: 0}, narrowList}},
-		{"out-of-range/past-end", []core.Value{core.Int{V: 9}, wideList}},
-		{"out-of-range/nil-subject", []core.Value{core.Int{V: 0}, core.Nil{}}},
+		{"hit/wide-member", []core.Value{core.Int{V: 0}, wideList}, 0},
+		{"hit/narrow-member", []core.Value{core.Int{V: 0}, narrowList}, 0},
+		{"out-of-range-singleton/past-end", []core.Value{core.Int{V: 9}, wideList}, singleton},
+		{"out-of-range-singleton/nil-subject", []core.Value{core.Int{V: 0}, core.Nil{}}, singleton},
 	}
 
 	bytes := make(map[string]int64, len(cases))
@@ -202,10 +210,14 @@ func TestCL_NthResultIsZeroByte(t *testing.T) {
 		require.NoErrorf(t, err, "%s must succeed", tc.name)
 		bytes[tc.name] = snap.AllocationBytes
 	}
-	t.Logf("CL nth result bytes: %v", bytes)
+	t.Logf("CL nth result bytes: %v (singleton fallback %d)", bytes, singleton)
 
 	for _, tc := range cases {
-		assert.Zerof(t, bytes[tc.name], "CL nth %s must charge zero result bytes: the hit borrows a stored member and the out-of-range branch returns the shared core.Nil{} singleton, so neither may reach the apply-site fallback (got %d bytes)", tc.name, bytes[tc.name])
+		if tc.want == 0 {
+			assert.Zerof(t, bytes[tc.name], "CL nth %s must charge zero result bytes: the hit borrows a member stored in the subject, so it must never reach the apply-site fallback (got %d bytes)", tc.name, bytes[tc.name])
+			continue
+		}
+		assert.Equalf(t, tc.want, bytes[tc.name], "CL nth %s must take the central shallow fallback for core.Nil{}: a shared scalar singleton allocates nothing and is billed by the apply site, so the adapter must leave it unmarked (got %d bytes, want %d)", tc.name, bytes[tc.name], tc.want)
 	}
 	assert.Equal(t, bytes["hit/narrow-member"], bytes["hit/wide-member"],
 		"CL nth must charge the same for a 1-byte and a %d-byte member; a ledger that tracks the member's size means the hit branch was never classified as borrowed", clbWideLen)
