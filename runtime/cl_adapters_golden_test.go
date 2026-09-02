@@ -240,6 +240,23 @@ func TestCLAdapters_LateVMDeadline(t *testing.T) {
 			WithBytecode(),
 			WithResourceLimits(ResourceLimits{MaxReductions: 300, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}),
 		)
+		// The subject arrives prebuilt from Go so that no builtin's own
+		// construction charge sits between the ceiling and the sort under
+		// test. Measured over these 380 elements: the run has accrued 271
+		// reductions by the predicate's second call and needs 399 to reach
+		// the end of sort's mandatory Flush, so the 300 ceiling provably
+		// falls between the two.
+		elems := make([]core.Value, 380)
+		for i := range elems {
+			elems[i] = core.Int{V: int64(len(elems) - i)}
+		}
+		subject := core.NewList(elems)
+		require.NoError(t, eng.Bind("clbudget-subject", core.GoFunc{
+			Name: "clbudget-subject",
+			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+				return subject, nil
+			},
+		}))
 		var predCalls int
 		require.NoError(t, eng.Bind("clbudget-pred", core.GoFunc{
 			Name: "clbudget-pred",
@@ -251,7 +268,7 @@ func TestCLAdapters_LateVMDeadline(t *testing.T) {
 				return core.Int{V: 1}, nil
 			},
 		}))
-		_, err := eng.Eval(context.Background(), "cl-budget-pending", `(sort (range 1 381) #'clbudget-pred)`)
+		_, err := eng.Eval(context.Background(), "cl-budget-pending", `(sort (clbudget-subject) #'clbudget-pred)`)
 		require.Error(t, err, "the sort Flush crossing the reduction ceiling must surface an error")
 		var le *core.LispicoError
 		require.ErrorAs(t, err, &le, "error must be a typed *core.LispicoError, got %v", err)
