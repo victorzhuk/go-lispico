@@ -166,17 +166,12 @@ func TestStdlibErrors_TerminalNotCatchable(t *testing.T) {
 				WithResourceLimits(ResourceLimits{MaxReductions: 300, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}))
 			eng := loadStdlibEngine(t, clojure.Dialect(), true, opts...)
 
-			// The subject is bound prebuilt so that no builtin's construction
-			// charge can cross the ceiling ahead of the sort under test.
-			// Measured: reaching the bound symbol through try costs at most
-			// 12 reductions and completing this sort needs 7713 under the
-			// tree-walker and 7725 under the VM, so under a 300 ceiling the
-			// Terminal can only come from sort's own budget.
-			elems := make([]core.Value, 599)
-			for i := range elems {
-				elems[i] = core.Int{V: int64(len(elems) - i)}
-			}
-			require.NoError(t, eng.Bind("budget-subject", core.NewList(elems)))
+			// Measured over these 599 elements: reaching the bound subject
+			// through try costs at most 12 reductions and completing this
+			// sort needs 7713 under the tree-walker and 7725 under the VM, so
+			// under a 300 ceiling the Terminal can only come from sort's own
+			// budget.
+			bindPrebuiltSubject(t, eng, "budget-subject", 599)
 
 			got, err := eng.Eval(context.Background(), "terminal-budget", "(try (sort budget-subject) (catch e :caught))")
 			require.Error(t, err, "%s: a 599-element sort under a 300-reduction ceiling must unwind through try, got %v", em.name, got)
