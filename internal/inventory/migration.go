@@ -6,7 +6,7 @@ package inventory
 var FamilyMigrated = map[string]bool{
 	"numeric":      true,
 	"types":        true,
-	"collection":   false,
+	"collection":   true,
 	"higher-order": false,
 	"string":       false,
 	"cl-adapter":   false,

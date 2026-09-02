@@ -306,7 +306,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "list",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "argument budget",
 		Disposition: "budgeted",
 	},
@@ -314,7 +314,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "list",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "argument copy",
 		Disposition: "budgeted",
 	},
@@ -322,7 +322,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "vector",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "argument budget",
 		Disposition: "budgeted",
 	},
@@ -330,7 +330,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "vector",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "argument copy",
 		Disposition: "budgeted",
 	},
@@ -338,7 +338,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "concat",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "flatten budget",
 		Disposition: "budgeted",
 	},
@@ -346,7 +346,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "concat",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "flatten walk",
 		Disposition: "budgeted",
 	},
@@ -354,7 +354,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "concat",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "prefix walk",
 		Disposition: "budgeted",
 	},
@@ -362,7 +362,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "concat",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "shared-tail cons walk",
 		Disposition: "budgeted",
 	},
@@ -378,7 +378,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "reverse",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "reverse budget",
 		Disposition: "budgeted",
 	},
@@ -386,7 +386,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "reverse",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "subject copy",
 		Disposition: "budgeted",
 	},
@@ -394,7 +394,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "reverse",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "reverse walk",
 		Disposition: "budgeted",
 	},
@@ -402,7 +402,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "hash-map",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "pair budget",
 		Disposition: "budgeted",
 	},
@@ -410,7 +410,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "hash-map",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "pair walk",
 		Disposition: "budgeted",
 	},
@@ -418,7 +418,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "merge",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "merge budget",
 		Disposition: "budgeted",
 	},
@@ -426,7 +426,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "merge",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "source entry walk",
 		Disposition: "budgeted",
 	},
@@ -434,7 +434,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "sort",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "sort budget",
 		Disposition: "budgeted",
 	},
@@ -442,7 +442,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "sort",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "subject copy",
 		Disposition: "budgeted",
 	},
@@ -450,7 +450,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "range",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "generation budget",
 		Disposition: "budgeted",
 	},
@@ -458,7 +458,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "range",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "bounds walk",
 		Disposition: "none-bounded-dispatch",
 	},
@@ -466,7 +466,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "range",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "generation walk",
 		Disposition: "budgeted",
 	},
@@ -478,7 +478,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"collection"},
 		Fn:          "hash-map list merge range vector",
 		File:        "plugins/stdlib/collections.go",
-		Func:        "registerCollections",
+		Func:        "collectionBuiltins",
 		PhaseLabel:  "result deep sizing",
 		Disposition: "bounded-exception",
 		Proof: "core.ValueDeepBytes walks the finished result once. Its node " +
@@ -503,5 +503,324 @@ var WorkPhases = []WorkPhase{
 			"limit: the walk stops at the first level past the ceiling " +
 			"instead of finishing the structure.",
 		MaxWork: 1_025,
+	},
+
+	// Collection family, part two: the lookup, indexed-access and persistent
+	// update builtins. Every traversal whose cost grows with the subject
+	// charges the caller's budget one unit per node walked, element copied,
+	// map entry read or key-value pair applied; the rest is fixed dispatch
+	// over one argument, or an exception carrying its own bound.
+
+	{
+		Families:    []string{"collection"},
+		Fn:          "first",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "indexed head dispatch",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "rest",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector copy budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "rest",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector copy walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "last",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "traversal budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "last",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "shared-list traversal walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "nth",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "indexed access dispatch",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "count",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "string rune scan",
+		Disposition: "bounded-exception",
+		Proof: "[]rune(c.V) converts the whole subject in one Go conversion, " +
+			"with no point inside it where a Step could run. The bound " +
+			"comes from the subject rather than from the conversion: a " +
+			"core.String reaches this builtin only by already existing as a " +
+			"charged value, and core.StringShallowBytes bills " +
+			"core.MeterStringHeaderBytes (16) plus one byte per byte of V, " +
+			"so a String that fits under core.DefaultMaxAllocationBytes " +
+			"(67108864) carries at most 67108848 bytes. The conversion is " +
+			"O(len(V)) and reads each of those bytes at most once, which is " +
+			"where MaxWork comes from. A longer String cannot exist: " +
+			"building it would have failed the allocation ledger first.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "cons",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector copy budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "cons",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector copy walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "conj",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector append budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "conj",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector append walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "conj",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "list cons walk",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "conj",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "vector backing copy",
+		Disposition: "bounded-exception",
+		Proof: "core.Vector.Conj copies the source's flat backing before it " +
+			"appends: below core's vectorFlatThreshold it rebuilds the " +
+			"whole flat slice, and above it a still-flat source is promoted " +
+			"once through buildVecTrieFromFlat. Neither copy can be " +
+			"preempted from stdlib. Its element count is bounded by the " +
+			"allocation ledger the source vector was charged against: every " +
+			"element cost at least core.MeterScalarBytes (16) when the " +
+			"vector was built, so a vector that fits under " +
+			"core.DefaultMaxAllocationBytes carries at most " +
+			"core.DefaultMaxAllocationBytes/16 elements. Every later Conj " +
+			"on the promoted result shares the trie and copies only the " +
+			"tail buffer, at most vecBranch elements.",
+		MaxWork: 4_194_304,
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "empty?",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "emptiness dispatch",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "get",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "map lookup dispatch",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "assoc",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "keyval budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "assoc",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "keyval walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "assoc",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "inserted element walk",
+		Disposition: "none-bounded-dispatch",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "keys",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "entry budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "keys",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "entry walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "vals",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "entry budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "vals",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "entry walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "contains?",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "key hashing",
+		Disposition: "bounded-exception",
+		Proof: "core.HashMap.Get hashes the key and then either scans the " +
+			"sorted-slice form, capped at core's hashMapSmallLimit of 8 " +
+			"entries, or descends the HAMT at vecBits per level - at most 7 " +
+			"levels for a 32-bit hash - before a collision node scans only " +
+			"the keys sharing a full hash. Just the hashing grows with " +
+			"input, and only with the key's own bytes: core.toHashKey " +
+			"rejects every container type, so a key is one of the seven " +
+			"scalar forms and core.hashOfKey reads at most len(hk.str) " +
+			"bytes. That length is bounded by the allocation ledger the key " +
+			"was charged against, one byte per byte of V, so a key that " +
+			"fits under core.DefaultMaxAllocationBytes carries at most " +
+			"67108848 bytes.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "dissoc",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "key budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "dissoc",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "collectionBuiltins",
+		PhaseLabel:  "key walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "get-in",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "getInLookup",
+		PhaseLabel:  "path budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "get-in",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "getInLookup",
+		PhaseLabel:  "path walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "get get-in",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "lookupArityError",
+		PhaseLabel:  "message format",
+		Disposition: "bounded-exception",
+		Proof: "Its two call sites, get and get-in in " +
+			"plugins/stdlib/collections.go, pass one %s and one %d. The %s " +
+			"renders a registered builtin name and the %d an argument " +
+			"count; neither reads a core.Value's contents, so no container " +
+			"is traversed and every message renders in constant time.",
+		MaxWork: 256,
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "get get-in",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "lookupTypeError",
+		PhaseLabel:  "message format",
+		Disposition: "bounded-exception",
+		Proof: "Its three call sites, get and get-in in " +
+			"plugins/stdlib/collections.go, pass two %s and one %T. The %s " +
+			"verbs render a registered builtin name and an expected-kind " +
+			"literal, and %T renders the name of one of the 13 concrete " +
+			"core.Value types without reading its contents, so no container " +
+			"is traversed and every message renders in constant time.",
+		MaxWork: 256,
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "assoc conj cons dissoc",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "chargeConsResult",
+		PhaseLabel:  "nested element depth walk",
+		Disposition: "bounded-exception",
+		Proof: "The loop runs once per newly introduced element - the " +
+			"arguments the caller wrote, already billed one Step each by " +
+			"the builtin that called in - and " +
+			"core.CheckNestedElementDepthWith descends at most " +
+			"core.DefaultMaxStructuralDepth+1 levels before reporting the " +
+			"limit, stopping at the first level past the ceiling instead of " +
+			"finishing the structure. The fmt.Sprintf on the length-limit " +
+			"path renders one %s and two %d and costs constant time.",
+		MaxWork: 1_025,
+	},
+
+	// The registrar walks the table above once while the plugin loads,
+	// outside any builtin dispatch: there is no budget yet to charge it
+	// against, and the table does not grow with program input.
+	{
+		Families:    []string{"collection"},
+		Fn:          "assoc concat conj cons contains? count dissoc empty? first get get-in hash-map keys last list merge nth range rest reverse sort vals vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "registerCollections",
+		PhaseLabel:  "registrar walk",
+		Disposition: "load-time",
 	},
 }
