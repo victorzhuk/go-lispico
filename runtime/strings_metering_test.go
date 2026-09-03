@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -107,6 +108,112 @@ func TestFormat_EscapedRenderIsChargedOnce(t *testing.T) {
 			require.Lessf(t, delta, renderDelta+core.MeterStringHeaderBytes,
 				"(format \"%%s\" <list of %d invalid UTF-8 bytes>) charged %d against %d for %d, a delta of %d for %d rendered bytes: the estimate and the apply-site fallback both bill the result, so it is charged twice",
 				wideLen, wide, tiny, tinyLen, delta, renderDelta)
+		})
+	}
+}
+
+// stringsRejectionBudget is the allocation ceiling the product-shaped
+// rejections below run under: wide enough that evaluating the bound operands
+// cannot exhaust it on its own, and two orders of magnitude under the output
+// either builtin produces, so a builtin that sizes its output before building
+// it has to reject at the pre-charge.
+const stringsRejectionBudget = 1 << 20
+
+// preallocTolerance is the share of that output a rejection may still allocate:
+// one 128th. Building the output is the whole thing a pre-charge exists to
+// prevent, so what a charging builtin allocates is its operands plus the reader
+// and the compiler, while one that charges afterwards allocates the product.
+const preallocTolerance = 128
+
+// stringsRejectionAlloc evaluates src on a fresh engine under
+// stringsRejectionBudget, with bind having placed the operands first, and
+// returns the process allocation the evaluation itself cost.
+// runtime.MemStats.TotalAlloc is cumulative and unaffected by GC, so the delta
+// is what this Eval materialized rather than what survived it.
+func stringsRejectionAlloc(t *testing.T, bytecode bool, src string, bind func(Engine)) (uint64, error) {
+	t.Helper()
+	eng := newMeteringStdlibEngine(t, bytecode, meteringLimits(t, 1_000_000, stringsRejectionBudget))
+	bind(eng)
+	ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, stringsRejectionBudget)
+
+	var before, after goruntime.MemStats
+	goruntime.ReadMemStats(&before)
+	_, err := eng.Eval(ctx, "strings-prealloc", src)
+	goruntime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc, err
+}
+
+// TestStrings_ReplaceRejectsBeforeAllocating: an empty old makes
+// strings.ReplaceAll insert the replacement before every rune of the subject
+// and once more at the end, so string/replace's output is the PRODUCT of two
+// operands, not a maximum over them - 8192 subject bytes and 16384 replacement
+// bytes produce 134242304, from operands the ledger sized at 24 KB.
+//
+// The ledger fails closed either way, so the returned error proves nothing on
+// its own: it is already returned today. What must change is when the charge
+// lands. format estimates its output and charges before fmt.Sprintf runs, which
+// is why TestStrings_FormatChargesEstimatedOutputBeforeSprintf can measure it
+// from the allocation side; string/replace charges after ReplaceAll has already
+// built the buffer, so the allocation delta is the discriminator.
+func TestStrings_ReplaceRejectsBeforeAllocating(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const (
+		subjectLen = 8192
+		newLen     = 16384
+	)
+	outputBytes := uint64(subjectLen + (subjectLen+1)*newLen)
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			delta, err := stringsRejectionAlloc(t, bytecode, `(string/replace s "" r)`, func(e Engine) {
+				require.NoError(t, e.Bind("s", core.String{V: strings.Repeat("x", subjectLen)}))
+				require.NoError(t, e.Bind("r", core.String{V: strings.Repeat("y", newLen)}))
+			})
+			require.Truef(t, isResourceLimit(t, err),
+				"(string/replace <%d bytes> \"\" <%d bytes>) under a %d-byte budget must fail with %s, got %v",
+				subjectLen, newLen, stringsRejectionBudget, core.CodeResourceLimit, err)
+			require.Truef(t, core.IsTerminalEvalError(err),
+				"(string/replace <%d bytes> \"\" <%d bytes>) must fail terminally, got %v", subjectLen, newLen, err)
+			require.Lessf(t, delta, outputBytes/preallocTolerance,
+				"(string/replace <%d bytes> \"\" <%d bytes>) allocated %d bytes under a %d-byte budget before returning %v: the output is %d bytes, %dx the budget, so the charge must be computed from the operands and land before strings.ReplaceAll builds it",
+				subjectLen, newLen, delta, stringsRejectionBudget, err, outputBytes, outputBytes/stringsRejectionBudget)
+		})
+	}
+}
+
+// TestStrings_JoinRejectsBeforeAllocating is the same defect at the other
+// product-shaped phase: strings.Join writes the separator between every part,
+// so 2048 empty parts and a 65536-byte separator produce 134152192 bytes from
+// operands the ledger sized at 98 KB. The parts loop already Steps once per
+// element, so the sum the pre-charge needs is one pass it is making anyway.
+func TestStrings_JoinRejectsBeforeAllocating(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const (
+		sepLen   = 65536
+		partsLen = 2048
+	)
+	outputBytes := uint64((partsLen - 1) * sepLen)
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			delta, err := stringsRejectionAlloc(t, bytecode, `(string/join sep ps)`, func(e Engine) {
+				require.NoError(t, e.Bind("sep", core.String{V: strings.Repeat("s", sepLen)}))
+				items := make([]core.Value, partsLen)
+				for i := range items {
+					items[i] = core.String{V: ""}
+				}
+				require.NoError(t, e.Bind("ps", core.NewList(items)))
+			})
+			require.Truef(t, isResourceLimit(t, err),
+				"(string/join <%d-byte separator> <%d empty parts>) under a %d-byte budget must fail with %s, got %v",
+				sepLen, partsLen, stringsRejectionBudget, core.CodeResourceLimit, err)
+			require.Truef(t, core.IsTerminalEvalError(err),
+				"(string/join <%d-byte separator> <%d empty parts>) must fail terminally, got %v", sepLen, partsLen, err)
+			require.Lessf(t, delta, outputBytes/preallocTolerance,
+				"(string/join <%d-byte separator> <%d empty parts>) allocated %d bytes under a %d-byte budget before returning %v: the output is %d bytes, %dx the budget, so the charge must be computed from the parts and land before strings.Join builds it",
+				sepLen, partsLen, delta, stringsRejectionBudget, err, outputBytes, outputBytes/stringsRejectionBudget)
 		})
 	}
 }

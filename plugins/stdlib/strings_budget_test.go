@@ -413,6 +413,16 @@ func TestStrings_LengthRuneScanIsBoundedException(t *testing.T) {
 // subject to an opaque Go string primitive owns a phase it cannot Step through.
 // Stepping per byte would put a reduction charge on every string operation,
 // which the design forbids, so each records the ledger-derived ceiling instead.
+//
+// What this certifies is the row: that inventory.WorkPhases carries one for the
+// builtin, with the bounded-exception disposition and MaxWork
+// sbPrimitiveMaxWork. What it does not certify is that the phase respects that
+// ceiling. A phase whose output is a product of two ledger-sized operands - the
+// separator string/join writes between every part, the replacement
+// string/replace inserts between every rune - exceeds it while the row still
+// reads exactly as asserted here. Those two are pinned behaviourally by
+// runtime.TestStrings_JoinRejectsBeforeAllocating and
+// runtime.TestStrings_ReplaceRejectsBeforeAllocating.
 func TestStrings_PrimitiveScansAreBoundedExceptions(t *testing.T) {
 	for _, fn := range []string{
 		"string/split", "string/join", "string/replace",
