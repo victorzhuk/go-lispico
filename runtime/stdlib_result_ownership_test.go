@@ -63,6 +63,12 @@ func (a ownershipArm) key() string {
 // ownershipArms holds exactly one arm per armed inventory row.
 var ownershipArms = []ownershipArm{
 	// borrowed
+	// Six arms here name a branch inside sort's or reverse's own path:
+	// finishAdapter, finishSort, StableSort, clSort's key projection, and
+	// seqInput's two element returns. None of those branches charges result
+	// bytes of its own, so what each arm's differential moves with is the
+	// builtin's charge for the sequence it allocates. A red on one of them
+	// says that size expression changed, not that a borrowed mark broke.
 	{file: "cl/charges.go", fnc: "finishAdapter", label: "settled value return", rep: "cl/sort@1", class: "borrowed", dia: "cl", kind: "noop", src: `(sort l2 (fn (a b) (< 1 0)))`},
 	{file: "cl/cl.go", fnc: "clNth", label: "hit return", rep: "cl/nth@1", class: "borrowed", dia: "cl", kind: "noop", src: `(nth 0 l2)`},
 	{file: "cl/cl.go", fnc: "clSort", label: "key projection return", rep: "cl/sort@1", class: "borrowed", dia: "cl", kind: "noop", src: `(sort l2 (fn (a b) (< 1 0)) :key (fn (x) x))`},
@@ -91,11 +97,6 @@ var ownershipArms = []ownershipArm{
 	{file: "plugins/stdlib/collections.go", fnc: "getInResult", label: "settled value return", rep: "get-in", class: "borrowed", kind: "noop", src: `(get-in m pa)`},
 	{file: "plugins/stdlib/collections.go", fnc: "next", label: "list key return", rep: "get-in", class: "borrowed", kind: "noop", src: `(get-in m pa)`},
 	{file: "plugins/stdlib/collections.go", fnc: "next", label: "vector key return", rep: "get-in", class: "borrowed", kind: "noop", src: `(get-in m pav)`},
-	// seqInput returns a borrowed []core.Value that its caller consumes
-	// internally, so no result of its own crosses a dispatch boundary and it
-	// has no charge site: the differential these two arms observe is reverse's
-	// own fresh-container charge. A red here means that container size
-	// expression moved, not that seqInput began charging.
 	{file: "plugins/stdlib/collections.go", fnc: "seqInput", label: "list elements return", rep: "reverse", class: "borrowed", kind: "noop", src: `(reverse l2)`},
 	{file: "plugins/stdlib/collections.go", fnc: "seqInput", label: "vector elements return", rep: "reverse", class: "borrowed", kind: "noop", src: `(reverse v2)`},
 	{file: "plugins/stdlib/higher_order.go", fnc: "registerHigherOrder", label: "accumulator return", rep: "reduce", class: "borrowed", kind: "noop", src: `(reduce (fn [a b] a) l2)`},
