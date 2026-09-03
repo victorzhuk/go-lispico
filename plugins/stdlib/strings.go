@@ -13,11 +13,19 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 	if err := env.RegisterValue("str", core.GoFunc{
 		Name: "str",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
+			budget := core.NewBuiltinWorkBudget(ctx)
 			var buf strings.Builder
 			for _, arg := range args {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				buf.WriteString(toString(arg))
 			}
-			return core.String{V: buf.String()}, nil
+			out := buf.String()
+			if err := chargeFreshString(ctx, len(out)); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, core.String{V: out}, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -38,7 +46,8 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			if fmtStr.V == "" {
 				return core.String{V: ""}, nil
 			}
-			if err := core.ChargeEvalAllocBytes(ctx, estimateFormatAllocBytes(fmtStr.V, args[1:])); err != nil {
+			estimate := estimateFormatAllocBytes(fmtStr.V, args[1:])
+			if err := core.ChargeEvalAllocBytes(ctx, estimate); err != nil {
 				return nil, err
 			}
 
@@ -47,7 +56,16 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				fmtArgs[i] = toAny(arg)
 			}
 
-			return core.String{V: fmt.Sprintf(fmtStr.V, fmtArgs...)}, nil
+			out := fmt.Sprintf(fmtStr.V, fmtArgs...)
+			// The estimate counts one byte per source byte, while %q renders a
+			// byte that is not valid UTF-8 as four. Charging the shortfall
+			// makes the total max(estimate, shallow): the pre-charge still
+			// guards Sprintf, the finished string is never billed twice, and a
+			// render that outran its estimate is never billed short.
+			if err := core.ChargeGoFuncResultBytes(ctx, max(0, core.StringShallowBytes(len(out))-estimate)); err != nil {
+				return nil, err
+			}
+			return core.String{V: out}, nil
 		},
 	}, false); err != nil {
 		return err
@@ -71,12 +89,16 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, typeErrorf("string/join: expected collection, got %T", coll)
 			}
 
+			budget := core.NewBuiltinWorkBudget(ctx)
 			parts := make([]string, 0, len(items))
 			for _, item := range items {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				parts = append(parts, toString(item))
 			}
 
-			return core.String{V: strings.Join(parts, sep.V)}, nil
+			return finishBuiltin(budget, core.String{V: strings.Join(parts, sep.V)}, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -97,12 +119,19 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			}
 
 			parts := strings.Split(s.V, sep.V)
+			budget := core.NewBuiltinWorkBudget(ctx)
 			items := make([]core.Value, len(parts))
 			for i, p := range parts {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				items[i] = core.String{V: p}
 			}
 
-			return core.NewList(items), nil
+			if err := chargeFreshContainer(ctx, splitResultBytes(len(items))); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, core.NewList(items), nil)
 		},
 	}, false); err != nil {
 		return err
@@ -144,7 +173,11 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, typeErrorf("string/replace: requires string arguments")
 			}
 
-			return core.String{V: strings.ReplaceAll(s.V, old.V, new.V)}, nil
+			out := strings.ReplaceAll(s.V, old.V, new.V)
+			if err := chargeStringResult(ctx, s.V, out); err != nil {
+				return nil, err
+			}
+			return core.String{V: out}, nil
 		},
 	}, false); err != nil {
 		return err
@@ -241,12 +274,19 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			}
 
 			lines := strings.Split(s.V, "\n")
+			budget := core.NewBuiltinWorkBudget(ctx)
 			items := make([]core.Value, len(lines))
 			for i, line := range lines {
+				if err := budget.Step(); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				items[i] = core.String{V: line}
 			}
 
-			return core.NewList(items), nil
+			if err := chargeFreshContainer(ctx, splitResultBytes(len(items))); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
+			return finishBuiltin(budget, core.NewList(items), nil)
 		},
 	}, false); err != nil {
 		return err
@@ -266,6 +306,9 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 
 			i, err := strconv.ParseInt(s.V, 10, 64)
 			if err != nil {
+				if cerr := core.ChargeEvalAllocBytes(ctx, parseFailureMessageBytes(len(s.V))); cerr != nil {
+					return nil, cerr
+				}
 				return nil, wrapCause("string->int", err)
 			}
 
@@ -289,6 +332,9 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 
 			f, err := strconv.ParseFloat(s.V, 64)
 			if err != nil {
+				if cerr := core.ChargeEvalAllocBytes(ctx, parseFailureMessageBytes(len(s.V))); cerr != nil {
+					return nil, cerr
+				}
 				return nil, wrapCause("string->float", err)
 			}
 
@@ -616,8 +662,42 @@ func unaryStringFunc(name string, fn func(string) string) func(context.Context, 
 			return nil, typeErrorf("%s: expected string, got %T", name, args[0])
 		}
 
-		return core.String{V: fn(s.V)}, nil
+		out := fn(s.V)
+		if err := chargeStringResult(ctx, s.V, out); err != nil {
+			return nil, err
+		}
+		return core.String{V: out}, nil
 	}
+}
+
+// chargeStringResult bills a Go string primitive's output. A primitive that
+// found nothing to change hands back the subject itself, so the result owns no
+// new bytes; identical content means an identical charge either way, so the
+// content comparison decides ownership without reaching for pointer identity.
+func chargeStringResult(ctx context.Context, subject, out string) error {
+	if out == subject {
+		return chargeBorrowedResult(ctx)
+	}
+	return chargeFreshString(ctx, len(out))
+}
+
+// splitResultBytes is what a split owes the ledger: the list plus one
+// core.String header per part. The part contents alias the subject's backing
+// array, which the ledger already holds, so billing them would charge the
+// subject twice.
+func splitResultBytes(parts int) int64 {
+	return core.ListShallowBytes(parts) + int64(parts)*core.MeterStringHeaderBytes
+}
+
+// parseQuoteFactor is what strconv.Quote expands a byte that is not valid
+// UTF-8 into: \xNN, four characters per source byte.
+const parseQuoteFactor = 4
+
+// parseFailureMessageBytes bounds what a failed parse materializes.
+// strconv.NumError.Error quotes the whole subject and wrapCause renders that
+// text again through %s: %v, so the escaped form is built twice.
+func parseFailureMessageBytes(subjectLen int) int64 {
+	return 2 * core.StringShallowBytes(subjectLen*parseQuoteFactor)
 }
 
 func toString(v core.Value) string {

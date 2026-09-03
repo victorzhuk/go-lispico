@@ -25,6 +25,12 @@ func chargeFreshContainer(ctx context.Context, bytes int64) error {
 	return core.ChargeGoFuncResultBytes(ctx, bytes)
 }
 
+// chargeFreshString charges the apply site for a string the builtin built
+// itself, header and bytes.
+func chargeFreshString(ctx context.Context, n int) error {
+	return core.ChargeGoFuncResultBytes(ctx, core.StringShallowBytes(n))
+}
+
 // chargeBorrowedResult marks a result the caller borrowed from its subject
 // rather than allocated, so the apply site does not charge its shallow size.
 func chargeBorrowedResult(ctx context.Context) error {
