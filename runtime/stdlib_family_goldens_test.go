@@ -740,4 +740,43 @@ func TestStdlibFamilies_TerminalOutranksCallbackError(t *testing.T) {
 		assert.True(t, core.IsTerminalEvalError(tightErr),
 			"the error sort returned must be terminal, got %v", tightErr)
 	})
+
+	// finishAdapter's own preference needs both of this arm's peculiarities to
+	// be visible at all: the engine re-terminalizes at its dispatch boundary, so
+	// only a direct Apply reads the error the adapter itself chose; and of
+	// sort's finishAdapter returns, the sequence-type rejection is the only one
+	// that still carries pending keyword work — the later returns sit behind the
+	// mandatory bare flush, and every other path reaches the kernel first.
+	t.Run("direct apply non-sequence subject", func(t *testing.T) {
+		apply := func(t *testing.T, maxReductions int) (int, error, int64) {
+			t.Helper()
+			eng := newGoldenEngine(t, cl.Dialect(), true)
+			fn, ok := eng.RootEnv().GetFunc("sort")
+			require.True(t, ok, "sort must be bound in the CL function cell")
+			var calls int
+			pred := tpPred(&calls)
+			ctx := core.WithEvalResourceLimits(context.Background(), maxReductions, 1<<30)
+			_, err := core.NewEvaluator().Apply(ctx, fn,
+				[]core.Value{core.Int{V: 42}, pred, core.Keyword{V: "key"}, pred}, core.NewEnv(nil))
+			return calls, err, core.EvalMeterFrom(ctx).Snapshot().Reductions
+		}
+
+		generousCalls, generousErr, used := apply(t, 1_000_000)
+		require.Zero(t, generousCalls, "an Int subject is rejected before the kernel, so no comparison may be dispatched")
+		assert.Equal(t, "TypeError", resourceLimitErrorCode(t, generousErr),
+			"under a generous budget sort must return the sequence TypeError unchanged")
+		assert.False(t, core.IsTerminalEvalError(generousErr),
+			"a sequence TypeError is not terminal, got %v", generousErr)
+
+		ceiling := int(used) - 1
+		require.Positive(t, ceiling, "the calibration apply must accrue reductions to place a ceiling under")
+
+		tightCalls, tightErr, _ := apply(t, ceiling)
+		require.Zero(t, tightCalls,
+			"the subject must still be rejected before the kernel (ceiling=%d generous total=%d)", ceiling, used)
+		assert.Equal(t, core.CodeResourceLimit, resourceLimitErrorCode(t, tightErr),
+			"the adapter's settle must return the terminal budget error over the pending sequence TypeError (ceiling=%d generous total=%d)", ceiling, used)
+		assert.True(t, core.IsTerminalEvalError(tightErr),
+			"the error the adapter returned must be terminal, got %v", tightErr)
+	})
 }
