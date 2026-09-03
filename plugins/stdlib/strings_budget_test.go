@@ -2,6 +2,7 @@ package stdlib
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -468,4 +469,107 @@ func TestStrings_UnicodeAndEmptySeparatorUnchanged(t *testing.T) {
 			require.Equalf(t, tt.want, eval(t, env, tt.input).String(), "%s value drift", tt.input)
 		})
 	}
+}
+
+// TestStrings_FormatEstimateTracksLiteralWidthRender pins the estimate to the
+// render at Go's literal-width parse boundary. fmt scans a literal width digit
+// by digit and abandons the whole verb the moment the running value passes 1e6,
+// emitting %!(NOVERB) instead of the field: a width it refuses renders a few
+// dozen bytes, a width it honours renders the field it asks for.
+// parseFormatInt saturates at maxFormatEstimate instead, so a refused width is
+// estimated eighteen orders of magnitude above what it materializes - and that
+// estimate is the charge that overflows the allocation ledger.
+//
+// Dynamic widths are a different path: fmt takes them from an argument, not
+// from parsenum, so they are not subject to this refusal and must keep the
+// estimate they carry today.
+func TestStrings_FormatEstimateTracksLiteralWidthRender(t *testing.T) {
+	arg := core.Int{V: 1}
+	args := []core.Value{arg}
+
+	for _, tt := range []struct {
+		name     string
+		format   string
+		honoured bool
+	}{
+		{"width at one million", "%1000000d", true},
+		{"width above one million", "%10000001d", true},
+		{"width refused int32 ceiling", "%2147483647d", false},
+		{"width refused int64 ceiling", "%9223372036854775807d", false},
+		{"precision refused int64 ceiling", "%.9223372036854775807f", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered := int64(len(fmt.Sprintf(tt.format, toAny(arg))))
+			estimate := estimateFormatAllocBytes(tt.format, args)
+
+			require.GreaterOrEqualf(t, estimate, rendered,
+				"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes",
+				tt.format, estimate, rendered)
+			if tt.honoured {
+				return
+			}
+
+			verbOnly := "%" + tt.format[len(tt.format)-1:]
+			ceiling := estimateFormatAllocBytes(verbOnly, args) + int64(len(tt.format))
+			require.LessOrEqualf(t, estimate, ceiling,
+				"estimateFormatAllocBytes(%q) = %d against a render of %d bytes and %d for %q with no width: fmt.Sprintf abandons a width it will not parse and emits %%!(NOVERB), so the estimate must mirror the refusal instead of saturating at %d",
+				tt.format, estimate, rendered, ceiling, verbOnly, maxFormatEstimate)
+		})
+	}
+}
+
+// TestStrings_ReplaceOutputBytesIsExact bounds string/replace's pre-charge from
+// above as well as below. The sealed pre-charge tests only require the charge
+// to be large enough to reject before strings.ReplaceAll runs, which a
+// constant-factor over-bill satisfies too; a successful call must be billed the
+// header plus the bytes its result actually owns, and no more.
+func TestStrings_ReplaceOutputBytesIsExact(t *testing.T) {
+	for _, tt := range []struct{ name, s, old, new string }{
+		{"replacement grows", strings.Repeat("ab", 512), "a", "xyz"},
+		{"replacement shrinks", strings.Repeat("abc", 512), "abc", "a"},
+		{"replacement same width", strings.Repeat("ab", 512), "a", "z"},
+		{"empty old inserts everywhere", strings.Repeat("x", 256), "", "yy"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			out := strings.ReplaceAll(tt.s, tt.old, tt.new)
+			want := core.MeterStringHeaderBytes + int64(len(out))
+			require.Equalf(t, want, replaceOutputBytes(tt.s, tt.old, tt.new),
+				"replaceOutputBytes(%d bytes, %q, %q) must bill the string header plus the %d bytes strings.ReplaceAll writes",
+				len(tt.s), tt.old, tt.new, len(out))
+		})
+	}
+}
+
+// sbJoinCharge charges string/join over parts empty parts and a separator of
+// sepLen bytes, returning the ledger total the call cost. The parts are empty
+// and their count is fixed, so the only quantity that moves between two calls
+// is the separator the pre-charge sizes.
+func sbJoinCharge(t *testing.T, env *core.Env, parts, sepLen int) int64 {
+	t.Helper()
+	fn := sbGoFunc(t, env, "string/join")
+	ctx := core.WithEvalResourceLimits(t.Context(), 1<<24, 1<<24)
+	_, err := fn.Fn(ctx, nil, []core.Value{
+		core.String{V: strings.Repeat("s", sepLen)},
+		core.NewList(sbStrings(parts, "")),
+	}, env)
+	require.NoError(t, err)
+	return core.EvalMeterFrom(ctx).Snapshot().AllocationBytes
+}
+
+// TestStrings_JoinChargeIsExact is the same upper bound at the other
+// product-shaped phase. strings.Join writes the separator between every part,
+// so widening the separator moves the output by a known amount and the charge
+// must move by exactly that - a pre-charge scaled by any constant factor moves
+// by a multiple of it.
+func TestStrings_JoinChargeIsExact(t *testing.T) {
+	env := setupEnv(t)
+	const parts = sbUnitCount
+
+	narrow := sbJoinCharge(t, env, parts, 1)
+	wide := sbJoinCharge(t, env, parts, sbWideLen)
+	want := int64((parts - 1) * (sbWideLen - 1))
+
+	require.Equalf(t, want, wide-narrow,
+		"string/join charged %d against %d when the separator grew from 1 to %d bytes across %d parts: the output grows by %d bytes, and a pre-charge billed above that over-bills every successful call",
+		wide, narrow, sbWideLen, parts, want)
 }

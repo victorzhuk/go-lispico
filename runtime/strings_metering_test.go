@@ -217,3 +217,103 @@ func TestStrings_JoinRejectsBeforeAllocating(t *testing.T) {
 		})
 	}
 }
+
+// overflowFormatSrc is one expression that saturates format's own estimate. The
+// literal width is past what fmt will parse, so fmt abandons the verb and
+// renders a few dozen bytes while parseFormatInt pins the estimate at its
+// ceiling. Charging that estimate wraps the allocation ledger negative, and the
+// ledger admits the charge because it compares after adding.
+const overflowFormatSrc = `(format "%9223372036854775807d" 1)`
+
+// overflowBudget is the allocation ceiling the cases below run under. The
+// render costs a few dozen bytes, so the whole ceiling is still there for
+// whatever the expression does next - which is the point: what must survive the
+// saturated estimate is the limit itself.
+const overflowBudget = 1 << 20
+
+// overflowLedger evaluates src on a fresh engine under overflowBudget, with
+// bind having placed any operands first, and returns the alloc ledger total
+// alongside the evaluation's error.
+func overflowLedger(t *testing.T, bytecode bool, src string, bind func(Engine)) (int64, error) {
+	t.Helper()
+	eng := newMeteringStdlibEngine(t, bytecode, meteringLimits(t, 1_000_000, overflowBudget))
+	bind(eng)
+	ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, overflowBudget)
+	_, err := eng.Eval(ctx, "format-overflow", src)
+	return core.EvalMeterFrom(ctx).Snapshot().AllocationBytes, err
+}
+
+// TestFormat_SaturatedEstimateLeavesLedgerPositive is the single-expression
+// half: one format call must not be able to put the ledger somewhere no total
+// can reach. A negative used is not a budget.
+func TestFormat_SaturatedEstimateLeavesLedgerPositive(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	for _, bytecode := range []bool{false, true} {
+		t.Run(evalModeName(bytecode), func(t *testing.T) {
+			alloc, err := overflowLedger(t, bytecode, overflowFormatSrc, func(Engine) {})
+			require.NoError(t, err)
+			require.Greaterf(t, alloc, int64(0),
+				"%s left the allocation ledger at %d under a %d-byte budget: the estimate saturated and the counter wrapped, so every later allocation in this evaluation is compared against a negative total",
+				overflowFormatSrc, alloc, overflowBudget)
+			require.LessOrEqualf(t, alloc, int64(overflowBudget),
+				"%s charged %d against a %d-byte budget it did not exceed: the render is a few dozen bytes, so the estimate must track it",
+				overflowFormatSrc, alloc, overflowBudget)
+		})
+	}
+}
+
+// TestFormat_SaturatedEstimateDoesNotDisarmLaterCharges is the half that makes
+// it a bypass rather than a bookkeeping slip: both product-shaped builtins the
+// sealed pre-charge tests pin are refused today only because the ledger is
+// honest, and one preceding format call in the same evaluation is enough to
+// take that away.
+func TestFormat_SaturatedEstimateDoesNotDisarmLaterCharges(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const (
+		subjectLen = 8192
+		newLen     = 16384
+		sepLen     = 65536
+		partsLen   = 2048
+	)
+
+	for _, tt := range []struct {
+		name string
+		src  string
+		bind func(Engine)
+	}{
+		{
+			name: "replace",
+			src:  `(do ` + overflowFormatSrc + ` (string/replace s "" r))`,
+			bind: func(e Engine) {
+				require.NoError(t, e.Bind("s", core.String{V: strings.Repeat("x", subjectLen)}))
+				require.NoError(t, e.Bind("r", core.String{V: strings.Repeat("y", newLen)}))
+			},
+		},
+		{
+			name: "join",
+			src:  `(do ` + overflowFormatSrc + ` (string/join sep ps))`,
+			bind: func(e Engine) {
+				require.NoError(t, e.Bind("sep", core.String{V: strings.Repeat("s", sepLen)}))
+				items := make([]core.Value, partsLen)
+				for i := range items {
+					items[i] = core.String{V: ""}
+				}
+				require.NoError(t, e.Bind("ps", core.NewList(items)))
+			},
+		},
+	} {
+		for _, bytecode := range []bool{false, true} {
+			t.Run(tt.name+"/"+evalModeName(bytecode), func(t *testing.T) {
+				alloc, err := overflowLedger(t, bytecode, tt.src, tt.bind)
+				require.Truef(t, isResourceLimit(t, err),
+					"%s under a %d-byte budget returned %v with the ledger at %d: the format call saturated its estimate and wrapped the counter, so the builtin's pre-charge is measured against a negative total and the limit no longer holds",
+					tt.src, overflowBudget, err, alloc)
+				require.Greaterf(t, alloc, int64(0),
+					"%s left the allocation ledger at %d: a refused charge must leave a total the next charge can still be measured against",
+					tt.src, alloc)
+			})
+		}
+	}
+}
