@@ -3326,7 +3326,7 @@ var ResultBranches = []ResultBranch{
 		Func:        "registerStrings",
 		BranchLabel: "joined string return",
 		Class:       "mixed-string",
-		ChargeExpr:  "the apply site's fallback, core.ValueShallowBytes' String arm core.StringShallowBytes(len(V)), which bills exactly what an explicit chargeFreshString would",
+		ChargeExpr:  "joinPrecharged's chargeSizedString(ctx, addFormatEstimate(core.MeterStringHeaderBytes, outBytes)) over the caller's summed part and separator lengths, billed before strings.Join builds the output",
 	},
 	{
 		Families:    []string{"string"},
@@ -3400,7 +3400,7 @@ var ResultBranches = []ResultBranch{
 		Func:        "registerStrings",
 		BranchLabel: "replaced string return",
 		Class:       "mixed-string",
-		ChargeExpr:  "chargeStringResult(ctx, s.V, out)",
+		ChargeExpr:  "replacePrecharged's chargeSizedString(ctx, replaceOutputBytes(s, old, new)), billed before strings.ReplaceAll builds the output, where the borrowed case is the 0 replaceOutputBytes returns when the primitive hands the subject back",
 	},
 	{
 		Families:    []string{"string"},
