@@ -159,7 +159,7 @@ func TestEvalMeter_SnapshotNeverPublishesAWrappedTotal(t *testing.T) {
 					meterSnapshotReaders, got)
 			}
 			if got := wrapped.Load(); got == 0 {
-				t.Fatalf("no reader caught the %s counter below zero across %d samples: only an add that overflowed leaves it there - the seed charge is recorded at the ceiling without one - so no charge wrapped while the readers were sampling and this case never reached the window it names",
+				t.Fatalf("no reader caught the %s counter below zero across %d samples: no load landed inside a wrapped window, so this case never observed the window it names - either nothing overflowed, or the readers sampled too slowly and every window opened and closed between two of their loads",
 					tc.name, samples.Load())
 			}
 			if got := belowCeiling.Load(); got < 2 {
