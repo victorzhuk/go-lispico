@@ -45,10 +45,15 @@ const meterSnapshotClimb = int64(meterSnapshotChargers * meterSnapshotCharges)
 // saturateCounter records it at math.MaxInt64 and every ordinary charge in the
 // second phase overflows the add.
 //
-// The climb, the pin and the sample count are asserted at the end rather than
-// assumed, so a case that never reached the ceiling, never sampled, or never
-// observed the counter at more than one total below the ceiling fails instead
-// of passing on a window it did not exercise.
+// The climb, the overflows and the sample count are asserted at the end rather
+// than assumed, so a case that never sampled, never observed the counter at
+// more than one total below the ceiling, or never had a charge overflow while
+// the readers were sampling fails instead of passing on a window it did not
+// exercise. Ending at the ceiling proves none of that: the seed alone leaves
+// the counter there. Only a wrapping add can leave the counter below zero -
+// saturateCounter never stores a negative value, and the seed is recorded
+// straight at the ceiling - so a reader that catches it negative caught a real
+// overflow mid-window.
 func TestEvalMeter_SnapshotNeverPublishesAWrappedTotal(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -72,7 +77,7 @@ func TestEvalMeter_SnapshotNeverPublishesAWrappedTotal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newEvalStateWithLimits(allocLedgerCeiling, allocLedgerCeiling)
 
-			var negative, decreasing, samples, belowCeiling atomic.Int64
+			var negative, decreasing, samples, belowCeiling, wrapped atomic.Int64
 			done := make(chan struct{})
 			stop := sync.OnceFunc(func() { close(done) })
 
@@ -87,7 +92,7 @@ func TestEvalMeter_SnapshotNeverPublishesAWrappedTotal(t *testing.T) {
 				go func() {
 					defer reading.Done()
 					meter := EvalMeter{st: st}
-					var prev, neg, dec, seen, distinct int64
+					var prev, neg, dec, seen, distinct, wrap int64
 					last := int64(-1)
 					for {
 						select {
@@ -95,9 +100,13 @@ func TestEvalMeter_SnapshotNeverPublishesAWrappedTotal(t *testing.T) {
 							negative.Add(neg)
 							decreasing.Add(dec)
 							samples.Add(seen)
+							wrapped.Add(wrap)
 							storeMaxObserved(&belowCeiling, distinct)
 							return
 						default:
+						}
+						if tc.counter(st).Load() < 0 {
+							wrap++
 						}
 						got := tc.observe(meter.Snapshot())
 						seen++
@@ -149,9 +158,9 @@ func TestEvalMeter_SnapshotNeverPublishesAWrappedTotal(t *testing.T) {
 				t.Fatalf("%d readers took %d snapshots: the case observed nothing and cannot answer for what Snapshot publishes",
 					meterSnapshotReaders, got)
 			}
-			if got := tc.counter(st).Load(); got != math.MaxInt64 {
-				t.Fatalf("counter = %d after the seed charge and %d ordinary charges, want %d: the counter is off the int64 ceiling, so no add here could overflow and this case never reached the window it names",
-					got, meterSnapshotClimb, int64(math.MaxInt64))
+			if got := wrapped.Load(); got == 0 {
+				t.Fatalf("no reader caught the %s counter below zero across %d samples: only an add that overflowed leaves it there - the seed charge is recorded at the ceiling without one - so no charge wrapped while the readers were sampling and this case never reached the window it names",
+					tc.name, samples.Load())
 			}
 			if got := belowCeiling.Load(); got < 2 {
 				t.Fatalf("no reader observed more than %d distinct %s total below the int64 ceiling out of %d samples: the readers only ever saw the counter pinned, so the monotonicity assertion below compared one value with itself and asserted nothing",
