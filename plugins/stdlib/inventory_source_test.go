@@ -61,7 +61,7 @@ var invFileFamilies = map[string][]string{
 	"internal/collections/order.go":   {"numeric", "collection"},
 	"plugins/stdlib/arithmetic.go":    {"numeric"},
 	"plugins/stdlib/bootstrap.go":     {"support"},
-	"plugins/stdlib/charges.go":       {"numeric", "types", "collection", "higher-order"},
+	"plugins/stdlib/charges.go":       {"numeric", "types", "collection", "higher-order", "string"},
 	"plugins/stdlib/collections.go":   {"collection"},
 	"plugins/stdlib/comparison.go":    {"numeric"},
 	"plugins/stdlib/control.go":       {"higher-order"},

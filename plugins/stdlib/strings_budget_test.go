@@ -1,0 +1,461 @@
+package stdlib
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/internal/inventory"
+)
+
+// sbUnitCount sits above the 128-unit batch interval of core's builtin work
+// budget, so a loop that steps once per argument, element or produced part
+// reaches a sync point mid-call instead of finishing inside the local batch.
+const sbUnitCount = 200
+
+// sbWideLen makes a payload charge unmistakable next to any header-sized
+// quantity.
+const sbWideLen = 4096
+
+// sbStringsFile is the File every work phase and result branch in this seam
+// must name.
+const sbStringsFile = "plugins/stdlib/strings.go"
+
+// sbErrorsFile is the File of the shared wrap site the string family's parse
+// failures render through.
+const sbErrorsFile = "plugins/stdlib/errors.go"
+
+// sbInvalidByte is a byte that is not valid UTF-8, and sbQuoteFactor is what
+// strconv.Quote and %q expand it into: \xNN, four characters per source byte.
+const (
+	sbInvalidByte = "\x80"
+	sbQuoteFactor = 4
+)
+
+// sbPrimitiveMaxWork is the ceiling on a core.String's bytes of V, not on its
+// charged size: core.StringShallowBytes bills core.MeterStringHeaderBytes (16)
+// plus one byte per byte, so a String that fits under
+// core.DefaultMaxAllocationBytes (67108864) carries at most 67108848 bytes and
+// a Go string primitive can scan no more than those. It is the ceiling count's
+// rune scan already records for the same reason.
+const sbPrimitiveMaxWork = int64(67_108_848)
+
+func sbGoFunc(t *testing.T, env *core.Env, name string) core.GoFunc {
+	t.Helper()
+	v, ok := env.Get(name)
+	require.Truef(t, ok, "%s is not registered", name)
+	fn, ok := v.(core.GoFunc)
+	require.Truef(t, ok, "%s is not a GoFunc: %T", name, v)
+	return fn
+}
+
+func sbStrings(n int, s string) []core.Value {
+	vs := make([]core.Value, n)
+	for i := range vs {
+		vs[i] = core.String{V: s}
+	}
+	return vs
+}
+
+// sbScalable is every string builtin whose loop runs once per argument, per
+// collection element or per produced part, each over an input above the batch
+// interval.
+func sbScalable() []struct {
+	name string
+	args []core.Value
+} {
+	return []struct {
+		name string
+		args []core.Value
+	}{
+		{"str", sbStrings(sbUnitCount, "a")},
+		{"string/join", []core.Value{core.String{V: ","}, core.NewList(sbStrings(sbUnitCount, "a"))}},
+		{"string/split", []core.Value{core.String{V: strings.Repeat("a,", sbUnitCount)}, core.String{V: ","}}},
+		{"string/lines", []core.Value{core.String{V: strings.Repeat("a\n", sbUnitCount)}}},
+	}
+}
+
+// TestStrings_TerminalUnderLowReductions: every string builtin whose cost grows
+// with its input must charge that growth, so a call over a 200-unit input under
+// a ceiling below one batch ends terminally instead of running to completion
+// unmetered.
+func TestStrings_TerminalUnderLowReductions(t *testing.T) {
+	env := setupEnv(t)
+	for _, c := range sbScalable() {
+		t.Run(c.name, func(t *testing.T) {
+			fn := sbGoFunc(t, env, c.name)
+			ctx := core.WithEvalResourceLimits(t.Context(), 100, 1<<30)
+			_, err := fn.Fn(ctx, nil, c.args, env)
+			requireResourceLimit(t, err)
+			require.Truef(t, core.IsTerminalEvalError(err),
+				"%s over a %d-unit input under a 100-reduction ceiling must fail terminally, got %v", c.name, sbUnitCount, err)
+		})
+	}
+}
+
+// TestStrings_TerminalUnderExpiredDeadline: the engine-owned deadline is
+// observed at the budget's sync point, so a long string loop surfaces
+// context.DeadlineExceeded even though its own parent context is still live.
+func TestStrings_TerminalUnderExpiredDeadline(t *testing.T) {
+	env := setupEnv(t)
+	for _, c := range sbScalable() {
+		t.Run(c.name, func(t *testing.T) {
+			fn := sbGoFunc(t, env, c.name)
+			ctx := core.WithEvalResourceLimits(t.Context(), 1_000_000, 1<<30)
+			ctx = core.WithEvalDeadline(ctx, time.Now().Add(-time.Millisecond))
+			_, err := fn.Fn(ctx, nil, c.args, env)
+			require.ErrorIsf(t, err, context.DeadlineExceeded,
+				"%s over a %d-unit input past the engine deadline must surface DeadlineExceeded, got %v", c.name, sbUnitCount, err)
+		})
+	}
+}
+
+// TestStrings_TerminalUnderCancellation: caller cancellation is observed at the
+// same sync point, so a long string loop cannot outlive the context that
+// started it.
+func TestStrings_TerminalUnderCancellation(t *testing.T) {
+	env := setupEnv(t)
+	for _, c := range sbScalable() {
+		t.Run(c.name, func(t *testing.T) {
+			fn := sbGoFunc(t, env, c.name)
+			parent, cancel := context.WithCancel(context.Background())
+			ctx := core.WithEvalResourceLimits(parent, 1_000_000, 1<<30)
+			cancel()
+			_, err := fn.Fn(ctx, nil, c.args, env)
+			require.ErrorIsf(t, err, context.Canceled,
+				"%s over a %d-unit input under a cancelled caller must surface Canceled, got %v", c.name, sbUnitCount, err)
+		})
+	}
+}
+
+// sbUnary dispatches a one-argument string builtin through the apply site,
+// where the unmarked-result fallback charge lives, and returns the ledger total.
+func sbUnary(t *testing.T, env *core.Env, name, in string) int64 {
+	t.Helper()
+	total, err := cbApplyCharge(t, env, sbGoFunc(t, env, name), 1<<30, core.String{V: in})
+	require.NoError(t, err)
+	return total
+}
+
+// TestStrings_UnchangedResultIsZeroByte: strings.ToUpper/ToLower/TrimSpace
+// return the input itself when nothing changes, so that return owns no new
+// bytes and its charge must not scale with the input. A 4096-byte subject
+// returned unchanged must cost exactly what a 1-byte one does.
+func TestStrings_UnchangedResultIsZeroByte(t *testing.T) {
+	env := setupEnv(t)
+	for _, c := range []struct{ name, wide, tiny string }{
+		{"string/upper", strings.Repeat("A", sbWideLen), "A"},
+		{"string/lower", strings.Repeat("a", sbWideLen), "a"},
+		{"string/trim", strings.Repeat("a", sbWideLen), "a"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			wide := sbUnary(t, env, c.name, c.wide)
+			tiny := sbUnary(t, env, c.name, c.tiny)
+			require.Equalf(t, tiny, wide,
+				"(%s <%d-byte subject returned unchanged>) charged %d bytes against %d for a 1-byte one: a result that IS its input owns no new bytes",
+				c.name, sbWideLen, wide, tiny)
+		})
+	}
+}
+
+// TestStrings_FreshResultChargesShallowBytes is the other half of the pair: a
+// result the Go primitive actually rebuilt is fresh, and its shallow size must
+// enter the ledger. Without it, marking every unary return zero-byte would
+// satisfy TestStrings_UnchangedResultIsZeroByte while billing nothing for
+// output the builtin allocated.
+func TestStrings_FreshResultChargesShallowBytes(t *testing.T) {
+	env := setupEnv(t)
+	fresh := core.StringShallowBytes(sbWideLen)
+	for _, c := range []struct{ name, changed, unchanged string }{
+		{"string/upper", strings.Repeat("a", sbWideLen), strings.Repeat("A", sbWideLen)},
+		{"string/lower", strings.Repeat("A", sbWideLen), strings.Repeat("a", sbWideLen)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			changed := sbUnary(t, env, c.name, c.changed)
+			unchanged := sbUnary(t, env, c.name, c.unchanged)
+			require.GreaterOrEqualf(t, changed, unchanged+fresh,
+				"(%s <%d-byte subject it rebuilt>) charged %d bytes against %d for one it returned unchanged: a rebuilt result must add its own %d shallow bytes",
+				c.name, sbWideLen, changed, unchanged, fresh)
+		})
+	}
+}
+
+// sbSplitCharge splits a subject of parts copies of a payload and returns the
+// ledger total for the dispatch.
+func sbSplitCharge(t *testing.T, env *core.Env, parts, payloadLen int) int64 {
+	t.Helper()
+	subject := strings.TrimSuffix(strings.Repeat(strings.Repeat("a", payloadLen)+",", parts), ",")
+	total, err := cbApplyCharge(t, env, sbGoFunc(t, env, "string/split"), 1<<30,
+		core.String{V: subject}, core.String{V: ","})
+	require.NoError(t, err)
+	return total
+}
+
+// TestStrings_SplitChargesHeadersNotContents: strings.Split's parts share the
+// subject's backing array, so the fresh bytes are the List plus one
+// core.String header per part - never the part contents, which the subject
+// already paid for.
+//
+// The first assertion is the contents half and holds today for a different
+// reason (the apply-site fallback is shallow, so it never saw the contents
+// either); it stays as the guard against a deep charge. The second is the
+// header half: doubling the part count at a fixed subject length must move the
+// ledger by one slot AND one string header per new part, which nothing charges
+// today.
+func TestStrings_SplitChargesHeadersNotContents(t *testing.T) {
+	env := setupEnv(t)
+	const parts = 64
+
+	narrow := sbSplitCharge(t, env, parts, 1)
+	wide := sbSplitCharge(t, env, parts, sbWideLen)
+	require.Equalf(t, narrow, wide,
+		"splitting into %d %d-byte parts charged %d bytes against %d for 1-byte parts: parts share the subject's bytes and must not be billed again",
+		parts, sbWideLen, wide, narrow)
+
+	doubled := sbSplitCharge(t, env, 2*parts, 1)
+	headerDelta := core.ListShallowBytes(2*parts) - core.ListShallowBytes(parts) + int64(parts)*core.MeterStringHeaderBytes
+	require.GreaterOrEqualf(t, doubled, narrow+headerDelta,
+		"splitting into %d parts charged %d bytes against %d for %d parts: each part is a fresh core.String header, so %d more parts must add %d bytes",
+		2*parts, doubled, narrow, parts, parts, headerDelta)
+}
+
+// sbParseCharge runs a failing parse over a subject of n copies of unit and
+// returns the ledger total for the dispatch.
+func sbParseCharge(t *testing.T, env *core.Env, name, unit string, n int) int64 {
+	t.Helper()
+	total, err := cbApplyCharge(t, env, sbGoFunc(t, env, name), 1<<30, core.String{V: strings.Repeat(unit, n)})
+	require.Errorf(t, err, "%s over %d invalid bytes must fail to parse", name, n)
+	return total
+}
+
+// TestStrings_ParseFailureMessageIsOwned: strconv.NumError quotes the whole
+// parsed argument and wrapCause renders that quoted form again, so a failed
+// parse materializes the subject a second time. That work grows with a single
+// flat core.String argument, which has no children and so no sharing to
+// amplify it - its ledger cost is its length - and it must be charged.
+//
+// The escaped arm is the worst case the charge has to cover: strconv.Quote
+// emits \xNN for a byte that is not valid UTF-8, so a subject of invalid bytes
+// renders four characters per source byte while the ledger counts one.
+// Measured over 1 MiB subjects: NumError.Error() is 1048620 bytes of ASCII
+// against 4194348 of invalid UTF-8, a factor of 4.0000.
+func TestStrings_ParseFailureMessageIsOwned(t *testing.T) {
+	env := setupEnv(t)
+	const (
+		small = 1 << 10
+		large = 1 << 20
+	)
+	for _, name := range []string{"string->int", "string->float"} {
+		t.Run(name, func(t *testing.T) {
+			t.Run("ascii", func(t *testing.T) {
+				tiny := sbParseCharge(t, env, name, "z", small)
+				huge := sbParseCharge(t, env, name, "z", large)
+				require.GreaterOrEqualf(t, huge-tiny, int64(large-small),
+					"(%s <%d invalid bytes>) charged %d against %d for %d bytes: the failure branch renders the whole subject and must bill it",
+					name, large, huge, tiny, small)
+			})
+			t.Run("escaped", func(t *testing.T) {
+				tiny := sbParseCharge(t, env, name, sbInvalidByte, small)
+				huge := sbParseCharge(t, env, name, sbInvalidByte, large)
+				require.GreaterOrEqualf(t, huge-tiny, int64(sbQuoteFactor*(large-small)),
+					"(%s <%d invalid UTF-8 bytes>) charged %d against %d for %d bytes: strconv.Quote renders each of them as \\xNN, so the charge must cover %d bytes per subject byte, not one",
+					name, large, huge, tiny, small, sbQuoteFactor)
+			})
+		})
+	}
+	t.Run("inventory row", func(t *testing.T) {
+		for _, p := range inventory.WorkPhases {
+			if p.File != sbErrorsFile || p.Func != "wrapCause" || p.PhaseLabel != "strconv message format" {
+				continue
+			}
+			require.Equalf(t, "bounded-exception", p.Disposition, "wrapCause/%s: disposition", p.PhaseLabel)
+			require.Containsf(t, p.Families, "string", "wrapCause/%s: the strconv message is the string family's to bound", p.PhaseLabel)
+			require.Containsf(t, p.Fn, "string->int", "wrapCause/%s: Fn must name string->int", p.PhaseLabel)
+			require.Containsf(t, p.Fn, "string->float", "wrapCause/%s: Fn must name string->float", p.PhaseLabel)
+			require.GreaterOrEqualf(t, p.MaxWork, int64(sbQuoteFactor)*sbPrimitiveMaxWork,
+				"wrapCause/%s: MaxWork %d bills one byte per subject byte, but an invalid UTF-8 byte renders as \\xNN, so the ceiling is %d times the ledger's %d",
+				p.PhaseLabel, p.MaxWork, sbQuoteFactor, sbPrimitiveMaxWork)
+			return
+		}
+		t.Fatalf("inventory.WorkPhases has no %s row Func %q PhaseLabel %q: the strconv failure message the string family owns is unrecorded, and the support-family row still claims a bound it excludes",
+			sbErrorsFile, "wrapCause", "strconv message format")
+	})
+}
+
+// sbHostValue is a core.Value supplied by an embedding host: not one of the 13
+// concrete kernel types, so str and format reach it only through its own
+// String method.
+type sbHostValue struct{ rendered string }
+
+func (v sbHostValue) Type() core.Keyword { return core.Keyword{V: "host"} }
+func (v sbHostValue) String() string     { return v.rendered }
+func (v sbHostValue) Equals(o core.Value) bool {
+	other, ok := o.(sbHostValue)
+	return ok && other.rendered == v.rendered
+}
+
+// TestStrings_TrustedHostFormatting: a host value's String method is the host's
+// own code, not stdlib's work to bound, so both formatting entries use it
+// verbatim and the inventory records the arm as trusted-host.
+func TestStrings_TrustedHostFormatting(t *testing.T) {
+	env := setupEnv(t)
+	host := sbHostValue{rendered: "#<host:token>"}
+
+	got, err := cbApplyCharge(t, env, sbGoFunc(t, env, "str"), 1<<30, host)
+	require.NoError(t, err)
+	require.NotZero(t, got)
+
+	str := sbGoFunc(t, env, "str")
+	out, err := str.Fn(t.Context(), nil, []core.Value{host}, env)
+	require.NoError(t, err)
+	require.Equal(t, core.String{V: host.rendered}, out, "str must use a host value's String output verbatim")
+
+	format := sbGoFunc(t, env, "format")
+	out, err = format.Fn(t.Context(), nil, []core.Value{core.String{V: "%s"}, host}, env)
+	require.NoError(t, err)
+	require.Equal(t, core.String{V: host.rendered}, out, "format %%s must use a host value's String output verbatim")
+
+	require.NotEmptyf(t, sbWorkPhases("toString", "trusted-host"),
+		"inventory.WorkPhases has no %s row Func %q Disposition %q: the host-value arm of the formatting boundary is unrecorded",
+		sbStringsFile, "toString", "trusted-host")
+}
+
+// sbWorkPhases returns the strings.go work phases for one function and
+// disposition.
+func sbWorkPhases(fn, disposition string) []inventory.WorkPhase {
+	var out []inventory.WorkPhase
+	for _, p := range inventory.WorkPhases {
+		if p.File == sbStringsFile && p.Func == fn && p.Disposition == disposition {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// TestStrings_ToStringWalkIsUnboundedTracked: toString drops a core container
+// into core boundedString, which walks the value as a tree while the ledger
+// charged each shared node once, so a node reachable twice renders twice.
+// str and string/join reach that walk with no pre-charge in front of it. No
+// static ceiling bounds it and the allocation ledger does not either, so the
+// phase is tracked against its owning change rather than given a false MaxWork.
+func TestStrings_ToStringWalkIsUnboundedTracked(t *testing.T) {
+	const owner = "Owned by core-value-walk-sharing-bound."
+	rows := sbWorkPhases("toString", "unbounded-tracked")
+	require.NotEmptyf(t, rows,
+		"inventory.WorkPhases has no %s row Func %q Disposition %q: the container arm of the formatting boundary still claims a bound it does not have",
+		sbStringsFile, "toString", "unbounded-tracked")
+	for _, p := range rows {
+		require.Zerof(t, p.MaxWork, "toString/%s: an unbounded-tracked phase must state no MaxWork", p.PhaseLabel)
+		require.Truef(t, strings.HasSuffix(p.Proof, owner), "toString/%s: Proof must end with %q, got %q", p.PhaseLabel, owner, p.Proof)
+	}
+}
+
+// TestStrings_FormatEstimatorWalkIsUnboundedTracked: estimateFormatAllocBytes
+// reaches core.ValueDeepBytes through formatStringBytes for every non-String
+// value, so the estimator itself runs the same unbounded tree walk - and it
+// runs before the pre-charge, unguarded by it. The estimate is load-bearing and
+// stays; what it needs is a row that stops claiming it is bounded.
+func TestStrings_FormatEstimatorWalkIsUnboundedTracked(t *testing.T) {
+	for _, fn := range []string{"estimateFormatAllocBytes", "estimateFormatValueBytes", "formatStringBytes"} {
+		if len(sbWorkPhases(fn, "unbounded-tracked")) > 0 {
+			return
+		}
+	}
+	t.Fatalf("inventory.WorkPhases has no %s row Disposition %q for the format estimator (Func estimateFormatAllocBytes, estimateFormatValueBytes or formatStringBytes): its core.ValueDeepBytes walk runs before the pre-charge and is unrecorded",
+		sbStringsFile, "unbounded-tracked")
+}
+
+// TestStrings_ToAnyRenderIsUnboundedTracked: toAny renders every non-scalar
+// format argument through v.String() at strings.go:643, and that loop runs
+// before fmt.Sprintf, so the render is materialized eagerly. What is unbounded
+// there is the walk, not the escaping: the render visits a shared node once per
+// path that reaches it while the ledger charged it once, exactly as toString's
+// walk does, so the phase carries toString's owner.
+//
+// The %q expansion is a separate defect of the same site and not a second
+// unboundedness: one byte becomes at most four, so the render stays a bounded
+// multiple of a ledger-bounded quantity. What it breaks is the charge, which
+// counts one byte per byte - measured, (list "<1048576 x 0x80>") estimates
+// 1048648 bytes and renders 4194308 characters, a ratio of 3.9997.
+func TestStrings_ToAnyRenderIsUnboundedTracked(t *testing.T) {
+	const owner = "Owned by core-value-walk-sharing-bound."
+	rows := sbWorkPhases("toAny", "unbounded-tracked")
+	require.NotEmptyf(t, rows,
+		"inventory.WorkPhases has no %s row Func %q Disposition %q: the eager render behind format's arguments is unrecorded, and the pre-charge does not bound it (measured render/estimate 3.9997 on a 1 MiB escaped leaf)",
+		sbStringsFile, "toAny", "unbounded-tracked")
+	for _, p := range rows {
+		require.Zerof(t, p.MaxWork, "toAny/%s: an unbounded-tracked phase must state no MaxWork", p.PhaseLabel)
+		require.Truef(t, strings.HasSuffix(p.Proof, owner), "toAny/%s: Proof must end with %q, got %q", p.PhaseLabel, owner, p.Proof)
+	}
+}
+
+// TestStrings_LengthRuneScanIsBoundedException: []rune(s.V) converts the whole
+// subject in one Go conversion with no point inside it where a Step could run,
+// exactly as count's subject scan does. The bound comes from the subject: a
+// core.String reaches the builtin only by already sitting in the allocation
+// ledger.
+func TestStrings_LengthRuneScanIsBoundedException(t *testing.T) {
+	for _, p := range inventory.WorkPhases {
+		if p.File != sbStringsFile || p.Fn != "string/length" {
+			continue
+		}
+		require.Equalf(t, "bounded-exception", p.Disposition, "string/length/%s: disposition", p.PhaseLabel)
+		require.Equalf(t, sbPrimitiveMaxWork, p.MaxWork, "string/length/%s: MaxWork", p.PhaseLabel)
+		return
+	}
+	t.Fatalf("inventory.WorkPhases has no %s row Fn %q: the rune conversion at strings.go:225 is unrecorded", sbStringsFile, "string/length")
+}
+
+// TestStrings_PrimitiveScansAreBoundedExceptions: every builtin that hands its
+// subject to an opaque Go string primitive owns a phase it cannot Step through.
+// Stepping per byte would put a reduction charge on every string operation,
+// which the design forbids, so each records the ledger-derived ceiling instead.
+func TestStrings_PrimitiveScansAreBoundedExceptions(t *testing.T) {
+	for _, fn := range []string{
+		"string/split", "string/join", "string/replace",
+		"string/trim", "string/upper", "string/lower",
+		"string/contains?", "string/starts-with?", "string/ends-with?",
+		"string->int", "string->float",
+	} {
+		t.Run(fn, func(t *testing.T) {
+			for _, p := range inventory.WorkPhases {
+				if p.File != sbStringsFile || p.Fn != fn || p.Disposition != "bounded-exception" {
+					continue
+				}
+				require.Equalf(t, sbPrimitiveMaxWork, p.MaxWork,
+					"%s/%s: a Go string primitive's ceiling is the allocation ledger's, %d", fn, p.PhaseLabel, sbPrimitiveMaxWork)
+				return
+			}
+			t.Fatalf("inventory.WorkPhases has no %s row Fn %q Disposition %q: the opaque Go string scan it performs is unrecorded", sbStringsFile, fn, "bounded-exception")
+		})
+	}
+}
+
+// TestStrings_UnicodeAndEmptySeparatorUnchanged restates the goldens the sealed
+// suites already pin for this family. It is green before the migration and must
+// stay green after it: every value survives the budget work byte for byte.
+// That is its whole purpose.
+func TestStrings_UnicodeAndEmptySeparatorUnchanged(t *testing.T) {
+	env := setupEnv(t)
+	for _, tt := range []struct{ name, input, want string }{
+		{"rune count multibyte", `(string/length "héllo")`, "5"},
+		{"rune count cjk", `(string/length "日本語")`, "3"},
+		{"rune count emoji", `(string/length "a😀b")`, "3"},
+		{"empty separator splits runes", `(string/split "héllo" "")`, `("h" "é" "l" "l" "o")`},
+		{"empty separator empty subject", `(string/split "" "")`, `()`},
+		{"split no separator present", `(string/split "abc" ",")`, `("abc")`},
+		{"upper multibyte", `(string/upper "héllo")`, `"HÉLLO"`},
+		{"lower multibyte", `(string/lower "HÉLLO")`, `"héllo"`},
+		{"join multibyte", `(string/join "，" (list "日" "本"))`, `"日，本"`},
+		{"lines trailing newline", `(string/lines "a\nb\n")`, `("a" "b" "")`},
+		{"str multibyte", `(str "日" "本")`, `"日本"`},
+		{"format multibyte", `(format "%s-%s" "日" "本")`, `"日-本"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equalf(t, tt.want, eval(t, env, tt.input).String(), "%s value drift", tt.input)
+		})
+	}
+}
