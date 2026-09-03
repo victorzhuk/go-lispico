@@ -419,10 +419,14 @@ func (st *evalState) chargeReductions(n int64) error {
 	if max <= 0 {
 		max = DefaultMaxReductions
 	}
-	if used := chargeCounter(&st.reductions, n); used > max {
-		return NewResourceLimitError(fmt.Sprintf("reduction limit %d exceeded", max))
+	if total, exact := addCharge(&st.reductions, max, n); exact {
+		if total <= max {
+			return nil
+		}
+	} else {
+		saturateCounter(&st.reductions, max, n)
 	}
-	return nil
+	return NewResourceLimitError(fmt.Sprintf("reduction limit %d exceeded", max))
 }
 
 func (st *evalState) chargeAllocBytes(n int64) error {
@@ -436,33 +440,62 @@ func (st *evalState) chargeAllocBytes(n int64) error {
 	if max <= 0 {
 		max = DefaultMaxAllocationBytes
 	}
-	if used := chargeCounter(&st.allocBytes, n); used > max {
-		return NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", max))
+	if total, exact := addCharge(&st.allocBytes, max, n); exact {
+		if total <= max {
+			return nil
+		}
+	} else {
+		saturateCounter(&st.allocBytes, max, n)
 	}
-	return nil
+	return NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", max))
 }
 
-// chargeCounter records a positive charge on a meter counter and pins the total
-// at math.MaxInt64 instead of letting it wrap. A wrapped total reads as under
-// budget, so a charge refused near the ceiling would leave the counter admitting
-// every charge after it and the limit would hold for nothing.
+// addCharge records a positive charge on a meter counter with one atomic add
+// and returns the running total. exact reports that the total is the real one;
+// when it is false the counter cannot answer for this charge and the caller must
+// refuse it and close it out through saturateCounter.
 //
-// The retry loop is what keeps that safe when several goroutines charge the same
-// counter: every attempt derives its total from the value it read and commits it
-// only if the counter still holds that value, so a charge landing in between is
-// re-read rather than lost. The total only ever rises, and never past MaxInt64.
-func chargeCounter(counter *atomic.Int64, n int64) int64 {
+// The counter must never wrap: a wrapped total reads as under budget, so a
+// charge refused near the ceiling would leave the counter admitting every charge
+// after it and the limit would hold for nothing. total >= n is the whole guard.
+// n is positive, so a total below it means the counter did not hold a plain
+// non-negative total when the add landed - the add overflowed, or an earlier one
+// already had.
+//
+// Keeping a charge larger than the whole budget off the add is what makes that
+// safe while other goroutines charge the same counter. Such a charge is refused
+// on its own and is the only one big enough to wrap the counter from an
+// arbitrary total, so saturateCounter records it without ever storing a wrapped
+// value. Every add here is then at most max, so one that does overflow leaves
+// the counter no higher than max-2^63: far below zero, never the small positive
+// residue a concurrent charge could mistake for a fresh budget, and an add onto
+// a negative counter fails the same total >= n guard rather than accumulating
+// on it.
+func addCharge(counter *atomic.Int64, max, n int64) (total int64, exact bool) {
+	if n > max {
+		return 0, false
+	}
+	total = counter.Add(n)
+	return total, total >= n
+}
+
+// saturateCounter closes out a charge the plain add could not record, and is
+// the only writer that may run with the counter in an unusable state. Each
+// attempt derives the total from the value the counter still holds and commits
+// it only if the counter has not moved since, so a concurrent charge is re-read
+// rather than lost. An oversized charge is recorded at its full amount, pinned
+// at math.MaxInt64 the moment it would pass it; anything else got here because
+// its own add already wrapped, and only the pin is left to do.
+func saturateCounter(counter *atomic.Int64, max, n int64) {
+	oversized := n > max
 	for {
 		used := counter.Load()
-		total := used + n
-		if total < used {
-			total = math.MaxInt64
+		total := int64(math.MaxInt64)
+		if oversized && used >= 0 && used+n >= used {
+			total = used + n
 		}
-		if total == used {
-			return used
-		}
-		if counter.CompareAndSwap(used, total) {
-			return total
+		if total == used || counter.CompareAndSwap(used, total) {
+			return
 		}
 	}
 }
