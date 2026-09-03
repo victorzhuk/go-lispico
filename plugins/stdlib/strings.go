@@ -357,6 +357,10 @@ const (
 	maxFormatEstimate          = int64(^uint64(0) >> 1)
 	minFormatValueStringScalar = 24
 	maxDefaultFloatFormatBytes = 512
+	// maxFormatParseNum is fmt's own ceiling on a literal width or precision,
+	// tested before each digit rather than after, so a literal is honoured up
+	// to maxFormatParseNum*10+9 and refused past it.
+	maxFormatParseNum = int64(1_000_000)
 )
 
 func estimateFormatAllocBytes(format string, args []core.Value) int64 {
@@ -416,8 +420,9 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 				i++
 			} else {
 				start := i
-				width, i = parseFormatInt(format, i)
-				hasWidth = i > start
+				var honoured bool
+				width, i, honoured = parseFormatInt(format, i)
+				hasWidth = honoured && i > start
 			}
 
 			goodArgNum := !afterIndex || !hasWidth
@@ -444,9 +449,13 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 					i++
 				} else {
 					start := i
-					precision, i = parseFormatInt(format, i)
+					var honoured bool
+					precision, i, honoured = parseFormatInt(format, i)
 					if i == start {
 						precision = 0
+					}
+					if !honoured {
+						hasPrecision = false
 					}
 				}
 			}
@@ -603,18 +612,29 @@ func parseFormatArgIndex(format string) (int64, int, bool) {
 	return index - 1, i + 1, true
 }
 
-func parseFormatInt(format string, i int) (int64, int) {
+// parseFormatInt reads a literal width or precision the way fmt's parsenum
+// does: the running value is tested against maxFormatParseNum before each
+// digit, so the largest literal fmt honours is 10000009. Past that fmt refuses
+// the whole verb and renders %!(NOVERB) instead of the field, which is why a
+// refused literal reports ok false: the directive cannot expand, so treating
+// its digits as a field width estimates a few dozen rendered bytes at the
+// int64 ceiling. The digits are still consumed so the caller lands on the verb.
+func parseFormatInt(format string, i int) (int64, int, bool) {
 	var n int64
+	refused := false
 	for i < len(format) && isFormatDigit(format[i]) {
-		d := int64(format[i] - '0')
-		if n > (maxFormatEstimate-d)/10 {
-			n = maxFormatEstimate
-		} else {
-			n = n*10 + d
+		if n > maxFormatParseNum {
+			refused = true
+		}
+		if !refused {
+			n = n*10 + int64(format[i]-'0')
 		}
 		i++
 	}
-	return n, i
+	if refused {
+		return 0, i, false
+	}
+	return n, i, true
 }
 
 func isFormatDigit(b byte) bool {

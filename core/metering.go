@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"math"
+	"sync/atomic"
 )
 
 const (
@@ -417,8 +419,7 @@ func (st *evalState) chargeReductions(n int64) error {
 	if max <= 0 {
 		max = DefaultMaxReductions
 	}
-	used := st.reductions.Add(n)
-	if used > max {
+	if used := chargeCounter(&st.reductions, n); used > max {
 		return NewResourceLimitError(fmt.Sprintf("reduction limit %d exceeded", max))
 	}
 	return nil
@@ -435,11 +436,35 @@ func (st *evalState) chargeAllocBytes(n int64) error {
 	if max <= 0 {
 		max = DefaultMaxAllocationBytes
 	}
-	used := st.allocBytes.Add(n)
-	if used > max {
+	if used := chargeCounter(&st.allocBytes, n); used > max {
 		return NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", max))
 	}
 	return nil
+}
+
+// chargeCounter records a positive charge on a meter counter and pins the total
+// at math.MaxInt64 instead of letting it wrap. A wrapped total reads as under
+// budget, so a charge refused near the ceiling would leave the counter admitting
+// every charge after it and the limit would hold for nothing.
+//
+// The retry loop is what keeps that safe when several goroutines charge the same
+// counter: every attempt derives its total from the value it read and commits it
+// only if the counter still holds that value, so a charge landing in between is
+// re-read rather than lost. The total only ever rises, and never past MaxInt64.
+func chargeCounter(counter *atomic.Int64, n int64) int64 {
+	for {
+		used := counter.Load()
+		total := used + n
+		if total < used {
+			total = math.MaxInt64
+		}
+		if total == used {
+			return used
+		}
+		if counter.CompareAndSwap(used, total) {
+			return total
+		}
+	}
 }
 
 func (st *evalState) consumeReductionLease(n int64) error {
