@@ -40,7 +40,8 @@ type ownershipArm struct {
 	// "cl" for the Common Lisp adapters.
 	dia string
 	// kind is the differential:
-	//   noop   - payload size 1 vs borrowedLen must not move the ledger
+	//   noop   - payload size 1 vs borrowedLen must not move the ledger,
+	//            and where srcB is set, neither may the subject's length
 	//   grow   - payload size must move the ledger, and force a budget trip
 	//   shape  - src returns the empty branch, srcB its one-element sibling
 	//   count  - the same source over n vs 2n synthesized elements
@@ -77,7 +78,10 @@ var ownershipArms = []ownershipArm{
 	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "indexed element return", rep: "nth", class: "borrowed", kind: "noop", src: `(nth l2 0)`},
 	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "list head return", rep: "first", class: "borrowed", kind: "noop", src: `(first l2)`},
 	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "list tail element return", rep: "last", class: "borrowed", kind: "noop", src: `(last l2)`},
-	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "list tail return", rep: "rest", class: "borrowed", kind: "noop", src: `(rest l2)`},
+	// A list tail is a container, so its shallow size tracks the subject's
+	// length and not the payload: only a longer subject can show whether the
+	// borrowed tail is charged.
+	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "list tail return", rep: "rest", class: "borrowed", kind: "noop", src: `(rest l2)`, srcB: `(rest l5)`},
 	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "stored or default value return", rep: "get", class: "borrowed", kind: "noop", src: `(get m :a)`},
 	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "vector head return", rep: "first", class: "borrowed", kind: "noop", src: `(first v2)`},
 	{file: "plugins/stdlib/collections.go", fnc: "collectionBuiltins", label: "vector tail element return", rep: "last", class: "borrowed", kind: "noop", src: `(last v2)`},
@@ -195,6 +199,7 @@ func ownershipEngine(t *testing.T, bytecode bool, dia string, budget int, payloa
 		"bigm": big,
 		"l1":   core.NewList([]core.Value{d}),
 		"l2":   core.NewList([]core.Value{d, d}),
+		"l5":   core.NewList([]core.Value{d, d, d, d, d}),
 		"v1":   core.NewVector([]core.Value{d}),
 		"v2":   core.NewVector([]core.Value{d, d}),
 		"nada": core.Nil{},
@@ -287,6 +292,13 @@ func TestResultOwnership_EveryInventoriedBranchHasAnArm(t *testing.T) {
 							"borrowed result must add zero bytes to the ledger: a payload %d times larger moved the total by %d (tiny=%d large=%d)",
 							borrowedLen, big-tiny, tiny, big)
 
+						if a.srcB != "" {
+							longer := ownershipBaseline(t, bytecode, a, "x", ownershipN, a.srcB)
+							require.Equal(t, tiny, longer,
+								"borrowed result must add zero bytes however long the subject is: %q and %q charged differently (%d vs %d)",
+								a.src, a.srcB, tiny, longer)
+						}
+
 						tight := int(tiny + borrowedShallowBytes()/2)
 						_, err := ownershipUsage(t, bytecode, a, large, ownershipN, tight, a.src)
 						require.NoError(t, err,
@@ -304,21 +316,34 @@ func TestResultOwnership_EveryInventoriedBranchHasAnArm(t *testing.T) {
 						require.True(t, isResourceLimit(t, err),
 							"fresh result must trip a budget below its fresh delta (budget=%d delta=%d), got %v", tight, big-tiny, err)
 
-					case "shape", "count":
-						srcB, nB := a.srcB, ownershipN
-						if a.kind == "count" {
-							srcB, nB = a.src, 2*ownershipN
-						}
+					case "shape":
 						small := ownershipBaseline(t, bytecode, a, "x", ownershipN, a.src)
-						grown := ownershipBaseline(t, bytecode, a, "x", nB, srcB)
+						grown := ownershipBaseline(t, bytecode, a, "x", ownershipN, a.srcB)
 						require.Greater(t, grown, small,
 							"the fresh container must be charged per element: %q and %q charged the same (small=%d grown=%d)",
-							a.src, srcB, small, grown)
+							a.src, a.srcB, small, grown)
 
 						tight := int(small + (grown-small)/2)
-						_, err := ownershipUsage(t, bytecode, a, "x", nB, tight, srcB)
+						_, err := ownershipUsage(t, bytecode, a, "x", ownershipN, tight, a.srcB)
 						require.True(t, isResourceLimit(t, err),
 							"the larger container must trip a budget below its fresh delta (budget=%d delta=%d), got %v", tight, grown-small, err)
+
+					case "count":
+						small := ownershipBaseline(t, bytecode, a, "x", ownershipN, a.src)
+						grown := ownershipBaseline(t, bytecode, a, "x", 2*ownershipN, a.src)
+						// Doubling the count doubles the container too, so
+						// growth alone cannot tell a deep charge from a
+						// container one: the delta has to outrun the list
+						// header the elements are held in.
+						floor := core.ListShallowBytes(2*ownershipN) - core.ListShallowBytes(ownershipN)
+						require.Greater(t, grown-small, floor,
+							"a fresh-deep result must charge the elements it synthesized, not just the container holding them (delta=%d container-only=%d)",
+							grown-small, floor)
+
+						tight := int(small + (grown-small)/2)
+						_, err := ownershipUsage(t, bytecode, a, "x", 2*ownershipN, tight, a.src)
+						require.True(t, isResourceLimit(t, err),
+							"the larger result must trip a budget below its fresh delta (budget=%d delta=%d), got %v", tight, grown-small, err)
 
 					case "linear":
 						base := ownershipBaseline(t, bytecode, a, "x", 0, a.src)
