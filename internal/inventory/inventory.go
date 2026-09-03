@@ -38,12 +38,15 @@ var Families = []string{
 	"support",
 }
 
-// Dispositions enumerates the valid values of WorkPhase.Disposition. Every
-// other value asserts something — a ceiling, an inherited bound, or that there
-// is no work that scales — and none of them can say a phase is unbounded,
-// known and owned by a named change; forcing such a phase into
-// bounded-exception is what produced the false ceiling "unbounded-tracked"
-// replaces.
+// Dispositions enumerates the valid values of WorkPhase.Disposition. Each says
+// how the phase's cost is accounted for: "budgeted" charges the caller's budget
+// as it runs; "bounded-exception" opts out of the budget against a ceiling it
+// states in MaxWork and backs with Proof; "trusted-host" runs inside host code
+// the runtime cannot preempt, named in Proof; "callback-owned" leaves the cost
+// to the callback the phase dispatches, one row per callback; "load-time" runs
+// while the plugin loads, before any budget exists; "none-bounded-dispatch"
+// does no work that grows with the input; and "unbounded-tracked" states no
+// ceiling at all, only the change that owns removing it.
 var Dispositions = []string{
 	"budgeted",
 	"bounded-exception",

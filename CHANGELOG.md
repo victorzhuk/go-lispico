@@ -169,6 +169,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline expires while the list is being built now aborts instead — no
   reduction limit need be anywhere in sight.
 
+- A builtin result reached through `apply` is charged once instead of twice. It
+  was billed by both the builtin and the apply site; the removed charge is
+  exactly one copy of the result, whatever its size — 16024 bytes off
+  `(apply list (range 1000))`, 10016 off the 10000-character string
+  `(apply str (map (fn [i] "abcdefghij") (range 1000)))` renders, and 16 off
+  `(apply max (range 1000))`, whose result is a single `Int`. Direct calls were
+  never double-billed and are unchanged. Allocation totals for `apply`-heavy
+  programs fall.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added
