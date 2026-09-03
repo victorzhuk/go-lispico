@@ -511,9 +511,8 @@ func saturateCounter(counter *atomic.Int64, max, n int64) {
 // value is both the truthful reading and a monotone one: what a reader sees
 // climbs with the real total and then stays at the ceiling. This belongs here
 // and not in addCharge because the charge path stays one atomic add; the cost
-// moves to the read, which vm.meterSnapshot takes once per re-entrant boundary
-// crossing - two compares, about 0.38ns, with the gold set's call-boundary
-// bytes and allocations unmoved.
+// moves to the read - a load and a sign test, paid by EvalMeter.Snapshot, the
+// only caller.
 func publishedTotal(counter *atomic.Int64) int64 {
 	total := counter.Load()
 	if total < 0 {
