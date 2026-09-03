@@ -158,8 +158,8 @@ func (m EvalMeter) Snapshot() EvalMeterSnapshot {
 	return EvalMeterSnapshot{
 		MaxReductions:      m.st.maxReductions,
 		MaxAllocationBytes: m.st.maxAllocBytes,
-		Reductions:         m.st.reductions.Load(),
-		AllocationBytes:    m.st.allocBytes.Load(),
+		Reductions:         publishedTotal(&m.st.reductions),
+		AllocationBytes:    publishedTotal(&m.st.allocBytes),
 	}
 }
 
@@ -498,6 +498,26 @@ func saturateCounter(counter *atomic.Int64, max, n int64) {
 			return
 		}
 	}
+}
+
+// publishedTotal reads a meter counter as a running total an embedder can act
+// on. addCharge commits its add before it can tell whether the counter still
+// held a plain total, so a counter already at the ceiling carries the wrapped
+// sum until saturateCounter pins it back, and a Snapshot taken in that window
+// would hand that sum out as the total charged so far.
+//
+// A counter reaches a negative value only by passing math.MaxInt64, and every
+// total after that is the ceiling too, so answering the ceiling for a wrapped
+// value is both the truthful reading and a monotone one: what a reader sees
+// climbs with the real total and then stays at the ceiling. This belongs here
+// and not in addCharge because it costs a charge nothing - the charge path
+// stays one atomic add, and only the far colder read pays a compare.
+func publishedTotal(counter *atomic.Int64) int64 {
+	total := counter.Load()
+	if total < 0 {
+		return math.MaxInt64
+	}
+	return total
 }
 
 func (st *evalState) consumeReductionLease(n int64) error {
