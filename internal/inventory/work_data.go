@@ -87,12 +87,12 @@ var WorkPhases = []WorkPhase{
 			"core.Value, so no container can be traversed. A cause that already " +
 			"is a *core.LispicoError takes the identity return above and never " +
 			"reaches fmt.Sprintf. The unhashable-key error core's HashMap " +
-			"mutators return carries one %T and renders in constant time. The " +
-			"bound does not hold for the two strconv call sites in " +
-			"plugins/stdlib/strings.go: strconv.NumError quotes the whole parsed " +
-			"argument, so the message grows with that string. MaxWork is the " +
-			"ceiling for every other cause. string->int and string->float belong " +
-			"to the string family; that seam owns the fix.",
+			"mutators return carries one %T and renders in constant time. " +
+			"MaxWork is the ceiling for every cause but one: a strconv.NumError " +
+			"quotes the whole parsed argument, so its message grows with that " +
+			"string. string->int and string->float are the only call sites that " +
+			"raise one, and the string-family row under the phase label " +
+			"\"strconv message format\" states the ceiling they run under.",
 		MaxWork: 256,
 	},
 	{
@@ -1195,5 +1195,490 @@ var WorkPhases = []WorkPhase{
 		Func:        "StableSort",
 		PhaseLabel:  "output copy walk",
 		Disposition: "budgeted",
+	},
+
+	// String family. The four builtins whose cost grows with an argument list or
+	// a collection open a budget and charge a Step per part. Everything else
+	// hands its subject to a Go string primitive with no point inside it where a
+	// Step could run: stepping per byte would put a reduction charge on every
+	// string operation, so each records the ceiling the allocation ledger puts on
+	// that subject instead. It is the same ceiling count's rune scan carries.
+	// core.StringShallowBytes bills core.MeterStringHeaderBytes (16) plus one
+	// byte per byte, so a core.String that fits under
+	// core.DefaultMaxAllocationBytes (67108864) carries at most 67108848 bytes,
+	// and a primitive reading one can scan no more than those.
+	{
+		Families:    []string{"string"},
+		Fn:          "str",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "argument budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "str",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "argument render walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/join",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "element budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/join",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "element render walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/split",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "part budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/split",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "part wrap walk",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/lines",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "line budget",
+		Disposition: "budgeted",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/lines",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "line wrap walk",
+		Disposition: "budgeted",
+	},
+
+	// format's own two phases. The argument loop is bounded by the operand
+	// count; the render behind it is not, and carries its own row on toAny.
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "argument conversion walk",
+		Disposition: "bounded-exception",
+		Proof: "The loop reads one argument per iteration and holds no Step of " +
+			"its own. Its length is the operand count, which the allocation " +
+			"ledger bounds: the operands arrive as slots of a charged sequence " +
+			"- the call form the reader billed, or the list apply spreads, " +
+			"billed at core.MeterValueSlotBytes (16) a slot - so a call that " +
+			"fits under core.DefaultMaxAllocationBytes carries at most " +
+			"core.DefaultMaxAllocationBytes/16 operands, which is MaxWork. What " +
+			"each iteration renders is toAny's work, not this loop's, and the " +
+			"row on toAny states what bounds it.",
+		MaxWork: 4_194_304,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "render assembly",
+		Disposition: "unbounded-tracked",
+		Proof: "fmt.Sprintf copies the already-materialized operands into one " +
+			"output buffer, so its cost is the sum of what the loop above " +
+			"produced. Every non-scalar operand in that sum came out of toAny's " +
+			"v.String render, which descends a value as a tree while the ledger " +
+			"charged each shared node once, so the sum inherits that " +
+			"unboundedness whole. The pre-charge in front of Sprintf does not " +
+			"bound it either: estimateFormatAllocBytes counts one byte per byte " +
+			"while %q renders a byte that is not valid UTF-8 as four, measured " +
+			"3.9997 on a 1 MiB escaped leaf, which is why the builtin charges " +
+			"the shortfall afterwards rather than reading the estimate as a " +
+			"ceiling. Owned by core-value-walk-sharing-bound.",
+	},
+
+	// The Go string primitives. Each reads core.String operands the ledger has
+	// already sized, so each states that ledger bound as its ceiling.
+	{
+		Families:    []string{"string"},
+		Fn:          "string/split",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "separator scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.Split walks the subject once looking for the separator " +
+			"and offers no point inside it where a Step could run. Both " +
+			"operands are core.String values that reached the builtin only by " +
+			"already sitting in the allocation ledger, so MaxWork is that " +
+			"ledger bound. The parts it hands back alias the subject's backing " +
+			"array, so the walk copies no contents; the per-part loop that " +
+			"wraps them is budgeted above.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/lines",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "newline scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.Split over a \"\\n\" separator walks the subject once " +
+			"with no point inside it where a Step could run. The subject is a " +
+			"core.String the allocation ledger has already sized, so MaxWork is " +
+			"that ledger bound, and the lines alias its backing array rather " +
+			"than copying it.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/join",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "part concatenation",
+		Disposition: "bounded-exception",
+		Proof: "strings.Join copies the parts and the separator into one buffer " +
+			"with no point inside it where a Step could run; the per-element " +
+			"loop ahead of it is budgeted. The bound holds per operand the " +
+			"ledger sized: the separator is a core.String, and so is every part " +
+			"that came from a core.String element, so each contributes at most " +
+			"the ledger's 67108848 bytes, which is MaxWork. It does not hold " +
+			"for a part toString rendered out of a container: that render is " +
+			"the unbounded walk recorded on toString, and its row is where the " +
+			"defect is tracked.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/replace",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "subject scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.ReplaceAll walks the subject once and writes the " +
+			"replacement into a new buffer, with no point inside it where a " +
+			"Step could run. All three operands are core.String values the " +
+			"allocation ledger has already sized, so MaxWork is that ledger " +
+			"bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/contains?",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "substring scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.Contains scans the subject for the needle in one Go " +
+			"call with no point inside it where a Step could run. Both operands " +
+			"are core.String values the allocation ledger has already sized, so " +
+			"MaxWork is that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/starts-with?",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "prefix scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.HasPrefix compares at most the prefix's bytes in one Go " +
+			"call with no point inside it where a Step could run. Both operands " +
+			"are core.String values the allocation ledger has already sized, so " +
+			"MaxWork is that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/ends-with?",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "suffix scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.HasSuffix compares at most the suffix's bytes in one Go " +
+			"call with no point inside it where a Step could run. Both operands " +
+			"are core.String values the allocation ledger has already sized, so " +
+			"MaxWork is that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/length",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "rune conversion",
+		Disposition: "bounded-exception",
+		Proof: "[]rune(s.V) converts the whole subject in one Go conversion, " +
+			"with no point inside it where a Step could run, exactly as count's " +
+			"subject scan does. The bound comes from the subject: a core.String " +
+			"reaches the builtin only by already sitting in the allocation " +
+			"ledger, so MaxWork is that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string->int",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "integer parse scan",
+		Disposition: "bounded-exception",
+		Proof: "strconv.ParseInt reads the subject's digits in one Go call with " +
+			"no point inside it where a Step could run. The subject is a " +
+			"core.String the allocation ledger has already sized, so MaxWork is " +
+			"that ledger bound. What the failure branch then renders is a " +
+			"separate phase, recorded on wrapCause in plugins/stdlib/errors.go.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string->float",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "registerStrings",
+		PhaseLabel:  "float parse scan",
+		Disposition: "bounded-exception",
+		Proof: "strconv.ParseFloat reads the subject's mantissa and exponent in " +
+			"one Go call with no point inside it where a Step could run. The " +
+			"subject is a core.String the allocation ledger has already sized, " +
+			"so MaxWork is that ledger bound. What the failure branch then " +
+			"renders is a separate phase, recorded on wrapCause in " +
+			"plugins/stdlib/errors.go.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/trim",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "unaryStringFunc",
+		PhaseLabel:  "whitespace scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.TrimSpace scans the subject from both ends in one Go " +
+			"call with no point inside it where a Step could run. The subject " +
+			"is a core.String the allocation ledger has already sized, so " +
+			"MaxWork is that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/upper",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "unaryStringFunc",
+		PhaseLabel:  "case scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.ToUpper walks the subject rune by rune in one Go call " +
+			"with no point inside it where a Step could run. The subject is a " +
+			"core.String the allocation ledger has already sized, so MaxWork is " +
+			"that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "string/lower",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "unaryStringFunc",
+		PhaseLabel:  "case scan",
+		Disposition: "bounded-exception",
+		Proof: "strings.ToLower walks the subject rune by rune in one Go call " +
+			"with no point inside it where a Step could run. The subject is a " +
+			"core.String the allocation ledger has already sized, so MaxWork is " +
+			"that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+
+	// The formatting boundary. A host value's own render is the host's code and
+	// is trusted; a core container's is a tree walk over a graph, and no ceiling
+	// covers it.
+	{
+		Families:    []string{"string"},
+		Fn:          "str string/join",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "toString",
+		PhaseLabel:  "host value render",
+		Disposition: "trusted-host",
+		Proof: "A value an embedding host supplies is none of the 13 concrete " +
+			"kernel types, so toString reaches it only through its own .String " +
+			"method and uses that output verbatim. Bounding it is the host's " +
+			"job, not stdlib's: the phase inherits whatever bound the host's " +
+			"implementation already holds.",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "str string/join",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "toString",
+		PhaseLabel:  "container render walk",
+		Disposition: "unbounded-tracked",
+		Proof: "A core container reaches core's boundedString, which descends " +
+			"the value as a tree and not as a graph, so a node reached by two " +
+			"references renders twice while the ledger charged it once. This " +
+			"core shares structure by design: core.List.Cons on a shared-tail " +
+			"list returns core.ListShallowBytes(1) whatever the list's length, " +
+			"so consing a list onto itself doubles the render for a constant " +
+			"charge. Measured: a ten-element list consed onto itself 26 times " +
+			"costs 1040 ledger bytes and renders 1476395007 characters. str and " +
+			"string/join reach the walk with no pre-charge in front of it, and " +
+			"the allocation ledger does not bound it, so no static ceiling " +
+			"replaces one. Owned by core-value-walk-sharing-bound.",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "toAny",
+		PhaseLabel:  "host value render",
+		Disposition: "trusted-host",
+		Proof: "A value an embedding host supplies falls to the default arm, " +
+			"which hands fmt the host's own .String output verbatim. Bounding " +
+			"it is the host's job, not stdlib's: the phase inherits whatever " +
+			"bound the host's implementation already holds.",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "toAny",
+		PhaseLabel:  "non-scalar render walk",
+		Disposition: "unbounded-tracked",
+		Proof: "The default arm calls v.String on every non-scalar format " +
+			"argument, in a loop that runs to completion before fmt.Sprintf, so " +
+			"the render is materialized eagerly rather than lazily inside the " +
+			"verb. What is unbounded there is the walk, not the escaping: the " +
+			"render visits a shared node once per path that reaches it while " +
+			"the ledger charged it once, exactly as toString's walk does. The " +
+			"%q expansion is a separate defect of the same site and is not a " +
+			"second unboundedness - core.String's own String is " +
+			"fmt.Sprintf(\"%q\", V), which turns one source byte into at most " +
+			"four, a bounded multiple of a ledger-bounded quantity, measured " +
+			"3.9997 on a 1 MiB 0x80 leaf, 3.7409 at 1 KiB and 1.9999 on 1 MiB " +
+			"of quotes. What that factor breaks is the charge, which counts one " +
+			"byte per byte, which is why format bills the shortfall after the " +
+			"render instead of treating the pre-charge as a bound. " +
+			"Owned by core-value-walk-sharing-bound.",
+	},
+
+	// The format estimator. Its own scans are bounded by the format string; the
+	// walk it reaches for a non-String operand is not, and it runs before the
+	// pre-charge rather than under it.
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "estimateFormatAllocBytes",
+		PhaseLabel:  "format string scan",
+		Disposition: "bounded-exception",
+		Proof: "The outer loop advances one byte at a time over the format " +
+			"string and holds no Step of its own. That string is args[0] " +
+			"asserted to core.String, so it reached the builtin only by already " +
+			"sitting in the allocation ledger and MaxWork is that ledger bound.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "estimateFormatAllocBytes",
+		PhaseLabel:  "verb flag scan",
+		Disposition: "bounded-exception",
+		Proof: "The flag loop inside estimateOne consumes the flag bytes of one " +
+			"verb and cannot outrun the format string it indexes, so the same " +
+			"ledger bound on that core.String is MaxWork.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "estimateFormatValueBytes",
+		PhaseLabel:  "default verb estimate",
+		Disposition: "unbounded-tracked",
+		Proof: "The default arm sizes an operand by calling core.ValueDeepBytes " +
+			"on it, which descends the value as a tree while the ledger charged " +
+			"each shared node once, so a node reachable twice is measured " +
+			"twice. It runs inside the estimator, ahead of the pre-charge the " +
+			"estimate feeds, so nothing guards it. Owned by " +
+			"core-value-walk-sharing-bound.",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "formatStringBytes",
+		PhaseLabel:  "deep size walk",
+		Disposition: "unbounded-tracked",
+		Proof: "This is the call estimateFormatAllocBytes reaches " +
+			"core.ValueDeepBytes through for every operand that is not a " +
+			"core.String, on the %s, %q and %x arms alike. The walk descends " +
+			"the value as a tree while the ledger charged each shared node " +
+			"once, and it runs before the pre-charge rather than under it, so " +
+			"the estimator itself is unbounded however small the estimate it " +
+			"returns. Owned by core-value-walk-sharing-bound.",
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "parseFormatArgIndex",
+		PhaseLabel:  "argument index scan",
+		Disposition: "bounded-exception",
+		Proof: "The loop consumes the digits of one [n] argument index inside " +
+			"the format string and cannot outrun it, so MaxWork is the " +
+			"allocation ledger's bound on that core.String.",
+		MaxWork: 67_108_848,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "parseFormatInt",
+		PhaseLabel:  "width and precision scan",
+		Disposition: "bounded-exception",
+		Proof: "The loop consumes the digits of one width or precision inside " +
+			"the format string and cannot outrun it, so MaxWork is the " +
+			"allocation ledger's bound on that core.String. The accumulator " +
+			"saturates at maxFormatEstimate rather than overflowing.",
+		MaxWork: 67_108_848,
+	},
+
+	// The failed-parse message the string family owns. The support-family row on
+	// the same function states the ceiling for every other cause and points here
+	// for this one.
+	{
+		Families:    []string{"string"},
+		Fn:          "string->int string->float",
+		File:        "plugins/stdlib/errors.go",
+		Func:        "wrapCause",
+		PhaseLabel:  "strconv message format",
+		Disposition: "bounded-exception",
+		Proof: "strconv.NumError.Error builds its text with " +
+			"strconv.Quote(e.Num), quoting the whole parsed subject, and " +
+			"wrapCause renders that text again through \"%s: %v\", so the " +
+			"subject is materialized twice. The bound holds here where the " +
+			"formatting boundary's does not: the subject is one flat " +
+			"core.String with no children, so no structural sharing can " +
+			"amplify it, and strconv.Quote's expansion is a constant factor of " +
+			"at most four - \\xNN for a byte that is not valid UTF-8. Measured " +
+			"at a 1 MiB subject: 1048620 bytes of ASCII at 1.0000x, 4194348 of " +
+			"invalid UTF-8 at 4.0000x, 2097196 of quotes and newlines at " +
+			"2.0000x; a 1-byte subject renders 45 bytes for ParseInt and 47 for " +
+			"ParseFloat. MaxWork is two renders of four bytes per subject byte " +
+			"plus 128 bytes of fixed wrapper text each, over the allocation " +
+			"ledger's 67108848-byte ceiling on the subject. " +
+			"plugins/stdlib/strings.go pre-charges the same quantity through " +
+			"parseFailureMessageBytes, which bills both renders for the same " +
+			"reason.",
+		MaxWork: 536_871_040,
 	},
 }
