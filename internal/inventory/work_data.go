@@ -1348,32 +1348,44 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"string"},
 		Fn:          "string/join",
 		File:        "plugins/stdlib/strings.go",
-		Func:        "registerStrings",
+		Func:        "joinPrecharged",
 		PhaseLabel:  "part concatenation",
 		Disposition: "bounded-exception",
 		Proof: "strings.Join copies the parts and the separator into one buffer " +
-			"with no point inside it where a Step could run; the per-element " +
-			"loop ahead of it is budgeted. The bound holds per operand the " +
-			"ledger sized: the separator is a core.String, and so is every part " +
-			"that came from a core.String element, so each contributes at most " +
-			"the ledger's 67108848 bytes, which is MaxWork. It does not hold " +
-			"for a part toString rendered out of a container: that render is " +
-			"the unbounded walk recorded on toString, and its row is where the " +
-			"defect is tracked.",
+			"with no point inside it where a Step could run, and that buffer is " +
+			"a product rather than a maximum over the operands: the separator " +
+			"lands between every part, so 2048 empty parts and a 65536-byte " +
+			"separator write 134152192 bytes out of 98 KB of ledger. What " +
+			"bounds it is the charge ahead of it. joinPrecharged sizes the " +
+			"output as the parts summed by the caller's budgeted pass plus one " +
+			"separator between each pair, saturating rather than wrapping, and " +
+			"charges that whole size before strings.Join runs, so the copy " +
+			"happens only for an output the allocation ledger accepted and " +
+			"MaxWork is that ledger bound. It does not cover a part toString " +
+			"rendered out of a container: that render is the unbounded walk " +
+			"recorded on toString, and its row is where the defect is tracked.",
 		MaxWork: 67_108_848,
 	},
 	{
 		Families:    []string{"string"},
 		Fn:          "string/replace",
 		File:        "plugins/stdlib/strings.go",
-		Func:        "registerStrings",
+		Func:        "replacePrecharged",
 		PhaseLabel:  "subject scan",
 		Disposition: "bounded-exception",
 		Proof: "strings.ReplaceAll walks the subject once and writes the " +
 			"replacement into a new buffer, with no point inside it where a " +
-			"Step could run. All three operands are core.String values the " +
-			"allocation ledger has already sized, so MaxWork is that ledger " +
-			"bound.",
+			"Step could run, and that buffer is a product rather than a maximum " +
+			"over the operands: an empty old inserts the replacement before " +
+			"every rune and once more at the end, so an 8192-byte subject and a " +
+			"16384-byte replacement write 134242304 bytes out of 24 KB of " +
+			"ledger. What bounds it is the charge ahead of it. " +
+			"replaceOutputBytes computes the exact output length from the " +
+			"operands - the subject's length plus one occurrence's growth per " +
+			"strings.Count occurrence, saturating rather than wrapping - and " +
+			"replacePrecharged charges it before strings.ReplaceAll runs, so " +
+			"the walk happens only for an output the allocation ledger " +
+			"accepted and MaxWork is that ledger bound.",
 		MaxWork: 67_108_848,
 	},
 	{
@@ -1676,9 +1688,13 @@ var WorkPhases = []WorkPhase{
 			"ParseFloat. MaxWork is two renders of four bytes per subject byte " +
 			"plus 128 bytes of fixed wrapper text each, over the allocation " +
 			"ledger's 67108848-byte ceiling on the subject. " +
-			"plugins/stdlib/strings.go pre-charges the same quantity through " +
-			"parseFailureMessageBytes, which bills both renders for the same " +
-			"reason.",
+			"plugins/stdlib/strings.go pre-charges both renders through " +
+			"parseFailureMessageBytes, which bills " +
+			"2 * core.StringShallowBytes(4n): four bytes per subject byte for " +
+			"each render plus a 16-byte string header each, 8n+32 against the " +
+			"8n+256 this ceiling states. The 224-byte gap is the fixed wrapper " +
+			"text the ceiling allows each render and the pre-charge carries " +
+			"only a header for.",
 		MaxWork: 536_871_040,
 	},
 }

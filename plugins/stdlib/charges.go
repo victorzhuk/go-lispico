@@ -37,6 +37,14 @@ func chargeBorrowedResult(ctx context.Context) error {
 	return core.ChargeGoFuncResultBytes(ctx, 0)
 }
 
+// chargeSizedString charges the apply site for a string the builtin sized from
+// its operands ahead of building it, so an output that cannot fit is rejected
+// before the buffer exists. bytes is the whole shallow size, header included,
+// and 0 marks a primitive that hands its subject back rather than allocate.
+func chargeSizedString(ctx context.Context, bytes int64) error {
+	return core.ChargeGoFuncResultBytes(ctx, bytes)
+}
+
 // chargeFormatShortfall tops up a result the builtin already pre-charged for
 // estimate bytes, settling the total at max(estimate, shallow): never billed
 // twice, never billed short.

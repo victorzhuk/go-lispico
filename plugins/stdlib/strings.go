@@ -91,14 +91,21 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 
 			budget := core.NewBuiltinWorkBudget(ctx)
 			parts := make([]string, 0, len(items))
+			var outBytes int64
 			for _, item := range items {
 				if err := budget.Step(); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
-				parts = append(parts, toString(item))
+				part := toString(item)
+				if len(parts) > 0 {
+					outBytes = addFormatEstimate(outBytes, int64(len(sep.V)))
+				}
+				outBytes = addFormatEstimate(outBytes, int64(len(part)))
+				parts = append(parts, part)
 			}
 
-			return finishBuiltin(budget, core.String{V: strings.Join(parts, sep.V)}, nil)
+			joined, err := joinPrecharged(ctx, parts, sep.V, outBytes)
+			return finishBuiltin(budget, core.String{V: joined}, err)
 		},
 	}, false); err != nil {
 		return err
@@ -173,8 +180,8 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, typeErrorf("string/replace: requires string arguments")
 			}
 
-			out := strings.ReplaceAll(s.V, old.V, new.V)
-			if err := chargeStringResult(ctx, s.V, out); err != nil {
+			out, err := replacePrecharged(ctx, s.V, old.V, new.V)
+			if err != nil {
 				return nil, err
 			}
 			return core.String{V: out}, nil
@@ -651,6 +658,19 @@ func addFormatEstimate(a, b int64) int64 {
 	return a + b
 }
 
+// mulFormatEstimate multiplies two estimate terms under addFormatEstimate's
+// saturation, so a product that cannot fit an int64 pins at the ceiling instead
+// of wrapping into a small charge.
+func mulFormatEstimate(a, b int64) int64 {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	if a > maxFormatEstimate/b {
+		return maxFormatEstimate
+	}
+	return a * b
+}
+
 func unaryStringFunc(name string, fn func(string) string) func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
 	return func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 		if len(args) != 1 {
@@ -668,6 +688,47 @@ func unaryStringFunc(name string, fn func(string) string) func(context.Context, 
 		}
 		return core.String{V: out}, nil
 	}
+}
+
+// joinPrecharged charges what string/join is about to build before
+// strings.Join writes it. The separator lands between every part, so the output
+// is a product of the part count and the separator's length rather than a
+// maximum over the operands; outBytes is that size, summed by the caller's
+// budgeted pass over the parts.
+func joinPrecharged(ctx context.Context, parts []string, sep string, outBytes int64) (string, error) {
+	if err := chargeSizedString(ctx, addFormatEstimate(core.MeterStringHeaderBytes, outBytes)); err != nil {
+		return "", err
+	}
+	return strings.Join(parts, sep), nil
+}
+
+// replacePrecharged charges what string/replace is about to build before
+// strings.ReplaceAll writes it.
+func replacePrecharged(ctx context.Context, s, old, new string) (string, error) {
+	if err := chargeSizedString(ctx, replaceOutputBytes(s, old, new)); err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(s, old, new), nil
+}
+
+// replaceOutputBytes sizes string/replace's output from its operands. An empty
+// old inserts the replacement before every rune and once more at the end, so
+// the output is a product of the subject's rune count and the replacement's
+// length, not a maximum over the two. It is 0 when the primitive hands the
+// subject straight back - old equal to new, or no occurrence to rewrite -
+// because that result owns no new bytes.
+func replaceOutputBytes(s, old, new string) int64 {
+	count := int64(strings.Count(s, old))
+	if old == new || count == 0 {
+		return 0
+	}
+	outLen := int64(len(s))
+	if grow := int64(len(new) - len(old)); grow > 0 {
+		outLen = addFormatEstimate(outLen, mulFormatEstimate(count, grow))
+	} else {
+		outLen += count * grow
+	}
+	return addFormatEstimate(core.MeterStringHeaderBytes, outLen)
 }
 
 // chargeStringResult bills a Go string primitive's output. A primitive that
