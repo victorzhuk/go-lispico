@@ -149,20 +149,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from these calls to treat `nil` as empty no longer receives it.
 
 - `hash-map` now charges its result deeply: building a map bills the size of
-  the values it holds, not just the container. `(hash-map :a s)` for a
-  4096-byte string `s` charged 236 bytes and now charges 4365. Accounting is
-  stricter, not cheaper — a tight allocation limit can refuse a call it
-  previously admitted.
+  the values it holds, not just the container. A single 4096-byte string
+  value adds 4129 bytes to the charge, the same on both evaluators.
+  Accounting is stricter, not cheaper — a tight allocation limit can refuse a
+  call it previously admitted.
 
 - `format` is charged once instead of twice. Its result was billed by both
-  the builtin and the apply site. `(format "%s" s)` for the same 4096-byte
-  string charged 8363 bytes and now charges 4251, so allocation totals for
+  the builtin and the apply site; the removed charge is exactly one copy of
+  the rendered result — 4112 bytes for a 4096-byte result, and the difference
+  tracks the result size at every size measured. Allocation totals for
   format-heavy programs fall.
 
-- `range` now consumes reductions in proportion to its length rather than a
-  constant: `(range 20000)` consumed 4 reductions and now consumes 20004. A
-  program under a tight reduction limit can hit the ceiling where it
-  previously ran to completion.
+- `range` now bills one reduction per element and observes the evaluation
+  deadline while it builds. `(range 20000)` costs 20000 more reductions than
+  before, on both evaluators, so a program under a tight reduction limit can
+  hit the ceiling where it previously ran to completion. The deadline is the
+  likelier of the two to bite a real program: `range` used to run to
+  completion however little time the caller had left, and a call whose
+  deadline expires while the list is being built now aborts instead — no
+  reduction limit need be anywhere in sight.
 
 ## [0.12.0] - 2026-07-31
 
