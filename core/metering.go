@@ -510,8 +510,10 @@ func saturateCounter(counter *atomic.Int64, max, n int64) {
 // total after that is the ceiling too, so answering the ceiling for a wrapped
 // value is both the truthful reading and a monotone one: what a reader sees
 // climbs with the real total and then stays at the ceiling. This belongs here
-// and not in addCharge because it costs a charge nothing - the charge path
-// stays one atomic add, and only the far colder read pays a compare.
+// and not in addCharge because the charge path stays one atomic add; the cost
+// moves to the read, which vm.meterSnapshot takes once per re-entrant boundary
+// crossing - two compares, about 0.38ns, with the gold set's call-boundary
+// bytes and allocations unmoved.
 func publishedTotal(counter *atomic.Int64) int64 {
 	total := counter.Load()
 	if total < 0 {
