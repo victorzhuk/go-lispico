@@ -50,7 +50,7 @@ func TestWorkInventory_NoUndisposedException(t *testing.T) {
 		case exception && row.MaxWork <= 0:
 			t.Errorf("%s %s:%s %q is a bounded-exception phase with MaxWork %d; a bounded exception needs a positive ceiling",
 				row.Fn, row.File, row.Func, row.PhaseLabel, row.MaxWork)
-		case !exception && row.MaxWork > 0:
+		case !exception && row.MaxWork != 0:
 			t.Errorf("%s %s:%s %q carries MaxWork %d under disposition %q; only a bounded-exception phase declares a ceiling",
 				row.Fn, row.File, row.Func, row.PhaseLabel, row.MaxWork, row.Disposition)
 		}

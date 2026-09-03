@@ -148,6 +148,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than `nil` still fails with `TypeError`. A host that caught `TypeError`
   from these calls to treat `nil` as empty no longer receives it.
 
+- `hash-map` now charges its result deeply: building a map bills the size of
+  the values it holds, not just the container. `(hash-map :a s)` for a
+  4096-byte string `s` charged 236 bytes and now charges 4365. Accounting is
+  stricter, not cheaper — a tight allocation limit can refuse a call it
+  previously admitted.
+
+- `format` is charged once instead of twice. Its result was billed by both
+  the builtin and the apply site. `(format "%s" s)` for the same 4096-byte
+  string charged 8363 bytes and now charges 4251, so allocation totals for
+  format-heavy programs fall.
+
+- `range` now consumes reductions in proportion to its length rather than a
+  constant: `(range 20000)` consumed 4 reductions and now consumes 20004. A
+  program under a tight reduction limit can hit the ceiling where it
+  previously ran to completion.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added
