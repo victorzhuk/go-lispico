@@ -480,6 +480,14 @@ func TestStrings_UnicodeAndEmptySeparatorUnchanged(t *testing.T) {
 // estimated eighteen orders of magnitude above what it materializes - and that
 // estimate is the charge that overflows the allocation ledger.
 //
+// The running value is tested before each digit rather than after, so the edge
+// is not 1e6: 10000009 is the last literal fmt honours and 10000010 the first
+// it refuses. Both are rows here, because the mechanism this pins is that
+// boundary and a table that straddles it without touching it holds while the
+// ceiling moves. The honoured column is checked against fmt's own render rather
+// than restated from the estimator, so a row cannot claim an edge fmt does not
+// have.
+//
 // Dynamic widths are a different path: fmt takes them from an argument, not
 // from parsenum, so they are not subject to this refusal and must keep the
 // estimate they carry today.
@@ -494,14 +502,21 @@ func TestStrings_FormatEstimateTracksLiteralWidthRender(t *testing.T) {
 	}{
 		{"width at one million", "%1000000d", true},
 		{"width above one million", "%10000001d", true},
+		{"width at the last honoured literal", "%10000009d", true},
+		{"width one past the last honoured literal", "%10000010d", false},
 		{"width refused int32 ceiling", "%2147483647d", false},
 		{"width refused int64 ceiling", "%9223372036854775807d", false},
 		{"precision refused int64 ceiling", "%.9223372036854775807f", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			rendered := int64(len(fmt.Sprintf(tt.format, toAny(arg))))
+			out := fmt.Sprintf(tt.format, toAny(arg))
+			rendered := int64(len(out))
+			honouredByFmt := !strings.Contains(out, "%!(NOVERB)")
 			estimate := estimateFormatAllocBytes(tt.format, args)
 
+			require.Equalf(t, tt.honoured, honouredByFmt,
+				"fmt.Sprintf(%q) rendered %d bytes and honoured=%v: the row's honoured column is fmt's own parse answer, not the estimator's",
+				tt.format, rendered, honouredByFmt)
 			require.GreaterOrEqualf(t, estimate, rendered,
 				"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes",
 				tt.format, estimate, rendered)
