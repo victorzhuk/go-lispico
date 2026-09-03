@@ -416,7 +416,7 @@ type inputArm struct {
 }
 
 const (
-	reasonArith    = "arithmetic over numbers; every argument is coerced to a number, so a collection argument is a TypeError rather than a call shape"
+	reasonArith    = "arithmetic over numbers; every argument is type-checked as a number, so a collection argument is a TypeError rather than a call shape"
 	reasonOrdering = "ordering coerces every argument through ToFloat, so a collection argument is a TypeError rather than a call shape"
 	reasonConvert  = "a total conversion between two scalar types; a collection argument is a TypeError rather than a call shape"
 	reasonStringIn = "takes string arguments only; a collection argument is a TypeError rather than a call shape"
@@ -442,12 +442,12 @@ var inputArms = []inputArm{
 	{name: "max", reason: reasonArith},
 	{name: "min", reason: reasonArith},
 	{name: "mod", reason: reasonArith},
-	{name: "neg?", reason: reasonArith},
-	{name: "pos?", reason: reasonArith},
+	{name: "neg?", src: `(neg? m)`},
+	{name: "pos?", src: `(pos? v)`},
 	{name: "pow", reason: reasonArith},
 	{name: "quot", reason: reasonArith},
 	{name: "sqrt", reason: reasonArith},
-	{name: "zero?", reason: reasonArith},
+	{name: "zero?", src: `(zero? l)`},
 
 	{name: "bool?", src: `(bool? l)`},
 	{name: "float?", src: `(float? v)`},
