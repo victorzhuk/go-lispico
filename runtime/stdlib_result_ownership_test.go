@@ -91,6 +91,11 @@ var ownershipArms = []ownershipArm{
 	{file: "plugins/stdlib/collections.go", fnc: "getInResult", label: "settled value return", rep: "get-in", class: "borrowed", kind: "noop", src: `(get-in m pa)`},
 	{file: "plugins/stdlib/collections.go", fnc: "next", label: "list key return", rep: "get-in", class: "borrowed", kind: "noop", src: `(get-in m pa)`},
 	{file: "plugins/stdlib/collections.go", fnc: "next", label: "vector key return", rep: "get-in", class: "borrowed", kind: "noop", src: `(get-in m pav)`},
+	// seqInput returns a borrowed []core.Value that its caller consumes
+	// internally, so no result of its own crosses a dispatch boundary and it
+	// has no charge site: the differential these two arms observe is reverse's
+	// own fresh-container charge. A red here means that container size
+	// expression moved, not that seqInput began charging.
 	{file: "plugins/stdlib/collections.go", fnc: "seqInput", label: "list elements return", rep: "reverse", class: "borrowed", kind: "noop", src: `(reverse l2)`},
 	{file: "plugins/stdlib/collections.go", fnc: "seqInput", label: "vector elements return", rep: "reverse", class: "borrowed", kind: "noop", src: `(reverse v2)`},
 	{file: "plugins/stdlib/higher_order.go", fnc: "registerHigherOrder", label: "accumulator return", rep: "reduce", class: "borrowed", kind: "noop", src: `(reduce (fn [a b] a) l2)`},
