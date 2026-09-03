@@ -36,3 +36,10 @@ func chargeFreshString(ctx context.Context, n int) error {
 func chargeBorrowedResult(ctx context.Context) error {
 	return core.ChargeGoFuncResultBytes(ctx, 0)
 }
+
+// chargeFormatShortfall tops up a result the builtin already pre-charged for
+// estimate bytes, settling the total at max(estimate, shallow): never billed
+// twice, never billed short.
+func chargeFormatShortfall(ctx context.Context, outLen int, estimate int64) error {
+	return core.ChargeGoFuncResultBytes(ctx, max(0, core.StringShallowBytes(outLen)-estimate))
+}

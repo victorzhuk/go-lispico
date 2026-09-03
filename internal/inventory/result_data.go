@@ -3285,7 +3285,7 @@ var ResultBranches = []ResultBranch{
 		Func:        "registerStrings",
 		BranchLabel: "rendered string return",
 		Class:       "mixed-string",
-		ChargeExpr:  "core.ChargeEvalAllocBytes(ctx, estimate) ahead of the render, then core.ChargeGoFuncResultBytes(ctx, max(0, core.StringShallowBytes(len(out))-estimate))",
+		ChargeExpr:  "core.ChargeEvalAllocBytes(ctx, estimate) ahead of the render, then chargeFormatShortfall(ctx, len(out), estimate)",
 	},
 	{
 		Families:    []string{"string"},

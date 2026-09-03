@@ -62,7 +62,7 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			// makes the total max(estimate, shallow): the pre-charge still
 			// guards Sprintf, the finished string is never billed twice, and a
 			// render that outran its estimate is never billed short.
-			if err := core.ChargeGoFuncResultBytes(ctx, max(0, core.StringShallowBytes(len(out))-estimate)); err != nil {
+			if err := chargeFormatShortfall(ctx, len(out), estimate); err != nil {
 				return nil, err
 			}
 			return core.String{V: out}, nil
