@@ -16,7 +16,10 @@ var invTrustedHostCallees = []string{".Equals", ".String", ".Type", "core.Equals
 // invTrackedChanges are the changes that own an unbounded phase. A row that
 // defers its bound has to name one, so "unbounded" is a tracked defect with an
 // owner rather than a shrug.
-var invTrackedChanges = []string{"core-value-walk-sharing-bound"}
+var invTrackedChanges = []string{
+	"core-value-walk-sharing-bound",
+	"format-mismatched-verb-bound",
+}
 
 // invKnownNames is the closed set of names a row may name: every registered
 // builtin plus every CL adapter id.

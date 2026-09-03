@@ -12,12 +12,23 @@ import (
 )
 
 // TestChargeGoFuncResultBytesCalledOnlyAsReturn statically verifies every
-// call to ChargeGoFuncResultBytes across the module is the sole result
-// expression of a return statement — "call exactly once, immediately
+// direct call to ChargeGoFuncResultBytes across the module is the sole
+// result expression of a return statement — "call exactly once, immediately
 // before returning the value n describes" per its doc comment. A call
 // assigned to a variable and used later would let the calleeCharged
 // marker and the value actually returned drift apart under a later
 // control-flow change nobody noticed at the call site.
+//
+// Most charge sites reach the API through a wrapper — chargeBorrowedResult,
+// chargeFreshContainer, chargeFreshString, chargeSizedString,
+// chargeFormatShortfall and their siblings. Each wrapper definition is
+// itself a single return of the call, so the scan covers those; the wrapper
+// call sites are outside its reach by construction, since their legitimate
+// shape is `if err := wrapper(ctx); err != nil { ... }` followed by a
+// separate return — the very shape forbidden above for a direct call.
+// There the marker-versus-value property is carried behaviourally instead,
+// by runtime/stdlib_result_ownership_test.go, which asserts a ledger
+// differential per classified result branch under both eval modes.
 func TestChargeGoFuncResultBytesCalledOnlyAsReturn(t *testing.T) {
 	root := moduleRoot(t)
 	fset := gotoken.NewFileSet()

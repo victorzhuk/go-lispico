@@ -71,10 +71,9 @@ func TestInventoryFixtures_CatchPrePostOnlyDisposition(t *testing.T) {
 	invAssertSingleFinding(t, "prepost_only", "PREPOST_ONLY_DISPOSITION")
 }
 
-// Vacuous until the compliant fixture lands: an absent root yields no findings,
-// which is exactly what this asserts. It stays as the regression that proves
-// the reconcilers keep quiet on clean source once the fixture exists — a check
-// that never passes proves nothing.
+// The negative case of the set. The seven above prove each finding fires; a
+// reconciler that flagged every source would pass all of them, so this one
+// pins the other side — compliant source under the same scan yields nothing.
 func TestInventoryFixtures_CompliantFixturePasses(t *testing.T) {
 	if findings := invFixtureFindings(t, "compliant"); len(findings) != 0 {
 		t.Fatalf("case compliant: want no findings, got %d: %q", len(findings), findings)

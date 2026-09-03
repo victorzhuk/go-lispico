@@ -1309,7 +1309,14 @@ var WorkPhases = []WorkPhase{
 			"while %q renders a byte that is not valid UTF-8 as four, measured " +
 			"3.9997 on a 1 MiB escaped leaf, which is why the builtin charges " +
 			"the shortfall afterwards rather than reading the estimate as a " +
-			"ceiling. Owned by core-value-walk-sharing-bound.",
+			"ceiling. Owned by core-value-walk-sharing-bound. A third cause " +
+			"sits outside that owner: when a verb and the operand's type " +
+			"disagree, fmt renders the whole operand inside a mismatch " +
+			"diagnostic such as %!d(string=...) while " +
+			"estimateFormatValueBytes returns a constant that does not " +
+			"depend on the operand, and an explicit argument index aims " +
+			"every directive at that same operand - no sharing and no %q " +
+			"escape in play. Owned by format-mismatched-verb-bound.",
 	},
 
 	// The Go string primitives. Each reads core.String operands the ledger has
