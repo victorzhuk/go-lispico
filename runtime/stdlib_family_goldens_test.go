@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -413,11 +414,18 @@ type inputArm struct {
 	// one of src and reason is set: a name with an awkward call shape is not a
 	// name without one.
 	reason string
+	// base is the argument list, in source spelling, of a call that makes a
+	// marked name succeed. Substituting a collection into any of its positions
+	// must fail, which is what makes reason a checked claim and not a stated one.
+	base []string
+	// variadic marks a name that accepts more arguments than base carries, so a
+	// collection appended past base is a further shape the marker must refuse.
+	// A fixed-arity name would only raise an ArityError there, proving nothing.
+	variadic bool
 }
 
 const (
 	reasonArith    = "arithmetic over numbers; every argument is type-checked as a number, so a collection argument is a TypeError rather than a call shape"
-	reasonOrdering = "ordering coerces every argument through ToFloat, so a collection argument is a TypeError rather than a call shape"
 	reasonConvert  = "a total conversion between two scalar types; a collection argument is a TypeError rather than a call shape"
 	reasonStringIn = "takes string arguments only; a collection argument is a TypeError rather than a call shape"
 	reasonRange    = "generates its own elements from integer bounds and accepts no collection argument"
@@ -428,25 +436,25 @@ const (
 // builtin cannot land without a stated decision either way.
 var inputArms = []inputArm{
 	{name: "=", src: `(= l l)`},
-	{name: "+", reason: reasonArith},
-	{name: "-", reason: reasonArith},
-	{name: "*", reason: reasonArith},
-	{name: "/", reason: reasonArith},
-	{name: "<", reason: reasonOrdering},
-	{name: "<=", reason: reasonOrdering},
-	{name: ">", reason: reasonOrdering},
-	{name: ">=", reason: reasonOrdering},
-	{name: "abs", reason: reasonArith},
-	{name: "ceil", reason: reasonArith},
-	{name: "floor", reason: reasonArith},
-	{name: "max", reason: reasonArith},
-	{name: "min", reason: reasonArith},
-	{name: "mod", reason: reasonArith},
+	{name: "+", reason: reasonArith, base: []string{"1", "2"}, variadic: true},
+	{name: "-", reason: reasonArith, base: []string{"3", "1"}, variadic: true},
+	{name: "*", reason: reasonArith, base: []string{"2", "3"}, variadic: true},
+	{name: "/", reason: reasonArith, base: []string{"6", "3"}, variadic: true},
+	{name: "<", src: `(< 2 1 l)`},
+	{name: "<=", src: `(<= 2 1 v)`},
+	{name: ">", src: `(> 1 2 m)`},
+	{name: ">=", src: `(>= 1 2 m)`},
+	{name: "abs", reason: reasonArith, base: []string{"-1"}},
+	{name: "ceil", reason: reasonArith, base: []string{"1.2"}},
+	{name: "floor", reason: reasonArith, base: []string{"1.2"}},
+	{name: "max", reason: reasonArith, base: []string{"1", "2"}, variadic: true},
+	{name: "min", reason: reasonArith, base: []string{"1", "2"}, variadic: true},
+	{name: "mod", reason: reasonArith, base: []string{"5", "2"}},
 	{name: "neg?", src: `(neg? m)`},
 	{name: "pos?", src: `(pos? v)`},
-	{name: "pow", reason: reasonArith},
-	{name: "quot", reason: reasonArith},
-	{name: "sqrt", reason: reasonArith},
+	{name: "pow", reason: reasonArith, base: []string{"2", "3"}},
+	{name: "quot", reason: reasonArith, base: []string{"5", "2"}},
+	{name: "sqrt", reason: reasonArith, base: []string{"4"}},
 	{name: "zero?", src: `(zero? l)`},
 
 	{name: "bool?", src: `(bool? l)`},
@@ -462,10 +470,10 @@ var inputArms = []inputArm{
 	{name: "symbol?", src: `(symbol? m)`},
 	{name: "type", src: `(type l)`},
 	{name: "vector?", src: `(vector? v)`},
-	{name: "float->int", reason: reasonConvert},
-	{name: "int->float", reason: reasonConvert},
-	{name: "keyword->str", reason: reasonConvert},
-	{name: "str->keyword", reason: reasonConvert},
+	{name: "float->int", reason: reasonConvert, base: []string{"1.5"}},
+	{name: "int->float", reason: reasonConvert, base: []string{"1"}},
+	{name: "keyword->str", reason: reasonConvert, base: []string{":a"}},
+	{name: "str->keyword", reason: reasonConvert, base: []string{`"a"`}},
 
 	{name: "assoc", src: `(assoc m :c 3)`},
 	{name: "concat", src: `(concat l v)`},
@@ -484,7 +492,7 @@ var inputArms = []inputArm{
 	{name: "list", src: `(list l)`},
 	{name: "merge", src: `(merge m m)`},
 	{name: "nth", src: `(nth l 0)`},
-	{name: "range", reason: reasonRange},
+	{name: "range", reason: reasonRange, base: []string{"3"}, variadic: true},
 	{name: "rest", src: `(rest l)`},
 	{name: "reverse", src: `(reverse l)`},
 	{name: "sort", src: `(sort l)`},
@@ -500,18 +508,18 @@ var inputArms = []inputArm{
 	{name: "format", src: `(format "%s" l)`},
 	{name: "str", src: `(str l)`},
 	{name: "string/join", src: `(string/join "," ls)`},
-	{name: "string->float", reason: reasonStringIn},
-	{name: "string->int", reason: reasonStringIn},
-	{name: "string/contains?", reason: reasonStringIn},
-	{name: "string/ends-with?", reason: reasonStringIn},
-	{name: "string/length", reason: reasonStringIn},
-	{name: "string/lines", reason: reasonStringIn},
-	{name: "string/lower", reason: reasonStringIn},
-	{name: "string/replace", reason: reasonStringIn},
-	{name: "string/split", reason: reasonStringIn},
-	{name: "string/starts-with?", reason: reasonStringIn},
-	{name: "string/trim", reason: reasonStringIn},
-	{name: "string/upper", reason: reasonStringIn},
+	{name: "string->float", reason: reasonStringIn, base: []string{`"1.5"`}},
+	{name: "string->int", reason: reasonStringIn, base: []string{`"1"`}},
+	{name: "string/contains?", reason: reasonStringIn, base: []string{`"ab"`, `"a"`}},
+	{name: "string/ends-with?", reason: reasonStringIn, base: []string{`"ab"`, `"b"`}},
+	{name: "string/length", reason: reasonStringIn, base: []string{`"ab"`}},
+	{name: "string/lines", reason: reasonStringIn, base: []string{`"ab"`}},
+	{name: "string/lower", reason: reasonStringIn, base: []string{`"AB"`}},
+	{name: "string/replace", reason: reasonStringIn, base: []string{`"ab"`, `"a"`, `"c"`}},
+	{name: "string/split", reason: reasonStringIn, base: []string{`"a,b"`, `","`}},
+	{name: "string/starts-with?", reason: reasonStringIn, base: []string{`"ab"`, `"a"`}},
+	{name: "string/trim", reason: reasonStringIn, base: []string{`" a "`}},
+	{name: "string/upper", reason: reasonStringIn, base: []string{`"ab"`}},
 
 	{name: "cl/nth@1", dia: "cl", src: `(nth 0 l)`},
 	{name: "cl/mapcar@1", dia: "cl", src: `(mapcar #'cb2x l)`},
@@ -579,6 +587,8 @@ func TestStdlibFamilies_InputsUnchanged(t *testing.T) {
 		hasSrc, hasReason := a.src != "", a.reason != ""
 		assert.True(t, hasSrc != hasReason,
 			"%q must carry exactly one of a call shape and a no-collection-shape reason", a.name)
+		assert.Equal(t, hasReason, len(a.base) > 0,
+			"%q must carry a base call exactly when it states a no-collection-shape reason", a.name)
 	}
 
 	for name := range inventory.NameFamily {
@@ -617,6 +627,63 @@ func TestStdlibFamilies_InputsUnchanged(t *testing.T) {
 						require.True(t, ok, "%s must still be bound after %s", name, a.src)
 						assert.True(t, bound.Equals(before),
 							"%s: %s left %s bound to something other than the value it was handed (now %v, was %v)", a.name, a.src, name, bound, before)
+					}
+				})
+			}
+		})
+	}
+}
+
+// markerCall spells one call of a marked name from an argument list, so the
+// base call and every collection substitution below are the same shape read
+// twice rather than two hand-written spellings that can drift apart.
+func markerCall(name string, args []string) string {
+	return "(" + name + " " + strings.Join(args, " ") + ")"
+}
+
+// TestStdlibFamilies_MarkersRefuseCollections turns every no-collection-shape
+// reason into a checked claim: the arm's base call must succeed, and that same
+// call with a collection substituted into any argument position — or appended
+// past the base where the name is variadic, the shape an earlier argument can
+// short-circuit past — must fail. A marker that accepts a collection anywhere
+// fails here instead of surviving until someone audits it.
+func TestStdlibFamilies_MarkersRefuseCollections(t *testing.T) {
+	collections := []string{"l", "v", "m"}
+
+	for _, a := range inputArms {
+		if a.reason == "" {
+			continue
+		}
+		t.Run(a.name, func(t *testing.T) {
+			for _, mode := range goldenEvaluatorModes {
+				t.Run(mode.name, func(t *testing.T) {
+					var c callbackCounter
+					eng := newFamilyEngine(t, a.dia, &c, mode.opts...)
+					for name, v := range familyInputFixtures(t) {
+						require.NoError(t, eng.Bind(name, v))
+					}
+
+					base := markerCall(a.name, a.base)
+					_, err := eng.Eval(context.Background(), "marker-base", base)
+					require.NoError(t, err,
+						"%s: the base call %s must succeed, else the marker is checked against nothing", a.name, base)
+
+					var shapes []string
+					for _, coll := range collections {
+						for i := range a.base {
+							args := append([]string(nil), a.base...)
+							args[i] = coll
+							shapes = append(shapes, markerCall(a.name, args))
+						}
+						if a.variadic {
+							shapes = append(shapes, markerCall(a.name, append(append([]string(nil), a.base...), coll)))
+						}
+					}
+
+					for _, src := range shapes {
+						_, err := eng.Eval(context.Background(), "marker-collection", src)
+						assert.Error(t, err,
+							"%s: %s is a legal call shape, so the stated reason is false and the name needs a call shape, not a marker (%s)", a.name, src, a.reason)
 					}
 				})
 			}
