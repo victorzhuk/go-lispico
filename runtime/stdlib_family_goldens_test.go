@@ -624,66 +624,120 @@ func TestStdlibFamilies_InputsUnchanged(t *testing.T) {
 	}
 }
 
+// tpSubjectLen: enough elements for the comparator to be reached twice and for
+// sort's copy walk to leave unpublished work for the mandatory flush to carry,
+// and small enough that the calibration runs below stay cheap.
+const tpSubjectLen = 64
+
+// tpPred fails the second comparison with a non-terminal TypeError. That error
+// is pending when the budget settles, so whatever the caller sees says which of
+// the two won.
+func tpPred(calls *int) core.GoFunc {
+	return core.GoFunc{
+		Name: "tp-pred",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			*calls++
+			if *calls == 2 {
+				return nil, core.NewTypeError("int", core.Int{V: 1})
+			}
+			return core.Bool{V: true}, nil
+		},
+	}
+}
+
 // TestStdlibFamilies_TerminalOutranksCallbackError pins the precedence at
 // sort's mandatory flush from both sides: with a budget that the flush crosses,
 // the terminal ResourceLimitError outranks the callback's pending TypeError;
 // with a generous budget the same callback's TypeError surfaces unchanged and
-// non-terminal. Without the second half the first would pass for a
-// sort that had simply stopped reporting callback errors at all.
+// non-terminal. Without the second half the first would pass for a sort that
+// had simply stopped reporting callback errors at all.
+//
+// Both halves are run twice: once through the engine, where the runtime's own
+// settle at the dispatch boundary has the last word, and once through a direct
+// core.Evaluator.Apply, which observes the error sort's own settle path
+// produced before that boundary is reached.
 func TestStdlibFamilies_TerminalOutranksCallbackError(t *testing.T) {
 	skipUntilMeteringFields(t)
 
-	// 64 elements is enough for the comparator to be reached twice and for
-	// sort's copy walk to leave unpublished work for the flush to carry, and
-	// small enough that the calibration run below is cheap.
-	const subjectLen = 64
+	t.Run("engine dispatch", func(t *testing.T) {
+		build := func(t *testing.T, maxReductions int, calls *int) Engine {
+			t.Helper()
+			eng := newGoldenEngine(t, cl.Dialect(), true, WithBytecode(),
+				WithResourceLimits(meteringLimits(t, maxReductions, 1<<30)))
+			bindPrebuiltSubject(t, eng, "tp-subject", tpSubjectLen)
+			require.NoError(t, eng.Bind("tp-pred", tpPred(calls)))
+			return eng
+		}
 
-	build := func(t *testing.T, maxReductions int, calls *int) Engine {
-		t.Helper()
-		eng := newGoldenEngine(t, cl.Dialect(), true, WithBytecode(),
-			WithResourceLimits(meteringLimits(t, maxReductions, 1<<30)))
-		bindPrebuiltSubject(t, eng, "tp-subject", subjectLen)
-		require.NoError(t, eng.Bind("tp-pred", core.GoFunc{
-			Name: "tp-pred",
-			Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
-				*calls++
-				if *calls == 2 {
-					return nil, core.NewTypeError("int", core.Int{V: 1})
-				}
-				return core.Bool{V: true}, nil
-			},
-		}))
-		return eng
-	}
+		const src = `(sort tp-subject #'tp-pred)`
 
-	const src = `(sort tp-subject #'tp-pred)`
+		var generousCalls int
+		generous := build(t, 1_000_000, &generousCalls)
+		ctx := core.EnsureEvalState(context.Background())
+		_, generousErr := generous.Eval(ctx, "terminal-precedence-generous", src)
+		used := core.EvalMeterFrom(ctx).Snapshot().Reductions
 
-	var generousCalls int
-	generous := build(t, 1_000_000, &generousCalls)
-	ctx := core.EnsureEvalState(context.Background())
-	_, generousErr := generous.Eval(ctx, "terminal-precedence-generous", src)
-	used := core.EvalMeterFrom(ctx).Snapshot().Reductions
+		require.Equal(t, 2, generousCalls, "the callback must raise its TypeError on the second comparison")
+		assert.Equal(t, "TypeError", resourceLimitErrorCode(t, generousErr),
+			"under a generous budget the callback's own TypeError must surface unchanged")
+		assert.False(t, core.IsTerminalEvalError(generousErr),
+			"a callback TypeError is not terminal, got %v", generousErr)
 
-	require.Equal(t, 2, generousCalls, "the callback must raise its TypeError on the second comparison")
-	assert.Equal(t, "TypeError", resourceLimitErrorCode(t, generousErr),
-		"under a generous budget the callback's own TypeError must surface unchanged")
-	assert.False(t, core.IsTerminalEvalError(generousErr),
-		"a callback TypeError is not terminal, got %v", generousErr)
+		// The generous run's published total is the ledger after the mandatory
+		// flush. One below it is therefore a ceiling the run clears everywhere
+		// except that flush, which is exactly the racing point under test.
+		ceiling := int(used) - 1
+		require.Positive(t, ceiling, "the calibration run must accrue reductions to place a ceiling under")
 
-	// The generous run's published total is the ledger after sort's mandatory
-	// flush. One below it is therefore a ceiling the run clears everywhere
-	// except that flush, which is exactly the racing point under test.
-	ceiling := int(used) - 1
-	require.Positive(t, ceiling, "the calibration run must accrue reductions to place a ceiling under")
+		var tightCalls int
+		tight := build(t, ceiling, &tightCalls)
+		_, tightErr := tight.Eval(context.Background(), "terminal-precedence-tight", src)
 
-	var tightCalls int
-	tight := build(t, ceiling, &tightCalls)
-	_, tightErr := tight.Eval(context.Background(), "terminal-precedence-tight", src)
+		require.Equal(t, 2, tightCalls,
+			"the callback must have raised its TypeError before the budget crossed, else nothing was outranked (ceiling=%d generous total=%d)", ceiling, used)
+		assert.Equal(t, core.CodeResourceLimit, resourceLimitErrorCode(t, tightErr),
+			"the terminal budget error must outrank the callback's pending TypeError (ceiling=%d generous total=%d)", ceiling, used)
+		assert.True(t, core.IsTerminalEvalError(tightErr),
+			"the surfaced error must be terminal, got %v", tightErr)
+	})
 
-	require.Equal(t, 2, tightCalls,
-		"the callback must have raised its TypeError before the budget crossed, else nothing was outranked (ceiling=%d generous total=%d)", ceiling, used)
-	assert.Equal(t, core.CodeResourceLimit, resourceLimitErrorCode(t, tightErr),
-		"the terminal budget error must outrank the callback's pending TypeError (ceiling=%d generous total=%d)", ceiling, used)
-	assert.True(t, core.IsTerminalEvalError(tightErr),
-		"the surfaced error must be terminal, got %v", tightErr)
+	t.Run("direct apply", func(t *testing.T) {
+		// bindPrebuiltSubject's shape, built inline: the direct path binds
+		// nothing, so the descending subject is handed straight to Apply.
+		elems := make([]core.Value, tpSubjectLen)
+		for i := range elems {
+			elems[i] = core.Int{V: int64(tpSubjectLen - i)}
+		}
+		subject := core.NewList(elems)
+
+		apply := func(t *testing.T, maxReductions int) (int, error, int64) {
+			t.Helper()
+			eng := newGoldenEngine(t, cl.Dialect(), true)
+			fn, ok := eng.RootEnv().GetFunc("sort")
+			require.True(t, ok, "sort must be bound in the CL function cell")
+			var calls int
+			ctx := core.WithEvalResourceLimits(context.Background(), maxReductions, 1<<30)
+			_, err := core.NewEvaluator().Apply(ctx, fn,
+				[]core.Value{subject, tpPred(&calls)}, core.NewEnv(nil))
+			return calls, err, core.EvalMeterFrom(ctx).Snapshot().Reductions
+		}
+
+		generousCalls, generousErr, used := apply(t, 1_000_000)
+		require.Equal(t, 2, generousCalls, "the callback must raise its TypeError on the second comparison")
+		assert.Equal(t, "TypeError", resourceLimitErrorCode(t, generousErr),
+			"under a generous budget sort must return the callback's own TypeError unchanged")
+		assert.False(t, core.IsTerminalEvalError(generousErr),
+			"a callback TypeError is not terminal, got %v", generousErr)
+
+		ceiling := int(used) - 1
+		require.Positive(t, ceiling, "the calibration apply must accrue reductions to place a ceiling under")
+
+		tightCalls, tightErr, _ := apply(t, ceiling)
+		require.Equal(t, 2, tightCalls,
+			"the callback must have raised its TypeError before the budget crossed, else nothing was outranked (ceiling=%d generous total=%d)", ceiling, used)
+		assert.Equal(t, core.CodeResourceLimit, resourceLimitErrorCode(t, tightErr),
+			"sort's own settle must return the terminal budget error over the callback's pending TypeError (ceiling=%d generous total=%d)", ceiling, used)
+		assert.True(t, core.IsTerminalEvalError(tightErr),
+			"the error sort returned must be terminal, got %v", tightErr)
+	})
 }
