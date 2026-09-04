@@ -5,6 +5,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -383,11 +384,23 @@ func (vm *VM) chargeReductions(n int64) error {
 	if vm.maxReductions <= 0 {
 		return nil
 	}
-	vm.reductions += n
-	if vm.reductions > vm.maxReductions {
+	total, ok := chargePrivate(vm.reductions, int64(vm.maxReductions), n)
+	vm.reductions = total
+	if !ok {
 		return core.NewResourceLimitError(fmt.Sprintf("reduction limit %d exceeded", vm.maxReductions))
 	}
 	return nil
+}
+
+// chargePrivate mirrors core's meter on a single-owner plain counter: one
+// ordinary add on the fast path, overflow detected by sum < n, and a wrapped
+// counter pinned at math.MaxInt64 so it can never read as fresh budget again.
+func chargePrivate(total, max, n int64) (int64, bool) {
+	sum := total + n
+	if sum < n {
+		return math.MaxInt64, false
+	}
+	return sum, sum <= max
 }
 
 func (vm *VM) flushConsumedReductions() error {
@@ -428,8 +441,9 @@ func (vm *VM) chargeAllocBytes(n int64) error {
 	if vm.maxAllocBytes <= 0 {
 		return nil
 	}
-	vm.allocBytes += n
-	if vm.allocBytes > vm.maxAllocBytes {
+	total, ok := chargePrivate(vm.allocBytes, int64(vm.maxAllocBytes), n)
+	vm.allocBytes = total
+	if !ok {
 		return core.NewResourceLimitError(fmt.Sprintf("allocation limit %d bytes exceeded", vm.maxAllocBytes))
 	}
 	return nil
