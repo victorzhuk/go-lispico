@@ -566,19 +566,21 @@ func TestStrings_FormatEstimateTracksExplicitIndexRefusal(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	tightCtx := core.WithEvalResourceLimits(t.Context(), 1<<20, budget)
-	_, err := fn.Fn(tightCtx, nil, args, env)
+	_, err := fn.Fn(tightCtx, nil, append([]core.Value{core.String{V: format}}, args...), env)
 	runtime.ReadMemStats(&after)
 	requireResourceLimit(t, err)
 	var lerr *core.LispicoError
 	require.ErrorAs(t, err, &lerr)
 	require.Equalf(t, fmt.Sprintf("allocation limit %d bytes exceeded", budget), lerr.Message,
 		"the render is one byte over the budget, so the refusal must carry the allocation message, got %q", lerr.Message)
-	if got := after.TotalAlloc - before.TotalAlloc; got >= uint64(len(rendered)) {
-		t.Fatalf("format allocated %d bytes before refusing; fmt.Sprintf materializes %d bytes here, so the render must never have run", got, len(rendered))
+	// A real render here cannot exceed the 1MiB argument's materialization;
+	// sub-kilobyte noise between the two ReadMemStats calls must not trip it.
+	if got := after.TotalAlloc - before.TotalAlloc; got >= 1<<20 {
+		t.Fatalf("format allocated %d bytes before refusing; a render materializing from the %d arguments must never have run", got, len(args))
 	}
 
 	generousCtx := core.WithEvalResourceLimits(t.Context(), 8<<20, 8<<20)
-	got, err := fn.Fn(generousCtx, nil, args, env)
+	got, err := fn.Fn(generousCtx, nil, append([]core.Value{core.String{V: format}}, args...), env)
 	require.NoError(t, err)
 	require.Equal(t, core.String{V: rendered}, got,
 		"with the index refused the result must carry fmt's own render, %!(BADINDEX) text included")
