@@ -569,6 +569,9 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 		}
 		return n
 	case 'd', 'b', 'o', 'O', 'U':
+		if _, ok := v.(core.String); ok {
+			return mismatchedVerbDiagnosticBytes(verb, v)
+		}
 		n := int64(64)
 		if hasPrecision && precision > n {
 			return precision
@@ -589,14 +592,30 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 		}
 		return n
 	case 't':
+		if _, ok := v.(core.String); ok {
+			return mismatchedVerbDiagnosticBytes(verb, v)
+		}
 		return 5
 	case 'c':
+		if _, ok := v.(core.String); ok {
+			return mismatchedVerbDiagnosticBytes(verb, v)
+		}
 		return 4
 	case 'T':
 		return 128
 	default:
 		return core.ValueDeepBytes(v)
 	}
+}
+
+// mismatchedVerbDiagnosticBytes bounds fmt's %!verb(<type>=<operand>)
+// diagnostic for a core.String operand. The diagnostic reproduces the whole
+// operand inside its parens, so its size grows with the string it embeds
+// rather than staying a constant.
+func mismatchedVerbDiagnosticBytes(verb byte, v core.Value) int64 {
+	// "%!" + verb + "(" + type + "=" + ")" around the operand.
+	base := int64(4 + len(fmt.Sprintf("%T", v)) + 2)
+	return addFormatEstimate(base, formatStringBytes(v))
 }
 
 func formatArgIndex(format string, arg int, i int, numArgs int) (int, int, bool, bool) {
