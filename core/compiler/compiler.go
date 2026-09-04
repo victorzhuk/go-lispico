@@ -2,6 +2,7 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -36,6 +37,7 @@ type Compiler struct {
 	loops           []loopFrame
 	dialect         *core.Dialect
 	meter           core.EvalMeter
+	ctx             context.Context
 	err             error
 	compileDepth    int
 	maxCompileDepth int
@@ -75,6 +77,8 @@ func (c *Compiler) Chunk() *vm.Chunk { return c.chunk }
 // SetEvalMeter attaches the evaluation meter charged by subsequent emitted instructions.
 func (c *Compiler) SetEvalMeter(m core.EvalMeter) { c.meter = m }
 
+func (c *Compiler) SetContext(ctx context.Context) { c.ctx = ctx }
+
 // EmitReturn emits the trailing return instruction expected by executable chunks.
 func (c *Compiler) EmitReturn() error {
 	c.emit(vm.OpReturn, 0)
@@ -107,7 +111,14 @@ func (c *Compiler) emitLoop(start int) int {
 // free-variable references resolve through the compiler parent chain at
 // emission time. Must be called once Code is final. CompileAll does this per
 // form; single-form callers must too.
-func (c *Compiler) MarkCaptures() { c.finalize() }
+func (c *Compiler) MarkCaptures() { _ = c.MarkCapturesContext(context.Background()) }
+
+func (c *Compiler) MarkCapturesContext(ctx context.Context) error {
+	if err := c.finalizeContext(ctx); err != nil {
+		return err
+	}
+	return nil
+}
 
 // emitGetGlobal emits OpGetGlobal for sym. The VM's site cache is built later
 // from Code (Chunk.EnsureSites), so no per-site bookkeeping is needed here.
@@ -121,7 +132,12 @@ func (c *Compiler) Compile(form core.Value) error {
 		return c.err
 	}
 	if c.compileDepth == 0 {
-		c.nodeCount += core.ValueNodeCount(form)
+		n, err := core.ValueNodeCountContext(c.ctx, form)
+		if err != nil {
+			c.err = err
+			return err
+		}
+		c.nodeCount += n
 	}
 	c.compileDepth++
 	defer func() { c.compileDepth-- }()
@@ -391,7 +407,9 @@ func (c *Compiler) compileFn(args []core.Value) error {
 	sub.chunk.Arity = len(params)
 	sub.chunk.Variadic = variadic.V != ""
 	sub.chunk.EnsureSites()
-	sub.finalize()
+	if err := sub.finalizeContext(c.ctx); err != nil {
+		return err
+	}
 	idx := len(c.chunk.SubChunks)
 	c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
 	c.emit(vm.OpClosure, idx)
@@ -845,7 +863,9 @@ func (c *Compiler) ensureCapture(name string) int {
 // computes MaxStack. Nested chunks are finalized by their own compilers right
 // after their bodies complete, so a chunk's Captured set is complete by the
 // time finalize runs.
-func (c *Compiler) finalize() {
+func (c *Compiler) finalize() { _ = c.finalizeContext(context.Background()) }
+
+func (c *Compiler) finalizeContext(ctx context.Context) error {
 	chunk := c.chunk
 	for ip, inst := range chunk.Code {
 		op, a := inst.Op(), inst.A()
@@ -865,10 +885,13 @@ func (c *Compiler) finalize() {
 	}
 	chunk.MaxStack = computeMaxStack(chunk)
 	chunk.NodeCount = c.nodeCount
-	chunk.DeepBytes = chunkDeepBytes(chunk)
+	chunk.DeepBytes = chunkDeepBytesContext(ctx, chunk)
+	return nil
 }
 
-func chunkDeepBytes(chunk *vm.Chunk) int64 {
+func chunkDeepBytes(chunk *vm.Chunk) int64 { return chunkDeepBytesContext(context.Background(), chunk) }
+
+func chunkDeepBytesContext(ctx context.Context, chunk *vm.Chunk) int64 {
 	if chunk == nil {
 		return 0
 	}
@@ -877,7 +900,11 @@ func chunkDeepBytes(chunk *vm.Chunk) int64 {
 		bytes += core.StringShallowBytes(len(name))
 	}
 	for _, constant := range chunk.Constants {
-		bytes += core.ValueDeepBytes(constant)
+		deep, err := core.ValueDeepBytesContext(ctx, constant)
+		if err != nil {
+			return 0
+		}
+		bytes += deep
 	}
 	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
 	for _, sub := range chunk.SubChunks {
@@ -978,7 +1005,9 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		sub.chunk.Arity = len(params)
 		sub.chunk.Variadic = variadic.V != ""
 		sub.chunk.EnsureSites()
-		sub.finalize()
+		if err := sub.finalizeContext(c.ctx); err != nil {
+			return err
+		}
 		idx := len(c.chunk.SubChunks)
 		c.chunk.SubChunks = append(c.chunk.SubChunks, sub.chunk)
 		c.emit(vm.OpClosure, idx)

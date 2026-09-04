@@ -405,6 +405,7 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	}
 	comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 	comp.SetEvalMeter(core.EvalMeterFrom(ctx))
+	comp.SetContext(ctx)
 	if err := comp.Compile(expanded); err != nil {
 		if isUnsupportedInBytecode(err) {
 			return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
@@ -522,6 +523,7 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 
 		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
 		comp.SetEvalMeter(core.EvalMeterFrom(ctx))
+		comp.SetContext(ctx)
 		if err := comp.Compile(expanded); err != nil {
 			if isUnsupportedInBytecode(err) {
 				return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
@@ -531,7 +533,9 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		if err := comp.EmitReturn(); err != nil {
 			return nil, fmt.Errorf("compile: %w", err)
 		}
-		comp.MarkCaptures()
+		if err := comp.MarkCapturesContext(ctx); err != nil {
+			return nil, err
+		}
 		chunk = comp.Chunk()
 		if err := chunk.Validate(); err != nil {
 			return nil, err
@@ -634,10 +638,10 @@ func (e *engineImpl) readForms(ctx context.Context, input string) ([]core.Value,
 }
 
 func chargeCompiledChunk(ctx context.Context, chunk *vm.Chunk) error {
-	return core.ChargeEvalAllocBytes(ctx, compiledChunkBytes(chunk))
+	return core.ChargeEvalAllocBytes(ctx, compiledChunkBytes(ctx, chunk))
 }
 
-func compiledChunkBytes(chunk *vm.Chunk) int64 {
+func compiledChunkBytes(ctx context.Context, chunk *vm.Chunk) int64 {
 	if chunk == nil {
 		return 0
 	}
@@ -649,11 +653,15 @@ func compiledChunkBytes(chunk *vm.Chunk) int64 {
 		bytes += core.StringShallowBytes(len(name))
 	}
 	for _, c := range chunk.Constants {
-		bytes += core.ValueDeepBytes(c)
+		deep, err := core.ValueDeepBytesContext(ctx, c)
+		if err != nil {
+			return 0
+		}
+		bytes += deep
 	}
 	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
 	for _, sub := range chunk.SubChunks {
-		bytes += compiledChunkBytes(sub)
+		bytes += compiledChunkBytes(ctx, sub)
 	}
 	return bytes
 }

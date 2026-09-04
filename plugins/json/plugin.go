@@ -72,10 +72,14 @@ func (p *Plugin) decode(ctx context.Context, eval core.Evaluator, args []core.Va
 	if err != nil {
 		return nil, err
 	}
-	if err := core.CheckConstructionDepth(res, env); err != nil {
+	if err := core.CheckConstructionDepthContextEnv(ctx, res, env); err != nil {
 		return nil, err
 	}
-	if err := core.ChargeEvalAllocBytes(ctx, core.ValueDeepBytes(res)); err != nil {
+	deep, err := core.ValueDeepBytesContext(ctx, res)
+	if err != nil {
+		return nil, err
+	}
+	if err := core.ChargeEvalAllocBytes(ctx, deep); err != nil {
 		return nil, err
 	}
 	return res, nil
