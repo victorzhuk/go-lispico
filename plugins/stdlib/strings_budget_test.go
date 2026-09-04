@@ -744,3 +744,28 @@ func TestFormatEstimatorBoundsMismatchedVerbAndOperand(t *testing.T) {
 		})
 	}
 }
+
+func TestStrings_ValueWalkRowsAreBudgeted(t *testing.T) {
+	for _, want := range []struct{ fn, phase string }{
+		{"toString", "container render walk"},
+		{"toAny", "non-scalar render walk"},
+		{"estimateFormatValueBytes", "default verb estimate"},
+		{"formatStringBytes", "deep size walk"},
+	} {
+		found := false
+		for _, row := range sbWorkPhases(want.fn, "budgeted") {
+			if row.PhaseLabel == want.phase {
+				found = true
+			}
+		}
+		require.Truef(t, found, "%s:%s: value walk phase %q must be budgeted", sbStringsFile, want.fn, want.phase)
+	}
+	found := false
+	for _, row := range sbWorkPhases("registerStrings", "bounded-exception") {
+		if row.PhaseLabel == "render assembly" {
+			found = true
+			require.Equal(t, int64(67_108_864), row.MaxWork)
+		}
+	}
+	require.True(t, found, "format render assembly must be a bounded exception")
+}

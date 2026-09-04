@@ -13,13 +13,8 @@ import (
 // bound instead of needing a budget of its own.
 var invTrustedHostCallees = []string{".Equals", ".String", ".Type", "core.EqualsBounded"}
 
-// invTrackedChanges are the changes that own an unbounded phase. A row that
-// defers its bound has to name one, so "unbounded" is a tracked defect with an
-// owner rather than a shrug.
-var invTrackedChanges = []string{
-	"core-value-walk-sharing-bound",
-	"format-mismatched-verb-bound",
-}
+// The unbounded-tracked disposition was retired; no owner token remains.
+var invTrackedChanges = []string{"core-value-walk-sharing-bound", "format-mismatched-verb-bound"}
 
 // invKnownNames is the closed set of names a row may name: every registered
 // builtin plus every CL adapter id.
@@ -179,31 +174,32 @@ func TestResultInventory_CoversEveryRegisteredName(t *testing.T) {
 }
 
 // TestWorkInventory_BoundedExceptionsCarryProofAndMaxWork keeps the escape
-// hatch expensive: a phase that opts out of the budget has to state the bound
-// it relies on and where that bound comes from, and a phase that has no bound
-// at all has to name the change that will remove it.
+// hatch expensive: every phase that opts out of the budget has to state the
+// bound it relies on and where that bound comes from.
 func TestWorkInventory_BoundedExceptionsCarryProofAndMaxWork(t *testing.T) {
 	for _, row := range inventory.WorkPhases {
-		switch row.Disposition {
-		case "bounded-exception":
-			if row.Proof == "" {
-				t.Errorf("%s:%s:%s: bounded-exception carries no Proof", row.File, row.Func, row.PhaseLabel)
-			}
-			if row.MaxWork == 0 {
-				t.Errorf("%s:%s:%s: bounded-exception carries no MaxWork", row.File, row.Func, row.PhaseLabel)
-			}
-		case "unbounded-tracked":
-			if row.Proof == "" {
-				t.Errorf("%s:%s:%s: unbounded-tracked carries no Proof", row.File, row.Func, row.PhaseLabel)
-			}
-			if !invNamesTrackedChange(row.Proof) {
-				t.Errorf("%s:%s:%s: unbounded-tracked Proof names no change in %s",
-					row.File, row.Func, row.PhaseLabel, strings.Join(invTrackedChanges, ", "))
-			}
-			if row.MaxWork != 0 {
-				t.Errorf("%s:%s:%s: unbounded-tracked must not state a MaxWork; there is no ceiling to state",
-					row.File, row.Func, row.PhaseLabel)
-			}
+		if row.Disposition != "bounded-exception" {
+			continue
+		}
+		if row.Proof == "" {
+			t.Errorf("%s:%s:%s: bounded-exception carries no Proof", row.File, row.Func, row.PhaseLabel)
+		}
+		if row.MaxWork == 0 {
+			t.Errorf("%s:%s:%s: bounded-exception carries no MaxWork", row.File, row.Func, row.PhaseLabel)
+		}
+	}
+}
+
+func TestWorkInventory_NoUnboundedTrackedDisposition(t *testing.T) {
+	for _, disposition := range inventory.Dispositions {
+		if disposition == "unbounded-tracked" {
+			t.Errorf("inventory.Dispositions still declares retired disposition %q", disposition)
+		}
+	}
+	for _, row := range inventory.WorkPhases {
+		if row.Disposition == "unbounded-tracked" {
+			t.Errorf("%s:%s:%s: WorkPhases still carries retired disposition %q",
+				row.File, row.Func, row.PhaseLabel, row.Disposition)
 		}
 	}
 }
