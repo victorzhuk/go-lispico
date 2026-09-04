@@ -581,6 +581,9 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 		n := int64(64)
 		if hasPrecision {
 			n = addFormatEstimate(n, precision)
+			if n < maxDefaultFloatFormatBytes {
+				n = maxDefaultFloatFormatBytes
+			}
 		} else {
 			n = maxDefaultFloatFormatBytes
 		}
@@ -589,6 +592,9 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 		n := int64(64)
 		if hasPrecision {
 			n = addFormatEstimate(n, precision)
+			if n < maxDefaultFloatFormatBytes {
+				n = maxDefaultFloatFormatBytes
+			}
 		}
 		return n
 	case 't':
