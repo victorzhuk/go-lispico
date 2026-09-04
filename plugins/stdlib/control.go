@@ -28,7 +28,11 @@ func (p *Plugin) registerControl(env *core.Env) error {
 					if s, ok := msg.(core.String); ok {
 						return nil, domainErrorf("assertion failed: %.200s", s.V)
 					}
-					return nil, domainErrorf("assertion failed: %.200v", msg)
+					rendered, err := core.ValueStringContext(ctx, msg)
+					if err != nil {
+						return nil, err
+					}
+					return nil, domainErrorf("assertion failed: %.200s", rendered)
 				}
 				return nil, domainErrorf("assertion failed")
 			}

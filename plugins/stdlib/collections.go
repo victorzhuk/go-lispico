@@ -40,7 +40,7 @@ func collectionBuiltins() []core.GoFunc {
 					items[i] = arg
 				}
 				res := core.NewList(items)
-				if err := chargeCollectionResult(ctx, eval, "list", res, core.ValueDeepBytes(res)); err != nil {
+				if err := chargeFreshDeepResult(ctx, eval, "list", res); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
 				return finishBuiltin(budget, res, nil)
@@ -148,7 +148,7 @@ func collectionBuiltins() []core.GoFunc {
 					items[i] = arg
 				}
 				res := core.NewVector(items)
-				if err := chargeCollectionResult(ctx, eval, "vector", res, core.ValueDeepBytes(res)); err != nil {
+				if err := chargeFreshDeepResult(ctx, eval, "vector", res); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
 				return finishBuiltin(budget, res, nil)
@@ -175,7 +175,7 @@ func collectionBuiltins() []core.GoFunc {
 				// Every entry holds an argument the map now owns, so the result is
 				// charged deeply: the apply site's shallow fallback would bill the
 				// header alone and miss the whole payload.
-				if err := chargeCollectionResult(ctx, eval, "hash-map", m, core.ValueDeepBytes(m)); err != nil {
+				if err := chargeFreshDeepResult(ctx, eval, "hash-map", m); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
 				return finishBuiltin(budget, m, nil)
@@ -444,7 +444,11 @@ func collectionBuiltins() []core.GoFunc {
 					}
 					// See assoc's WHY comment below: charge the path this call
 					// copied plus the inserted value, not the shared remainder.
-					bytes := allocated + core.ValueDeepBytes(args[2])
+					deep, err := core.ValueDeepBytesContext(ctx, args[2])
+					if err != nil {
+						return nil, err
+					}
+					bytes := allocated + deep
 					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[2]); err != nil {
 						return nil, err
 					}
@@ -555,7 +559,11 @@ func collectionBuiltins() []core.GoFunc {
 					// map is shared with the argument and was charged when it was
 					// created — re-charging it would grow with the accumulated
 					// size and make a chained assoc quadratic.
-					bytes += allocated + core.ValueDeepBytes(args[i+1])
+					deep, err := core.ValueDeepBytesContext(ctx, args[i+1])
+					if err != nil {
+						return finishBuiltin(budget, nil, err)
+					}
+					bytes += allocated + deep
 				}
 
 				// Guarded like conj's: prepending a scalar cannot deepen the
@@ -697,7 +705,7 @@ func collectionBuiltins() []core.GoFunc {
 						return finishBuiltin(budget, nil, typeErrorf("merge: expected map, got %T", arg))
 					}
 				}
-				if err := chargeCollectionResult(ctx, eval, "merge", result, core.ValueDeepBytes(result)); err != nil {
+				if err := chargeFreshDeepResult(ctx, eval, "merge", result); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
 				return finishBuiltin(budget, result, nil)
@@ -864,7 +872,7 @@ func collectionBuiltins() []core.GoFunc {
 					}
 				}
 				res := core.NewList(items)
-				if err := chargeCollectionResult(ctx, eval, "range", res, core.ValueDeepBytes(res)); err != nil {
+				if err := chargeFreshDeepResult(ctx, eval, "range", res); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
 				return finishBuiltin(budget, res, nil)
@@ -1016,6 +1024,23 @@ func (c *keyPathCursor) next() (core.Value, bool) {
 // Callers decide what bytes means: the full deep size for a fresh builder
 // assembling unrelated values, or just what an operation newly allocated
 // when it derives its result from an existing collection.
+func chargeFreshDeepResult(ctx context.Context, eval core.Evaluator, name string, res core.Value) error {
+	if n, ok := collectionLen(res); ok {
+		maxLen := collectionLimit(eval)
+		if n > maxLen {
+			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
+		}
+	}
+	if err := core.CheckConstructionDepthContext(ctx, res, eval); err != nil {
+		return err
+	}
+	bytes, err := core.ValueDeepBytesContext(ctx, res)
+	if err != nil {
+		return err
+	}
+	return core.ChargeGoFuncResultBytes(ctx, bytes)
+}
+
 func chargeCollectionResult(ctx context.Context, eval core.Evaluator, name string, res core.Value, bytes int64) error {
 	if n, ok := collectionLen(res); ok {
 		maxLen := collectionLimit(eval)
@@ -1023,7 +1048,7 @@ func chargeCollectionResult(ctx context.Context, eval core.Evaluator, name strin
 			return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, n, maxLen))
 		}
 	}
-	if err := core.CheckConstructionDepthWith(res, eval); err != nil {
+	if err := core.CheckConstructionDepthContext(ctx, res, eval); err != nil {
 		return err
 	}
 	return core.ChargeGoFuncResultBytes(ctx, bytes)
@@ -1060,7 +1085,7 @@ func chargeConsResult(ctx context.Context, eval core.Evaluator, name string, res
 			// being extended was depth-checked when it was built, so
 			// re-walking it here would cost the accumulated size on every
 			// call and make a loop that conses collections quadratic.
-			if err := core.CheckNestedElementDepthWith(e, eval); err != nil {
+			if err := core.CheckNestedElementDepthContext(ctx, e, eval); err != nil {
 				return err
 			}
 		}

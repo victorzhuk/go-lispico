@@ -19,7 +19,11 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				if err := budget.Step(); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
-				buf.WriteString(toString(arg))
+				rendered, err := toString(ctx, arg)
+				if err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
+				buf.WriteString(rendered)
 			}
 			out := buf.String()
 			if err := chargeFreshString(ctx, len(out)); err != nil {
@@ -46,14 +50,20 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			if fmtStr.V == "" {
 				return core.String{V: ""}, nil
 			}
-			estimate := estimateFormatAllocBytes(fmtStr.V, args[1:])
+			estimate, err := estimateFormatAllocBytesContext(ctx, fmtStr.V, args[1:])
+			if err != nil {
+				return nil, err
+			}
 			if err := core.ChargeEvalAllocBytes(ctx, estimate); err != nil {
 				return nil, err
 			}
 
 			fmtArgs := make([]any, len(args)-1)
 			for i, arg := range args[1:] {
-				fmtArgs[i] = toAny(arg)
+				fmtArgs[i], err = toAnyContext(ctx, arg)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			out := fmt.Sprintf(fmtStr.V, fmtArgs...)
@@ -96,7 +106,10 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				if err := budget.Step(); err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
-				part := toString(item)
+				part, err := toString(ctx, item)
+				if err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				if len(parts) > 0 {
 					outBytes = addFormatEstimate(outBytes, int64(len(sep.V)))
 				}
@@ -366,7 +379,13 @@ const (
 )
 
 func estimateFormatAllocBytes(format string, args []core.Value) int64 {
+	n, _ := estimateFormatAllocBytesContext(context.Background(), format, args)
+	return n
+}
+
+func estimateFormatAllocBytesContext(ctx context.Context, format string, args []core.Value) (int64, error) {
 	var out int64
+	var walkErr error
 	arg := 0
 
 	for i := 0; i < len(format); {
@@ -499,8 +518,8 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 			}
 
 			field := int64(1)
-			if chargeValue && arg < len(args) {
-				field = estimateFormatValueBytes(args[arg], verb, precision, hasPrecision, hasSpace, hasAlt)
+			if walkErr == nil && chargeValue && arg < len(args) {
+				field, walkErr = estimateFormatValueBytes(ctx, args[arg], verb, precision, hasPrecision, hasSpace, hasAlt)
 			}
 			if hasWidth && width > field {
 				field = width
@@ -518,25 +537,38 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 		out = addFormatEstimate(out, field)
 	}
 
-	return addFormatEstimate(core.MeterStringHeaderBytes, out)
+	if walkErr != nil {
+		return 0, walkErr
+	}
+	return addFormatEstimate(core.MeterStringHeaderBytes, out), nil
 }
 
-func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPrecision bool, hasSpace bool, hasAlt bool) int64 {
+func estimateFormatValueBytes(ctx context.Context, v core.Value, verb byte, precision int64, hasPrecision bool, hasSpace bool, hasAlt bool) (int64, error) {
 	switch verb {
 	case 's':
-		n := formatStringBytes(v)
+		n, err := formatStringBytes(ctx, v)
+		if err != nil {
+			return 0, err
+		}
 		if _, ok := v.(core.String); !ok && n < minFormatValueStringScalar {
 			n = minFormatValueStringScalar
 		}
 		if hasPrecision && precision < n {
-			return precision
+			return precision, nil
 		}
-		return n
+		return n, nil
 	case 'q':
-		return addFormatEstimate(2, formatStringBytes(v)*4)
+		n, err := formatStringBytes(ctx, v)
+		if err != nil {
+			return 0, err
+		}
+		return addFormatEstimate(2, n*4), nil
 	case 'x', 'X':
 		if _, ok := v.(core.String); ok {
-			n := formatStringBytes(v)
+			n, err := formatStringBytes(ctx, v)
+			if err != nil {
+				return 0, err
+			}
 			if hasPrecision && precision < n {
 				n = precision
 			}
@@ -553,7 +585,7 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 						field = addFormatEstimate(field, 2)
 					}
 				}
-				return field
+				return field, nil
 			}
 			if hasAlt {
 				field = addFormatEstimate(field, 2)
@@ -561,22 +593,22 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 					field = addFormatEstimate(field, 1)
 				}
 			}
-			return field
+			return field, nil
 		}
 		n := int64(64)
 		if hasPrecision && precision > n {
-			return precision
+			return precision, nil
 		}
-		return n
+		return n, nil
 	case 'd', 'b', 'o', 'O', 'U':
 		if _, ok := v.(core.String); ok {
-			return mismatchedVerbDiagnosticBytes(verb, v)
+			return mismatchedVerbDiagnosticBytes(ctx, verb, v)
 		}
 		n := int64(64)
 		if hasPrecision && precision > n {
-			return precision
+			return precision, nil
 		}
-		return n
+		return n, nil
 	case 'f', 'F', 'g':
 		n := int64(64)
 		if hasPrecision {
@@ -587,7 +619,7 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 		} else {
 			n = maxDefaultFloatFormatBytes
 		}
-		return n
+		return n, nil
 	case 'e', 'E':
 		n := int64(64)
 		if hasPrecision {
@@ -596,21 +628,21 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 				n = maxDefaultFloatFormatBytes
 			}
 		}
-		return n
+		return n, nil
 	case 't':
 		if _, ok := v.(core.String); ok {
-			return mismatchedVerbDiagnosticBytes(verb, v)
+			return mismatchedVerbDiagnosticBytes(ctx, verb, v)
 		}
-		return 5
+		return 5, nil
 	case 'c':
 		if _, ok := v.(core.String); ok {
-			return mismatchedVerbDiagnosticBytes(verb, v)
+			return mismatchedVerbDiagnosticBytes(ctx, verb, v)
 		}
-		return 4
+		return 4, nil
 	case 'T':
-		return 128
+		return 128, nil
 	default:
-		return core.ValueDeepBytes(v)
+		return core.ValueDeepBytesContext(ctx, v)
 	}
 }
 
@@ -618,10 +650,14 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 // diagnostic for a core.String operand. The diagnostic reproduces the whole
 // operand inside its parens, so its size grows with the string it embeds
 // rather than staying a constant.
-func mismatchedVerbDiagnosticBytes(verb byte, v core.Value) int64 {
+func mismatchedVerbDiagnosticBytes(ctx context.Context, verb byte, v core.Value) (int64, error) {
 	// "%!" + verb + "(" + type + "=" + ")" around the operand.
 	base := int64(4 + len(fmt.Sprintf("%T", v)) + 2)
-	return addFormatEstimate(base, formatStringBytes(v))
+	n, err := formatStringBytes(ctx, v)
+	if err != nil {
+		return 0, err
+	}
+	return addFormatEstimate(base, n), nil
 }
 
 func formatArgIndex(format string, arg int, i int, numArgs int) (int, int, bool, bool) {
@@ -718,11 +754,11 @@ func absFormatInt(n int64) int64 {
 	return -n
 }
 
-func formatStringBytes(v core.Value) int64 {
+func formatStringBytes(ctx context.Context, v core.Value) (int64, error) {
 	if s, ok := v.(core.String); ok {
-		return int64(len(s.V))
+		return int64(len(s.V)), nil
 	}
-	return core.ValueDeepBytes(v)
+	return core.ValueDeepBytesContext(ctx, v)
 }
 
 func addFormatEstimate(a, b int64) int64 {
@@ -838,11 +874,28 @@ func parseFailureMessageBytes(subjectLen int) int64 {
 	return 2 * core.StringShallowBytes(subjectLen*parseQuoteFactor)
 }
 
-func toString(v core.Value) string {
+func toString(ctx context.Context, v core.Value) (string, error) {
 	if s, ok := v.(core.String); ok {
-		return s.V
+		return s.V, nil
 	}
-	return v.String()
+	return core.ValueStringContext(ctx, v)
+}
+
+func toAnyContext(ctx context.Context, v core.Value) (any, error) {
+	switch val := v.(type) {
+	case core.Nil:
+		return nil, nil
+	case core.Bool:
+		return val.V, nil
+	case core.Int:
+		return val.V, nil
+	case core.Float:
+		return val.V, nil
+	case core.String:
+		return val.V, nil
+	default:
+		return core.ValueStringContext(ctx, v)
+	}
 }
 
 func toAny(v core.Value) any {
