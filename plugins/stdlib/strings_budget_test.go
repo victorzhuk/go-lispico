@@ -643,3 +643,104 @@ func TestStrings_JoinChargeIsExact(t *testing.T) {
 		"string/join charged %d against %d when the separator grew from 1 to %d bytes across %d parts: the output grows by %d bytes, and a pre-charge billed above that over-bills every successful call",
 		wide, narrow, sbWideLen, parts, want)
 }
+
+// TestFormatEstimatorBoundsMismatchedVerbAndOperand pins the format
+// pre-charge to fmt's own render for verbs the operand's type cannot
+// satisfy. A mismatched directive falls through to fmt's
+// %!verb(<type>=...) diagnostic, and the operand's rendered text is the
+// part that grows with the input: a 1KiB core.String under %[1]d renders
+// over a kilobyte of diagnostic while the mismatch arms estimate a fixed
+// constant. Every expectation is derived from fmt.Sprintf itself, never
+// restated from the estimator's arithmetic.
+//
+// The well-formed arms are regression anchors, not new demands: %s and %x
+// over a core.String are already bounded and must survive the change
+// untouched. The precision arm adds the task 1.3 invariant: a float verb
+// carrying an explicit precision must never estimate below the same verb
+// without one, because fmt renders the magnitude in full and the
+// precision trims digits, not bytes already below it.
+func TestFormatEstimatorBoundsMismatchedVerbAndOperand(t *testing.T) {
+	type row struct {
+		name   string
+		format string
+		args   []core.Value
+	}
+	estimateCoversRender := func(t *testing.T, format string, args []core.Value) {
+		t.Helper()
+		anyArgs := make([]any, len(args))
+		for i, v := range args {
+			anyArgs[i] = toAny(v)
+		}
+		render := fmt.Sprintf(format, anyArgs...)
+		estimate := estimateFormatAllocBytes(format, args)
+		require.GreaterOrEqualf(t, estimate, int64(len(render)),
+			"%s produced %d bytes; the estimator must cover the render, got %d",
+			format, len(render), estimate)
+	}
+	runRows := func(group string, rows []row) {
+		t.Run(group, func(t *testing.T) {
+			for _, tt := range rows {
+				t.Run(tt.name, func(t *testing.T) {
+					estimateCoversRender(t, tt.format, tt.args)
+				})
+			}
+		})
+	}
+	// One explicit index per directive keeps every row independent of
+	// arg-cursor bookkeeping.
+	stringRows := func(verbs []string, operand core.Value, tag string) []row {
+		rows := make([]row, 0, len(verbs))
+		for _, verb := range verbs {
+			format := "%[1]" + verb
+			rows = append(rows, row{format + " over " + tag, format, []core.Value{operand}})
+		}
+		return rows
+	}
+
+	str1KiB := core.String{V: strings.Repeat("A", 1024)}
+	str4KiB := core.String{V: strings.Repeat("A", 4096)}
+
+	runRows("string-mismatch", append(
+		stringRows([]string{"d", "b", "c", "o", "O", "U", "t"}, str1KiB, "1KiB string"),
+		stringRows([]string{"d", "b", "c", "o", "O", "U", "t"}, str4KiB, "4KiB string")...))
+
+	runRows("well-formed-anchor", []row{
+		{"%[1]s over 1KiB string", "%[1]s", []core.Value{str1KiB}},
+		{"%[1]x over 1KiB string", "%[1]x", []core.Value{str1KiB}},
+	})
+
+	runRows("bool-mismatch",
+		stringRows([]string{"d", "b", "c", "o", "O", "U", "x", "X"}, core.Bool{V: true}, "bool"))
+
+	runRows("float-mismatch",
+		stringRows([]string{"d", "b", "c", "o", "O", "U", "t", "x", "X"}, core.Float{V: 1.5}, "float 1.5"))
+
+	runRows("int-mismatch",
+		stringRows([]string{"t", "e", "E", "f", "F", "g", "G"}, core.Int{V: 1}, "int 1"))
+
+	runRows("repeated-directives", []row{
+		{"four %[1]d over 1KiB string", "%[1]d%[1]d%[1]d%[1]d", []core.Value{str1KiB}},
+		{"four %[1]c over 1KiB string", "%[1]c%[1]c%[1]c%[1]c", []core.Value{str1KiB}},
+	})
+
+	for _, large := range []struct {
+		name string
+		v    float64
+	}{
+		{"1e200", 1e200},
+		{"1e308", 1e308},
+	} {
+		args := []core.Value{core.Float{V: large.v}}
+		runRows("precision-large-magnitude/"+large.name, []row{
+			{"%.2f", "%.2f", args},
+			{"%.0f", "%.0f", args},
+		})
+		t.Run("precision-arm-at-or-above-bare/"+large.name, func(t *testing.T) {
+			precEstimate := estimateFormatAllocBytes("%.2f", args)
+			bareEstimate := estimateFormatAllocBytes("%f", args)
+			require.LessOrEqualf(t, bareEstimate, precEstimate,
+				"estimateFormatAllocBytes(\"%%.2f\") = %d over %v falls below the same verb with no precision at %d: a precision must not estimate below the no-precision arm",
+				precEstimate, large.v, bareEstimate)
+		})
+	}
+}
