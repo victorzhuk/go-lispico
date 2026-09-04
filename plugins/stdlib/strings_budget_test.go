@@ -3,9 +3,9 @@ package stdlib
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
-	"runtime"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -560,7 +560,6 @@ func TestStrings_FormatEstimateTracksExplicitIndexRefusal(t *testing.T) {
 	refusedCeiling := core.MeterStringHeaderBytes + int64(len(rendered)) + int64(len(format))
 	require.LessOrEqualf(t, estimate, refusedCeiling,
 		"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: fmt refused the explicit index and rendered nothing from the 1MiB argument, so the estimator must treat the refusal as a no-op too and not wrap the index into charging an argument the render never used", format, estimate, len(rendered))
-
 
 	budget := int(core.StringShallowBytes(len(rendered)) - 1)
 	var before, after runtime.MemStats

@@ -60,7 +60,7 @@ func TestVM_SetResourceLimits_CountersFailClosedAtInt64Ceiling(t *testing.T) {
 		vm.SetResourceLimits(math.MaxInt64, math.MaxInt64)
 		require.Zero(t, vm.allocBytes)
 
-		require.NoError(t, vm.chargeAllocBytes(math.MaxInt64 - 100))
+		require.NoError(t, vm.chargeAllocBytes(math.MaxInt64-100))
 		require.Positive(t, vm.allocBytes)
 
 		lerr := requireResourceLimit(t, vm.chargeAllocBytes(200))
