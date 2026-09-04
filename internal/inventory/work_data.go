@@ -1649,6 +1649,22 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"string"},
 		Fn:          "format",
 		File:        "plugins/stdlib/strings.go",
+		Func:        "mismatchedVerbDiagnosticBytes",
+		PhaseLabel:  "mismatch diagnostic bound",
+		Disposition: "bounded-exception",
+		Proof: "Its one fmt.Sprintf carries the %T verb, which renders the " +
+			"name of one of the 13 concrete core.Value types and reads none of " +
+			"a value's contents, so the render is constant work. The operand " +
+			"length it adds comes from formatStringBytes over a core.String - " +
+			"the caller dispatches on that type - which is a len of the string, " +
+			"a single read, and the ledger already bounded that string when it " +
+			"was built.",
+		MaxWork: 256,
+	},
+	{
+		Families:    []string{"string"},
+		Fn:          "format",
+		File:        "plugins/stdlib/strings.go",
 		Func:        "parseFormatArgIndex",
 		PhaseLabel:  "argument index scan",
 		Disposition: "bounded-exception",
