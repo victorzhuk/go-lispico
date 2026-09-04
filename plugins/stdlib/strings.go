@@ -353,6 +353,8 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 	return nil
 }
 
+// badIndexFieldBytes sizes fmt's %!(verb)(BADINDEX) render for an ASCII verb.
+const badIndexFieldBytes = int64(len("%!") + 1 + len("(BADINDEX)"))
 const (
 	maxFormatEstimate          = int64(^uint64(0) >> 1)
 	minFormatValueStringScalar = 24
@@ -437,7 +439,9 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 				if afterIndex {
 					goodArgNum = false
 				}
-				arg, i, afterIndex, refused = formatArgIndex(format, arg, i, len(args))
+				var precisionRefused bool
+				arg, i, afterIndex, precisionRefused = formatArgIndex(format, arg, i, len(args))
+				refused = refused || precisionRefused
 				if i < len(format) && format[i] == '*' {
 					precision = formatDynamicInt(args, arg)
 					if precision < 0 {
@@ -478,15 +482,16 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 			verb := format[i]
 			i++
 			if refused {
-				// fmt renders %!(verb)(BADINDEX) for the directive and leaves
-				// the implicit cursor untouched: a refused index never binds
-				// or consumes. The width is kept only as an upper bound in
-				// case a future fmt pads the error text.
-				field := int64(len("%!(BADINDEX)"))
+				// fmt renders %!(verb)(BADINDEX) — the verb byte counts.
+				// The width is kept only as an upper bound in case a
+				// future fmt pads the error text. fmt's cursor still moves
+				// for any * width/precision arguments already consumed;
+				// only the refused value itself binds and consumes nothing.
+				field := badIndexFieldBytes
 				if hasWidth && width > field {
 					field = width
 				}
-				return field, i, arg0
+				return field, i, arg
 			}
 			chargeValue := verb != '%' && (goodArgNum || valueArgIndexed)
 			if !chargeValue && verb != '%' && indexedDynamicWidth && !afterIndex {
