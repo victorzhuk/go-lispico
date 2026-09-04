@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -22,10 +23,12 @@ func TestStrings_FormatRefusalCases(t *testing.T) {
 	}{
 		{
 			// fmt keeps the refusal through the precision parse and the
-			// trailing %s binds argument 0.
+			// trailing %s binds argument 0. A long argument there makes a
+			// restored arg-0 cursor undercharge: the header slack cannot
+			// mask the difference between fixed and buggy estimates.
 			name:   "refused index with precision",
 			format: "%[18446744073709551618].2s%s",
-			args:   []any{"ABCDEF", "Z"},
+			args:   []any{strings.Repeat("B", 1<<10), "Z"},
 		},
 		{
 			// fmt consumes the dynamic width argument even though the index
@@ -62,6 +65,15 @@ func TestStrings_FormatRefusalCases(t *testing.T) {
 			estimate := estimateFormatAllocBytes(tc.format, args)
 			if estimate < int64(len(render)) {
 				t.Fatalf("estimate %d < render %d (%q)", estimate, len(render), render)
+			}
+			if tc.name == "lone refused directive" {
+				// The lone refused directive is the only BADINDEX-only
+				// case: the 13-byte field estimate (12 bytes of
+				// %!(s)(BADINDEX) plus the verb byte) is otherwise
+				// indistinguishable from a 12-byte miscount.
+				require.Equalf(t, core.MeterStringHeaderBytes+13, estimate,
+					"estimateFormatAllocBytes(%q) = %d: a lone refused directive must estimate exactly a header plus 13 bytes",
+					tc.format, estimate)
 			}
 		})
 	}
