@@ -386,6 +386,8 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 		}
 
 		estimateOne := func(i, arg int) (int64, int, int) {
+			arg0 := arg
+			refused := false
 			hasSpace, hasAlt := false, false
 			for i < len(format) {
 				switch format[i] {
@@ -403,9 +405,9 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 			}
 		flagsDone:
 
-			arg, i, afterIndex := formatArgIndex(format, arg, i, len(args))
+			var afterIndex bool
+			arg, i, afterIndex, refused = formatArgIndex(format, arg, i, len(args))
 			valueArgIndexed := afterIndex
-
 			width, hasWidth := int64(0), false
 			indexedDynamicWidth := false
 			if i < len(format) && format[i] == '*' {
@@ -435,7 +437,7 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 				if afterIndex {
 					goodArgNum = false
 				}
-				arg, i, afterIndex = formatArgIndex(format, arg, i, len(args))
+				arg, i, afterIndex, refused = formatArgIndex(format, arg, i, len(args))
 				if i < len(format) && format[i] == '*' {
 					precision = formatDynamicInt(args, arg)
 					if precision < 0 {
@@ -459,18 +461,33 @@ func estimateFormatAllocBytes(format string, args []core.Value) int64 {
 					}
 				}
 			}
-
 			if !afterIndex {
-				arg, i, afterIndex = formatArgIndex(format, arg, i, len(args))
+				var valueRefused bool
+				arg, i, afterIndex, valueRefused = formatArgIndex(format, arg, i, len(args))
+				refused = refused || valueRefused
 				valueArgIndexed = afterIndex
 			}
 
 			if i >= len(format) {
+				if refused {
+					return int64(len("%!(BADINDEX)")) + 1, i, arg0
+				}
 				return 1, i, arg
 			}
 
 			verb := format[i]
 			i++
+			if refused {
+				// fmt renders %!(verb)(BADINDEX) for the directive and leaves
+				// the implicit cursor untouched: a refused index never binds
+				// or consumes. The width is kept only as an upper bound in
+				// case a future fmt pads the error text.
+				field := int64(len("%!(BADINDEX)"))
+				if hasWidth && width > field {
+					field = width
+				}
+				return field, i, arg0
+			}
 			chargeValue := verb != '%' && (goodArgNum || valueArgIndexed)
 			if !chargeValue && verb != '%' && indexedDynamicWidth && !afterIndex {
 				chargeValue = true
@@ -577,39 +594,49 @@ func estimateFormatValueBytes(v core.Value, verb byte, precision int64, hasPreci
 	}
 }
 
-func formatArgIndex(format string, arg int, i int, numArgs int) (int, int, bool) {
-	index, consumed, ok := parseFormatArgIndex(format[i:])
+func formatArgIndex(format string, arg int, i int, numArgs int) (int, int, bool, bool) {
+	index, consumed, ok, refused := parseFormatArgIndex(format[i:])
 	if !ok {
-		return arg, i + consumed, false
+		return arg, i + consumed, false, false
 	}
-	if index < 0 || index >= int64(numArgs) {
-		return arg, i + consumed, true
+	if refused || index < 0 || index >= int64(numArgs) {
+		// fmt renders %!(BADINDEX) and consumes nothing; the caller must
+		// treat the directive as a no-op that leaves the cursor untouched.
+		return arg, i + consumed, false, true
 	}
-	return int(index), i + consumed, true
+	return int(index), i + consumed, true, false
 }
 
-func parseFormatArgIndex(format string) (int64, int, bool) {
+func parseFormatArgIndex(format string) (int64, int, bool, bool) {
 	if len(format) == 0 || format[0] != '[' {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	if len(format) < 3 {
-		return 0, 1, false
+		return 0, 1, false, false
 	}
 
 	var index int64
+	refused := false
 	i := 1
 	for i < len(format) && isFormatDigit(format[i]) {
-		index = index*10 + int64(format[i]-'0')
+		if index > maxFormatParseNum {
+			refused = true
+		}
+		if !refused {
+			index = index*10 + int64(format[i]-'0')
+		}
 		i++
 	}
 	if i == 1 || i >= len(format) || format[i] != ']' {
-		return 0, 1, false
+		return 0, 1, false, false
 	}
-
+	if refused {
+		return 0, i + 1, true, true
+	}
 	if index == 0 {
-		return -1, i + 1, true
+		return -1, i + 1, true, false
 	}
-	return index - 1, i + 1, true
+	return index - 1, i + 1, true, false
 }
 
 // parseFormatInt reads a literal width or precision the way fmt's parsenum

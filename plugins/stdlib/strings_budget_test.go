@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"runtime"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -531,6 +532,59 @@ func TestStrings_FormatEstimateTracksLiteralWidthRender(t *testing.T) {
 				tt.format, estimate, rendered, ceiling, verbOnly, maxFormatEstimate)
 		})
 	}
+}
+
+// TestStrings_FormatEstimateTracksExplicitIndexRefusal pins the estimator and
+// fmt to agreement on which argument a directive names. fmt refuses an
+// explicit index past its parsenum ceiling, renders %!(BADINDEX) for the
+// directive alone, and lets the following %s bind to the implicit cursor's
+// argument - the 1MiB argument is never rendered. The estimator must refuse
+// the index the same way, as a no-op: it must not wrap the decimal through
+// index*10+d into an in-range argument and charge the unrendered 1MiB string
+// for a render fmt materializes in a few dozen bytes.
+func TestStrings_FormatEstimateTracksExplicitIndexRefusal(t *testing.T) {
+	env := setupEnv(t)
+	fn := formatGoFunc(t, env)
+
+	format := "%[18446744073709551618]s%s"
+	args := []core.Value{core.Int{V: 7}, core.String{V: strings.Repeat("x", 1<<20)}}
+	rendered := fmt.Sprintf(format, toAny(args[0]), toAny(args[1]))
+	require.Containsf(t, rendered, "BADINDEX",
+		"render is %d bytes: the seeded index must be one fmt refuses, not one it honours", len(rendered))
+	require.Lessf(t, len(rendered), 1<<20,
+		"render is %d bytes: fmt refused the index, so the 1MiB argument must not be part of the render the estimate answers for", len(rendered))
+
+	estimate := estimateFormatAllocBytes(format, args)
+	require.GreaterOrEqualf(t, estimate, int64(len(rendered)),
+		"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes", format, estimate, len(rendered))
+	refusedCeiling := core.MeterStringHeaderBytes + int64(len(rendered)) + int64(len(format))
+	require.LessOrEqualf(t, estimate, refusedCeiling,
+		"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: fmt refused the explicit index and rendered nothing from the 1MiB argument, so the estimator must treat the refusal as a no-op too and not wrap the index into charging an argument the render never used", format, estimate, len(rendered))
+
+
+	budget := int(core.StringShallowBytes(len(rendered)) - 1)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	tightCtx := core.WithEvalResourceLimits(t.Context(), 1<<20, budget)
+	_, err := fn.Fn(tightCtx, nil, args, env)
+	runtime.ReadMemStats(&after)
+	requireResourceLimit(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	require.Equalf(t, fmt.Sprintf("allocation limit %d bytes exceeded", budget), lerr.Message,
+		"the render is one byte over the budget, so the refusal must carry the allocation message, got %q", lerr.Message)
+	if got := after.TotalAlloc - before.TotalAlloc; got >= uint64(len(rendered)) {
+		t.Fatalf("format allocated %d bytes before refusing; fmt.Sprintf materializes %d bytes here, so the render must never have run", got, len(rendered))
+	}
+
+	generousCtx := core.WithEvalResourceLimits(t.Context(), 8<<20, 8<<20)
+	got, err := fn.Fn(generousCtx, nil, args, env)
+	require.NoError(t, err)
+	require.Equal(t, core.String{V: rendered}, got,
+		"with the index refused the result must carry fmt's own render, %!(BADINDEX) text included")
+	charged := core.EvalMeterFrom(generousCtx).Snapshot().AllocationBytes
+	require.GreaterOrEqualf(t, charged, core.StringShallowBytes(len(rendered)),
+		"charged %d bytes for a render of %d bytes: the settled charge must cover the render fmt actually produced", charged, len(rendered))
 }
 
 // TestStrings_ReplaceOutputBytesIsExact bounds string/replace's pre-charge from
