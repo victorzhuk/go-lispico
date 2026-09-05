@@ -13,9 +13,6 @@ import (
 // bound instead of needing a budget of its own.
 var invTrustedHostCallees = []string{".Equals", ".String", ".Type", "core.EqualsBounded"}
 
-// The unbounded-tracked disposition was retired; no owner token remains.
-var invTrackedChanges = []string{"core-value-walk-sharing-bound", "format-mismatched-verb-bound"}
-
 // invKnownNames is the closed set of names a row may name: every registered
 // builtin plus every CL adapter id.
 func invKnownNames() map[string]bool {
@@ -77,8 +74,6 @@ func invNamesToken(proof string, allowed []string) bool {
 }
 
 func invNamesTrustedCallee(proof string) bool { return invNamesToken(proof, invTrustedHostCallees) }
-
-func invNamesTrackedChange(proof string) bool { return invNamesToken(proof, invTrackedChanges) }
 
 // invSupportOnly reports whether a row belongs solely to the support family.
 // Nothing in support is registered under a Lisp name, so such a row names none.

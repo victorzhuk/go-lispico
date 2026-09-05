@@ -93,22 +93,37 @@ var invEnvEvaluatorAllow = map[string]bool{
 // entry by a deterministic bound, or recorded as a bounded exception with proof
 // and a maximum.
 var invOpaqueQualified = map[string]bool{
-	"strings.Split":                    true,
-	"strings.Join":                     true,
-	"strings.ReplaceAll":               true,
-	"strings.ToUpper":                  true,
-	"strings.ToLower":                  true,
-	"strings.TrimSpace":                true,
-	"strings.Contains":                 true,
-	"strings.HasPrefix":                true,
-	"strings.HasSuffix":                true,
-	"fmt.Sprintf":                      true,
-	"strconv.ParseInt":                 true,
-	"strconv.ParseFloat":               true,
-	"sort.SliceStable":                 true,
-	"core.ValueDeepBytes":              true,
-	"core.CheckConstructionDepthWith":  true,
-	"core.CheckNestedElementDepthWith": true,
+	"strings.Split":                       true,
+	"strings.Join":                        true,
+	"strings.ReplaceAll":                  true,
+	"strings.ToUpper":                     true,
+	"strings.ToLower":                     true,
+	"strings.TrimSpace":                   true,
+	"strings.Contains":                    true,
+	"strings.HasPrefix":                   true,
+	"strings.HasSuffix":                   true,
+	"fmt.Sprintf":                         true,
+	"strconv.ParseInt":                    true,
+	"strconv.ParseFloat":                  true,
+	"sort.SliceStable":                    true,
+	"core.ValueStringContext":             true,
+	"core.ValueDeepBytesContext":          true,
+	"core.ValueNodeCountContext":          true,
+	"core.CheckConstructionDepthContext":  true,
+	"core.CheckNestedElementDepthContext": true,
+}
+
+// invContextWalkCallees is the subset of invOpaqueQualified that carries the
+// caller's occurrence and work budget through the context. Such a callee charges
+// and interrupts on its own, so a phase whose only scalable work is one of these
+// calls is bounded without a loop or a budget of the caller's own, and such a
+// call standing in a loop body is that loop's charge.
+var invContextWalkCallees = map[string]bool{
+	"core.ValueStringContext":             true,
+	"core.ValueDeepBytesContext":          true,
+	"core.ValueNodeCountContext":          true,
+	"core.CheckConstructionDepthContext":  true,
+	"core.CheckNestedElementDepthContext": true,
 }
 
 // invOpaqueMethods are the HashMap methods of the same set. They are matched on
@@ -177,6 +192,7 @@ type invSourceFn struct {
 	hasLoop     bool
 	hasBudget   bool
 	stepInLoop  bool
+	contextWalk bool
 }
 
 // invFinding formats one reconciliation finding as
@@ -197,8 +213,6 @@ type invSourceFn struct {
 //	                              callback-owned row
 //	MISSING_PROOF                 a bounded-exception row without Proof or MaxWork
 //	TRUSTED_HOST_NOT_VALUE_METHOD a trusted-host Proof naming no allowed callee
-//	UNTRACKED_UNBOUNDED           an unbounded-tracked row without a Proof naming
-//	                              its tracking change, or one that states a MaxWork
 //	UNFLUSHED_RETURN              a budget holder returning without settling it
 //	DUPLICATE_CALLBACK_CHARGE     a second callback-owned row for one callback
 //	UNCLASSIFIED_RESULT_BRANCH    a row whose Class is unknown, or which allocates
@@ -814,6 +828,9 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 			}
 			if callee := invOpaqueCalleeName(x); callee != "" {
 				sf.libCalls = append(sf.libCalls, invLabel(callee, fset, x.Pos()))
+				if invContextWalkCallees[callee] {
+					sf.contextWalk = true
+				}
 			}
 			sel, ok := x.Fun.(*ast.SelectorExpr)
 			if !ok {
@@ -872,7 +889,7 @@ func invAnalyzeFunc(fset *gotoken.FileSet, rel string, unit invUnit, flushHelper
 		if !ok || !inLoop(call.Pos()) {
 			return true
 		}
-		if sel.Sel.Name == "Step" {
+		if sel.Sel.Name == "Step" || invContextWalkCallees[invOpaqueCalleeName(call)] {
 			sf.stepInLoop = true
 		}
 		recv, ok := sel.X.(*ast.Ident)
@@ -1108,11 +1125,6 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 				out = append(out, invFinding("MISSING_PROOF", row.File, row.Func, row.PhaseLabel,
 					"a bounded-exception phase needs both Proof and MaxWork"))
 			}
-		case "unbounded-tracked":
-			if row.Proof == "" || !invNamesTrackedChange(row.Proof) || row.MaxWork != 0 {
-				out = append(out, invFinding("UNTRACKED_UNBOUNDED", row.File, row.Func, row.PhaseLabel,
-					"an unbounded phase needs a Proof naming its tracking change and no MaxWork"))
-			}
 		case "trusted-host":
 			if !invNamesTrustedCallee(row.Proof) {
 				out = append(out, invFinding("TRUSTED_HOST_NOT_VALUE_METHOD", row.File, row.Func, row.PhaseLabel,
@@ -1127,7 +1139,7 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 			}
 		case "budgeted":
 			switch {
-			case !sf.hasLoop && !sf.hasBudget:
+			case !sf.hasLoop && !sf.hasBudget && !sf.contextWalk:
 				out = append(out, invFinding("HELPER_ONLY_LOOP", row.File, row.Func, row.PhaseLabel,
 					"row claims budgeted work but the named function holds neither a loop nor a budget"))
 			case sf.hasLoop && !sf.stepInLoop:
@@ -1169,11 +1181,10 @@ func reconcileWork(root string, phases []inventory.WorkPhase, migrated map[strin
 					"a registered builtin must not reach the environment's evaluator"))
 			}
 		}
-		if !invHasDisposition(rowsByFunc[key],
-			"budgeted", "bounded-exception", "trusted-host", "unbounded-tracked") {
+		if !invHasDisposition(rowsByFunc[key], "budgeted", "bounded-exception", "trusted-host") {
 			for _, label := range sf.libCalls {
 				out = append(out, invFinding("OPAQUE_CALL", sf.file, sf.name, label,
-					"opaque callee with no budgeted, bounded-exception, trusted-host or unbounded-tracked row"))
+					"opaque callee with no budgeted, bounded-exception or trusted-host row"))
 			}
 		}
 		if !invHasDisposition(rowsByFunc[key], "callback-owned", "budgeted") {
@@ -1257,80 +1268,6 @@ func reconcileResult(root string, branches []inventory.ResultBranch, migrated ma
 func TestWorkInventory_MatchesSource(t *testing.T) {
 	for _, finding := range reconcileWork(moduleRoot(t), inventory.WorkPhases, inventory.FamilyMigrated) {
 		t.Error(finding)
-	}
-}
-
-// TestReconcileWork_UnboundedTrackedRowsNameTheirChange drives reconcileWork on
-// synthetic rows because the recorded inventory cannot reach UNTRACKED_UNBOUNDED:
-// a real row is written unbounded-tracked together with its change id, so the
-// finding would sit unexercised and rot into a guard that no longer guards.
-// The lookalike case is the one that rots first — it holds the matcher to whole
-// tokens, and a substring search would accept it.
-func TestReconcileWork_UnboundedTrackedRowsNameTheirChange(t *testing.T) {
-	root := moduleRoot(t)
-
-	const (
-		file  = "plugins/stdlib/collections.go"
-		fn    = "collectionBuiltins"
-		label = "synthetic unbounded phase"
-	)
-
-	tests := []struct {
-		name    string
-		proof   string
-		maxWork int64
-		want    bool
-	}{
-		{
-			name:  "no change named",
-			proof: "core.ValueDeepBytes walks the result as a tree, so the ledger does not bound it.",
-			want:  true,
-		},
-		{
-			name:  "tracking change named",
-			proof: "core.ValueDeepBytes walks the result as a tree. Owned by core-value-walk-sharing-bound.",
-			want:  false,
-		},
-		{
-			name:  "lookalike token named",
-			proof: "Owned by core-value-walk-sharing-boundary.",
-			want:  true,
-		},
-		{
-			name:    "tracking change named but a ceiling stated",
-			proof:   "Owned by core-value-walk-sharing-bound.",
-			maxWork: 4_194_304,
-			want:    true,
-		},
-	}
-
-	want := invFinding("UNTRACKED_UNBOUNDED", file, fn, label, "")
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rows := []inventory.WorkPhase{{
-				Families:    []string{"collection"},
-				Fn:          "list",
-				File:        file,
-				Func:        fn,
-				PhaseLabel:  label,
-				Disposition: "unbounded-tracked",
-				Proof:       tt.proof,
-				MaxWork:     tt.maxWork,
-			}}
-
-			// Nothing is migrated, so the per-function loop is skipped whole and the
-			// only findings left for this site are the per-row switch's own.
-			got := false
-			for _, finding := range reconcileWork(root, rows, map[string]bool{}) {
-				if strings.HasPrefix(finding, want) {
-					got = true
-				}
-			}
-			if got != tt.want {
-				t.Errorf("UNTRACKED_UNBOUNDED = %v, want %v for Proof %q with MaxWork %d",
-					got, tt.want, tt.proof, tt.maxWork)
-			}
-		})
 	}
 }
 
