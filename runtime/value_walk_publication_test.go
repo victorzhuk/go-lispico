@@ -79,10 +79,10 @@ func TestValueWalk_CallerPublication(t *testing.T) {
 		t.Run(mode+"/assert", func(t *testing.T) {
 			eng := newEngine(t, bytecode)
 			// assert renders its non-string message through
-			// ValueStringContext. The payload is a self-evaluating vector
-			// of 300 scalars — 301 walk units, above the 256-unit ceiling —
-			// because the tree-walker hands GoFuncs pre-evaluated args that
-			// assert re-evaluates itself.
+			// ValueStringContext under the caller's context. The payload is
+			// a vector of 300 scalars — one walk unit for the vector plus
+			// one per element, 301 against the 256-unit ceiling — so the
+			// render refuses before any message is emitted.
 			bigVec := make([]core.Value, 300)
 			for i := range bigVec {
 				bigVec[i] = core.Int{V: int64(i)}
