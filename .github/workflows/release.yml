@@ -248,6 +248,13 @@ jobs:
       # non-regression baseline. Reached only after the verdict step passed
       # (an implicit success() guards every if: without always()); release-
       # triggered only.
+      #
+      # Mode resolution above no longer keys on the triggering event, so this
+      # event guard is the only thing keeping a dispatched run out of the
+      # baseline slot -- the release-upload command below is the file's sole
+      # writer of a release asset. Keep the guard on the event, never on the
+      # resolved mode: a dispatch that resolves first-authorization would
+      # otherwise publish a baseline.
       - name: Store VM baseline on the authorized release
         if: github.event_name == 'release'
         env:
