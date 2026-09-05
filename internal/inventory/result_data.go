@@ -2631,8 +2631,9 @@ var ResultBranches = []ResultBranch{
 		ChargeExpr:  "chargeBorrowedResult(ctx)",
 	},
 
-	// assert evaluates both its condition and its message through the
-	// caller's evaluator, so either error reaches the caller unchanged.
+	// assert reports against the arguments the apply site already evaluated
+	// and never re-enters the evaluator, so the message render is the only
+	// return it borrows.
 	{
 		Families:    []string{"higher-order"},
 		Fn:          "assert",
@@ -2640,22 +2641,6 @@ var ResultBranches = []ResultBranch{
 		Func:        "registerControl",
 		BranchLabel: "arity error return",
 		Class:       "scalar-singleton",
-	},
-	{
-		Families:    []string{"higher-order"},
-		Fn:          "assert",
-		File:        "plugins/stdlib/control.go",
-		Func:        "registerControl",
-		BranchLabel: "condition eval error return",
-		Class:       "borrowed",
-	},
-	{
-		Families:    []string{"higher-order"},
-		Fn:          "assert",
-		File:        "plugins/stdlib/control.go",
-		Func:        "registerControl",
-		BranchLabel: "message eval error return",
-		Class:       "borrowed",
 	},
 	{
 		Families:    []string{"higher-order"},
