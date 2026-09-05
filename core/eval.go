@@ -343,15 +343,17 @@ func evalStateFrom(ctx context.Context) *evalState {
 	return st
 }
 
-// walkEvalStateFrom resolves the limits a value walk reads. A walk charges no
+// walkLimitsFrom resolves the limits a value walk reads. A walk charges no
 // allocation and never reaches the session meter, so it skips resolving and
 // attaching one: that costs a second context chain walk and an atomic store per
-// value rendered, and str, format and string/join render one per element.
-func walkEvalStateFrom(ctx context.Context) *evalState {
+// value rendered, and str, format and string/join render one per element. A
+// context carrying no evaluator state has no counters to keep either, so the
+// defaults are read directly rather than out of a state allocated to hold them.
+func walkLimitsFrom(ctx context.Context) (maxAllocBytes int64, deadline time.Time) {
 	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
-		return st
+		return st.maxAllocBytes, st.deadline
 	}
-	return newEvalState()
+	return DefaultMaxAllocationBytes, time.Time{}
 }
 
 // DetachEvalState returns a copy of ctx with a fresh evalState attached,

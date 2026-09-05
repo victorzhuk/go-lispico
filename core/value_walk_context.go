@@ -9,7 +9,7 @@ import (
 
 type valueWalkBudget struct {
 	ctx      context.Context
-	st       *evalState
+	deadline time.Time
 	limit    int64
 	used     int64
 	since    int64
@@ -20,12 +20,12 @@ func newValueWalkBudget(ctx context.Context) valueWalkBudget {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	st := walkEvalStateFrom(ctx)
-	limit := st.maxAllocBytes / MeterValueSlotBytes
+	maxAllocBytes, deadline := walkLimitsFrom(ctx)
+	limit := maxAllocBytes / MeterValueSlotBytes
 	if limit < 1 {
 		limit = 1
 	}
-	return valueWalkBudget{ctx: ctx, st: st, limit: limit}
+	return valueWalkBudget{ctx: ctx, deadline: deadline, limit: limit}
 }
 
 func (w *valueWalkBudget) resource() error {
@@ -36,7 +36,7 @@ func (w *valueWalkBudget) sync() error {
 	if w.terminal != nil {
 		return w.terminal
 	}
-	if !w.st.deadline.IsZero() && !time.Now().Before(w.st.deadline) {
+	if !w.deadline.IsZero() && !time.Now().Before(w.deadline) {
 		w.terminal = context.DeadlineExceeded
 		return w.terminal
 	}
