@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The release gate now reports a cell's latency verdict as inconclusive
+  whenever the stored baseline and the candidate benchmark were measured on
+  different runners, instead of comparing latency figures across them.
+  Allocation counts and allocated bytes are still enforced regardless of
+  runner identity.
+
 ## [0.13.0] - 2026-09-05
 
 ### Changed

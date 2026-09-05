@@ -31,12 +31,25 @@ every eval (only `twice-macro`, whose `defmacro` bumps the macro epoch) therefor
 carries ~+0.2% B/op with allocation count and latency unchanged — a fixed
 per-chunk field, within CI benchstat noise, not a per-operation regression.
 
-Note (non-increasing bounds and benchstat "~"): every tier with a bytes or
-allocation-count non-increasing bound, including startup, shares one blind
-spot. benchstat reports a non-significant metric delta as `~`, which this
-gate's CSV parser turns into `DeltaPct = 0`; a real but non-significant
-byte or allocation regression is therefore indistinguishable from no change
-and passes the bound undetected. This is a pre-existing gap in the gate's
+Note (runner comparability): a latency conclusion is only sound when the
+stored baseline and the candidate ran on the same runner identity, so the
+gate reports latency as inconclusive rather than compare figures across a
+change of runner, and never normalizes a configuration line to manufacture
+a comparison it cannot support. Allocation count and allocated bytes stay
+enforced regardless of runner identity: allocation count is an exact
+per-op integer, so its non-increasing bound already reads as an exact
+comparison independent of which machine produced it, while B/op is a
+benchmark-tool average that wobbles run to run even on identical
+hardware — the reason the bytes axis, not the allocation-count axis,
+carries a stated per-cell allowance.
+
+Note (benchstat "~" blind spot, latency only): benchstat reports a
+non-significant metric delta as `~`, which this gate's CSV parser turns
+into `DeltaPct = 0`; a real but non-significant regression is therefore
+indistinguishable from no change and passes undetected. The bytes and
+allocation-count axes no longer pass through benchstat at all — the gate
+reads both directly off the raw benchmark output — so this blind spot now
+applies to the latency axis only. This is a pre-existing gap in the gate's
 machinery, not something this ADR resolves.
 
 Note (startup's absolute overhead reading, still open): "at most 1 ms and
@@ -58,9 +71,10 @@ the same logical work. `guard-nil` therefore carries a named, per-cell,
 absolute allowance of 4 B/op on the bytes axis only, recorded in
 `internal/perfgate/tiers.json`'s `bytesAllowanceBOp`, sized from those
 hosted figures rather than a developer-box estimate. The other thirteen
-data-dominated cells — every `GoldsetParse/*` cell — keep the exact
-non-increasing bound with no allowance. The mechanism itself is not
-tier-specific, and reads wider than this one cell: an entry in that map is
+data-dominated cells — every `GoldsetParse/*` cell — carry an explicit
+allowance of 0 B/op in that same map: a stated zero, not an absent entry,
+which is what the exact non-increasing bound now means. The mechanism
+itself is not tier-specific, and reads wider than this one cell: an entry in that map is
 honored wherever a bytes non-increasing bound is applied — data/output-
 dominated, concurrent, and startup cells in either mode, and
 engine-sensitive cells once they compare against a previous release. It is
