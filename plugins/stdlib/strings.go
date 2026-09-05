@@ -382,11 +382,6 @@ const (
 	maxFormatParseNum = int64(1_000_000)
 )
 
-func estimateFormatAllocBytes(format string, args []core.Value) int64 {
-	n, _ := estimateFormatAllocBytesContext(context.Background(), format, args)
-	return n
-}
-
 func estimateFormatAllocBytesContext(ctx context.Context, format string, args []core.Value) (int64, error) {
 	var out int64
 	var walkErr error
