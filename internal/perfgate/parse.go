@@ -194,7 +194,8 @@ func TrimProcsSuffix(name string) string {
 }
 
 // tierConfigFile is tiers.json's on-disk shape: a documenting comment, the
-// cell-name -> tier map, and an optional cell-name -> bytes allowance map.
+// cell-name -> tier map, and the cell-name -> bytes allowance map every cell
+// must appear in.
 type tierConfigFile struct {
 	Comment           string             `json:"comment"`
 	Cells             map[string]string  `json:"cells"`
@@ -216,7 +217,7 @@ type CellTier struct {
 
 // ErrMissingBytesAllowance reports a cell the gate is asked to judge with no
 // stated bytes allowance. It is a configuration defect, not a cell verdict.
-var ErrMissingBytesAllowance = errors.New("perfgate: cell states no bytesAllowanceBOp")
+var ErrMissingBytesAllowance = errors.New("states no bytesAllowanceBOp")
 
 // LoadTierConfig reads a cell-name -> tier mapping (perfgate/tiers.json).
 // Real cell names and tier assignments are YAGEL-owned and not yet
@@ -237,12 +238,23 @@ func LoadTierConfig(r io.Reader) (map[string]CellTier, error) {
 		}
 		tiers[name] = CellTier{Tier: t}
 	}
-	for name, allowance := range file.BytesAllowanceBOp {
-		ct, ok := tiers[name]
-		if !ok {
+	for name := range file.BytesAllowanceBOp {
+		if _, ok := tiers[name]; !ok {
 			return nil, fmt.Errorf("perfgate: bytesAllowanceBOp names cell %q, absent from cells", name)
 		}
+	}
+	for name, ct := range tiers {
+		allowance, ok := file.BytesAllowanceBOp[name]
+		if !ok {
+			return nil, fmt.Errorf("perfgate: cell %q: %w", name, ErrMissingBytesAllowance)
+		}
+		// A negative allowance is stricter than the exact non-increasing bound
+		// nonIncreasing enforces at 0: it would fail a cell whose bytes held.
+		if allowance < 0 {
+			return nil, fmt.Errorf("perfgate: cell %q: negative bytesAllowanceBOp %v", name, allowance)
+		}
 		ct.BytesAllowanceBOp = allowance
+		ct.BytesAllowanceStated = true
 		tiers[name] = ct
 	}
 	return tiers, nil
