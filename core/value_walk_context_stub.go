@@ -16,7 +16,7 @@ type valueWalkBudget struct {
 	terminal error
 }
 
-func newValueWalkBudget(ctx context.Context) *valueWalkBudget {
+func newValueWalkBudget(ctx context.Context) valueWalkBudget {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -25,7 +25,7 @@ func newValueWalkBudget(ctx context.Context) *valueWalkBudget {
 	if limit < 1 {
 		limit = 1
 	}
-	return &valueWalkBudget{ctx: ctx, st: st, limit: limit}
+	return valueWalkBudget{ctx: ctx, st: st, limit: limit}
 }
 
 func (w *valueWalkBudget) resource() error {
@@ -86,8 +86,26 @@ func (w *valueWalkBudget) reserve(n int64) error {
 
 func ValueStringContext(ctx context.Context, v Value) (string, error) {
 	w := newValueWalkBudget(ctx)
+	switch v.(type) {
+	case List, Vector, *HashMap, Lambda, Macro:
+	default:
+		// A value with nothing to descend into already holds its own
+		// render: routing it through a Builder would allocate a second
+		// copy of that string on every str, format and assert call.
+		if err := w.step(); err != nil {
+			return "", err
+		}
+		s, err := scalarRender(v, &w)
+		if err != nil {
+			return "", err
+		}
+		if err := w.sync(); err != nil {
+			return "", err
+		}
+		return s, nil
+	}
 	var b strings.Builder
-	if err := walkString(&b, v, 0, w); err != nil {
+	if err := walkString(&b, v, 0, &w); err != nil {
 		return "", err
 	}
 	if err := w.sync(); err != nil {
@@ -162,20 +180,34 @@ func walkString(b *strings.Builder, v Value, depth int, w *valueWalkBudget) erro
 		}
 		b.WriteString(s)
 	default:
-		s := v.String()
-		if _, ok := v.(String); ok {
-			if err := w.reserve(int64(len(s))); err != nil {
-				return err
-			}
+		s, err := scalarRender(v, w)
+		if err != nil {
+			return err
 		}
 		b.WriteString(s)
 	}
 	return nil
 }
 
+// scalarRender renders a value that needs no descent, charging the same
+// reservation the surrounding walk would: an over-budget render is refused
+// identically whether or not a descent surrounds it.
+func scalarRender(v Value, w *valueWalkBudget) (string, error) {
+	if v == nil {
+		return "nil", nil
+	}
+	s := v.String()
+	if _, ok := v.(String); ok {
+		if err := w.reserve(int64(len(s))); err != nil {
+			return "", err
+		}
+	}
+	return s, nil
+}
+
 func ValueDeepBytesContext(ctx context.Context, v Value) (int64, error) {
 	w := newValueWalkBudget(ctx)
-	n, err := walkDeepBytes(v, 0, w)
+	n, err := walkDeepBytes(v, 0, &w)
 	if err != nil {
 		return 0, err
 	}
@@ -238,7 +270,7 @@ func walkDeepBytes(v Value, depth int, w *valueWalkBudget) (int64, error) {
 
 func ValueNodeCountContext(ctx context.Context, v Value) (int, error) {
 	w := newValueWalkBudget(ctx)
-	n, err := walkNodeCount(v, 0, w)
+	n, err := walkNodeCount(v, 0, &w)
 	if err != nil {
 		return 0, err
 	}
@@ -311,7 +343,7 @@ func checkDepthContext(ctx context.Context, v Value, depth int, eval Evaluator) 
 		limit = de.ConstructionDepthLimit()
 	}
 	w := newValueWalkBudget(ctx)
-	bad, err := walkDepth(v, depth, limit, w)
+	bad, err := walkDepth(v, depth, limit, &w)
 	if err != nil {
 		return err
 	}
