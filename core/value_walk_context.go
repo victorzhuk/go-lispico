@@ -367,11 +367,29 @@ func walkNodeCount(v Value, depth int, w *valueWalkBudget) (int, error) {
 			err = e
 		})
 		return n, err
-	case Lambda, Macro:
-		return 1, nil
+	case Lambda:
+		return walkClosureNodeCount(val.Body, depth, w)
+	case Macro:
+		return walkClosureNodeCount(val.Body, depth, w)
 	default:
 		return 1, nil
 	}
+}
+
+// walkClosureNodeCount counts the closure node plus every form its Body holds,
+// the figure core/depth.go reports for the same closure, under the caller's
+// budget: a payload that costs nothing would leave the walk's ceiling
+// unenforced behind every Lambda and Macro. Params are not nodes.
+func walkClosureNodeCount(body []Value, depth int, w *valueWalkBudget) (int, error) {
+	n := 1
+	for _, form := range body {
+		z, err := walkNodeCount(form, depth+1, w)
+		if err != nil {
+			return 0, err
+		}
+		n += z
+	}
+	return n, nil
 }
 
 func CheckConstructionDepthContext(ctx context.Context, v Value, eval Evaluator) error {
