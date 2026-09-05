@@ -83,7 +83,7 @@ func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn co
 	}
 
 	b := core.NewBuiltinWorkBudget(ctx)
-	var results []core.Value
+	results := make([]core.Value, 0, n)
 	for i := range n {
 		args := make([]core.Value, len(cursors))
 		for j := range cursors {
