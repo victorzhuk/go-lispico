@@ -898,23 +898,6 @@ func toAnyContext(ctx context.Context, v core.Value) (any, error) {
 	}
 }
 
-func toAny(v core.Value) any {
-	switch val := v.(type) {
-	case core.Nil:
-		return nil
-	case core.Bool:
-		return val.V
-	case core.Int:
-		return val.V
-	case core.Float:
-		return val.V
-	case core.String:
-		return val.V
-	default:
-		return v.String()
-	}
-}
-
 func isTruthy(v core.Value) bool {
 	if _, ok := v.(core.Nil); ok {
 		return false

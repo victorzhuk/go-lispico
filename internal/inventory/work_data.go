@@ -1315,7 +1315,7 @@ var WorkPhases = []WorkPhase{
 	},
 
 	// format's own two phases. The argument loop is bounded by the operand
-	// count; the render behind it is not, and carries its own row on toAny.
+	// count; the render behind it is not, and carries its own row on toAnyContext.
 	{
 		Families:    []string{"string"},
 		Fn:          "format",
@@ -1330,8 +1330,8 @@ var WorkPhases = []WorkPhase{
 			"billed at core.MeterValueSlotBytes (16) a slot - so a call that " +
 			"fits under core.DefaultMaxAllocationBytes carries at most " +
 			"core.DefaultMaxAllocationBytes/16 operands, which is MaxWork. What " +
-			"each iteration renders is toAny's work, not this loop's, and the " +
-			"row on toAny states what bounds it.",
+			"each iteration renders is toAnyContext's work, not this loop's, and " +
+			"the row on toAnyContext states what bounds it.",
 		MaxWork: 4_194_304,
 	},
 	{
@@ -1592,18 +1592,6 @@ var WorkPhases = []WorkPhase{
 			"ceil(bytes/16) units for each leaf whose bytes it writes, and a " +
 			"resource-limit error the moment the units run out. Cancellation and the " +
 			"deadline are polled every 128 units, holding Terminal lag to 127.",
-	},
-	{
-		Families:    []string{"string"},
-		Fn:          "format",
-		File:        "plugins/stdlib/strings.go",
-		Func:        "toAny",
-		PhaseLabel:  "host value render",
-		Disposition: "trusted-host",
-		Proof: "A value an embedding host supplies falls to the default arm, " +
-			"which hands fmt the host's own .String output verbatim. Bounding " +
-			"it is the host's job, not stdlib's: the phase inherits whatever " +
-			"bound the host's implementation already holds.",
 	},
 	{
 		Families:    []string{"string"},
