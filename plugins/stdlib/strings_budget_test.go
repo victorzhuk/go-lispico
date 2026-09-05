@@ -721,3 +721,53 @@ func TestStrings_ValueWalkRowsAreBudgeted(t *testing.T) {
 	}
 	require.True(t, found, "format render assembly must be a bounded exception")
 }
+
+// sbJoin sizes a join whose parts each render well inside the allocation
+// ceiling while their sum is four times it: the per-part bound holds on every
+// one of them, and what the call has to hold too is the bound across them.
+const (
+	sbJoinPartLen   = 65536
+	sbJoinPartCount = 64
+	sbJoinBudget    = 1 << 20
+)
+
+// sbCountedPart is a host value whose render is the fixture's payload and
+// whose renders are counted, so a join can be observed to stop producing parts
+// once the ledger can no longer accept them.
+type sbCountedPart struct {
+	rendered string
+	renders  *int
+}
+
+func (v sbCountedPart) Type() core.Keyword       { return core.Keyword{V: "counted"} }
+func (v sbCountedPart) String() string           { *v.renders++; return v.rendered }
+func (v sbCountedPart) Equals(o core.Value) bool { _, ok := o.(sbCountedPart); return ok }
+
+// TestStrings_JoinCompositionIsBounded: string/join renders every part into a
+// retained slice and charges the sum only once the whole set exists, so a call
+// whose parts sum to four times the allocation ceiling materializes all of
+// them and only then refuses. Each part's own render is bounded, but that
+// bound has to compose: the ledger must accept a rendered part before the next
+// one is produced, so the set the call holds is bounded by the ceiling instead
+// of by the input's length.
+func TestStrings_JoinCompositionIsBounded(t *testing.T) {
+	env := setupEnv(t)
+
+	renders := 0
+	items := make([]core.Value, sbJoinPartCount)
+	for i := range items {
+		items[i] = sbCountedPart{rendered: strings.Repeat("p", sbJoinPartLen), renders: &renders}
+	}
+
+	fn := sbGoFunc(t, env, "string/join")
+	ctx := core.WithEvalResourceLimits(t.Context(), 1<<20, sbJoinBudget)
+	_, err := fn.Fn(ctx, nil, []core.Value{core.String{V: ""}, core.NewList(items)}, env)
+
+	requireResourceLimit(t, err)
+	require.Truef(t, core.IsTerminalEvalError(err),
+		"(string/join \"\" <%d parts of %d bytes>) under a %d-byte ceiling must fail terminally, got %v",
+		sbJoinPartCount, sbJoinPartLen, sbJoinBudget, err)
+	require.Lessf(t, renders, sbJoinPartCount,
+		"(string/join \"\" <%d parts of %d bytes>) rendered all %d of them under a %d-byte ceiling their sum exceeds by %dx before the ledger refused: the per-part bound must compose across parts, so a rendered part has to enter the ledger before the next one is produced",
+		sbJoinPartCount, sbJoinPartLen, renders, sbJoinBudget, sbJoinPartCount*sbJoinPartLen/sbJoinBudget)
+}

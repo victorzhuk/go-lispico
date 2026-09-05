@@ -249,5 +249,96 @@ func BenchmarkSharedValueWalk(b *testing.B) {
 	b.Log("canonical 26-Cons baseline is report-only; do not render it")
 }
 
+// TestValueWalk_ClosureBodyIsBudgeted places the canonical 352-visit shared
+// fixture where only a closure body reaches it, under the same 256-unit
+// ceiling TestValueWalk_WorkCap uses. A walk that descends Params, Variadic
+// and Body under its own budget exhausts that ceiling; one that hands the
+// closure to a context-free helper answers with the whole figure instead, so
+// the bound the ceiling exists to enforce is absent behind every Lambda and
+// Macro.
+func TestValueWalk_ClosureBodyIsBudgeted(t *testing.T) {
+	shared := sharedConsChain(5, []Value{Int{V: 0}, Int{V: 1}, Int{V: 2}, Int{V: 3}, Int{V: 4}, Int{V: 5}, Int{V: 6}, Int{V: 7}, Int{V: 8}, Int{V: 9}})
+	ctx := WithEvalResourceLimits(context.Background(), 1_000_000, 4096)
+
+	for _, c := range []struct {
+		name string
+		v    Value
+	}{
+		{"Lambda", Lambda{Name: "f", Body: []Value{shared}}},
+		{"Macro", Macro{Name: "m", Body: []Value{shared}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Run("ValueDeepBytesContext", func(t *testing.T) {
+				runWalk(t, c.name+" deep size must refuse terminally at the 256-unit work ceiling", func() {
+					n, err := ValueDeepBytesContext(ctx, c.v)
+					if err == nil {
+						t.Fatalf("ValueDeepBytesContext over a %s whose body holds the 352-visit shared fixture = %d bytes, nil under a 256-unit ceiling: a closure payload must be walked under the same budget as any other node, not handed to the context-free helper", c.name, n)
+					}
+					if errCode(t, err) != CodeResourceLimit || !IsTerminalEvalError(err) {
+						t.Fatalf("ValueDeepBytesContext over a %s body = %v, want terminal %s", c.name, err, CodeResourceLimit)
+					}
+				})
+			})
+			t.Run("ValueStringContext", func(t *testing.T) {
+				runWalk(t, c.name+" render must refuse terminally at the 256-unit work ceiling", func() {
+					s, err := ValueStringContext(ctx, c.v)
+					if err == nil {
+						t.Fatalf("ValueStringContext over a %s whose body holds the 352-visit shared fixture = %q, nil under a 256-unit ceiling: a closure payload must be walked under the same budget as any other node, not handed to the context-free helper", c.name, s)
+					}
+					if errCode(t, err) != CodeResourceLimit || !IsTerminalEvalError(err) {
+						t.Fatalf("ValueStringContext over a %s body = %v, want terminal %s", c.name, err, CodeResourceLimit)
+					}
+				})
+			})
+		})
+	}
+}
+
+// TestValueWalk_ClosureDepthDescendsBody pins the contextual construction
+// depth check to the answer core/depth.go already gives on the identical
+// value. constructionDepthExceeded descends a closure's Body, so a form
+// nested past the limit inside a Lambda or Macro is refused on the host path;
+// the contextual twin counts the closure as one level and stops, accepting
+// what the value the check exists to reject.
+//
+// The under-limit closure is the other half: a check that refused every
+// closure would satisfy the first assertion while breaking every ordinary
+// program that defines a function.
+func TestValueWalk_ClosureDepthDescendsBody(t *testing.T) {
+	const limit = 5
+	eval := depthLimitEvaluator{limit: limit}
+	over, under := nestedList(limit+3), nestedList(limit-3)
+
+	for _, c := range []struct {
+		name         string
+		over, within Value
+	}{
+		{"Lambda", Lambda{Name: "f", Body: []Value{over}}, Lambda{Name: "f", Body: []Value{under}}},
+		{"Macro", Macro{Name: "m", Body: []Value{over}}, Macro{Name: "m", Body: []Value{under}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			runWalk(t, c.name+" construction depth must match the context-free answer on the same value", func() {
+				hostErr := CheckConstructionDepthWith(c.over, eval)
+				if hostErr == nil || errCode(t, hostErr) != CodeResourceLimit {
+					t.Fatalf("CheckConstructionDepthWith over a %s whose body nests %d levels past a limit of %d = %v, want %s: the parity this test pins is against the host path's refusal", c.name, limit+3-limit, limit, hostErr, CodeResourceLimit)
+				}
+				err := CheckConstructionDepthContext(context.Background(), c.over, eval)
+				if err == nil {
+					t.Fatalf("CheckConstructionDepthContext over a %s whose body nests %d levels under a limit of %d = nil while CheckConstructionDepthWith refuses the same value with %s: the contextual check must descend the closure body, not count the closure as its last level", c.name, limit+3, limit, CodeResourceLimit)
+				}
+				if errCode(t, err) != CodeResourceLimit {
+					t.Fatalf("CheckConstructionDepthContext over a %s body = %v, want %s", c.name, err, CodeResourceLimit)
+				}
+				if err := CheckConstructionDepthWith(c.within, eval); err != nil {
+					t.Fatalf("CheckConstructionDepthWith over a %s whose body nests %d levels under a limit of %d = %v, want nil", c.name, limit-3, limit, err)
+				}
+				if err := CheckConstructionDepthContext(context.Background(), c.within, eval); err != nil {
+					t.Fatalf("CheckConstructionDepthContext over a %s whose body nests %d levels under a limit of %d = %v, want nil: descending the body must not refuse a closure that fits", c.name, limit-3, limit, err)
+				}
+			})
+		})
+	}
+}
+
 func timeNowPast() time.Time { return time.Now().Add(-time.Millisecond) }
 func itoa(n int) string      { return fmt.Sprintf("%d", n) }
