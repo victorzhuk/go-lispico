@@ -3,11 +3,18 @@ package perfgate
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 )
+
+// ErrUnpairedComparison reports that benchstat declined to pair the two
+// inputs and emitted single-group tables instead — it exits 0 either way, so
+// this is the only signal that the comparison the gate asked for was never
+// made. Distinct from the generic parse errors, which mean a malformed CSV.
+var ErrUnpairedComparison = errors.New("perfgate: benchstat emitted a single-group table, the two runs were not paired")
 
 // ParseBenchstatCSV parses the output of
 // `benchstat -format csv old.txt new.txt` into per-cell comparisons.

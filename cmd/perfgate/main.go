@@ -155,7 +155,10 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 	}
 }
 
-func runBenchstat(oldPath, newPath string) ([]byte, error) {
+// runBenchstat is a variable so tests can substitute committed benchstat
+// output; production keeps the argv at exactly `-format csv <old> <new>`,
+// which is what makes a refusal to pair observable instead of papered over.
+var runBenchstat = func(oldPath, newPath string) ([]byte, error) {
 	cmd := exec.Command("go", "run", "golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d", "-format", "csv", oldPath, newPath)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
