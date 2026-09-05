@@ -743,16 +743,16 @@ func TestCLDocs_ExamplesParse(t *testing.T) {
 
 	changelog, err := os.ReadFile("../CHANGELOG.md")
 	require.NoError(t, err, "CHANGELOG.md must be readable relative to the cl package")
-	unreleased, ok := changelogUnreleased(string(changelog))
+	current, ok := changelogCurrent(string(changelog))
 	require.True(t, ok, "CHANGELOG must carry an [Unreleased] section")
 	migrated := false
-	for _, args := range adapterArgCounts(unreleased) {
-		require.NotEqual(t, 2, args, "[Unreleased] must not show the retired two-argument WithAdapter(name, fn) form")
+	for _, args := range adapterArgCounts(current) {
+		require.NotEqual(t, 2, args, "the current changelog must not show the retired two-argument WithAdapter(name, fn) form")
 		if args >= 3 {
 			migrated = true
 		}
 	}
-	require.True(t, migrated, "[Unreleased] must document the WithAdapter(name, semanticID, fn) migration with a three-argument example")
+	require.True(t, migrated, "the current changelog must document the WithAdapter(name, semanticID, fn) migration with a three-argument example")
 }
 
 // clDocSection returns the body of the README section whose heading mentions
@@ -849,15 +849,25 @@ func adapterArgCounts(src string) []int {
 	}
 }
 
-func changelogUnreleased(src string) (string, bool) {
+// changelogCurrent returns [Unreleased] together with the newest released
+// section. Cutting a release moves an entry from the former into the latter
+// without changing what the changelog documents, so pinning [Unreleased] alone
+// would fail every release cut. Older sections stay out of range: they record
+// the call shapes of their own day, including retired ones.
+func changelogCurrent(src string) (string, bool) {
 	const head = "## [Unreleased]"
 	start := strings.Index(src, head)
 	if start < 0 {
 		return "", false
 	}
 	rest := src[start+len(head):]
-	if end := strings.Index(rest, "\n## "); end >= 0 {
-		return rest[:end], true
+	end := strings.Index(rest, "\n## ")
+	if end < 0 {
+		return rest, true
 	}
-	return rest, true
+	next := strings.Index(rest[end+1:], "\n## ")
+	if next < 0 {
+		return rest, true
+	}
+	return rest[:end+1+next], true
 }
