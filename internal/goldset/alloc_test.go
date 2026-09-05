@@ -1,3 +1,10 @@
+//go:build !race
+
+// The race detector allocates on its own account, so every fixture here counts
+// well above its pin under -race and the number records the detector rather
+// than the code. The release gate measures without it, so this file is excluded
+// under -race rather than carrying a second set of counts nothing ships against.
+
 package goldset
 
 import (
