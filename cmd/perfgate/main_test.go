@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -287,4 +288,64 @@ func runGate(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	var outBuf, errBuf bytes.Buffer
 	code = run(&outBuf, &errBuf, append([]string{"-tiers", committedTiers}, args...))
 	return code, outBuf.String(), errBuf.String()
+}
+
+// TestRun_ResolveModeSubcommand pins the gate mode to the stored baselines
+// rather than the triggering event: a dispatched run reads the same lookup a
+// release run does and reaches the same mode. A lookup that could not enumerate
+// releases is not evidence of absence, so it selects no threshold branch at all
+// and exits 3 instead of silently falling back to first-authorization.
+func TestRun_ResolveModeSubcommand(t *testing.T) {
+	swapBenchstat(t, func(_, _ string) ([]byte, error) {
+		assert.Fail(t, "benchstat ran for resolve-mode, which reads no benchmark output")
+		return nil, errors.New("benchstat must not run")
+	})
+	dir := t.TempDir()
+
+	found := writeLookup(t, dir, "found.json", perfgate.BaselineLookup{
+		EnumerationOK: true,
+		Tags:          []string{"v0.12.0"},
+		DownloadedTag: "v0.12.0",
+	})
+	var stdout, stderr bytes.Buffer
+	code := run(&stdout, &stderr, []string{"resolve-mode", "-lookup", found})
+	assert.Equal(t, 0, code, "a downloaded baseline is a clean resolution; stderr: %s", stderr.String())
+	assert.Contains(t, stdout.String(), "mode=non-regression",
+		"a stored baseline selects non-regression; stdout: %q", stdout.String())
+
+	absent := writeLookup(t, dir, "absent.json", perfgate.BaselineLookup{
+		EnumerationOK: true,
+		Tags:          []string{"v0.11.0", "v0.12.0"},
+	})
+	stdout.Reset()
+	stderr.Reset()
+	code = run(&stdout, &stderr, []string{"resolve-mode", "-lookup", absent})
+	assert.Equal(t, 0, code, "a known absence is a clean resolution; stderr: %s", stderr.String())
+	assert.Contains(t, stdout.String(), "mode=first-authorization",
+		"no release carries the asset, so the mode is first-authorization; stdout: %q", stdout.String())
+
+	// The zero lookup: EnumerationOK is false by zero value, so an unpopulated
+	// lookup fails closed the way a failed `gh release list` must.
+	enumFailed := writeLookup(t, dir, "enumeration-failed.json", perfgate.BaselineLookup{})
+	stdout.Reset()
+	stderr.Reset()
+	code = run(&stdout, &stderr, []string{"resolve-mode", "-lookup", enumFailed})
+	assert.Equal(t, 3, code, "a failed enumeration must not resolve a mode; stderr: %s", stderr.String())
+	assert.NotContains(t, stdout.String(), "mode=",
+		"a failed enumeration must name no mode; stdout: %q", stdout.String())
+	assert.Contains(t, stderr.String(), "enumerating releases",
+		"stderr does not give the enumeration failure as the reason: %s", stderr.String())
+}
+
+// writeLookup marshals the struct the subcommand unmarshals into, so the
+// fixture's wire shape cannot drift from the type the classification reads.
+func writeLookup(t *testing.T, dir, name string, lookup perfgate.BaselineLookup) string {
+	t.Helper()
+
+	data, err := json.Marshal(lookup)
+	require.NoError(t, err)
+
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+	return path
 }
