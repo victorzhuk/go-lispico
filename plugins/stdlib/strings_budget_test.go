@@ -54,6 +54,15 @@ func sbGoFunc(t *testing.T, env *core.Env, name string) core.GoFunc {
 	return fn
 }
 
+// sbToAny renders a value through the same entry format's argument path uses,
+// failing the test on a render error instead of discarding it.
+func sbToAny(t *testing.T, v core.Value) any {
+	t.Helper()
+	out, err := toAnyContext(t.Context(), v)
+	require.NoError(t, err)
+	return out
+}
+
 func sbStrings(n int, s string) []core.Value {
 	vs := make([]core.Value, n)
 	for i := range vs {
@@ -337,63 +346,6 @@ func sbWorkPhases(fn, disposition string) []inventory.WorkPhase {
 	return out
 }
 
-// TestStrings_ToStringWalkIsUnboundedTracked: toString drops a core container
-// into core boundedString, which walks the value as a tree while the ledger
-// charged each shared node once, so a node reachable twice renders twice.
-// str and string/join reach that walk with no pre-charge in front of it. No
-// static ceiling bounds it and the allocation ledger does not either, so the
-// phase is tracked against its owning change rather than given a false MaxWork.
-func TestStrings_ToStringWalkIsUnboundedTracked(t *testing.T) {
-	const owner = "Owned by core-value-walk-sharing-bound."
-	rows := sbWorkPhases("toString", "unbounded-tracked")
-	require.NotEmptyf(t, rows,
-		"inventory.WorkPhases has no %s row Func %q Disposition %q: the container arm of the formatting boundary still claims a bound it does not have",
-		sbStringsFile, "toString", "unbounded-tracked")
-	for _, p := range rows {
-		require.Zerof(t, p.MaxWork, "toString/%s: an unbounded-tracked phase must state no MaxWork", p.PhaseLabel)
-		require.Truef(t, strings.HasSuffix(p.Proof, owner), "toString/%s: Proof must end with %q, got %q", p.PhaseLabel, owner, p.Proof)
-	}
-}
-
-// TestStrings_FormatEstimatorWalkIsUnboundedTracked: estimateFormatAllocBytes
-// reaches core.ValueDeepBytes through formatStringBytes for every non-String
-// value, so the estimator itself runs the same unbounded tree walk - and it
-// runs before the pre-charge, unguarded by it. The estimate is load-bearing and
-// stays; what it needs is a row that stops claiming it is bounded.
-func TestStrings_FormatEstimatorWalkIsUnboundedTracked(t *testing.T) {
-	for _, fn := range []string{"estimateFormatAllocBytes", "estimateFormatValueBytes", "formatStringBytes"} {
-		if len(sbWorkPhases(fn, "unbounded-tracked")) > 0 {
-			return
-		}
-	}
-	t.Fatalf("inventory.WorkPhases has no %s row Disposition %q for the format estimator (Func estimateFormatAllocBytes, estimateFormatValueBytes or formatStringBytes): its core.ValueDeepBytes walk runs before the pre-charge and is unrecorded",
-		sbStringsFile, "unbounded-tracked")
-}
-
-// TestStrings_ToAnyRenderIsUnboundedTracked: toAny renders every non-scalar
-// format argument through v.String() at strings.go:643, and that loop runs
-// before fmt.Sprintf, so the render is materialized eagerly. What is unbounded
-// there is the walk, not the escaping: the render visits a shared node once per
-// path that reaches it while the ledger charged it once, exactly as toString's
-// walk does, so the phase carries toString's owner.
-//
-// The %q expansion is a separate defect of the same site and not a second
-// unboundedness: one byte becomes at most four, so the render stays a bounded
-// multiple of a ledger-bounded quantity. What it breaks is the charge, which
-// counts one byte per byte - measured, (list "<1048576 x 0x80>") estimates
-// 1048648 bytes and renders 4194308 characters, a ratio of 3.9997.
-func TestStrings_ToAnyRenderIsUnboundedTracked(t *testing.T) {
-	const owner = "Owned by core-value-walk-sharing-bound."
-	rows := sbWorkPhases("toAny", "unbounded-tracked")
-	require.NotEmptyf(t, rows,
-		"inventory.WorkPhases has no %s row Func %q Disposition %q: the eager render behind format's arguments is unrecorded, and the pre-charge does not bound it (measured render/estimate 3.9997 on a 1 MiB escaped leaf)",
-		sbStringsFile, "toAny", "unbounded-tracked")
-	for _, p := range rows {
-		require.Zerof(t, p.MaxWork, "toAny/%s: an unbounded-tracked phase must state no MaxWork", p.PhaseLabel)
-		require.Truef(t, strings.HasSuffix(p.Proof, owner), "toAny/%s: Proof must end with %q, got %q", p.PhaseLabel, owner, p.Proof)
-	}
-}
-
 // TestStrings_LengthRuneScanIsBoundedException: []rune(s.V) converts the whole
 // subject in one Go conversion with no point inside it where a Step could run,
 // exactly as count's subject scan does. The bound comes from the subject: a
@@ -510,7 +462,7 @@ func TestStrings_FormatEstimateTracksLiteralWidthRender(t *testing.T) {
 		{"precision refused int64 ceiling", "%.9223372036854775807f", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			out := fmt.Sprintf(tt.format, toAny(arg))
+			out := fmt.Sprintf(tt.format, sbToAny(t, arg))
 			rendered := int64(len(out))
 			honouredByFmt := !strings.Contains(out, "%!(NOVERB)")
 			estimate := estimateFormatAllocBytes(tt.format, args)
@@ -548,7 +500,7 @@ func TestStrings_FormatEstimateTracksExplicitIndexRefusal(t *testing.T) {
 
 	format := "%[18446744073709551618]s%s"
 	args := []core.Value{core.Int{V: 7}, core.String{V: strings.Repeat("x", 1<<20)}}
-	rendered := fmt.Sprintf(format, toAny(args[0]), toAny(args[1]))
+	rendered := fmt.Sprintf(format, sbToAny(t, args[0]), sbToAny(t, args[1]))
 	require.Containsf(t, rendered, "BADINDEX",
 		"render is %d bytes: the seeded index must be one fmt refuses, not one it honours", len(rendered))
 	require.Lessf(t, len(rendered), 1<<20,
@@ -669,7 +621,7 @@ func TestFormatEstimatorBoundsMismatchedVerbAndOperand(t *testing.T) {
 		t.Helper()
 		anyArgs := make([]any, len(args))
 		for i, v := range args {
-			anyArgs[i] = toAny(v)
+			anyArgs[i] = sbToAny(t, v)
 		}
 		render := fmt.Sprintf(format, anyArgs...)
 		estimate := estimateFormatAllocBytes(format, args)
@@ -748,7 +700,7 @@ func TestFormatEstimatorBoundsMismatchedVerbAndOperand(t *testing.T) {
 func TestStrings_ValueWalkRowsAreBudgeted(t *testing.T) {
 	for _, want := range []struct{ fn, phase string }{
 		{"toString", "container render walk"},
-		{"toAny", "non-scalar render walk"},
+		{"toAnyContext", "non-scalar render walk"},
 		{"estimateFormatValueBytes", "default verb estimate"},
 		{"formatStringBytes", "deep size walk"},
 	} {
