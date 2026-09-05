@@ -13,7 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whenever the stored baseline and the candidate benchmark were measured on
   different runners, instead of comparing latency figures across them.
   Allocation counts and allocated bytes are still enforced regardless of
-  runner identity.
+  runner identity. A release whose stored baseline came from a different
+  runner now finishes in one benchmark run: the gate no longer spends a
+  second run at doubled benchtime on cells it cannot decide, since a rerun
+  regenerates only the candidate and cannot change which machine the
+  baseline was measured on. Cells the stored baseline never measured
+  collapse the same way.
 
 ## [0.13.0] - 2026-09-05
 

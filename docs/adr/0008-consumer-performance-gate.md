@@ -11,7 +11,7 @@ Consumers opt into the VM only after every known VM parity, state-cleanup, cache
 - Timed cells evaluate the rule-shaped gold fixtures through the engine with deterministic fixture data, retaining GoFunc call overhead; scheduler and bus flows stay in YAGEL as untimed end-to-end behavior checks outside this gate.
 - go-lispico owns the gate corpus as a gold set: rule-shaped fixtures with independent golden expected results, plus benchmark cells over them, committed in this repo (`internal/goldset`) and modeled on embedder rule workloads — dispatch, closure state, error handling, keyword lookups, macros, collection folds, rule loading. The release gate runs it self-contained — no consumer checkout, no revision pin, no cross-repo secret. Goldens are hand-derived from the language contract, never captured from either engine.
 - The authoritative performance run interleaves both execution modes in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence; ordinary pull requests run correctness and race checks only. Race-detector runs are separate and untimed — no timing threshold is evaluated under `-race`.
-- When benchstat is inconclusive on any cell, the whole paired run reruns once at doubled benchtime and every cell is re-judged from the rerun data. Still inconclusive after the rerun: improvement cells fail (the win was not demonstrated), non-regression cells pass (no regression was demonstrated).
+- When a cell is inconclusive for a reason more data could settle, the whole paired run reruns once at doubled benchtime and every cell is re-judged from the rerun data. Still inconclusive after the rerun: improvement cells fail (the win was not demonstrated), non-regression cells pass (no regression was demonstrated). A cell inconclusive for a reason a rerun cannot change — a runner mismatch, or a cell the stored baseline never measured, neither of which a fresh candidate run affects — is resolved immediately instead, so a release does not spend a doubled-benchtime run it cannot learn from.
 - Each scaled data dimension has three checked-in levels: shipped baseline, an operational knee, and its supported boundary; a lower CI proxy is allowed only when a separate load test covers the real boundary.
 
 ## Thresholds
@@ -19,7 +19,7 @@ Consumers opt into the VM only after every known VM parity, state-cleanup, cache
 This ADR is the single owner of the numbers; the PRD and glossary reference them. No cell may regress beyond its tier's budget. Before candidate results are produced, a checked-in baseline profile classifies each cell:
 
 - Engine-sensitive hot cells: at least 15% lower latency and 20% fewer allocated bytes, allocation count non-increasing.
-- Data/output-dominated hot cells: within 5% latency, bytes and allocation count non-increasing — subject to any per-cell bytes allowance recorded in `internal/perfgate/tiers.json`'s `bytesAllowanceBOp`.
+- Data/output-dominated hot cells: within 5% latency, bytes and allocation count non-increasing — subject to the per-cell bytes allowance every cell records in `internal/perfgate/tiers.json`'s `bytesAllowanceBOp`.
 - Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing, race detector clean in the separate untimed run.
 - Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone; bytes and allocation count stay non-increasing regardless of which of those two latency paths the cell takes — the absolute-overhead escape excuses the latency percentage only, never allocation.
 
@@ -60,7 +60,7 @@ its New latency and New bytes each sit under the floor outright, regardless
 of Old. The latter reading is unresolved and not implemented; this note
 records the choice made, not a decision that the other reading is wrong.
 
-Note (`Goldset/guard-nil`'s named bytes allowance): three hosted dispatch
+Note (per-cell bytes allowances): three hosted dispatch
 runs (30630796967, 30637802780, 30639778105) each measured the same
 deterministic figure for this cell — 1128 B/op under the Evaluator against
 1129 under the VM, +0.09%, p=0.000, 0% CI on both arms. This is not a
@@ -70,22 +70,30 @@ GC-cadence remainder on the VM's chunk pool — two engines' honest cost for
 the same logical work. `guard-nil` therefore carries a named, per-cell,
 absolute allowance of 4 B/op on the bytes axis only, recorded in
 `internal/perfgate/tiers.json`'s `bytesAllowanceBOp`, sized from those
-hosted figures rather than a developer-box estimate. The other thirteen
-data-dominated cells — every `GoldsetParse/*` cell — carry an explicit
-allowance of 0 B/op in that same map: a stated zero, not an absent entry,
-which is what the exact non-increasing bound now means. The mechanism
-itself is not tier-specific, and reads wider than this one cell: an entry in that map is
+hosted figures rather than a developer-box estimate.
+
+Every gold-set cell now states an allowance in that map, and an absent
+entry is a configuration error rather than a silent zero. Thirteen are
+nonzero, ranging from 1 to 8 B/op; the remaining fourteen state an
+explicit 0 — a stated zero, which is what the exact non-increasing bound
+means. Each nonzero value is bounded by the within-run sampling spread
+that cell shows on the checked-in 200 ms classification profile, so an
+allowance never exceeds the wobble the measurement itself carries.
+`guard-nil`'s 4 is the exception: it is sized from the reproducible
+between-engine offset above, not from spread. The per-cell numbers live
+in `tiers.json` and this ADR does not restate them; a new nonzero
+allowance needs evidence of one of those two kinds. The mechanism itself
+is not tier-specific, and reads wider than any one cell: an entry in that map is
 honored wherever a bytes non-increasing bound is applied — data/output-
 dominated, concurrent, and startup cells in either mode, and
 engine-sensitive cells once they compare against a previous release. It is
 inert against the engine-sensitive tier's 20%-fewer-bytes improvement
 floor, which is not a non-increasing bound, so an entry naming an
 engine-sensitive cell would do nothing at first authorization and take
-effect only afterwards. Only `Goldset/guard-nil` carries one today; a
-second entry needs the same evidence this one does. This is a distinct fix from
-the benchstat-`~` blind spot noted above, which this allowance does not
-close — that gap applies to every non-increasing bound in the gate and
-remains open. No cell's tier changes.
+effect only afterwards. This is a distinct fix from
+the benchstat-`~` blind spot noted above, which these allowances do not
+close — that gap applies to the latency axis and remains open. No cell's
+tier changes.
 
 ## Consequences
 
