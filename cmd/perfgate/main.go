@@ -91,6 +91,12 @@ func parseMode(s string) (perfgate.Mode, error) {
 // re-invoke this command with -rerun to resolve it. Exit 3 stays out of that
 // path — no rerun turns an unusable config or an unpaired comparison into
 // evidence.
+//
+// Latency is only comparable within one runner, so the two raw files' runner
+// identities are read first and benchstat runs only when they match. Bytes and
+// allocs are exact counts that a change of machine does not invalidate: they
+// come from the raw per-sample figures on both paths and stay enforced either
+// way, which is what makes an inconclusive cross-runner latency safe.
 func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mode perfgate.Mode, rerun, raceClean bool) (int, error) {
 	tiersFile, err := os.Open(tiersPath)
 	if err != nil {
@@ -102,16 +108,43 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 		return exitNotComparable, err
 	}
 
-	csvOut, err := runBenchstat(oldPath, newPath)
+	oldID, err := readRunnerIdentity(oldPath)
 	if err != nil {
 		return exitNotComparable, err
 	}
-	cells, err := perfgate.ParseBenchstatCSV(csvOut)
+	newID, err := readRunnerIdentity(newPath)
 	if err != nil {
-		if errors.Is(err, perfgate.ErrUnpairedComparison) {
-			return exitNotComparable, withBenchstatDiagnostics(err)
-		}
 		return exitNotComparable, err
+	}
+	oldMetrics, err := readBenchmarkMetrics(oldPath)
+	if err != nil {
+		return exitNotComparable, err
+	}
+	newMetrics, err := readBenchmarkMetrics(newPath)
+	if err != nil {
+		return exitNotComparable, err
+	}
+
+	// The identity comparison comes before benchstat, not after it: benchstat
+	// declines to pair two runs from different machines and that refusal
+	// returns exit 3 before the cell loop, silently foreclosing the bytes and
+	// allocs verdicts the differing runners do not invalidate.
+	crossRunner := !sameRunner(oldID, newID)
+	var cells map[string]perfgate.CellComparison
+	if crossRunner {
+		cells = cellsWithoutLatency(newMetrics)
+	} else {
+		csvOut, err := runBenchstat(oldPath, newPath)
+		if err != nil {
+			return exitNotComparable, err
+		}
+		cells, err = perfgate.ParseBenchstatCSV(csvOut)
+		if err != nil {
+			if errors.Is(err, perfgate.ErrUnpairedComparison) {
+				return exitNotComparable, withBenchstatDiagnostics(err)
+			}
+			return exitNotComparable, err
+		}
 	}
 
 	names := make([]string, 0, len(cells))
@@ -134,7 +167,31 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 		}
 		cell.BytesAllowanceBOp = ct.BytesAllowanceBOp
 
+		baseline, hasBaseline := oldMetrics[name]
+		if !hasBaseline {
+			// Absence of a baseline figure is not a zero: judged against one,
+			// every newly added cell would fail its first release.
+			verdict := perfgate.VerdictInconclusive
+			if rerun {
+				verdict = perfgate.Resolve(ct.Tier, mode)
+			} else {
+				needsRerun = true
+			}
+			if verdict == perfgate.VerdictFail {
+				anyFail = true
+			}
+			fmt.Fprintf(&report, "%s: %s (no baseline figure for this cell)\n", name, verdict)
+			continue
+		}
+		// Bytes and allocs are exact counts that survive a change of runner,
+		// so they come from the raw per-sample figures rather than from
+		// benchstat, which is not consulted at all on a cross-runner pair.
+		cell.Bytes, cell.Allocs = perfgate.CompareSamples(baseline, newMetrics[name])
+
 		res := perfgate.Evaluate(cell, ct.Tier, mode)
+		if crossRunner && res.Verdict == perfgate.VerdictInconclusive {
+			res.Reason = fmt.Sprintf("latency not comparable: baseline ran on %s, candidate on %s", oldID, newID)
+		}
 		verdict := res.Verdict
 		if verdict == perfgate.VerdictInconclusive {
 			if rerun {
@@ -162,6 +219,10 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 		return exitNotComparable, fmt.Errorf("write verdict report: %w", err)
 	}
 
+	// Exit precedence, worst first: 3 (already returned above — the gate could
+	// not be configured, or evidence that should have paired did not) outranks
+	// 1 (a cell failed) outranks 2 (a cell needs a rerun). A failure a rerun
+	// cannot overturn must not be reported as one a rerun might.
 	switch {
 	case anyFail:
 		return exitFail, nil
@@ -170,6 +231,52 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 	default:
 		return exitPass, nil
 	}
+}
+
+// sameRunner licenses a latency conclusion. An unknown identity is not
+// evidence that the two runs shared a machine, so it never matches — not even
+// another unknown.
+func sameRunner(a, b perfgate.RunnerIdentity) bool {
+	return a.Known() && b.Known() && a == b
+}
+
+// cellsWithoutLatency is the cell set for a cross-runner comparison: the candidate
+// run's cells with a zero Latency, which every per-tier evaluator reads as not
+// statistically significant and reports inconclusive.
+func cellsWithoutLatency(metrics map[string]perfgate.SampleMetrics) map[string]perfgate.CellComparison {
+	cells := make(map[string]perfgate.CellComparison, len(metrics))
+	for name := range metrics {
+		cells[name] = perfgate.CellComparison{Name: name}
+	}
+	return cells
+}
+
+func readRunnerIdentity(path string) (perfgate.RunnerIdentity, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return perfgate.RunnerIdentity{}, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	id, err := perfgate.ReadRunnerIdentity(f)
+	if err != nil {
+		return perfgate.RunnerIdentity{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return id, nil
+}
+
+func readBenchmarkMetrics(path string) (map[string]perfgate.SampleMetrics, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	metrics, err := perfgate.ReadBenchmarkMetrics(f)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return metrics, nil
 }
 
 // runBenchstat is a variable so tests can substitute committed benchstat
