@@ -489,7 +489,7 @@ var WorkPhases = []WorkPhase{
 			"calls core.ValueDeepBytesContext. That walk descends the result as a tree " +
 			"and not as a graph, so a node reached by two references is visited twice " +
 			"while the ledger charged it once: consing a ten-element list onto itself " +
-			"26 times costs 1040 ledger bytes while the deep size reports 24159191024. " +
+			"26 times costs 9536 ledger bytes while the deep size reports 24159191024. " +
 			"The walk no longer leans on that charge to stop. It carries a " +
 			"non-allocating work budget of the evaluator's allocation limit over " +
 			"core.MeterValueSlotBytes - 4194304 units under " +
@@ -550,7 +550,7 @@ var WorkPhases = []WorkPhase{
 			"per reference, while the ledger charged each shared node once. Measured " +
 			"before the budget landed: a ten-element list consed onto itself 26 times " +
 			"sits at nesting depth 27, far under core.DefaultMaxStructuralDepth, and " +
-			"took 1.677s for 1040 ledger bytes, doubling per cons (3.3us, 132us, 6.8ms, " +
+			"took 1.677s for 9536 ledger bytes, doubling per cons (3.3us, 132us, 6.8ms, " +
 			"563ms, 1.68s). The contextual entry point now bounds that walk with a " +
 			"non-allocating work budget of the evaluator's allocation limit over " +
 			"core.MeterValueSlotBytes - 4194304 units under " +
@@ -1582,7 +1582,7 @@ var WorkPhases = []WorkPhase{
 		Proof: "A core container reaches core's boundedString through " +
 			"core.ValueStringContext, which descends the value as a tree and not as a " +
 			"graph, so a node reached by two references renders twice while the ledger " +
-			"charged it once: a ten-element list consed onto itself 26 times costs 1040 " +
+			"charged it once: a ten-element list consed onto itself 26 times costs 9536 " +
 			"ledger bytes and renders 1476395007 characters. str and string/join reach " +
 			"the walk with no pre-charge in front of it, so what stops it is the walk's " +
 			"own non-allocating work budget - the evaluator's allocation limit over " +
