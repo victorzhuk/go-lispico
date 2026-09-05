@@ -168,17 +168,9 @@ func walkString(b *strings.Builder, v Value, depth int, w *valueWalkBudget) erro
 		}
 		b.WriteByte('}')
 	case Lambda:
-		s := boundedString(val, depth)
-		if err := w.reserve(int64(len(s))); err != nil {
-			return err
-		}
-		b.WriteString(s)
+		return writeClosure(b, "fn", val.Name, val.Params, val.Variadic, val.Body, depth, w)
 	case Macro:
-		s := boundedString(val, depth)
-		if err := w.reserve(int64(len(s))); err != nil {
-			return err
-		}
-		b.WriteString(s)
+		return writeClosure(b, "macro", val.Name, val.Params, val.Variadic, val.Body, depth, w)
 	default:
 		s, err := scalarRender(v, w)
 		if err != nil {
@@ -186,6 +178,31 @@ func walkString(b *strings.Builder, v Value, depth int, w *valueWalkBudget) erro
 		}
 		b.WriteString(s)
 	}
+	return nil
+}
+
+// writeClosure renders a closure as the fixed tag core/depth.go renders, after
+// its payload has cost what the payload holds: the tag says nothing about the
+// body, so charging only the tag would leave the walk's ceiling unenforced
+// behind every Lambda and Macro.
+func writeClosure(b *strings.Builder, kind, name string, params []Symbol, variadic Symbol, body []Value, depth int, w *valueWalkBudget) error {
+	if _, err := walkClosurePayload(params, variadic, body, name, depth, w); err != nil {
+		return err
+	}
+	tag := len("#<>") + len(kind)
+	if name != "" {
+		tag += len(":") + len(name)
+	}
+	if err := w.reserve(int64(tag)); err != nil {
+		return err
+	}
+	b.WriteString("#<")
+	b.WriteString(kind)
+	if name != "" {
+		b.WriteByte(':')
+		b.WriteString(name)
+	}
+	b.WriteByte('>')
 	return nil
 }
 
@@ -260,12 +277,41 @@ func walkDeepBytes(v Value, depth int, w *valueWalkBudget) (int64, error) {
 		})
 		return n, err
 	case Lambda:
-		return boundedDeepBytes(val, depth), nil
+		return walkClosurePayload(val.Params, val.Variadic, val.Body, val.Name, depth, w)
 	case Macro:
-		return boundedDeepBytes(val, depth), nil
+		return walkClosurePayload(val.Params, val.Variadic, val.Body, val.Name, depth, w)
 	default:
 		return ValueShallowBytes(v), nil
 	}
+}
+
+// walkClosurePayload walks a closure's Params, Variadic and Body under the
+// caller's budget and reports the deep size core/depth.go reports for the same
+// closure. The render path calls it for the charge alone.
+func walkClosurePayload(params []Symbol, variadic Symbol, body []Value, name string, depth int, w *valueWalkBudget) (int64, error) {
+	n := ClosureShallowBytes(len(params)+len(body)) + StringShallowBytes(len(name))
+	for _, p := range params {
+		z, err := walkDeepBytes(p, depth+1, w)
+		if err != nil {
+			return 0, err
+		}
+		n += z
+	}
+	if variadic.V != "" {
+		z, err := walkDeepBytes(variadic, depth+1, w)
+		if err != nil {
+			return 0, err
+		}
+		n += z
+	}
+	for _, form := range body {
+		z, err := walkDeepBytes(form, depth+1, w)
+		if err != nil {
+			return 0, err
+		}
+		n += z
+	}
+	return n, nil
 }
 
 func ValueNodeCountContext(ctx context.Context, v Value) (int, error) {
@@ -397,10 +443,23 @@ func walkDepth(v Value, depth, limit int, w *valueWalkBudget) (bool, error) {
 			}
 		})
 		return bad, err
-	case Lambda, Macro:
-		depth++
-		if depth > limit {
-			return true, nil
+	case Lambda:
+		return walkClosureDepth(val.Body, depth, limit, w)
+	case Macro:
+		return walkClosureDepth(val.Body, depth, limit, w)
+	}
+	return false, nil
+}
+
+func walkClosureDepth(body []Value, depth, limit int, w *valueWalkBudget) (bool, error) {
+	depth++
+	if depth > limit {
+		return true, nil
+	}
+	for _, form := range body {
+		bad, err := walkDepth(form, depth, limit, w)
+		if err != nil || bad {
+			return bad, err
 		}
 	}
 	return false, nil
