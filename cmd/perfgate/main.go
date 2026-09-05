@@ -156,6 +156,12 @@ func resolveMode(stdout, stderr io.Writer, args []string) int {
 // allocs are exact counts that a change of machine does not invalidate: they
 // come from the raw per-sample figures on both paths and stay enforced either
 // way, which is what makes an inconclusive cross-runner latency safe.
+//
+// The needs-rerun signal is raised by cause, not by verdict: only an
+// inconclusive cell a rerun could actually change raises it. A runner mismatch
+// and a cell the stored baseline never measured are both beyond a rerun's
+// reach, so they take Resolve's collapse straight away and the release is still
+// authorized on the axes that were comparable.
 func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mode perfgate.Mode, rerun, raceClean bool) (int, error) {
 	tiersFile, err := os.Open(tiersPath)
 	if err != nil {
@@ -229,17 +235,13 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 		baseline, hasBaseline := oldMetrics[name]
 		if !hasBaseline {
 			// Absence of a baseline figure is not a zero: judged against one,
-			// every newly added cell would fail its first release.
-			verdict := perfgate.VerdictInconclusive
-			if rerun {
-				verdict = perfgate.Resolve(ct.Tier, mode)
-			} else {
-				needsRerun = true
-			}
-			if verdict == perfgate.VerdictFail {
+			// every newly added cell would fail its first release. A rerun
+			// regenerates only the candidate run, never the stored baseline, so
+			// the figure can never appear and the cell collapses now.
+			if perfgate.Resolve(ct.Tier, mode) == perfgate.VerdictFail {
 				anyFail = true
 			}
-			fmt.Fprintf(&report, "%s: %s (no baseline figure for this cell)\n", name, verdict)
+			fmt.Fprintf(&report, "%s: %s (no baseline figure for this cell)\n", name, perfgate.VerdictInconclusive)
 			continue
 		}
 		// Bytes and allocs are exact counts that survive a change of runner,
@@ -248,14 +250,22 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 		cell.Bytes, cell.Allocs = perfgate.CompareSamples(baseline, newMetrics[name])
 
 		res := perfgate.Evaluate(cell, ct.Tier, mode)
-		if crossRunner && res.Verdict == perfgate.VerdictInconclusive {
-			res.Reason = fmt.Sprintf("latency not comparable: baseline ran on %s, candidate on %s", oldID, newID)
-		}
 		verdict := res.Verdict
 		if verdict == perfgate.VerdictInconclusive {
-			if rerun {
+			switch {
+			case crossRunner:
+				// A rerun cannot change which machine the stored baseline came
+				// from, so this collapses now instead of spending the gate's
+				// most expensive step to reach the same place. The report line
+				// stays inconclusive: the latency evidence is genuinely absent,
+				// only the rerun is futile.
+				res.Reason = fmt.Sprintf("latency not comparable: baseline ran on %s, candidate on %s", oldID, newID)
+				if perfgate.Resolve(ct.Tier, mode) == perfgate.VerdictFail {
+					anyFail = true
+				}
+			case rerun:
 				verdict = perfgate.Resolve(ct.Tier, mode)
-			} else {
+			default:
 				needsRerun = true
 			}
 		}
