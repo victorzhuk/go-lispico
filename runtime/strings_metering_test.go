@@ -63,7 +63,7 @@ func TestFormat_ChargedExactlyOnce(t *testing.T) {
 // the rendered result alongside the alloc ledger total. The container forces
 // toAny's v.String() render, where core.String.String is fmt.Sprintf("%q", V)
 // and every invalid byte comes out as \xNN: the render is four times the
-// payload that estimateFormatAllocBytes counted.
+// payload that estimateFormatAllocBytesContext counted.
 func formatEscapedUsage(t *testing.T, bytecode bool, payloadLen int) (string, int64) {
 	t.Helper()
 	eng := newMeteringStdlibEngine(t, bytecode, meteringLimits(t, 1_000_000, 16<<20))

@@ -424,6 +424,16 @@ func TestStrings_UnicodeAndEmptySeparatorUnchanged(t *testing.T) {
 	}
 }
 
+// sbEstimateFormat estimates through the contextual entry point the format
+// builtin itself calls, and fails the test on a walk error instead of
+// discarding it.
+func sbEstimateFormat(t *testing.T, format string, args []core.Value) int64 {
+	t.Helper()
+	n, err := estimateFormatAllocBytesContext(t.Context(), format, args)
+	require.NoErrorf(t, err, "estimateFormatAllocBytesContext(%q) refused the walk over %d arguments", format, len(args))
+	return n
+}
+
 // TestStrings_FormatEstimateTracksLiteralWidthRender pins the estimate to the
 // render at Go's literal-width parse boundary. fmt scans a literal width digit
 // by digit and abandons the whole verb the moment the running value passes 1e6,
@@ -465,22 +475,22 @@ func TestStrings_FormatEstimateTracksLiteralWidthRender(t *testing.T) {
 			out := fmt.Sprintf(tt.format, sbToAny(t, arg))
 			rendered := int64(len(out))
 			honouredByFmt := !strings.Contains(out, "%!(NOVERB)")
-			estimate := estimateFormatAllocBytes(tt.format, args)
+			estimate := sbEstimateFormat(t, tt.format, args)
 
 			require.Equalf(t, tt.honoured, honouredByFmt,
 				"fmt.Sprintf(%q) rendered %d bytes and honoured=%v: the row's honoured column is fmt's own parse answer, not the estimator's",
 				tt.format, rendered, honouredByFmt)
 			require.GreaterOrEqualf(t, estimate, rendered,
-				"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes",
+				"estimateFormatAllocBytesContext(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes",
 				tt.format, estimate, rendered)
 			if tt.honoured {
 				return
 			}
 
 			verbOnly := "%" + tt.format[len(tt.format)-1:]
-			ceiling := estimateFormatAllocBytes(verbOnly, args) + int64(len(tt.format))
+			ceiling := sbEstimateFormat(t, verbOnly, args) + int64(len(tt.format))
 			require.LessOrEqualf(t, estimate, ceiling,
-				"estimateFormatAllocBytes(%q) = %d against a render of %d bytes and %d for %q with no width: fmt.Sprintf abandons a width it will not parse and emits %%!(NOVERB), so the estimate must mirror the refusal instead of saturating at %d",
+				"estimateFormatAllocBytesContext(%q) = %d against a render of %d bytes and %d for %q with no width: fmt.Sprintf abandons a width it will not parse and emits %%!(NOVERB), so the estimate must mirror the refusal instead of saturating at %d",
 				tt.format, estimate, rendered, ceiling, verbOnly, maxFormatEstimate)
 		})
 	}
@@ -506,12 +516,12 @@ func TestStrings_FormatEstimateTracksExplicitIndexRefusal(t *testing.T) {
 	require.Lessf(t, len(rendered), 1<<20,
 		"render is %d bytes: fmt refused the index, so the 1MiB argument must not be part of the render the estimate answers for", len(rendered))
 
-	estimate := estimateFormatAllocBytes(format, args)
+	estimate := sbEstimateFormat(t, format, args)
 	require.GreaterOrEqualf(t, estimate, int64(len(rendered)),
-		"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes", format, estimate, len(rendered))
+		"estimateFormatAllocBytesContext(%q) = %d against a render of %d bytes: the estimate must cover what fmt.Sprintf materializes", format, estimate, len(rendered))
 	refusedCeiling := core.MeterStringHeaderBytes + int64(len(rendered)) + int64(len(format))
 	require.LessOrEqualf(t, estimate, refusedCeiling,
-		"estimateFormatAllocBytes(%q) = %d against a render of %d bytes: fmt refused the explicit index and rendered nothing from the 1MiB argument, so the estimator must treat the refusal as a no-op too and not wrap the index into charging an argument the render never used", format, estimate, len(rendered))
+		"estimateFormatAllocBytesContext(%q) = %d against a render of %d bytes: fmt refused the explicit index and rendered nothing from the 1MiB argument, so the estimator must treat the refusal as a no-op too and not wrap the index into charging an argument the render never used", format, estimate, len(rendered))
 
 	budget := int(core.StringShallowBytes(len(rendered)) - 1)
 	var before, after runtime.MemStats
@@ -624,7 +634,7 @@ func TestFormatEstimatorBoundsMismatchedVerbAndOperand(t *testing.T) {
 			anyArgs[i] = sbToAny(t, v)
 		}
 		render := fmt.Sprintf(format, anyArgs...)
-		estimate := estimateFormatAllocBytes(format, args)
+		estimate := sbEstimateFormat(t, format, args)
 		require.GreaterOrEqualf(t, estimate, int64(len(render)),
 			"%s produced %d bytes; the estimator must cover the render, got %d",
 			format, len(render), estimate)
@@ -688,13 +698,48 @@ func TestFormatEstimatorBoundsMismatchedVerbAndOperand(t *testing.T) {
 			{"%.0f", "%.0f", args},
 		})
 		t.Run("precision-arm-at-or-above-bare/"+large.name, func(t *testing.T) {
-			precEstimate := estimateFormatAllocBytes("%.2f", args)
-			bareEstimate := estimateFormatAllocBytes("%f", args)
+			precEstimate := sbEstimateFormat(t, "%.2f", args)
+			bareEstimate := sbEstimateFormat(t, "%f", args)
 			require.LessOrEqualf(t, bareEstimate, precEstimate,
-				"estimateFormatAllocBytes(\"%%.2f\") = %d over %v falls below the same verb with no precision at %d: a precision must not estimate below the no-precision arm",
+				"estimateFormatAllocBytesContext(\"%%.2f\") = %d over %v falls below the same verb with no precision at %d: a precision must not estimate below the no-precision arm",
 				precEstimate, large.v, bareEstimate)
 		})
 	}
+}
+
+// TestFormatEstimator_UsesContextualEntryPoint pins the estimator seam the
+// format builtin actually runs. estimateFormatAllocBytesContext sizes a
+// non-string operand by walking it under the caller's value-walk budget, so a
+// walk that budget refuses must come back as an error rather than as a
+// silently truncated estimate - and the builtin must refuse the same call with
+// the same error, which is what proves it estimates through this entry point
+// and no other.
+func TestFormatEstimator_UsesContextualEntryPoint(t *testing.T) {
+	env := setupEnv(t)
+	fn := formatGoFunc(t, env)
+
+	const format = "%s"
+	// A one-element list costs two walk steps, the list node and its leaf,
+	// while an allocation ceiling of one byte funds a single slot: the leaf
+	// is the step the budget refuses.
+	args := []core.Value{core.NewList([]core.Value{core.String{V: "x"}})}
+	starved := core.WithEvalResourceLimits(t.Context(), 1<<20, 1)
+
+	estimate, err := estimateFormatAllocBytesContext(starved, format, args)
+	require.Errorf(t, err,
+		"estimateFormatAllocBytesContext(%q) returned %d and no error: a walk the budget refused must surface as an error, not as an estimate",
+		format, estimate)
+	var walkErr *core.LispicoError
+	require.ErrorAs(t, err, &walkErr)
+	require.Equalf(t, core.CodeResourceLimit, walkErr.Code,
+		"the refused walk carried code %v: an exhausted value-walk budget is a resource limit", walkErr.Code)
+
+	_, callErr := fn.Fn(starved, nil, append([]core.Value{core.String{V: format}}, args...), env)
+	var callErrL *core.LispicoError
+	require.ErrorAs(t, callErr, &callErrL)
+	require.Equalf(t, walkErr.Message, callErrL.Message,
+		"format refused with %q while the contextual estimator refused with %q: the builtin must estimate through estimateFormatAllocBytesContext, so the same starved walk must produce the same refusal",
+		callErrL.Message, walkErr.Message)
 }
 
 func TestStrings_ValueWalkRowsAreBudgeted(t *testing.T) {

@@ -62,7 +62,7 @@ func TestStrings_FormatRefusalCases(t *testing.T) {
 					t.Fatalf("unhandled arg type %T", a)
 				}
 			}
-			estimate := estimateFormatAllocBytes(tc.format, args)
+			estimate := sbEstimateFormat(t, tc.format, args)
 			if estimate < int64(len(render)) {
 				t.Fatalf("estimate %d < render %d (%q)", estimate, len(render), render)
 			}
@@ -72,7 +72,7 @@ func TestStrings_FormatRefusalCases(t *testing.T) {
 				// %!(s)(BADINDEX) plus the verb byte) is otherwise
 				// indistinguishable from a 12-byte miscount.
 				require.Equalf(t, core.MeterStringHeaderBytes+13, estimate,
-					"estimateFormatAllocBytes(%q) = %d: a lone refused directive must estimate exactly a header plus 13 bytes",
+					"estimateFormatAllocBytesContext(%q) = %d: a lone refused directive must estimate exactly a header plus 13 bytes",
 					tc.format, estimate)
 			}
 		})
