@@ -19,7 +19,10 @@ type BaselineLookup struct {
 type BaselineOutcome int
 
 const (
-	BaselineFound BaselineOutcome = iota
+	// The taxonomy starts at 1 so that no outcome is the zero value: an
+	// uninitialized BaselineOutcome must not read as a baseline having been
+	// found, the same fail-closed rule ModeUnknown and VerdictUnknown follow.
+	BaselineFound BaselineOutcome = iota + 1
 	BaselineAbsent
 	BaselineEnumerationFailed
 	BaselineDownloadFailed
@@ -40,5 +43,14 @@ var (
 // failed for any reason other than the baseline not existing yields
 // ModeUnknown and an error, never a threshold branch.
 func ResolveGateMode(lookup BaselineLookup) (Mode, BaselineOutcome, error) {
-	panic("not implemented")
+	switch {
+	case !lookup.EnumerationOK:
+		return ModeUnknown, BaselineEnumerationFailed, ErrBaselineEnumerationFailed
+	case lookup.DownloadFailed:
+		return ModeUnknown, BaselineDownloadFailed, ErrBaselineDownloadFailed
+	case lookup.DownloadedTag != "":
+		return ModeNonRegression, BaselineFound, nil
+	default:
+		return ModeFirstAuthorization, BaselineAbsent, nil
+	}
 }
