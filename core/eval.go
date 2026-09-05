@@ -343,6 +343,17 @@ func evalStateFrom(ctx context.Context) *evalState {
 	return st
 }
 
+// walkEvalStateFrom resolves the limits a value walk reads. A walk charges no
+// allocation and never reaches the session meter, so it skips resolving and
+// attaching one: that costs a second context chain walk and an atomic store per
+// value rendered, and str, format and string/join render one per element.
+func walkEvalStateFrom(ctx context.Context) *evalState {
+	if st, ok := ctx.Value(evalStateKey{}).(*evalState); ok {
+		return st
+	}
+	return newEvalState()
+}
+
 // DetachEvalState returns a copy of ctx with a fresh evalState attached,
 // preserving cancellation and any other context values. Use this when a new
 // goroutine should evaluate with its own depth counters so it cannot race or

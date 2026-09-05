@@ -20,7 +20,7 @@ func newValueWalkBudget(ctx context.Context) valueWalkBudget {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	st := evalStateFrom(ctx)
+	st := walkEvalStateFrom(ctx)
 	limit := st.maxAllocBytes / MeterValueSlotBytes
 	if limit < 1 {
 		limit = 1
