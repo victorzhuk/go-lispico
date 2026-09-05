@@ -13,8 +13,20 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 
 	"github.com/victorzhuk/go-lispico/internal/perfgate"
+)
+
+// Process exit codes. Exit 2 is reserved for the needs-rerun signal
+// release.yml acts on by rerunning at doubled benchtime, so every failure that
+// a rerun cannot resolve — an unusable tier config, benchstat declining to
+// pair the two runs — exits 3 instead of costing that pointless rerun.
+const (
+	exitPass          = 0
+	exitFail          = 1
+	exitNeedsRerun    = 2
+	exitNotComparable = 3
 )
 
 func main() {
@@ -39,23 +51,22 @@ func run(stdout, stderr io.Writer, args []string) int {
 	outPath := fs.String("out", "", "verdict output path; empty writes to stdout")
 
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return exitNotComparable
 	}
 	if *oldPath == "" || *newPath == "" {
 		fmt.Fprintln(stderr, "perfgate: -old and -candidate are required")
-		return 2
+		return exitNotComparable
 	}
 
 	m, err := parseMode(*mode)
 	if err != nil {
 		fmt.Fprintln(stderr, "perfgate:", err)
-		return 2
+		return exitNotComparable
 	}
 
 	exitCode, err := evaluate(stdout, *oldPath, *newPath, *tiersPath, *outPath, m, *rerun, *raceClean)
 	if err != nil {
 		fmt.Fprintln(stderr, "perfgate:", err)
-		return 2
 	}
 	return exitCode
 }
@@ -73,28 +84,34 @@ func parseMode(s string) (perfgate.Mode, error) {
 
 // evaluate runs benchstat, evaluates every cell, writes the verdict report,
 // and returns the process exit code: 0 all pass, 1 any fail, 2 any cell is
-// still inconclusive and needs a rerun. release.yml's "Rerun paired
-// benchmark at doubled benchtime" / "Resolve inconclusive cells after
-// rerun" steps distinguish exit 2 from exit 1: they rerun once at doubled
-// benchtime and re-invoke this command with -rerun to resolve it.
+// still inconclusive and needs a rerun, 3 the gate could not be configured or
+// the two runs could not be paired. release.yml's "Rerun paired benchmark at
+// doubled benchtime" / "Resolve inconclusive cells after rerun" steps
+// distinguish exit 2 from exit 1: they rerun once at doubled benchtime and
+// re-invoke this command with -rerun to resolve it. Exit 3 stays out of that
+// path — no rerun turns an unusable config or an unpaired comparison into
+// evidence.
 func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mode perfgate.Mode, rerun, raceClean bool) (int, error) {
 	tiersFile, err := os.Open(tiersPath)
 	if err != nil {
-		return 0, fmt.Errorf("open tier config: %w", err)
+		return exitNotComparable, fmt.Errorf("open tier config: %w", err)
 	}
 	defer func() { _ = tiersFile.Close() }()
 	tiers, err := perfgate.LoadTierConfig(tiersFile)
 	if err != nil {
-		return 0, err
+		return exitNotComparable, err
 	}
 
 	csvOut, err := runBenchstat(oldPath, newPath)
 	if err != nil {
-		return 0, err
+		return exitNotComparable, err
 	}
 	cells, err := perfgate.ParseBenchstatCSV(csvOut)
 	if err != nil {
-		return 0, err
+		if errors.Is(err, perfgate.ErrUnpairedComparison) {
+			return exitNotComparable, withBenchstatDiagnostics(err)
+		}
+		return exitNotComparable, err
 	}
 
 	names := make([]string, 0, len(cells))
@@ -139,19 +156,19 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 
 	if outPath == "" {
 		if _, err := stdout.Write(report.Bytes()); err != nil {
-			return 0, err
+			return exitNotComparable, err
 		}
 	} else if err := os.WriteFile(outPath, report.Bytes(), 0o644); err != nil {
-		return 0, fmt.Errorf("write verdict report: %w", err)
+		return exitNotComparable, fmt.Errorf("write verdict report: %w", err)
 	}
 
 	switch {
 	case anyFail:
-		return 1, nil
+		return exitFail, nil
 	case needsRerun:
-		return 2, nil
+		return exitNeedsRerun, nil
 	default:
-		return 0, nil
+		return exitPass, nil
 	}
 }
 
@@ -170,5 +187,23 @@ var runBenchstat = func(oldPath, newPath string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("run benchstat: %w", err)
 	}
+	benchstatStderr = stderr.String()
 	return stdout.Bytes(), nil
+}
+
+// benchstatStderr holds what benchstat wrote to stderr while exiting 0. A run
+// it declined to pair is a successful run by the exit code, so this is the
+// only place its own words survive.
+var benchstatStderr string
+
+// withBenchstatDiagnostics appends benchstat's stderr to a pairing refusal for
+// the operator's benefit. It is never the reason: on a declined pairing
+// benchstat reports only that it cannot compute a geomean, which is about the
+// summary row and says nothing about the two runs being incomparable.
+func withBenchstatDiagnostics(err error) error {
+	diag := strings.TrimSpace(benchstatStderr)
+	if diag == "" {
+		return err
+	}
+	return fmt.Errorf("%w; benchstat exited 0 and reported: %s", err, diag)
 }

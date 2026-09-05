@@ -76,6 +76,16 @@ func parseBlock(block string, cells map[string]CellComparison) error {
 	}
 	metric := header[1]
 
+	// benchstat exits 0 whether or not it paired the inputs, so the metric
+	// header is the only positive discriminator: 7 columns ending
+	// "vs base","P" is the paired comparison the gate asked for, 3 ending
+	// "CI" is a single-group table. Anything else is a malformed csv and
+	// keeps the generic errors below — a short data row alone cannot tell
+	// the two apart.
+	if len(header) == 3 && header[2] == "CI" {
+		return fmt.Errorf("%w: metric %q, single-group header has %d columns, want 7", ErrUnpairedComparison, metric, len(header))
+	}
+
 	for _, row := range records[2:] {
 		if len(row) < 7 {
 			return fmt.Errorf("perfgate: benchstat csv data row too short: %v", row)
