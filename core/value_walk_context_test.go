@@ -395,5 +395,106 @@ func TestValueWalk_ClosureNodeCountDescendsBody(t *testing.T) {
 	}
 }
 
+// allocRuns is large enough that a per-call heap allocation shows up as a whole
+// unit and small enough to stay inside the package's test budget.
+const allocRuns = 200
+
+// TestValueWalk_NoStateAllocationOnPlainContext pins the walk's own overhead on
+// a context that carries no evaluator state — the shape every sub-compiler walk
+// has, since sub-compilers are built without one. The context-free twin of the
+// same walk over the same value is the budget: reading the default limits must
+// cost what reading them cost before these walks became contextual, not a fresh
+// evalState on every call.
+func TestValueWalk_NoStateAllocationOnPlainContext(t *testing.T) {
+	var missing context.Context
+	plain := context.Background()
+
+	for _, c := range []struct {
+		name string
+		v    Value
+	}{
+		{"Int", Int{V: 7}},
+		{"Symbol", Symbol{V: "x"}},
+		{"List", NewList([]Value{Symbol{V: "+"}, Symbol{V: "x"}, Int{V: 1}})},
+	} {
+		v := c.v
+		for _, w := range []struct {
+			walk           string
+			free, bg, unse func()
+		}{
+			{
+				"ValueNodeCount",
+				func() { _ = ValueNodeCount(v) },
+				func() { _, _ = ValueNodeCountContext(plain, v) },
+				func() { _, _ = ValueNodeCountContext(missing, v) },
+			},
+			{
+				"ValueDeepBytes",
+				func() { _ = ValueDeepBytes(v) },
+				func() { _, _ = ValueDeepBytesContext(plain, v) },
+				func() { _, _ = ValueDeepBytesContext(missing, v) },
+			},
+		} {
+			t.Run(c.name+"/"+w.walk, func(t *testing.T) {
+				runWalk(t, w.walk+"Context on a stateless context must allocate no evaluator state", func() {
+					budget := testing.AllocsPerRun(allocRuns, w.free)
+					if got := testing.AllocsPerRun(allocRuns, w.bg); got != budget {
+						t.Fatalf("%sContext over a %s on context.Background() = %.0f allocs/op, want %.0f — the figure the context-free %s spends on the same value: a walk on a context that carries no evaluator state must read the default limits, not heap-allocate a fresh evalState per call", w.walk, c.name, got, budget, w.walk)
+					}
+					if got := testing.AllocsPerRun(allocRuns, w.unse); got != budget {
+						t.Fatalf("%sContext over a %s on a nil context = %.0f allocs/op, want %.0f — the figure the context-free %s spends on the same value: the sub-compiler call site carries no context at all and must stay as allocation-free as the context-free walk it replaced", w.walk, c.name, got, budget, w.walk)
+					}
+				})
+			})
+		}
+	}
+}
+
+// TestValueWalk_ClosureParityWithinBudget pins the contextual closure figure to
+// the context-free one it must reproduce. Inside the budget the two are the same
+// answer, and only that equality holds the payload's terms in place: dropping
+// StringShallowBytes(len(name)) or the Variadic charge would leave every refusal
+// test green while the reported figure silently shrank. The anonymous cases pin
+// the other direction — a term charged where core/depth.go charges none.
+func TestValueWalk_ClosureParityWithinBudget(t *testing.T) {
+	params := []Symbol{{V: "x"}, {V: "y"}}
+	body := []Value{
+		NewList([]Value{Symbol{V: "+"}, Symbol{V: "x"}, Int{V: 1}}),
+		String{V: "tail"},
+	}
+
+	for _, c := range []struct {
+		name string
+		v    Value
+	}{
+		{"Lambda/named-variadic", Lambda{Name: "compute", Params: params, Variadic: Symbol{V: "rest"}, Body: body}},
+		{"Lambda/anonymous", Lambda{Params: params, Body: body}},
+		{"Macro/named-variadic", Macro{Name: "expand", Params: params, Variadic: Symbol{V: "rest"}, Body: body}},
+		{"Macro/anonymous", Macro{Params: params, Body: body}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			runWalk(t, c.name+" within the budget must report the context-free figure", func() {
+				wantBytes := ValueDeepBytes(c.v)
+				gotBytes, err := ValueDeepBytesContext(context.Background(), c.v)
+				if err != nil {
+					t.Fatalf("ValueDeepBytesContext over a %s inside the default budget = %v, want %d bytes and no error", c.name, err, wantBytes)
+				}
+				if gotBytes != wantBytes {
+					t.Fatalf("ValueDeepBytesContext over a %s = %d while ValueDeepBytes reports %d on the same value: the contextual payload must charge the closure header, the name and the Variadic exactly as the context-free walk does", c.name, gotBytes, wantBytes)
+				}
+
+				wantString := c.v.String()
+				gotString, err := ValueStringContext(context.Background(), c.v)
+				if err != nil {
+					t.Fatalf("ValueStringContext over a %s inside the default budget = %v, want %q and no error", c.name, err, wantString)
+				}
+				if gotString != wantString {
+					t.Fatalf("ValueStringContext over a %s = %q, want %q: the contextual render must produce the tag the context-free render produces", c.name, gotString, wantString)
+				}
+			})
+		})
+	}
+}
+
 func timeNowPast() time.Time { return time.Now().Add(-time.Millisecond) }
 func itoa(n int) string      { return fmt.Sprintf("%d", n) }
