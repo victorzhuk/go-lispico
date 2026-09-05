@@ -885,15 +885,17 @@ func (c *Compiler) finalizeContext(ctx context.Context) error {
 	}
 	chunk.MaxStack = computeMaxStack(chunk)
 	chunk.NodeCount = c.nodeCount
-	chunk.DeepBytes = chunkDeepBytesContext(ctx, chunk)
+	deep, err := chunkDeepBytesContext(ctx, chunk)
+	if err != nil {
+		return err
+	}
+	chunk.DeepBytes = deep
 	return nil
 }
 
-func chunkDeepBytes(chunk *vm.Chunk) int64 { return chunkDeepBytesContext(context.Background(), chunk) }
-
-func chunkDeepBytesContext(ctx context.Context, chunk *vm.Chunk) int64 {
+func chunkDeepBytesContext(ctx context.Context, chunk *vm.Chunk) (int64, error) {
 	if chunk == nil {
-		return 0
+		return 0, nil
 	}
 	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + int64(len(chunk.Fused))*core.MeterFusedOpBytes + core.ValueSlotsBytes(len(chunk.Constants))
 	for _, name := range chunk.LocalNames {
@@ -902,15 +904,19 @@ func chunkDeepBytesContext(ctx context.Context, chunk *vm.Chunk) int64 {
 	for _, constant := range chunk.Constants {
 		deep, err := core.ValueDeepBytesContext(ctx, constant)
 		if err != nil {
-			return 0
+			return 0, err
 		}
 		bytes += deep
 	}
 	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
 	for _, sub := range chunk.SubChunks {
-		bytes += chunkDeepBytes(sub)
+		deep, err := chunkDeepBytesContext(ctx, sub)
+		if err != nil {
+			return 0, err
+		}
+		bytes += deep
 	}
-	return bytes
+	return bytes, nil
 }
 
 func isElse(v core.Value) bool {

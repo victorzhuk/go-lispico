@@ -415,7 +415,9 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	if err := comp.EmitReturn(); err != nil {
 		return nil, fmt.Errorf("compile: %w", err)
 	}
-	comp.MarkCaptures()
+	if err := comp.MarkCapturesContext(ctx); err != nil {
+		return nil, err
+	}
 	chunk := comp.Chunk()
 	if err := chunk.Validate(); err != nil {
 		return nil, err
@@ -638,15 +640,19 @@ func (e *engineImpl) readForms(ctx context.Context, input string) ([]core.Value,
 }
 
 func chargeCompiledChunk(ctx context.Context, chunk *vm.Chunk) error {
-	return core.ChargeEvalAllocBytes(ctx, compiledChunkBytes(ctx, chunk))
+	bytes, err := compiledChunkBytes(ctx, chunk)
+	if err != nil {
+		return err
+	}
+	return core.ChargeEvalAllocBytes(ctx, bytes)
 }
 
-func compiledChunkBytes(ctx context.Context, chunk *vm.Chunk) int64 {
+func compiledChunkBytes(ctx context.Context, chunk *vm.Chunk) (int64, error) {
 	if chunk == nil {
-		return 0
+		return 0, nil
 	}
 	if chunk.DeepBytes > 0 {
-		return chunk.DeepBytes
+		return chunk.DeepBytes, nil
 	}
 	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + core.ValueSlotsBytes(len(chunk.Constants))
 	for _, name := range chunk.LocalNames {
@@ -655,15 +661,19 @@ func compiledChunkBytes(ctx context.Context, chunk *vm.Chunk) int64 {
 	for _, c := range chunk.Constants {
 		deep, err := core.ValueDeepBytesContext(ctx, c)
 		if err != nil {
-			return 0
+			return 0, err
 		}
 		bytes += deep
 	}
 	bytes += core.ValueSlotsBytes(len(chunk.SubChunks))
 	for _, sub := range chunk.SubChunks {
-		bytes += compiledChunkBytes(ctx, sub)
+		deep, err := compiledChunkBytes(ctx, sub)
+		if err != nil {
+			return 0, err
+		}
+		bytes += deep
 	}
-	return bytes
+	return bytes, nil
 }
 
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {
