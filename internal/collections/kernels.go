@@ -55,9 +55,12 @@ func IndexedAccess(ctx context.Context, subject core.Value, idx int64) (core.Val
 }
 
 func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn core.Value, seqs []core.Value) (core.Value, error) {
+	// A vector is held as a Value rather than by value: core.Vector is 64 bytes
+	// and a list cursor never needs it, so embedding both widens every cursor to
+	// 112 bytes for a field only one branch reads.
 	type cursor struct {
 		list  core.List
-		vec   core.Vector
+		vec   core.Value
 		isVec bool
 		len   int
 	}
@@ -91,7 +94,7 @@ func MapSequences(ctx context.Context, eval core.Evaluator, env *core.Env, fn co
 				return nil, flushErr(b, err)
 			}
 			if cursors[j].isVec {
-				args[j] = cursors[j].vec.At(i)
+				args[j] = cursors[j].vec.(core.Vector).At(i)
 			} else {
 				args[j] = cursors[j].list.At(0)
 				cursors[j].list = cursors[j].list.Rest()
