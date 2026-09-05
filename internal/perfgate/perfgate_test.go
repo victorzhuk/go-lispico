@@ -369,13 +369,13 @@ func TestTrimProcsSuffix(t *testing.T) {
 func TestLoadTierConfig(t *testing.T) {
 	t.Parallel()
 
-	const config = `{"comment": "placeholder", "cells": {"BenchmarkApply": "engine-sensitive", "BenchmarkFormat": "data-dominated"}}`
+	const config = `{"comment": "placeholder", "cells": {"BenchmarkApply": "engine-sensitive", "BenchmarkFormat": "data-dominated"}, "bytesAllowanceBOp": {"BenchmarkApply": 0, "BenchmarkFormat": 0}}`
 
 	tiers, err := LoadTierConfig(strings.NewReader(config))
 	require.NoError(t, err)
 	assert.Equal(t, TierEngineSensitive, tiers["BenchmarkApply"].Tier)
 	assert.Equal(t, TierDataDominated, tiers["BenchmarkFormat"].Tier)
-	assert.Zero(t, tiers["BenchmarkFormat"].BytesAllowanceBOp, "a cell absent from bytesAllowanceBOp gets no allowance")
+	assert.Zero(t, tiers["BenchmarkFormat"].BytesAllowanceBOp, "a stated zero is the exact non-increasing bound")
 }
 
 func TestLoadTierConfig_UnknownTier(t *testing.T) {
@@ -388,11 +388,12 @@ func TestLoadTierConfig_UnknownTier(t *testing.T) {
 }
 
 // TestLoadTierConfig_BytesAllowance guards tiers.json's bytesAllowanceBOp map:
-// a listed cell gets its allowance, an unlisted one defaults to 0.
+// a cell's stated allowance reaches its CellTier, and a stated zero is the
+// exact non-increasing bound.
 func TestLoadTierConfig_BytesAllowance(t *testing.T) {
 	t.Parallel()
 
-	const config = `{"cells": {"Goldset/guard-nil": "data-dominated", "Goldset/pipeline": "data-dominated"}, "bytesAllowanceBOp": {"Goldset/guard-nil": 4}}`
+	const config = `{"cells": {"Goldset/guard-nil": "data-dominated", "Goldset/pipeline": "data-dominated"}, "bytesAllowanceBOp": {"Goldset/guard-nil": 4, "Goldset/pipeline": 0}}`
 
 	tiers, err := LoadTierConfig(strings.NewReader(config))
 	require.NoError(t, err)
@@ -410,6 +411,47 @@ func TestLoadTierConfig_BytesAllowance_UnknownCell(t *testing.T) {
 
 	_, err := LoadTierConfig(strings.NewReader(config))
 	require.Error(t, err)
+}
+
+// TestLoadTierConfig_MissingBytesAllowance pins that silence is a
+// configuration defect: a cell the gate is asked to judge with no stated
+// allowance fails the load rather than being judged against an implied zero.
+func TestLoadTierConfig_MissingBytesAllowance(t *testing.T) {
+	t.Parallel()
+
+	const config = `{"cells": {"Goldset/guard-nil": "data-dominated"}, "bytesAllowanceBOp": {}}`
+
+	_, err := LoadTierConfig(strings.NewReader(config))
+	require.Error(t, err, "a cell with no stated bytes allowance must fail the load")
+	assert.ErrorIs(t, err, ErrMissingBytesAllowance)
+	assert.Contains(t, err.Error(), "Goldset/guard-nil")
+}
+
+// TestLoadTierConfig_StatedZeroIsNotAbsent separates a recorded decision from
+// silence: an explicit 0 loads cleanly and enforces the exact non-increasing
+// bound, while absence is the error above.
+func TestLoadTierConfig_StatedZeroIsNotAbsent(t *testing.T) {
+	t.Parallel()
+
+	const config = `{"cells": {"GoldsetParse/kw-lookup": "data-dominated"}, "bytesAllowanceBOp": {"GoldsetParse/kw-lookup": 0}}`
+
+	tiers, err := LoadTierConfig(strings.NewReader(config))
+	require.NoError(t, err)
+	assert.Zero(t, tiers["GoldsetParse/kw-lookup"].BytesAllowanceBOp)
+	assert.True(t, tiers["GoldsetParse/kw-lookup"].BytesAllowanceStated, "a stated zero is a recorded decision, not silence")
+}
+
+// TestLoadTierConfig_NegativeBytesAllowance rejects an allowance that would
+// fail a cell whose bytes did not increase: nonIncreasing compares
+// New-Old <= allowance, so a negative bound is stricter than exact.
+func TestLoadTierConfig_NegativeBytesAllowance(t *testing.T) {
+	t.Parallel()
+
+	const config = `{"cells": {"Goldset/guard-nil": "data-dominated"}, "bytesAllowanceBOp": {"Goldset/guard-nil": -4}}`
+
+	_, err := LoadTierConfig(strings.NewReader(config))
+	require.Error(t, err, "a negative bytes allowance must fail the load")
+	assert.Contains(t, err.Error(), "Goldset/guard-nil")
 }
 
 // TestEvaluate_NonRegression_ImprovementPasses is the case a two-sided latency

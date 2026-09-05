@@ -209,7 +209,14 @@ type tierConfigFile struct {
 type CellTier struct {
 	Tier              Tier
 	BytesAllowanceBOp float64
+	// BytesAllowanceStated separates a recorded 0 from silence: without it an
+	// absent bytesAllowanceBOp entry is indistinguishable from a stated zero.
+	BytesAllowanceStated bool
 }
+
+// ErrMissingBytesAllowance reports a cell the gate is asked to judge with no
+// stated bytes allowance. It is a configuration defect, not a cell verdict.
+var ErrMissingBytesAllowance = errors.New("perfgate: cell states no bytesAllowanceBOp")
 
 // LoadTierConfig reads a cell-name -> tier mapping (perfgate/tiers.json).
 // Real cell names and tier assignments are YAGEL-owned and not yet
