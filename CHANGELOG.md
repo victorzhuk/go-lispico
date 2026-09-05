@@ -178,6 +178,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never double-billed and are unchanged. Allocation totals for `apply`-heavy
   programs fall.
 
+- `assert` now reports against the values it is given, instead of resolving
+  them a second time. A symbol message — `(assert false 'x)` — fails with
+  `EvalError` and `assertion failed: x`, where it failed with
+  `UndefinedError` and `undefined: x` from looking the symbol up. A list
+  message — `(assert false (list 1 2))` — fails with `EvalError` and
+  `assertion failed: (1 2)`, where the list was applied as a call and the
+  resulting `TypeError` wording differed between the two evaluators. The same
+  shift makes a symbol or list condition pass: `(assert 'x)` and
+  `(assert (list 1 2))` return `nil` where they raised `UndefinedError` and
+  `TypeError`, so a call that used to fail loudly now succeeds silently. Both
+  transitions hold on both evaluators and under both dialects. The message
+  rendering, the arity, which values count as true, and the success return are
+  unchanged.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added
