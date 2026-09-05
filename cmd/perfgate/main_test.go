@@ -101,7 +101,7 @@ func TestCrossRunner_LatencyInconclusiveBytesEnforced(t *testing.T) {
 		names := candidateCells(t)
 		assert.Equal(t, uniformVerdicts(names, "INCONCLUSIVE"), verdictsFor(t, stdout, names),
 			"a latency conclusion across differing runners is not licensed")
-		assert.Equal(t, 2, code, "every cell inconclusive is the needs-rerun signal; stderr: %s", stderr)
+		assert.Equal(t, 0, code, "a rerun cannot change which machine the stored baseline came from, so a runner mismatch raises no needs-rerun signal and the release stays authorized on the comparable bytes and allocs axes; stderr: %s", stderr)
 	})
 
 	t.Run("bytes still enforced across differing runners", func(t *testing.T) {
@@ -143,7 +143,7 @@ func TestCrossRunner_UnknownIdentityIsNotAMatch(t *testing.T) {
 	names := candidateCells(t)
 	assert.Equal(t, uniformVerdicts(names, "INCONCLUSIVE"), verdictsFor(t, stdout, names),
 		"an unknown identity must not be read as a match")
-	assert.Equal(t, 2, code, "an unknown identity leaves every latency cell needing a rerun; stderr: %s", stderr)
+	assert.Equal(t, 0, code, "an unknown identity is a runner mismatch no rerun can resolve, so it raises no needs-rerun signal and the release stays authorized on the comparable bytes and allocs axes; stderr: %s", stderr)
 }
 
 // TestCrossRunner_MissingBaselineCellIsInconclusive covers a cell the candidate
