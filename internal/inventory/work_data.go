@@ -61,19 +61,16 @@ var WorkPhases = []WorkPhase{
 		Disposition: "bounded-exception",
 		Proof: "The bound does not hold universally. Seven of the nine call sites " +
 			"format no verb at all and render in constant time; MaxWork is the " +
-			"ceiling for those seven only. The two exceptions are both assert " +
-			"branches in plugins/stdlib/control.go, and they no longer read " +
-			"alike. control.go:29 passes core.String.V to a %.200s: fmt " +
-			"truncates a %s operand at its precision without reading past it, " +
-			"so the work is flat in the operand rather than linear - measured " +
-			"258 B/op alike for operands of 1e3, 1e5 and 1e7 bytes - and the " +
-			"render is bounded, though by its own 818-byte message ceiling and " +
-			"not by MaxWork. control.go:31 passes an arbitrary core.Value to a " +
-			"%.200v: that precision caps only what is emitted, so the render " +
-			"behind it still walks the whole operand and stays unbounded. Both " +
-			"branches belong to the higher-order family and carry their own " +
-			"rows there, where the value branch is the one recorded " +
-			"unbounded-tracked.",
+			"ceiling for those seven only. The two exceptions are both assert branches " +
+			"in plugins/stdlib/control.go, and both hand fmt a Go string rather than a " +
+			"core.Value: one is core.String.V, the other is what " +
+			"core.ValueStringContext already materialized under the caller's walk " +
+			"budget. fmt truncates a %.200s operand at its precision without reading " +
+			"past it, so the work is flat in the operand rather than linear - measured " +
+			"258 B/op alike for operands of 1e3, 1e5 and 1e7 bytes - and both renders " +
+			"are bounded by their own 818-byte message ceiling rather than by MaxWork. " +
+			"Both branches belong to the higher-order family and carry their own rows " +
+			"there.",
 		MaxWork: 256,
 	},
 	{
@@ -474,11 +471,12 @@ var WorkPhases = []WorkPhase{
 		Disposition: "budgeted",
 	},
 
-	// The two core walks the builtins cannot preempt. Neither is bounded:
-	// both descend a value as a tree while the ledger charges a shared node
-	// once, and this core shares structure by design, so a node reached by
-	// two references is walked once per reference.
-	// Owned by core-value-walk-sharing-bound.
+	// The two core walks the builtins reach through the contextual entry
+	// points. Both descend a value as a tree while the ledger charges a shared
+	// node once, and this core shares structure by design, so a node reached by
+	// two references is walked once per reference. What stops them is not that
+	// charge but the walk's own work budget, which counts visits rather than
+	// bytes.
 
 	{
 		Families:    []string{"collection"},
@@ -486,19 +484,57 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "collectionBuiltins",
 		PhaseLabel:  "result deep sizing",
-		Disposition: "unbounded-tracked",
-		Proof: "core.ValueDeepBytes walks the finished result once, as a tree and " +
-			"not as a graph, so a node reached by two references is visited " +
-			"twice while the ledger charged it once. This core shares structure " +
-			"by design: core.List.Cons on a shared-tail list returns " +
-			"core.ListShallowBytes(1) whatever the list's length, and " +
-			"plugins/stdlib/collections.go's cons charges exactly that, so " +
-			"consing a list onto itself doubles the walk for a constant charge. " +
-			"Measured: consing a ten-element list onto itself 26 times costs " +
-			"1040 ledger bytes while core.ValueDeepBytes reports 24159191024 " +
-			"and String renders 1476395007 characters. The allocation ledger " +
-			"therefore does not bound this walk and no static ceiling replaces " +
-			"it. Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "The builtins size a fresh result through chargeFreshDeepResult, which " +
+			"calls core.ValueDeepBytesContext. That walk descends the result as a tree " +
+			"and not as a graph, so a node reached by two references is visited twice " +
+			"while the ledger charged it once: consing a ten-element list onto itself " +
+			"26 times costs 1040 ledger bytes while the deep size reports 24159191024. " +
+			"The walk no longer leans on that charge to stop. It carries a " +
+			"non-allocating work budget of the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - spends one unit per node visited, and returns a " +
+			"resource-limit error the moment the units run out, so a second visit to a " +
+			"shared node costs what the first did not refund. Cancellation and the " +
+			"engine deadline are polled every 128 units, so a Terminal error surfaces " +
+			"at most 127 units late.",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "hash-map list merge range vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "chargeFreshDeepResult",
+		PhaseLabel:  "construction depth walk",
+		Disposition: "budgeted",
+		Proof: "core.CheckConstructionDepthContext caps the depth of the descent, not the " +
+			"number of nodes it visits: every element at every level is read and each " +
+			"collection-typed one recursed into, so a wide, shallow result is walked " +
+			"whole. The node count is what the contextual entry point bounds, with a " +
+			"non-allocating work budget of the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - one unit per node visited, a resource-limit error when " +
+			"the units run out, and a cancellation and deadline poll every 128 units " +
+			"that holds Terminal lag to 127. The fmt.Sprintf above it renders one %s " +
+			"and two %d over a name literal and two Go ints and costs constant time.",
+	},
+	{
+		Families:    []string{"collection"},
+		Fn:          "hash-map list merge range vector",
+		File:        "plugins/stdlib/collections.go",
+		Func:        "chargeFreshDeepResult",
+		PhaseLabel:  "result deep sizing",
+		Disposition: "budgeted",
+		Proof: "core.ValueDeepBytesContext sizes the finished result as a tree and not as " +
+			"a graph, so a node reached by two references is measured twice while the " +
+			"ledger charges it once. It spends one unit of the same non-allocating work " +
+			"budget per node visited - the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - and returns a resource-limit error once they run out, " +
+			"which is what bounds the size this helper hands to " +
+			"core.ChargeGoFuncResultBytes.",
 	},
 	{
 		Families:    []string{"collection"},
@@ -506,18 +542,22 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "chargeCollectionResult",
 		PhaseLabel:  "construction depth walk",
-		Disposition: "unbounded-tracked",
-		Proof: "core.CheckConstructionDepthWith caps the depth of the descent, " +
-			"not the number of nodes it visits. constructionDepthExceeded " +
-			"(core/depth.go:69) iterates every element at every level and " +
-			"recurses into each collection-typed one, and returns early only " +
-			"when the limit actually trips; a wide, shallow structure never " +
-			"trips it and is walked whole, once per reference, while the " +
-			"ledger charged each shared node once. Measured: a ten-element " +
-			"list consed onto itself 26 times sits at nesting depth 27, far " +
-			"under core.DefaultMaxStructuralDepth, and takes 1.677s for 1040 " +
-			"ledger bytes, doubling per cons (3.3us, 132us, 6.8ms, 563ms, " +
-			"1.68s). Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "core.CheckConstructionDepthContext caps the depth of the descent, not the " +
+			"number of nodes it visits: it iterates every element at every level and " +
+			"recurses into each collection-typed one, returning early only when the " +
+			"limit actually trips, so a wide, shallow structure is walked whole, once " +
+			"per reference, while the ledger charged each shared node once. Measured " +
+			"before the budget landed: a ten-element list consed onto itself 26 times " +
+			"sits at nesting depth 27, far under core.DefaultMaxStructuralDepth, and " +
+			"took 1.677s for 1040 ledger bytes, doubling per cons (3.3us, 132us, 6.8ms, " +
+			"563ms, 1.68s). The contextual entry point now bounds that walk with a " +
+			"non-allocating work budget of the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - one unit per node visited and a resource-limit error " +
+			"when they run out, with cancellation and the deadline polled every 128 " +
+			"units.",
 	},
 
 	// Collection family, part two: the lookup, indexed-access and persistent
@@ -815,24 +855,22 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "chargeConsResult",
 		PhaseLabel:  "nested element depth walk",
-		Disposition: "unbounded-tracked",
-		Proof: "The loop runs once per newly introduced element - the " +
-			"arguments the caller wrote, already billed one Step each by " +
-			"the builtin that called in - so the walk never revisits the " +
-			"accumulated result. Each walk is itself unbounded: " +
-			"core.CheckNestedElementDepthWith is checkDepthAt(v, 1, eval) " +
-			"over constructionDepthExceeded (core/depth.go:38), the same " +
-			"function the construction depth walk runs and differing only " +
-			"in starting depth, which does not change the node count. Its " +
-			"limit caps the depth of the descent, not the number of nodes " +
-			"visited, and a newly introduced element may itself share " +
-			"substructure, in which case a node reached by two references " +
-			"is visited twice while the ledger charged it once. Measured: " +
-			"a ten-element list consed onto itself 26 times sits at nesting " +
-			"depth 27, far under core.DefaultMaxStructuralDepth, and takes " +
-			"1.677s for 1040 ledger bytes. The fmt.Sprintf on the " +
-			"length-limit path renders one %s and two %d and costs constant " +
-			"time. Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "The loop runs once per newly introduced element - the arguments the caller " +
+			"wrote, already billed one Step each by the builtin that called in - so the " +
+			"walk never revisits the accumulated result. " +
+			"core.CheckNestedElementDepthContext is the construction depth descent at " +
+			"starting depth 1, differing only in that depth, which does not change the " +
+			"node count its limit leaves uncapped. A newly introduced element may " +
+			"itself share substructure, in which case a node reached by two references " +
+			"is visited twice while the ledger charged it once. The budget the entry " +
+			"point carries is what settles that: the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower, one unit per node visited, a resource-limit error when " +
+			"the units run out, and a cancellation and deadline poll every 128 units, " +
+			"so each iteration of the loop charges its own walk. The fmt.Sprintf on the " +
+			"length-limit path renders one %s and two %d and costs constant time.",
 	},
 
 	// The registrar walks the table above once while the plugin loads,
@@ -958,15 +996,19 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/control.go",
 		Func:        "registerControl",
 		PhaseLabel:  "value failure message format",
-		Disposition: "unbounded-tracked",
-		Proof: "The precision in \"assertion failed: %.200v\" caps the emitted " +
-			"message and nothing else: the render behind it walks the whole " +
-			"operand before fmt truncates the result. That operand is an " +
-			"arbitrary core.Value, so the walk descends a tree whose nodes " +
-			"may be reached by more than one reference while the ledger " +
-			"charged each of them once, and no ceiling can be stated for it. " +
-			"Read the precision as a bound on output, never as one on work. " +
-			"Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "assert no longer hands fmt an arbitrary core.Value. A non-String message " +
+			"goes through core.ValueStringContext first, and that render carries a " +
+			"non-allocating work budget of the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - one unit per node visited plus a reservation of " +
+			"ceil(bytes/16) units for each leaf it writes out - so a value whose shared " +
+			"nodes render once per reference exhausts the budget and returns a " +
+			"resource-limit error rather than running on. Cancellation and the deadline " +
+			"are polled every 128 units, holding Terminal lag to 127. What reaches " +
+			"domainErrorf is the finished Go string under a %.200s, which fmt truncates " +
+			"without reading past the precision.",
 	},
 
 	// CL adapter family. Each adapter renders its own error messages through
@@ -1298,25 +1340,22 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/strings.go",
 		Func:        "registerStrings",
 		PhaseLabel:  "render assembly",
-		Disposition: "unbounded-tracked",
-		Proof: "fmt.Sprintf copies the already-materialized operands into one " +
-			"output buffer, so its cost is the sum of what the loop above " +
-			"produced. Every non-scalar operand in that sum came out of toAny's " +
-			"v.String render, which descends a value as a tree while the ledger " +
-			"charged each shared node once, so the sum inherits that " +
-			"unboundedness whole. The pre-charge in front of Sprintf does not " +
-			"bound it either: estimateFormatAllocBytes counts one byte per byte " +
-			"while %q renders a byte that is not valid UTF-8 as four, measured " +
-			"3.9997 on a 1 MiB escaped leaf, which is why the builtin charges " +
-			"the shortfall afterwards rather than reading the estimate as a " +
-			"ceiling. Owned by core-value-walk-sharing-bound. A third cause " +
-			"sits outside that owner: when a verb and the operand's type " +
-			"disagree, fmt renders the whole operand inside a mismatch " +
-			"diagnostic such as %!d(string=...) while " +
-			"estimateFormatValueBytes returns a constant that does not " +
-			"depend on the operand, and an explicit argument index aims " +
-			"every directive at that same operand - no sharing and no %q " +
-			"escape in play. Owned by format-mismatched-verb-bound.",
+		Disposition: "bounded-exception",
+		Proof: "fmt.Sprintf copies the already-materialized operands into one output " +
+			"buffer, so its cost is the sum of what the loop above produced - and both " +
+			"steps in front of it have to succeed before it runs. " +
+			"estimateFormatAllocBytesContext sizes every operand through the contextual " +
+			"walks, which stop at their own work budget instead of descending a shared " +
+			"graph without limit, and core.ChargeEvalAllocBytes charges the estimate to " +
+			"the allocation ledger before a single operand is rendered, so a sum the " +
+			"ledger cannot hold is refused ahead of the assembly. MaxWork is that " +
+			"ledger ceiling, core.DefaultMaxAllocationBytes. The estimate is not itself " +
+			"exact - it counts one byte per byte while %q renders a byte that is not " +
+			"valid UTF-8 as four, measured 3.9997 on a 1 MiB escaped leaf - which is " +
+			"why the builtin charges the shortfall after the render instead of reading " +
+			"the estimate as the ceiling; what this row states is the ceiling the " +
+			"pre-charge enforces.",
+		MaxWork: 67_108_864,
 	},
 
 	// The Go string primitives. Each reads core.String operands the ledger has
@@ -1518,8 +1557,8 @@ var WorkPhases = []WorkPhase{
 	},
 
 	// The formatting boundary. A host value's own render is the host's code and
-	// is trusted; a core container's is a tree walk over a graph, and no ceiling
-	// covers it.
+	// is trusted; a core container's is a tree walk over a graph, bounded by the
+	// work budget the contextual render carries rather than by the ledger.
 	{
 		Families:    []string{"string"},
 		Fn:          "str string/join",
@@ -1539,18 +1578,20 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/strings.go",
 		Func:        "toString",
 		PhaseLabel:  "container render walk",
-		Disposition: "unbounded-tracked",
-		Proof: "A core container reaches core's boundedString, which descends " +
-			"the value as a tree and not as a graph, so a node reached by two " +
-			"references renders twice while the ledger charged it once. This " +
-			"core shares structure by design: core.List.Cons on a shared-tail " +
-			"list returns core.ListShallowBytes(1) whatever the list's length, " +
-			"so consing a list onto itself doubles the render for a constant " +
-			"charge. Measured: a ten-element list consed onto itself 26 times " +
-			"costs 1040 ledger bytes and renders 1476395007 characters. str and " +
-			"string/join reach the walk with no pre-charge in front of it, and " +
-			"the allocation ledger does not bound it, so no static ceiling " +
-			"replaces one. Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "A core container reaches core's boundedString through " +
+			"core.ValueStringContext, which descends the value as a tree and not as a " +
+			"graph, so a node reached by two references renders twice while the ledger " +
+			"charged it once: a ten-element list consed onto itself 26 times costs 1040 " +
+			"ledger bytes and renders 1476395007 characters. str and string/join reach " +
+			"the walk with no pre-charge in front of it, so what stops it is the walk's " +
+			"own non-allocating work budget - the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - one unit per node visited plus a reservation of " +
+			"ceil(bytes/16) units for each leaf whose bytes it writes, and a " +
+			"resource-limit error the moment the units run out. Cancellation and the " +
+			"deadline are polled every 128 units, holding Terminal lag to 127.",
 	},
 	{
 		Families:    []string{"string"},
@@ -1568,34 +1609,36 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"string"},
 		Fn:          "format",
 		File:        "plugins/stdlib/strings.go",
-		Func:        "toAny",
+		Func:        "toAnyContext",
 		PhaseLabel:  "non-scalar render walk",
-		Disposition: "unbounded-tracked",
-		Proof: "The default arm calls v.String on every non-scalar format " +
-			"argument, in a loop that runs to completion before fmt.Sprintf, so " +
-			"the render is materialized eagerly rather than lazily inside the " +
-			"verb. What is unbounded there is the walk, not the escaping: the " +
-			"render visits a shared node once per path that reaches it while " +
-			"the ledger charged it once, exactly as toString's walk does. The " +
-			"%q expansion is a separate defect of the same site and is not a " +
-			"second unboundedness - core.String's own String is " +
-			"fmt.Sprintf(\"%q\", V), which turns one source byte into at most " +
-			"four, a bounded multiple of a ledger-bounded quantity, measured " +
-			"3.9997 on a 1 MiB 0x80 leaf, 3.7409 at 1 KiB and 1.9999 on 1 MiB " +
-			"of quotes. What that factor breaks is the charge, which counts one " +
-			"byte per byte, which is why format bills the shortfall after the " +
-			"render instead of treating the pre-charge as a bound. " +
-			"Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "The default arm calls core.ValueStringContext on every non-scalar format " +
+			"argument, in a loop that runs to completion before fmt.Sprintf, so the " +
+			"render is materialized eagerly rather than lazily inside the verb. It " +
+			"visits a shared node once per path that reaches it while the ledger " +
+			"charged it once, exactly as toString's walk does, and each visit spends a " +
+			"unit of the render's non-allocating work budget - the evaluator's " +
+			"allocation limit over core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - with ceil(bytes/16) units reserved for each leaf " +
+			"written out, so the render stops with a resource-limit error instead of " +
+			"outrunning that single charge. The %q expansion is a separate property of " +
+			"the same site and not a second unboundedness: core.String's own String is " +
+			"fmt.Sprintf(\"%q\", V), which turns one source byte into at most four, " +
+			"measured 3.9997 on a 1 MiB 0x80 leaf, 3.7409 at 1 KiB and 1.9999 on 1 MiB " +
+			"of quotes. What that factor breaks is the charge, which counts one byte " +
+			"per byte, which is why format bills the shortfall after the render instead " +
+			"of treating the pre-charge as a bound.",
 	},
 
-	// The format estimator. Its own scans are bounded by the format string; the
-	// walk it reaches for a non-String operand is not, and it runs before the
-	// pre-charge rather than under it.
+	// The format estimator. Its own scans are bounded by the format string, and
+	// the walk it reaches for a non-String operand runs ahead of the pre-charge,
+	// under the contextual walk's own work budget rather than under the ledger.
 	{
 		Families:    []string{"string"},
 		Fn:          "format",
 		File:        "plugins/stdlib/strings.go",
-		Func:        "estimateFormatAllocBytes",
+		Func:        "estimateFormatAllocBytesContext",
 		PhaseLabel:  "format string scan",
 		Disposition: "bounded-exception",
 		Proof: "The outer loop advances one byte at a time over the format " +
@@ -1608,7 +1651,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"string"},
 		Fn:          "format",
 		File:        "plugins/stdlib/strings.go",
-		Func:        "estimateFormatAllocBytes",
+		Func:        "estimateFormatAllocBytesContext",
 		PhaseLabel:  "verb flag scan",
 		Disposition: "bounded-exception",
 		Proof: "The flag loop inside estimateOne consumes the flag bytes of one " +
@@ -1622,13 +1665,16 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/strings.go",
 		Func:        "estimateFormatValueBytes",
 		PhaseLabel:  "default verb estimate",
-		Disposition: "unbounded-tracked",
-		Proof: "The default arm sizes an operand by calling core.ValueDeepBytes " +
-			"on it, which descends the value as a tree while the ledger charged " +
-			"each shared node once, so a node reachable twice is measured " +
-			"twice. It runs inside the estimator, ahead of the pre-charge the " +
-			"estimate feeds, so nothing guards it. Owned by " +
-			"core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "The default arm sizes an operand by calling core.ValueDeepBytesContext on " +
+			"it, which descends the value as a tree while the ledger charged each " +
+			"shared node once, so a node reachable twice is measured twice - and " +
+			"charged twice against the walk's non-allocating work budget, the " +
+			"evaluator's allocation limit over core.MeterValueSlotBytes - 4194304 units " +
+			"under core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower, at one unit per node visited. That budget is what guards " +
+			"the estimator: it runs ahead of the pre-charge its estimate feeds, so " +
+			"nothing downstream could.",
 	},
 	{
 		Families:    []string{"string"},
@@ -1636,14 +1682,18 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/strings.go",
 		Func:        "formatStringBytes",
 		PhaseLabel:  "deep size walk",
-		Disposition: "unbounded-tracked",
-		Proof: "This is the call estimateFormatAllocBytes reaches " +
-			"core.ValueDeepBytes through for every operand that is not a " +
-			"core.String, on the %s, %q and %x arms alike. The walk descends " +
-			"the value as a tree while the ledger charged each shared node " +
-			"once, and it runs before the pre-charge rather than under it, so " +
-			"the estimator itself is unbounded however small the estimate it " +
-			"returns. Owned by core-value-walk-sharing-bound.",
+		Disposition: "budgeted",
+		Proof: "This is the call estimateFormatAllocBytesContext reaches " +
+			"core.ValueDeepBytesContext through for every operand that is not a " +
+			"core.String, on the %s, %q and %x arms alike. The walk descends the value " +
+			"as a tree while the ledger charged each shared node once, and it runs " +
+			"before the pre-charge rather than under it, so what stops it is its own " +
+			"non-allocating work budget - the evaluator's allocation limit over " +
+			"core.MeterValueSlotBytes - 4194304 units under " +
+			"core.DefaultMaxAllocationBytes and fewer when the evaluator caps " +
+			"allocation lower - one unit per node visited and a resource-limit error " +
+			"the moment they run out, however small the estimate it would have " +
+			"returned.",
 	},
 	{
 		Families:    []string{"string"},

@@ -45,8 +45,7 @@ var Families = []string{
 // the runtime cannot preempt, named in Proof; "callback-owned" leaves the cost
 // to the callback the phase dispatches, one row per callback; "load-time" runs
 // while the plugin loads, before any budget exists; "none-bounded-dispatch"
-// does no work that grows with the input; and "unbounded-tracked" states no
-// ceiling at all, only the change that owns removing it.
+// does no work that grows with the input.
 var Dispositions = []string{
 	"budgeted",
 	"bounded-exception",
@@ -54,7 +53,6 @@ var Dispositions = []string{
 	"callback-owned",
 	"load-time",
 	"none-bounded-dispatch",
-	"unbounded-tracked",
 }
 
 // ResultClasses enumerates the valid values of ResultBranch.Class.
