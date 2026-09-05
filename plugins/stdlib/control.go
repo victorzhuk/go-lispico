@@ -14,17 +14,9 @@ func (p *Plugin) registerControl(env *core.Env) error {
 				return nil, arityErrorf("assert: requires at least 1 argument")
 			}
 
-			cond, err := eval.Eval(ctx, args[0], env)
-			if err != nil {
-				return nil, err
-			}
-
-			if !isTruthy(cond) {
+			if !isTruthy(args[0]) {
 				if len(args) > 1 {
-					msg, err := eval.Eval(ctx, args[1], env)
-					if err != nil {
-						return nil, err
-					}
+					msg := args[1]
 					if s, ok := msg.(core.String); ok {
 						return nil, domainErrorf("assertion failed: %.200s", s.V)
 					}
