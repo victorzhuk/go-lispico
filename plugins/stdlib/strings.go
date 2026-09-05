@@ -100,8 +100,10 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 			}
 
 			budget := core.NewBuiltinWorkBudget(ctx)
+			if err := chargeSizedString(ctx, core.MeterStringHeaderBytes); err != nil {
+				return finishBuiltin(budget, nil, err)
+			}
 			parts := make([]string, 0, len(items))
-			var outBytes int64
 			for _, item := range items {
 				if err := budget.Step(); err != nil {
 					return finishBuiltin(budget, nil, err)
@@ -110,15 +112,17 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				if err != nil {
 					return finishBuiltin(budget, nil, err)
 				}
+				partBytes := int64(len(part))
 				if len(parts) > 0 {
-					outBytes = addFormatEstimate(outBytes, int64(len(sep.V)))
+					partBytes = addFormatEstimate(partBytes, int64(len(sep.V)))
 				}
-				outBytes = addFormatEstimate(outBytes, int64(len(part)))
+				if err := chargeSizedString(ctx, partBytes); err != nil {
+					return finishBuiltin(budget, nil, err)
+				}
 				parts = append(parts, part)
 			}
 
-			joined, err := joinPrecharged(ctx, parts, sep.V, outBytes)
-			return finishBuiltin(budget, core.String{V: joined}, err)
+			return finishBuiltin(budget, core.String{V: strings.Join(parts, sep.V)}, nil)
 		},
 	}, false); err != nil {
 		return err
@@ -801,18 +805,6 @@ func unaryStringFunc(name string, fn func(string) string) func(context.Context, 
 		}
 		return core.String{V: out}, nil
 	}
-}
-
-// joinPrecharged charges what string/join is about to build before
-// strings.Join writes it. The separator lands between every part, so the output
-// is a product of the part count and the separator's length rather than a
-// maximum over the operands; outBytes is that size, summed by the caller's
-// budgeted pass over the parts.
-func joinPrecharged(ctx context.Context, parts []string, sep string, outBytes int64) (string, error) {
-	if err := chargeSizedString(ctx, addFormatEstimate(core.MeterStringHeaderBytes, outBytes)); err != nil {
-		return "", err
-	}
-	return strings.Join(parts, sep), nil
 }
 
 // replacePrecharged charges what string/replace is about to build before

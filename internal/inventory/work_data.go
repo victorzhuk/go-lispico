@@ -1394,7 +1394,7 @@ var WorkPhases = []WorkPhase{
 		Families:    []string{"string"},
 		Fn:          "string/join",
 		File:        "plugins/stdlib/strings.go",
-		Func:        "joinPrecharged",
+		Func:        "registerStrings",
 		PhaseLabel:  "part concatenation",
 		Disposition: "bounded-exception",
 		Proof: "strings.Join copies the parts and the separator into one buffer " +
@@ -1402,12 +1402,13 @@ var WorkPhases = []WorkPhase{
 			"a product rather than a maximum over the operands: the separator " +
 			"lands between every part, so 2048 empty parts and a 65536-byte " +
 			"separator write 134152192 bytes out of 98 KB of ledger. What " +
-			"bounds it is the charge ahead of it. joinPrecharged sizes the " +
-			"output as the parts summed by the caller's budgeted pass plus one " +
-			"separator between each pair, saturating rather than wrapping, and " +
-			"charges that whole size before strings.Join runs, so the copy " +
-			"happens only for an output the allocation ledger accepted and " +
-			"MaxWork is that ledger bound. It does not cover a part toString " +
+			"bounds it is the charge ahead of it. The builtin charges the " +
+			"output's header before the first part is rendered and each part " +
+			"plus the separator that precedes it as that part is produced, " +
+			"saturating rather than wrapping, so a set the ledger cannot hold " +
+			"is refused while it is still being retained and strings.Join " +
+			"copies only an output the ledger accepted; MaxWork is that ledger " +
+			"bound. It does not cover a part toString " +
 			"rendered out of a container: that render is the unbounded walk " +
 			"recorded on toString, and its row is where the defect is tracked.",
 		MaxWork: 67_108_848,
