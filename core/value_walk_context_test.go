@@ -340,5 +340,60 @@ func TestValueWalk_ClosureDepthDescendsBody(t *testing.T) {
 	}
 }
 
+// TestValueWalk_ClosureNodeCountDescendsBody pins the contextual node count to
+// the answer core/depth.go already gives on the identical value: boundedNodeCount
+// descends a closure's Body and counts every form in it, while the contextual
+// walk counts the closure as one node and stops. Both halves of that divergence
+// are pinned — the count, and the budget: a closure body that costs nothing is a
+// hole under every ceiling the walk exists to enforce.
+//
+// Params are deliberately non-empty: the context-free count charges the Body
+// only, so a walk that also counted parameters would diverge the other way.
+func TestValueWalk_ClosureNodeCountDescendsBody(t *testing.T) {
+	params := []Symbol{{V: "x"}, {V: "y"}}
+	body := []Value{
+		NewList([]Value{Symbol{V: "+"}, Symbol{V: "x"}, Int{V: 1}}),
+		NewList([]Value{Symbol{V: "*"}, Symbol{V: "y"}, Int{V: 2}}),
+		String{V: "tail"},
+	}
+	// One closure node, two 4-node lists, one scalar; parameters are not nodes.
+	const wantNodes = 10
+
+	shared := sharedConsChain(5, []Value{Int{V: 0}, Int{V: 1}, Int{V: 2}, Int{V: 3}, Int{V: 4}, Int{V: 5}, Int{V: 6}, Int{V: 7}, Int{V: 8}, Int{V: 9}})
+	capped := WithEvalResourceLimits(context.Background(), 1_000_000, 4096)
+
+	for _, c := range []struct {
+		name             string
+		counted, overCap Value
+	}{
+		{"Lambda", Lambda{Name: "f", Params: params, Body: body}, Lambda{Name: "f", Params: params, Body: []Value{shared}}},
+		{"Macro", Macro{Name: "m", Params: params, Body: body}, Macro{Name: "m", Params: params, Body: []Value{shared}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			runWalk(t, c.name+" node count must match the context-free answer on the same value", func() {
+				host := ValueNodeCount(c.counted)
+				if host != wantNodes {
+					t.Fatalf("ValueNodeCount over a %s with a %d-form body = %d, want %d: the context-free count is the reference this parity pins and must not move", c.name, len(body), host, wantNodes)
+				}
+				got, err := ValueNodeCountContext(context.Background(), c.counted)
+				if err != nil {
+					t.Fatalf("ValueNodeCountContext over a %s with a %d-form body = %v, want %d nodes and no error", c.name, len(body), err, wantNodes)
+				}
+				if got != host {
+					t.Fatalf("ValueNodeCountContext over a %s with a %d-form body = %d while ValueNodeCount reports %d on the same value: the contextual walk must descend the closure body, not count the closure as a single node", c.name, len(body), got, host)
+				}
+
+				n, err := ValueNodeCountContext(capped, c.overCap)
+				if err == nil {
+					t.Fatalf("ValueNodeCountContext over a %s whose body holds the 352-visit shared fixture = %d, nil under a 256-unit ceiling: a closure payload must cost budget like any other node, not answer without walking it", c.name, n)
+				}
+				if errCode(t, err) != CodeResourceLimit || !IsTerminalEvalError(err) {
+					t.Fatalf("ValueNodeCountContext over a %s body above the ceiling = %v, want terminal %s", c.name, err, CodeResourceLimit)
+				}
+			})
+		})
+	}
+}
+
 func timeNowPast() time.Time { return time.Now().Add(-time.Millisecond) }
 func itoa(n int) string      { return fmt.Sprintf("%d", n) }
