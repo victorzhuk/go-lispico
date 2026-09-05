@@ -13,7 +13,7 @@ the number of nodes it visits: a wide, shallow, heavily shared structure never
 trips it and is walked whole.
 
 Measured on a ten-element list consed onto itself 26 times — nesting depth 27,
-far under the 1024 limit, 1040 ledger bytes:
+far under the 1024 limit, 9,536 ledger bytes:
 
 | Walk | Result |
 | --- | --- |
