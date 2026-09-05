@@ -34,11 +34,12 @@ on:
   # public and a pre-release being promoted to one, which is exactly when a
   # baseline should be captured.
   #
-  # A workflow_dispatch run is still useful, but only for the untimed and
-  # benchmark legs. It carries no release identity, so the baseline lookup
-  # and the asset upload are both skipped -- meaning gh auth, tag_name
-  # interpolation, and the asset round-trip cannot be rehearsed by dispatch
-  # at all. Those three paths run for real the first time or not at all.
+  # A workflow_dispatch run resolves its gate mode from the same stored
+  # baselines a release run reads, so gh auth and the baseline lookup are
+  # rehearsable by dispatch and both triggers reach the same per-cell
+  # verdicts on the same tree. It carries no release identity, so only the
+  # asset upload is skipped -- tag_name interpolation and the upload itself
+  # run for real the first time or not at all.
   release:
     types: [released]
 
@@ -80,33 +81,75 @@ jobs:
           go-version: "1.24"
           cache: true
 
+      # Built once and run as a binary: `go run` collapses the program's exit
+      # code to 1, which would make the needs-rerun signal (exit 2)
+      # indistinguishable from a failure, and would hide resolve-mode's exit 3
+      # the same way. Built before the mode is determined because that step is
+      # its first caller.
+      - name: Build the gate binary
+        run: go build -o bin/perfgate ./cmd/perfgate
+
       # 3.3: first authorization uses ADR 0008's improvement thresholds; every
       # later release compares this candidate VM against the previous release's
       # stored bench-vm.txt as non-regression (design.md "Decision rules"). The
       # baseline is whichever earlier release still carries the asset; none
-      # found means this is the first authorization. Release-triggered only --
-      # a workflow_dispatch run has no release identity, so it stays in
-      # first-authorization mode with no baseline I/O.
+      # found means this is the first authorization. The mode comes from the
+      # stored baselines, not from the triggering event, so a dispatched run
+      # reaches the same verdicts a release run does on the same tree.
+      #
+      # Absence is decided from each release's asset list, never from a
+      # download exit code: an unreadable repository state and an empty one
+      # would otherwise be the same observation, and only the empty one may
+      # select the first-authorization thresholds. The lookup records what was
+      # observed; `perfgate resolve-mode` classifies it and fails the step when
+      # it cannot be classified.
       - name: Determine gate mode
         id: gate-mode
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
+          enumeration_ok=true
+          download_failed=false
           baseline_tag=""
-          for tag in $(gh release list --limit 30 --json tagName --jq '.[].tagName'); do
+          inspected=()
+
+          if ! tags=$(gh release list --limit 30 --json tagName --jq '.[].tagName'); then
+            enumeration_ok=false
+            tags=""
+          fi
+
+          for tag in $tags; do
+            # RELEASE_TAG is empty on a dispatch: there is no release being cut,
+            # so nothing is excluded and the newest release is considered first.
             [ "$tag" = "$RELEASE_TAG" ] && continue
-            if gh release download "$tag" --pattern bench-vm.txt --output baseline-vm.txt 2>/dev/null; then
-              baseline_tag="$tag"
+            if ! has_baseline=$(gh release view "$tag" --json assets --jq 'any(.assets[]; .name == "bench-vm.txt")'); then
+              enumeration_ok=false
               break
             fi
+            inspected+=("$tag")
+            [ "$has_baseline" = "true" ] || continue
+            if gh release download "$tag" --pattern bench-vm.txt --output baseline-vm.txt; then
+              baseline_tag="$tag"
+            else
+              download_failed=true
+            fi
+            break
           done
+
+          jq -n \
+            --argjson enumeration_ok "$enumeration_ok" \
+            --argjson download_failed "$download_failed" \
+            --arg downloaded_tag "$baseline_tag" \
+            '{EnumerationOK: $enumeration_ok, Tags: $ARGS.positional, DownloadedTag: $downloaded_tag, DownloadFailed: $download_failed}' \
+            --args "${inspected[@]}" > baseline-lookup.json
+
+          # resolve-mode prints the `mode=<name>` line the downstream steps
+          # read, and exits non-zero without it when the lookup resolves to no
+          # mode -- which fails this step under the runner's `bash -e`.
+          bin/perfgate resolve-mode -lookup baseline-lookup.json >> "$GITHUB_OUTPUT"
           if [ -n "$baseline_tag" ]; then
-            echo "mode=non-regression" >> "$GITHUB_OUTPUT"
             echo "baseline_tag=$baseline_tag" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=first-authorization" >> "$GITHUB_OUTPUT"
           fi
 
       # 2.1: correctness leg, untimed -- every gold-set fixture under both
@@ -138,16 +181,14 @@ jobs:
       # this release's Evaluator vs VM against the improvement thresholds;
       # later releases pair the previous release's stored bench-vm.txt (the
       # baseline downloaded above) against this candidate as non-regression.
-      # Built once and run as a binary: `go run` collapses the program's
-      # exit code to 1, which would make the needs-rerun signal (exit 2)
-      # indistinguishable from a failure. The `|| code=$?` capture keeps the
-      # runner's `bash -e` from aborting before the output line is written.
+      # The mode is whatever the baseline lookup resolved -- there is no
+      # default here, because a step that could not resolve one has already
+      # failed the job. The `|| code=$?` capture keeps the runner's `bash -e`
+      # from aborting before the output line is written.
       - name: Evaluate performance gate
         id: perfgate
         run: |
-          go build -o bin/perfgate ./cmd/perfgate
           mode="${{ steps.gate-mode.outputs.mode }}"
-          [ -z "$mode" ] && mode="first-authorization"
           old="bench-evaluator.txt"
           [ "$mode" = "non-regression" ] && old="baseline-vm.txt"
           code=0

@@ -1,11 +1,14 @@
 // Command perfgate evaluates a benchstat comparison against ADR 0008's
 // consumer performance-gate thresholds (docs/adr/0008-consumer-performance-gate.md).
 // It shells out to golang.org/x/perf/cmd/benchstat for the statistics and
-// applies the internal/perfgate package's per-tier verdict rules.
+// applies the internal/perfgate package's per-tier verdict rules. Its
+// resolve-mode subcommand classifies a recorded baseline lookup into the gate
+// mode those rules are applied in.
 package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +37,10 @@ func main() {
 }
 
 func run(stdout, stderr io.Writer, args []string) int {
+	if len(args) > 0 && args[0] == "resolve-mode" {
+		return resolveMode(stdout, stderr, args[1:])
+	}
+
 	fs := flag.NewFlagSet("perfgate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	oldPath := fs.String("old", "", "benchstat-format input: reference run (Evaluator mode, or a stored VM baseline in non-regression mode)")
@@ -80,6 +87,58 @@ func parseMode(s string) (perfgate.Mode, error) {
 	default:
 		return perfgate.ModeUnknown, fmt.Errorf("unknown -mode %q, want first-authorization or non-regression", s)
 	}
+}
+
+// resolveMode classifies the baseline lookup release.yml recorded while
+// searching the releases for a stored bench-vm.txt, so the gate mode comes from
+// what the repository actually holds rather than from the triggering event: a
+// dispatched run and a release run read the same lookup and reach the same
+// mode. A lookup that could not be completed names no mode at all — exit 3,
+// never a silent fall back to first-authorization thresholds.
+func resolveMode(stdout, stderr io.Writer, args []string) int {
+	fs := flag.NewFlagSet("perfgate resolve-mode", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	lookupPath := fs.String("lookup", "", "JSON record of the baseline lookup: enumeration outcome, inspected tags, downloaded tag")
+
+	if err := fs.Parse(args); err != nil {
+		return exitNotComparable
+	}
+	if *lookupPath == "" {
+		fmt.Fprintln(stderr, "perfgate: resolve-mode requires -lookup")
+		return exitNotComparable
+	}
+
+	data, err := os.ReadFile(*lookupPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "perfgate:", err)
+		return exitNotComparable
+	}
+	var lookup perfgate.BaselineLookup
+	if err := json.Unmarshal(data, &lookup); err != nil {
+		fmt.Fprintf(stderr, "perfgate: parse %s: %v\n", *lookupPath, err)
+		return exitNotComparable
+	}
+
+	mode, _, err := perfgate.ResolveGateMode(lookup)
+	if err != nil {
+		// The lookup sentinels carry the perfgate: prefix themselves.
+		fmt.Fprintln(stderr, err)
+		return exitNotComparable
+	}
+
+	var name string
+	switch mode {
+	case perfgate.ModeFirstAuthorization:
+		name = "first-authorization"
+	case perfgate.ModeNonRegression:
+		name = "non-regression"
+	default:
+		fmt.Fprintln(stderr, "perfgate: the baseline lookup selected no gate mode")
+		return exitNotComparable
+	}
+
+	fmt.Fprintf(stdout, "mode=%s\n", name)
+	return exitPass
 }
 
 // evaluate runs benchstat, evaluates every cell, writes the verdict report,
