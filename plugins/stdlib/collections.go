@@ -969,11 +969,11 @@ func getInLookup(ctx context.Context, args []core.Value) (core.Value, error) {
 // terminal sync error outranks a lookup error, and only a value return
 // reaches the result ledger.
 func getInResult(ctx context.Context, budget *core.BuiltinWorkBudget, v core.Value, err error) (core.Value, error) {
-	if ferr := budget.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
-		return nil, ferr
-	}
 	if err != nil {
-		return nil, err
+		return nil, budget.Finish(err)
+	}
+	if ferr := budget.Flush(); ferr != nil {
+		return nil, ferr
 	}
 	if cerr := chargeBorrowedResult(ctx); cerr != nil {
 		return nil, cerr

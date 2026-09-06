@@ -197,18 +197,18 @@ type sortPair struct {
 }
 
 func finishSort(b *core.BuiltinWorkBudget, sorted []core.Value, err error) ([]core.Value, error) {
-	if ferr := b.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
-		return nil, ferr
-	}
 	if err != nil {
-		return nil, err
+		return nil, b.Finish(err)
+	}
+	if ferr := b.Flush(); ferr != nil {
+		return nil, ferr
 	}
 	return sorted, nil
 }
 
 func flushErr(b *core.BuiltinWorkBudget, err error) error {
-	if ferr := b.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
-		return ferr
+	if err != nil {
+		return b.Finish(err)
 	}
-	return err
+	return b.Flush()
 }

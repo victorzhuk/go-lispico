@@ -10,11 +10,11 @@ import (
 // terminal sync error outranks a pending non-terminal one, so cancellation and
 // deadline expiry cannot be masked by an ordinary adapter failure.
 func finishAdapter(b *core.BuiltinWorkBudget, v core.Value, err error) (core.Value, error) {
-	if ferr := b.Flush(); ferr != nil && (err == nil || (core.IsTerminalEvalError(ferr) && !core.IsTerminalEvalError(err))) {
-		return nil, ferr
-	}
 	if err != nil {
-		return nil, err
+		return nil, b.Finish(err)
+	}
+	if ferr := b.Flush(); ferr != nil {
+		return nil, ferr
 	}
 	return v, nil
 }
