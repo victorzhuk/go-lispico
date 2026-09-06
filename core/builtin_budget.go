@@ -50,9 +50,16 @@ func (b *BuiltinWorkBudget) flushPending() error {
 		b.latched = err
 		return err
 	}
-	if !b.st.deadline.IsZero() && !nowFunc().Before(b.st.deadline) {
-		b.latched = context.DeadlineExceeded
-		return b.latched
+	if !b.st.deadline.IsZero() {
+		if b.st.deadlineClockPolls.Load() <= 0 {
+			if !nowFunc().Before(b.st.deadline) {
+				b.latched = context.DeadlineExceeded
+				return b.latched
+			}
+			b.st.deadlineClockPolls.Store(deadlineClockCadence - 1)
+		} else {
+			b.st.deadlineClockPolls.Add(-1)
+		}
 	}
 	if err := b.ctx.Err(); err != nil {
 		b.latched = err

@@ -105,8 +105,10 @@ type evalState struct {
 	// apply site's fallback shallow charge should skip it. Plain, not
 	// atomic — only the evaluating goroutine ever touches it, same as
 	// leasedReductions/leasedAllocBytes above.
-	calleeCharged     bool
-	pendingCellAllocs []pendingCellAlloc
+	calleeCharged bool
+	// Keep the countdown in this padding slot so evalState stays 192 bytes.
+	deadlineClockPolls atomic.Int32
+	pendingCellAllocs  []pendingCellAlloc
 	// shared lets lazy states alias wrapper-owned counters without a second allocation per evalState.
 	shared          *atomic.Int64
 	sharedCallDepth *atomic.Int64
@@ -289,6 +291,8 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 // (force=false) fires immediately without charging reductions, then every
 // checkInterval thereafter.
 const checkInterval int64 = 128
+
+const deadlineClockCadence = 8
 
 var nowFunc = time.Now
 
