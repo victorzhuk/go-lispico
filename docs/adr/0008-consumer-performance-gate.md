@@ -35,13 +35,23 @@ Note (runner comparability): a latency conclusion is only sound when the
 stored baseline and the candidate ran on the same runner identity, so the
 gate reports latency as inconclusive rather than compare figures across a
 change of runner, and never normalizes a configuration line to manufacture
-a comparison it cannot support. Allocation count and allocated bytes stay
-enforced regardless of runner identity: allocation count is an exact
-per-op integer, so its non-increasing bound already reads as an exact
-comparison independent of which machine produced it, while B/op is a
-benchmark-tool average that wobbles run to run even on identical
-hardware — the reason the bytes axis, not the allocation-count axis,
-carries a stated per-cell allowance.
+a comparison it cannot support. Allocation count survives a change of
+runner: it is an exact per-op integer with no iteration-count term, so its
+non-increasing bound already reads as an exact comparison independent of
+which machine produced it. Allocated bytes do not survive: B/op divides a
+benchmark's total bytes by its iteration count, and that iteration count
+is itself a property of machine speed — on hosted run 33985766146 the
+same cell's iteration counts differed 2.8x between runner identities at
+one fixed benchtime. Per-allocation sizing moves independently of that
+denominator: on the committed gold-set corpora, where iteration counts
+sit within ~10% of each other across runners, every GoldsetParse/* cell
+still moves +16 to +288 B/op between runners with allocs/op identical.
+Both mechanisms make B/op a property of the machine rather than of the
+code under test, so the gate reports the bytes axis as inconclusive
+across a change of runner identity and enforces it against the cell's
+stated allowance only when the stored baseline and the candidate share a
+runner identity — the reason the bytes axis, not the allocation-count
+axis, carries a stated per-cell allowance.
 
 Note (benchstat "~" blind spot, latency only): benchstat reports a
 non-significant metric delta as `~`, which this gate's CSV parser turns
