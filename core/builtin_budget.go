@@ -43,6 +43,15 @@ func (b *BuiltinWorkBudget) Flush() error {
 	return b.flushPending()
 }
 
+// Finish settles pending work and preserves terminal error precedence.
+func (b *BuiltinWorkBudget) Finish(err error) error {
+	ferr := b.Flush()
+	if ferr != nil && (err == nil || (IsTerminalEvalError(ferr) && !IsTerminalEvalError(err))) {
+		return ferr
+	}
+	return err
+}
+
 func (b *BuiltinWorkBudget) flushPending() error {
 	n := int64(b.pending)
 	b.pending = 0
