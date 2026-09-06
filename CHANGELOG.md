@@ -207,6 +207,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rendering, the arity, which values count as true, and the success return are
   unchanged.
 
+- A Builtin now observes an expired evaluation deadline within eight
+  synchronizations (1024 local work units), rather than at the very next
+  synchronization. This bounded delay reduces deadline-check overhead during
+  Builtin work.
+
 ## [0.12.0] - 2026-07-31
 
 ### Added
