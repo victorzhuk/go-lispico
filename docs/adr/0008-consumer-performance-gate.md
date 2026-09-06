@@ -50,8 +50,9 @@ Both mechanisms make B/op a property of the machine rather than of the
 code under test, so the gate reports the bytes axis as inconclusive
 across a change of runner identity and enforces it against the cell's
 stated allowance only when the stored baseline and the candidate share a
-runner identity — the reason the bytes axis, not the allocation-count
-axis, carries a stated per-cell allowance.
+runner identity. Within a single runner B/op is a benchmark-tool average
+that still wobbles run to run, which is why the bytes axis, and not the
+allocation-count axis, carries a stated per-cell allowance at all.
 
 Note (benchstat "~" blind spot, latency only): benchstat reports a
 non-significant metric delta as `~`, which this gate's CSV parser turns
