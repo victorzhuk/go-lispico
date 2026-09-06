@@ -14,6 +14,63 @@ func budgetCtx(parent context.Context, maxReductions int64) context.Context {
 	return WithEvalResourceLimits(parent, int(maxReductions), 1<<30)
 }
 
+func TestBuiltinWorkBudget_InstalledDeadlineReadAtNextSync(t *testing.T) {
+	base := time.Now()
+	var calls int
+	restore := nowFunc
+	nowFunc = func() time.Time {
+		calls++
+		return base
+	}
+	t.Cleanup(func() { nowFunc = restore })
+
+	ctx := WithEvalDeadline(budgetCtx(t.Context(), 1_000_000), base.Add(time.Hour))
+	for range 3 {
+		b := NewBuiltinWorkBudget(ctx)
+		stepN(t, b, 1)
+		if err := b.Flush(); err != nil {
+			t.Fatalf("sync before reinstalling deadline: %v", err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("3 synchronizations: want 1 clock read, got %d", calls)
+	}
+
+	ctx = WithEvalDeadline(ctx, base.Add(2*time.Hour))
+	b := NewBuiltinWorkBudget(ctx)
+	stepN(t, b, 1)
+	before := calls
+	if err := b.Flush(); err != nil {
+		t.Fatalf("first sync after reinstalling deadline: %v", err)
+	}
+	if got := calls - before; got != 1 {
+		t.Fatalf("first sync after reinstalling deadline: want 1 clock read, got %d", got)
+	}
+}
+
+func TestBuiltinWorkBudget_FreshEvalStateReadsClockAtFirstSync(t *testing.T) {
+	base := time.Now()
+	deadline := base.Add(time.Hour)
+	var calls int
+	restore := nowFunc
+	nowFunc = func() time.Time {
+		calls++
+		return base
+	}
+	t.Cleanup(func() { nowFunc = restore })
+
+	ctx, _, _ := AdoptEvalStateWithMeter(context.Background(), deadline, 0, EvalMeterSnapshot{})
+	b := NewBuiltinWorkBudget(ctx)
+	stepN(t, b, 1)
+	before := calls
+	if err := b.Flush(); err != nil {
+		t.Fatalf("first sync with fresh eval state: %v", err)
+	}
+	if got := calls - before; got != 1 {
+		t.Fatalf("first sync with fresh eval state: want 1 clock read, got %d", got)
+	}
+}
+
 func TestBuiltinWorkBudget_ShortCallsShareClockCadence(t *testing.T) {
 	for _, n := range []int{1, 8, 9, 16, 17, 37} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
