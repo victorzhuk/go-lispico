@@ -258,8 +258,19 @@ or VM for that unit. A phase using this facility SHALL accrue one local step per
 semantic unit. The budget SHALL synchronize with shared evaluation state every
 128 pending units and SHALL flush any remainder before every return.
 Synchronization SHALL charge the logical Reductions and observe the Engine-owned
-Evaluation deadline and caller cancellation. No atomic ledger operation or clock
-read SHALL occur per local step. A consumer SHALL NOT replace the facility with a
+Evaluation deadline and caller cancellation. Observing the deadline SHALL NOT
+require a wall-clock read at every synchronization: the core MAY read the clock
+at a reduced, fixed multiple of the synchronization interval. That cadence SHALL
+be carried by the evaluation rather than by the budget, because a budget is
+confined to one GoFunc call and a per-budget cadence would read the clock once
+per call however short the call is. The interval between a deadline passing and
+a Builtin terminating SHALL be bounded and documented: no more than a small fixed
+number of synchronizations, plus any single opaque phase's own execution time as
+today. Caller cancellation and the Reduction charge SHALL still occur at every
+synchronization. Installing a deadline on an evaluation SHALL make the next
+synchronization read the clock, so no evaluation inherits a cadence position from
+an earlier one. No atomic ledger operation or clock read SHALL occur per local
+step. A consumer SHALL NOT replace the facility with a
 direct per-unit ledger charge, per-unit evaluation-state poll, or caller-context
 check, and SHALL NOT double-charge callback execution already accounted by
 re-entry. When a consumer assigns a budget to a callback-driven operation,
@@ -267,12 +278,21 @@ separate uninterrupted copying, traversal, and result-construction phases SHALL
 retain their own ownership.
 
 The Go API SHALL expose `NewBuiltinWorkBudget(context.Context)`,
-`(*BuiltinWorkBudget).Step() error`, and `(*BuiltinWorkBudget).Flush() error`.
+`(*BuiltinWorkBudget).Step() error`, `(*BuiltinWorkBudget).Flush() error`, and
+`(*BuiltinWorkBudget).Finish(error) error`.
 A budget SHALL be confined to one GoFunc call and goroutine, SHALL latch and
 replay its first synchronization error, and SHALL make an empty successful flush
 idempotent. If a pending non-Terminal error and a Terminal flush error coexist,
 the Terminal error SHALL win; otherwise the original validation/callback error
 SHALL be preserved.
+
+Settling a pending non-Terminal error through `Finish` SHALL check the armed
+Evaluation deadline and caller cancellation even between scheduled clock reads
+or when no local work remains pending. A reduction-limit failure SHALL retain
+precedence over that check. Settling a nil error SHALL retain ordinary `Flush`
+behavior; an existing Terminal input error SHALL retain its identity. Consumers
+SHALL settle pending validation/callback errors through this operation before
+returning them. Forced error settlement SHALL NOT charge local work twice.
 
 Before a VM dispatches a GoFunc, its re-entry context SHALL carry the absolute
 deadline already resolved for that VM run. An earlier non-zero deadline from an
@@ -373,7 +393,17 @@ its whole reachable structure alive.
 #### Scenario: Builtin checkpoint observes the Engine deadline
 
 - **WHEN** scalable Builtin work runs after the Engine-owned Evaluation deadline expires while the caller context remains live
-- **THEN** the next bounded budget synchronization SHALL return `context.DeadlineExceeded`
+- **THEN** budget synchronization SHALL return `context.DeadlineExceeded` within the documented number of synchronizations of the expiry
+
+#### Scenario: Short Builtins do not read the clock once per call
+
+- **WHEN** an evaluation with an armed deadline calls many short Builtins, each constructing its own work budget and flushing a small remainder on return
+- **THEN** the wall-clock reads SHALL be bounded by the documented fraction of synchronizations rather than reaching one per Builtin call
+
+#### Scenario: A newly installed deadline is read at the next synchronization
+
+- **WHEN** an Evaluation deadline is installed and a Builtin then synchronizes its budget
+- **THEN** that synchronization SHALL read the clock rather than continue a cadence position established before the deadline existed
 
 #### Scenario: VM time before a Builtin remains consumed
 

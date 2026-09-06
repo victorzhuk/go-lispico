@@ -1,7 +1,9 @@
 # repl-cli Specification
 
 ## Purpose
-TBD - created by archiving change repl-binary. Update Purpose after archive.
+Provide a command-line interface for interactive evaluation, persistent history,
+dialect and evaluator selection, and ordered execution of source files.
+
 ## Requirements
 ### Requirement: Interactive REPL binary
 

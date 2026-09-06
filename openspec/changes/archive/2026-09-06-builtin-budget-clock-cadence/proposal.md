@@ -58,6 +58,11 @@ publish nothing for the next release to gate against.
 - Make installing a deadline reset the cadence, so the first synchronization
   after arming reads the clock rather than inheriting a position from an earlier
   evaluation.
+- Preserve terminal-error precedence when a Builtin settles a pending ordinary
+  error: force a deadline check at that boundary, including an empty remainder.
+  Successful returns retain the ordinary synchronization cadence.
+- Avoid allocation during standard terminal-error classification while preserving
+  custom error hooks and traversal order.
 
 ## Impact
 
@@ -66,6 +71,9 @@ publish nothing for the next release to gate against.
   `core/eval.go` (`evalState` cadence field, and the two sites that install a
   deadline), plus a clock seam in package `core` for the tests — `nowFunc` exists
   only in `core/vm` today.
+- Error-settlement consumers in `internal/collections`, `cl`, and
+  `plugins/stdlib`, plus the existing metering ADR and release notes.
+- `core/error.go` and classifier/settlement contract tests.
 - Not in scope: `core/eval.go:316` already sits behind a 128-node budget, and
   `core/value_walk_context.go:39` carries no measured cost. Neither is touched.
 - Release: `v0.13.0` is held untagged until the gate passes, so that the release

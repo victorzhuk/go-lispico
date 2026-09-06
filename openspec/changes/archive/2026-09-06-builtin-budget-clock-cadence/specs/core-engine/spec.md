@@ -44,12 +44,21 @@ separate uninterrupted copying, traversal, and result-construction phases SHALL
 retain their own ownership.
 
 The Go API SHALL expose `NewBuiltinWorkBudget(context.Context)`,
-`(*BuiltinWorkBudget).Step() error`, and `(*BuiltinWorkBudget).Flush() error`.
+`(*BuiltinWorkBudget).Step() error`, `(*BuiltinWorkBudget).Flush() error`, and
+`(*BuiltinWorkBudget).Finish(error) error`.
 A budget SHALL be confined to one GoFunc call and goroutine, SHALL latch and
 replay its first synchronization error, and SHALL make an empty successful flush
 idempotent. If a pending non-Terminal error and a Terminal flush error coexist,
 the Terminal error SHALL win; otherwise the original validation/callback error
 SHALL be preserved.
+
+Settling a pending non-Terminal error through `Finish` SHALL check the armed
+Evaluation deadline and caller cancellation even between scheduled clock reads
+or when no local work remains pending. A reduction-limit failure SHALL retain
+precedence over that check. Settling a nil error SHALL retain ordinary `Flush`
+behavior; an existing Terminal input error SHALL retain its identity. Consumers
+SHALL settle pending validation/callback errors through this operation before
+returning them. Forced error settlement SHALL NOT charge local work twice.
 
 Before a VM dispatches a GoFunc, its re-entry context SHALL carry the absolute
 deadline already resolved for that VM run. An earlier non-zero deadline from an

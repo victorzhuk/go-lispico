@@ -1,7 +1,8 @@
 # dialect Specification
 
 ## Purpose
-TBD - created by archiving change dialect-per-engine-dispatch. Update Purpose after archive.
+Define per-engine Lisp dialect selection, reader syntax, symbol namespaces and
+builtin vocabulary while preserving shared evaluation semantics and isolation.
 
 ## Requirements
 
