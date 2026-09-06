@@ -415,3 +415,339 @@ func Read1(t *testing.T, src string) Value {
 	}
 	return forms[0]
 }
+
+func TestBuiltinWorkBudget_FinishForcesDeadlineAfterError(t *testing.T) {
+	for phase := 1; phase < 8; phase++ {
+		for _, units := range []int{0, 3} {
+			for _, after := range []time.Duration{0, time.Nanosecond} {
+				t.Run(fmt.Sprintf("phase=%d/pending=%d/after=%s", phase, units, after), func(t *testing.T) {
+					base := time.Now()
+					deadline := base.Add(time.Hour)
+					now := base
+					var calls int
+					restore := nowFunc
+					nowFunc = func() time.Time {
+						calls++
+						return now
+					}
+					t.Cleanup(func() { nowFunc = restore })
+
+					ctx := WithEvalDeadline(budgetCtx(t.Context(), 1_000_000), deadline)
+					for range phase {
+						b := NewBuiltinWorkBudget(ctx)
+						stepN(t, b, 1)
+						if err := b.Flush(); err != nil {
+							t.Fatalf("sync before expiry: %v", err)
+						}
+					}
+
+					b := NewBuiltinWorkBudget(ctx)
+					stepN(t, b, units)
+					now = deadline.Add(after)
+					before := calls
+					if err := b.Finish(errors.New("operation failed")); err != context.DeadlineExceeded {
+						t.Errorf("Finish after expiry: want bare context.DeadlineExceeded, got %v", err)
+					}
+					if got := calls - before; got != 1 {
+						t.Errorf("Finish after expiry: want 1 clock read, got %d", got)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestBuiltinWorkBudget_FinishPreservesSuccessfulCadence(t *testing.T) {
+	for _, n := range []int{1, 8, 9, 16, 17, 37} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			base := time.Now()
+			now := base
+			var calls int
+			restore := nowFunc
+			nowFunc = func() time.Time {
+				calls++
+				return now
+			}
+			t.Cleanup(func() { nowFunc = restore })
+
+			parent, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			deadline := base.Add(time.Hour)
+			ctx := WithEvalDeadline(budgetCtx(parent, 1_000_000), deadline)
+			for range n {
+				b := NewBuiltinWorkBudget(ctx)
+				stepN(t, b, 1)
+				if err := b.Finish(nil); err != nil {
+					t.Fatalf("Finish(nil): %v", err)
+				}
+				if err := b.Finish(nil); err != nil {
+					t.Fatalf("empty Finish(nil): %v", err)
+				}
+			}
+			if want := (n + 7) / 8; calls != want {
+				t.Errorf("%d synchronizations: want %d clock reads, got %d", n, want, calls)
+			}
+
+			now = deadline
+			cancel()
+			before := calls
+			if err := NewBuiltinWorkBudget(ctx).Finish(nil); err != nil {
+				t.Errorf("empty Finish(nil) after expiry and cancellation: want nil, got %v", err)
+			}
+			if calls != before {
+				t.Errorf("empty Finish(nil): want no clock read, got %d", calls-before)
+			}
+		})
+	}
+}
+
+func TestBuiltinWorkBudget_FinishPreservesErrorPrecedence(t *testing.T) {
+	ordinary := errors.New("operation failed")
+	wrappedCancel := fmt.Errorf("callback: %w", context.Canceled)
+	wrappedDeadline := fmt.Errorf("callback: %w", context.DeadlineExceeded)
+	resource := NewResourceLimitError("callback reduction limit")
+	for _, tc := range []struct {
+		name     string
+		input    error
+		armed    bool
+		expired  bool
+		canceled bool
+		cross    bool
+		units    int
+		want     error
+		reads    int
+	}{
+		{name: "nil", units: 3},
+		{name: "ordinary-no-deadline", input: ordinary, units: 3, want: ordinary},
+		{name: "ordinary-live-deadline", input: ordinary, armed: true, units: 3, want: ordinary, reads: 1},
+		{name: "nil-keeps-cadence", armed: true, expired: true, units: 3},
+		{name: "nil-observes-cancellation", armed: true, expired: true, canceled: true, units: 3, want: context.Canceled},
+		{name: "empty-cancellation", input: ordinary, canceled: true, want: context.Canceled},
+		{name: "pending-cancellation", input: ordinary, canceled: true, units: 3, want: context.Canceled},
+		{name: "deadline-before-cancellation", input: ordinary, armed: true, expired: true, canceled: true, units: 3, want: context.DeadlineExceeded, reads: 1},
+		{name: "reductions-before-deadline", input: ordinary, armed: true, expired: true, canceled: true, cross: true, units: 3},
+		{name: "terminal-before-reductions", input: wrappedCancel, armed: true, expired: true, canceled: true, cross: true, units: 3, want: wrappedCancel},
+		{name: "terminal-keeps-cadence", input: wrappedDeadline, armed: true, units: 3, want: wrappedDeadline},
+		{name: "empty-terminal", input: resource, armed: true, expired: true, want: resource},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := time.Now()
+			deadline := base.Add(time.Hour)
+			now := base
+			var calls int
+			restore := nowFunc
+			nowFunc = func() time.Time {
+				calls++
+				return now
+			}
+			t.Cleanup(func() { nowFunc = restore })
+
+			parent, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			limit := int64(1_000_000)
+			if tc.cross {
+				limit = 1
+			}
+			ctx := budgetCtx(parent, limit)
+			if tc.armed {
+				ctx = WithEvalDeadline(ctx, deadline)
+				b := NewBuiltinWorkBudget(ctx)
+				stepN(t, b, 1)
+				if err := b.Flush(); err != nil {
+					t.Fatalf("prime cadence: %v", err)
+				}
+			}
+			if tc.expired {
+				now = deadline
+			}
+			if tc.canceled {
+				cancel()
+			}
+
+			b := NewBuiltinWorkBudget(ctx)
+			stepN(t, b, tc.units)
+			before := calls
+			got := b.Finish(tc.input)
+			if tc.cross && tc.want == nil {
+				if !IsTerminalEvalError(got) || errCode(t, got) != CodeResourceLimit {
+					t.Errorf("Finish: want terminal %s, got %v", CodeResourceLimit, got)
+				}
+			} else if got != tc.want {
+				t.Errorf("Finish: want original %v, got %v", tc.want, got)
+			}
+			if got := calls - before; got != tc.reads {
+				t.Errorf("Finish: want %d clock reads, got %d", tc.reads, got)
+			}
+			if tc.cross {
+				latched := b.Flush()
+				if !IsTerminalEvalError(latched) || errCode(t, latched) != CodeResourceLimit {
+					t.Fatalf("Flush after Finish: want latched %s, got %v", CodeResourceLimit, latched)
+				}
+				if err := b.Step(); err != latched {
+					t.Errorf("Step after Finish: want identical latched error, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestBuiltinWorkBudget_FinishChargesPendingOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input error
+	}{
+		{name: "nil"},
+		{name: "ordinary", input: errors.New("operation failed")},
+		{name: "terminal", input: fmt.Errorf("callback: %w", context.Canceled)},
+	} {
+		for _, units := range []int{0, 3, 128, 131} {
+			t.Run(fmt.Sprintf("%s/units=%d", tc.name, units), func(t *testing.T) {
+				ctx := budgetCtx(t.Context(), 1_000_000)
+				b := NewBuiltinWorkBudget(ctx)
+				before := EvalMeterFrom(ctx).Snapshot()
+				stepN(t, b, units)
+				for attempt := 1; attempt <= 2; attempt++ {
+					if err := b.Finish(tc.input); err != tc.input {
+						t.Errorf("Finish attempt %d: want original %v, got %v", attempt, tc.input, err)
+					}
+					after := EvalMeterFrom(ctx).Snapshot()
+					if got := after.Reductions - before.Reductions; got != int64(units) {
+						t.Errorf("Finish attempt %d: want %d reductions, got %d", attempt, units, got)
+					}
+					if after.AllocationBytes != before.AllocationBytes {
+						t.Errorf("Finish attempt %d: allocation charge changed by %d", attempt, after.AllocationBytes-before.AllocationBytes)
+					}
+				}
+
+				stepN(t, b, 1)
+				if err := b.Flush(); err != nil {
+					t.Fatalf("Flush after supplied operation error: %v", err)
+				}
+				if got := EvalMeterFrom(ctx).Snapshot().Reductions - before.Reductions; got != int64(units+1) {
+					t.Errorf("continued work: want %d reductions, got %d", units+1, got)
+				}
+			})
+		}
+	}
+}
+
+func TestBuiltinWorkBudget_FinishReplaysLatchedError(t *testing.T) {
+	for _, kind := range []string{"reductions", "deadline", "cancellation"} {
+		t.Run(kind, func(t *testing.T) {
+			base := time.Now()
+			var calls int
+			restore := nowFunc
+			nowFunc = func() time.Time {
+				calls++
+				return base
+			}
+			t.Cleanup(func() { nowFunc = restore })
+
+			parent, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			limit := int64(1_000_000)
+			deadline := base.Add(time.Hour)
+			switch kind {
+			case "reductions":
+				limit = 1
+			case "deadline":
+				deadline = base
+			case "cancellation":
+				cancel()
+			}
+			ctx := WithEvalDeadline(budgetCtx(parent, limit), deadline)
+			b := NewBuiltinWorkBudget(ctx)
+			stepN(t, b, 2)
+			first := b.Flush()
+			switch kind {
+			case "reductions":
+				if !IsTerminalEvalError(first) || errCode(t, first) != CodeResourceLimit {
+					t.Fatalf("first Flush: want terminal %s, got %v", CodeResourceLimit, first)
+				}
+			case "deadline":
+				if first != context.DeadlineExceeded {
+					t.Fatalf("first Flush: want context.DeadlineExceeded, got %v", first)
+				}
+			case "cancellation":
+				if first != context.Canceled {
+					t.Fatalf("first Flush: want context.Canceled, got %v", first)
+				}
+			}
+			before := EvalMeterFrom(ctx).Snapshot()
+			reads := calls
+			for _, action := range []struct {
+				name string
+				run  func() error
+			}{
+				{name: "Step", run: b.Step},
+				{name: "Flush", run: b.Flush},
+				{name: "Finish(nil)", run: func() error { return b.Finish(nil) }},
+				{name: "Finish(error)", run: func() error { return b.Finish(errors.New("operation failed")) }},
+			} {
+				if err := action.run(); err != first {
+					t.Errorf("%s: want identical latched error, got %v", action.name, err)
+				}
+			}
+			terminal := fmt.Errorf("callback: %w", context.DeadlineExceeded)
+			if err := b.Finish(terminal); err != terminal {
+				t.Errorf("Finish(terminal): want original terminal error, got %v", err)
+			}
+			if err := b.Flush(); err != first {
+				t.Errorf("Flush after terminal input: want original latch, got %v", err)
+			}
+			after := EvalMeterFrom(ctx).Snapshot()
+			if after.Reductions != before.Reductions || after.AllocationBytes != before.AllocationBytes {
+				t.Errorf("latched settlement changed accounting: reductions %d -> %d, bytes %d -> %d", before.Reductions, after.Reductions, before.AllocationBytes, after.AllocationBytes)
+			}
+			if calls != reads {
+				t.Errorf("latched settlement: want no clock reads, got %d", calls-reads)
+			}
+		})
+	}
+}
+
+func TestBuiltinWorkBudget_FinishResetsDeadlineCadence(t *testing.T) {
+	base := time.Now()
+	var calls int
+	restore := nowFunc
+	nowFunc = func() time.Time {
+		calls++
+		return base
+	}
+	t.Cleanup(func() { nowFunc = restore })
+
+	ctx := WithEvalDeadline(budgetCtx(t.Context(), 1_000_000), base.Add(time.Hour))
+	for range 3 {
+		b := NewBuiltinWorkBudget(ctx)
+		stepN(t, b, 1)
+		if err := b.Flush(); err != nil {
+			t.Fatalf("prime cadence: %v", err)
+		}
+	}
+	b := NewBuiltinWorkBudget(ctx)
+	stepN(t, b, 1)
+	before := calls
+	ordinary := errors.New("operation failed")
+	if err := b.Finish(ordinary); err != ordinary {
+		t.Fatalf("Finish before expiry: want original error, got %v", err)
+	}
+	if got := calls - before; got != 1 {
+		t.Fatalf("Finish before expiry: want 1 clock read, got %d", got)
+	}
+
+	before = calls
+	for sync := 1; sync <= 8; sync++ {
+		b = NewBuiltinWorkBudget(ctx)
+		stepN(t, b, 1)
+		if err := b.Flush(); err != nil {
+			t.Fatalf("sync %d after Finish: %v", sync, err)
+		}
+		want := 0
+		if sync == 8 {
+			want = 1
+		}
+		if got := calls - before; got != want {
+			t.Errorf("sync %d after Finish: want %d clock reads, got %d", sync, want, got)
+		}
+	}
+}
