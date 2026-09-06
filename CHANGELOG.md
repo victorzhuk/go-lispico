@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A release measured against a baseline from a different runner is gated
+  on allocation counts rather than allocated bytes.
+
 ## [0.13.0] - 2026-09-05
 
 ### Changed
