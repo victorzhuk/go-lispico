@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- A release measured against a baseline from a different runner is gated
-  on allocation counts rather than allocated bytes.
-
 ## [0.13.0] - 2026-09-05
 
 ### Changed
@@ -52,11 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than as a bare activation, matching how the `v0.11.0` failure above
   was recorded.
 
-- The release gate now reports a cell's latency verdict as inconclusive
-  whenever the stored baseline and the candidate benchmark were measured on
-  different runners, instead of comparing latency figures across them.
-  Allocation counts and allocated bytes are still enforced regardless of
-  runner identity. A release whose stored baseline came from a different
+- The release gate now reports a cell's latency and allocated-bytes verdicts
+  as inconclusive whenever the stored baseline and the candidate benchmark
+  were measured on different runners, instead of comparing those figures
+  across them. Allocation counts are exact per-operation integers, so they
+  stay enforced regardless of runner identity, and a release measured against
+  a baseline from a different runner is gated on them rather than on
+  allocated bytes. A release whose stored baseline came from a different
   runner now finishes in one benchmark run: the gate no longer spends a
   second run at doubled benchtime on cells it cannot decide, since a rerun
   regenerates only the candidate and cannot change which machine the
