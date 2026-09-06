@@ -222,20 +222,18 @@ func evaluateEngineSensitiveImprovement(cell CellComparison) Result {
 // delta cannot hide a real allocation regression behind an INCONCLUSIVE that
 // Resolve later collapses to PASS.
 func evaluateNonRegression(cell CellComparison, tolerancePct float64) Result {
-	if r := nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp); r.Verdict != VerdictPass {
-		return r
-	}
-	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
-		return r
+	exact := exactAxes(cell)
+	if exact.Verdict == VerdictFail {
+		return exact
 	}
 	if !cell.Latency.Significant {
-		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
+		return Result{Verdict: VerdictInconclusive, Reason: joinReasons(exact.Reason, "latency delta not statistically significant")}
 	}
 	if cell.Latency.DeltaPct > tolerancePct {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
 			"latency regressed %.2f%%, exceeding the %.0f%% tolerance", cell.Latency.DeltaPct, tolerancePct)}
 	}
-	return Result{Verdict: VerdictPass}
+	return exact
 }
 
 // evaluateWithinTolerance fails a cell whose latency moved past tolerancePct in
@@ -243,20 +241,18 @@ func evaluateNonRegression(cell CellComparison, tolerancePct float64) Result {
 // cost, so any movement is a finding. Bytes and allocs are checked before the
 // significance gate for the same reason as evaluateNonRegression.
 func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
-	if r := nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp); r.Verdict != VerdictPass {
-		return r
-	}
-	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
-		return r
+	exact := exactAxes(cell)
+	if exact.Verdict == VerdictFail {
+		return exact
 	}
 	if !cell.Latency.Significant {
-		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
+		return Result{Verdict: VerdictInconclusive, Reason: joinReasons(exact.Reason, "latency delta not statistically significant")}
 	}
 	if math.Abs(cell.Latency.DeltaPct) > tolerancePct {
 		return Result{Verdict: VerdictFail, Reason: fmt.Sprintf(
 			"latency delta %.2f%% exceeds %.0f%% tolerance", cell.Latency.DeltaPct, tolerancePct)}
 	}
-	return Result{Verdict: VerdictPass}
+	return exact
 }
 
 // evaluateStartup applies ADR 0008's startup/Rule-load rule: the absolute
@@ -266,15 +262,17 @@ func evaluateWithinTolerance(cell CellComparison, tolerancePct float64) Result {
 // count stay non-increasing here exactly as they do for every other tier,
 // checked before the significance gate and before the tolerance/absolute-
 // overhead block, regardless of which latency path that block takes.
+//
+// The 256 KiB half of the absolute bound survives an undecided bytes axis: it
+// reads the candidate's own B/op figure, not a difference between two runs, so
+// a runner change gives the gate no reason to stop bounding it.
 func evaluateStartup(cell CellComparison, mode Mode) Result {
-	if r := nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp); r.Verdict != VerdictPass {
-		return r
-	}
-	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
-		return r
+	exact := exactAxes(cell)
+	if exact.Verdict == VerdictFail {
+		return exact
 	}
 	if !cell.Latency.Significant {
-		return Result{Verdict: VerdictInconclusive, Reason: "latency delta not statistically significant"}
+		return Result{Verdict: VerdictInconclusive, Reason: joinReasons(exact.Reason, "latency delta not statistically significant")}
 	}
 	withinTolerance := math.Abs(cell.Latency.DeltaPct) <= nonRegressionTolerancePct
 	if mode == ModeNonRegression {
@@ -289,7 +287,48 @@ func evaluateStartup(cell CellComparison, mode Mode) Result {
 			cell.Latency.New*1000, cell.Bytes.New,
 			startupMaxLatency, startupMaxBytes/1024)}
 	}
-	return Result{Verdict: VerdictPass}
+	return exact
+}
+
+// exactAxes evaluates the two exact-count axes together and reports the one
+// that decides the cell. A bytes failure still outranks an allocs failure, as
+// it did when the two were consecutive early returns. A bytes axis left
+// undecided by a runner change does not decide anything, so it is carried
+// past the allocs check — an allocation count is exact on any runner and must
+// keep failing the cell — and past the caller's latency checks, which may
+// still fail it. Only where nothing else decides does the undecided axis
+// surface, as INCONCLUSIVE: it may not collapse into a pass.
+func exactAxes(cell CellComparison) Result {
+	bytes := bytesResult(cell)
+	if bytes.Verdict == VerdictFail {
+		return bytes
+	}
+	if r := nonIncreasing(cell.Allocs, "allocs", 0); r.Verdict != VerdictPass {
+		return r
+	}
+	return bytes
+}
+
+// bytesResult applies the bytes bound only to runs whose B/op figures are
+// comparable. Where the caller states they are not, the delta is an artifact
+// of the runner change and carries no evidence either way.
+func bytesResult(cell CellComparison) Result {
+	if cell.BytesNotComparable != "" {
+		return Result{Verdict: VerdictInconclusive, Reason: "bytes not comparable: " + cell.BytesNotComparable}
+	}
+	return nonIncreasing(cell.Bytes, "bytes", cell.BytesAllowanceBOp)
+}
+
+// joinReasons reports both undecided axes rather than only the last one to be
+// checked, so a rerun decision is made on the whole picture.
+func joinReasons(first, second string) string {
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	return first + "; " + second
 }
 
 // nonIncreasing enforces ADR 0008's "allocation count non-increasing" and
