@@ -265,6 +265,7 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 				deadline = c.resolveDeadline(c.Context, time.Duration(c.timeout.Load()))
 			}
 		}
+		// The fresh state's zero countdown makes the next sync read the clock.
 		st.deadline = deadline
 		st.shared = &c.counter
 		st.sharedCallDepth = &c.callCounter
@@ -406,7 +407,9 @@ func EvalCallCounter(ctx context.Context) *atomic.Int64 {
 // leaves the caller's context as the only bound.
 func WithEvalDeadline(ctx context.Context, deadline time.Time) context.Context {
 	ctx = ensureEvalState(ctx)
-	evalStateFrom(ctx).deadline = deadline
+	st := evalStateFrom(ctx)
+	st.deadline = deadline
+	st.deadlineClockPolls.Store(0)
 	return ctx
 }
 
