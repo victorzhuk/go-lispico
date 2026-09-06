@@ -42,7 +42,7 @@ func TestBuiltinWorkBudget_ShortCallsShareClockCadence(t *testing.T) {
 	}
 }
 
-func TestBuiltinWorkBudget_DeadlineCrossingBoundedSyncsAfterExpiry(t *testing.T) {
+func TestBuiltinWorkBudget_DeadlineCrossingBoundedBySynchronizations(t *testing.T) {
 	for _, units := range []int{1, 128} {
 		t.Run(fmt.Sprintf("units=%d", units), func(t *testing.T) {
 			base := time.Now()
@@ -80,7 +80,7 @@ func TestBuiltinWorkBudget_DeadlineCrossingBoundedSyncsAfterExpiry(t *testing.T)
 	}
 }
 
-func TestBuiltinWorkBudget_CallerCancellationEverySync(t *testing.T) {
+func TestBuiltinWorkBudget_CancellationUnconditionalMidCadence(t *testing.T) {
 	base := time.Now()
 	restore := nowFunc
 	nowFunc = func() time.Time { return base }
@@ -109,7 +109,7 @@ func TestBuiltinWorkBudget_CallerCancellationEverySync(t *testing.T) {
 	}
 }
 
-func TestBuiltinWorkBudget_ReductionsChargedEverySync(t *testing.T) {
+func TestBuiltinWorkBudget_ReductionChargeUnconditionalMidCadence(t *testing.T) {
 	base := time.Now()
 	restore := nowFunc
 	nowFunc = func() time.Time { return base }
