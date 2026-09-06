@@ -751,3 +751,135 @@ func TestBuiltinWorkBudget_FinishResetsDeadlineCadence(t *testing.T) {
 		}
 	}
 }
+
+func TestBuiltinWorkBudget_FinishStandardErrorsAllocateZero(t *testing.T) {
+	for _, tc := range standardTerminalErrors() {
+		for _, state := range []string{"empty", "pending", "latched"} {
+			t.Run(tc.name+"/"+state, func(t *testing.T) {
+				parent, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				ctx := budgetCtx(parent, 1_000_000)
+				budget := NewBuiltinWorkBudget(ctx)
+				want := tc.err
+				units := 0
+				if state == "pending" {
+					units = 3
+				}
+				if state == "latched" {
+					cancel()
+					stepN(t, budget, 1)
+					if err := budget.Flush(); err != context.Canceled {
+						t.Fatalf("prime latch: want context.Canceled, got %v", err)
+					}
+					if !tc.want {
+						want = context.Canceled
+					}
+				}
+				before := EvalMeterFrom(ctx).Snapshot()
+				var got, stepErr error
+				allocs := testing.AllocsPerRun(1000, func() {
+					for range units {
+						if err := budget.Step(); err != nil {
+							stepErr = err
+							return
+						}
+					}
+					got = budget.Finish(tc.err)
+				})
+				if stepErr != nil {
+					t.Errorf("Step: %v", stepErr)
+				}
+				if got != want {
+					t.Errorf("Finish: want original %v, got %v", want, got)
+				}
+				if allocs != 0 {
+					t.Errorf("Finish allocs = %v, want 0", allocs)
+				}
+				after := EvalMeterFrom(ctx).Snapshot()
+				if got := after.Reductions - before.Reductions; got != int64(1001*units) {
+					t.Errorf("reductions = %d, want %d", got, 1001*units)
+				}
+				if after.AllocationBytes != before.AllocationBytes {
+					t.Error("Finish changed allocation accounting")
+				}
+			})
+		}
+	}
+}
+
+func TestBuiltinWorkBudget_FinishCustomErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		makeErr  func() error
+		terminal bool
+	}{
+		{name: "as-resource", terminal: true, makeErr: func() error {
+			resource := NewResourceLimitError("limit")
+			return &terminalErrorHook{as: func(target any) bool {
+				*target.(**LispicoError) = resource
+				return true
+			}}
+		}},
+		{name: "as-ordinary", makeErr: func() error {
+			ordinary := NewTypeError("number", Nil{})
+			return &terminalErrorHook{as: func(target any) bool {
+				*target.(**LispicoError) = ordinary
+				return true
+			}}
+		}},
+		{name: "as-false-resource-descendant", terminal: true, makeErr: func() error {
+			resource := NewResourceLimitError("limit")
+			return &terminalErrorHook{as: func(any) bool { return false }, unwrap: func() error { return resource }}
+		}},
+		{name: "is-canceled", terminal: true, makeErr: func() error {
+			return &terminalErrorHook{is: func(target error) bool { return target == context.Canceled }}
+		}},
+		{name: "first-typed-ordinary", makeErr: func() error {
+			return errors.Join(NewTypeError("number", Nil{}), NewResourceLimitError("limit"))
+		}},
+	} {
+		for _, units := range []int{0, 3} {
+			t.Run(fmt.Sprintf("%s/pending=%d", tc.name, units), func(t *testing.T) {
+				base := time.Now()
+				deadline := base.Add(time.Hour)
+				now := base
+				calls := 0
+				restore := nowFunc
+				nowFunc = func() time.Time {
+					calls++
+					return now
+				}
+				t.Cleanup(func() { nowFunc = restore })
+				ctx := WithEvalDeadline(budgetCtx(t.Context(), 1_000_000), deadline)
+				for range 3 {
+					budget := NewBuiltinWorkBudget(ctx)
+					stepN(t, budget, 1)
+					if err := budget.Flush(); err != nil {
+						t.Fatalf("prime cadence: %v", err)
+					}
+				}
+				budget := NewBuiltinWorkBudget(ctx)
+				stepN(t, budget, units)
+				input := tc.makeErr()
+				now = deadline
+				before := calls
+				got := budget.Finish(input)
+				want := error(context.DeadlineExceeded)
+				reads := 1
+				if tc.terminal {
+					want = input
+					reads = 0
+				}
+				if got != want {
+					t.Errorf("Finish: want original %v, got %v", want, got)
+				}
+				if got := calls - before; got != reads {
+					t.Errorf("Finish clock reads = %d, want %d", got, reads)
+				}
+				if got := EvalMeterFrom(ctx).Snapshot().Reductions; got != int64(3+units) {
+					t.Errorf("reductions = %d, want %d", got, 3+units)
+				}
+			})
+		}
+	}
+}
