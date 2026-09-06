@@ -113,7 +113,6 @@ func TestStdlibLazyBootstrap_UsesInstalledOwner(t *testing.T) {
 	}
 }
 
-
 // TestStdlibLazyBootstrap_UsesInstalledOwnerCellFirstTouch pins the cell a
 // first touch publishes for a deferred bootstrap name under each owner axis:
 // the evaluator's lisp2 axis solely owns publication — Lisp-1 publishes the
@@ -123,9 +122,9 @@ func TestStdlibLazyBootstrap_UsesInstalledOwnerCellFirstTouch(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		axis   string
-		d      core.Dialect
-		funcNS bool
+		axis        string
+		d           core.Dialect
+		funcNS      bool
 		lookupFound bool
 	}{
 		{axis: "lisp1", d: clojure.Dialect(), funcNS: false, lookupFound: true},
