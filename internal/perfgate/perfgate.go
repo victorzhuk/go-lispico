@@ -95,6 +95,13 @@ type CellComparison struct {
 	// itself. Zero value means no allowance, i.e. the exact non-increasing
 	// bound. Only nonIncreasing reads it.
 	BytesAllowanceBOp float64
+
+	// BytesNotComparable, when non-empty, states why the two runs' B/op
+	// figures cannot be compared — the runner identities differ — and the
+	// bytes axis is then inconclusive rather than enforced. Zero value is
+	// the empty string so an unset field keeps the bytes bound enforced
+	// rather than silently excusing a regression.
+	BytesNotComparable string
 }
 
 const (
