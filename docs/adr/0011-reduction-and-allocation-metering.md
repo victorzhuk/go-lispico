@@ -14,7 +14,7 @@ Reductions are evaluator-local work units, not wall-clock time and not cross-eva
 - Macro expansion: one reduction per expansion step.
 - Bytecode VM: one reduction per decoded instruction, plus one per `GoFunc` dispatch.
 - Compiler: one reduction per emitted instruction.
-- Builtin Go function (`GoFunc`): logical work accrues locally via `core.NewBuiltinWorkBudget(ctx)`, with `Step()` recording one unit and synchronizing with the shared eval state (reductions, engine deadline, caller cancellation) every 128 units. Max unobserved work is 127 units; the first sync error is latched and replayed by every subsequent `Step`/`Flush` call.
+- Builtin Go function (`GoFunc`): logical work accrues locally via `core.NewBuiltinWorkBudget(ctx)`, with `Step()` recording one unit and synchronizing reductions and caller cancellation with the shared eval state every 128 pending units. At most 127 units remain unsynchronized; the remainder flushes before return. Engine deadline clock reads occur every eight synchronizations per evaluation, bounding observation to 1,024 local units plus any single opaque phase's execution time. Deadline installation and freshly materialized eval state make the next synchronization read the clock. The first sync error is latched and replayed by every subsequent `Step`/`Flush` call.
 
 The hot loops do not increment a shared atomic on every step. Both evaluators already keep a 128-step cancellation budget, so metering piggybacks that countdown and flushes consumed work at the existing sync points. This keeps the context-observation bound comfortably inside the required 1,024-reduction window while avoiding a new per-step branch or atomic write.
 
