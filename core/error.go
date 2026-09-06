@@ -41,11 +41,41 @@ func IsTerminalEvalError(err error) bool {
 		return true
 	}
 
-	var lerr *LispicoError
-	if errors.As(err, &lerr) && lerr.Code == CodeResourceLimit {
-		return true
+	var target **LispicoError
+	lerr, ok := asLispicoError(err, &target)
+	return ok && lerr.Code == CodeResourceLimit
+}
+
+func asLispicoError(err error, target ***LispicoError) (*LispicoError, bool) {
+	for err != nil {
+		if lerr, ok := err.(*LispicoError); ok {
+			if *target != nil {
+				**target = lerr
+			}
+			return lerr, true
+		}
+		if _, ok := err.(interface{ As(any) bool }); ok {
+			if *target == nil {
+				*target = new(*LispicoError)
+			}
+			ok := errors.As(err, *target)
+			return **target, ok
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, child := range x.Unwrap() {
+				if lerr, ok := asLispicoError(child, target); ok {
+					return lerr, true
+				}
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
 	}
-	return false
+	return nil, false
 }
 
 // NewReadError builds a LispicoError for a tokenizer/parser failure at the
