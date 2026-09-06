@@ -28,7 +28,7 @@ func (b *BuiltinWorkBudget) Step() error {
 	if b.pending < int(checkInterval) {
 		return nil
 	}
-	return b.flushPending()
+	return b.flushPending(false)
 }
 
 // Flush synchronizes any pending remainder (exactly once) and returns the
@@ -40,19 +40,30 @@ func (b *BuiltinWorkBudget) Flush() error {
 	if b.pending == 0 {
 		return nil
 	}
-	return b.flushPending()
+	return b.flushPending(false)
 }
 
 // Finish settles pending work and preserves terminal error precedence.
+// A nonterminal error forces deadline and cancellation checks, even with no
+// pending work, unless a synchronization error is already latched.
 func (b *BuiltinWorkBudget) Finish(err error) error {
-	ferr := b.Flush()
-	if ferr != nil && (err == nil || (IsTerminalEvalError(ferr) && !IsTerminalEvalError(err))) {
+	if err == nil {
+		return b.Flush()
+	}
+	terminal := IsTerminalEvalError(err)
+	ferr := b.latched
+	if terminal {
+		ferr = b.Flush()
+	} else if ferr == nil {
+		ferr = b.flushPending(true)
+	}
+	if !terminal && IsTerminalEvalError(ferr) {
 		return ferr
 	}
 	return err
 }
 
-func (b *BuiltinWorkBudget) flushPending() error {
+func (b *BuiltinWorkBudget) flushPending(forceDeadline bool) error {
 	n := int64(b.pending)
 	b.pending = 0
 	if err := b.st.chargeReductions(n); err != nil {
@@ -60,7 +71,7 @@ func (b *BuiltinWorkBudget) flushPending() error {
 		return err
 	}
 	if !b.st.deadline.IsZero() {
-		if b.st.deadlineClockPolls.Load() <= 0 {
+		if forceDeadline || b.st.deadlineClockPolls.Load() <= 0 {
 			if !nowFunc().Before(b.st.deadline) {
 				b.latched = context.DeadlineExceeded
 				return b.latched
