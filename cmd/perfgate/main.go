@@ -152,10 +152,12 @@ func resolveMode(stdout, stderr io.Writer, args []string) int {
 // evidence.
 //
 // Latency is only comparable within one runner, so the two raw files' runner
-// identities are read first and benchstat runs only when they match. Bytes and
-// allocs are exact counts that a change of machine does not invalidate: they
-// come from the raw per-sample figures on both paths and stay enforced either
-// way, which is what makes an inconclusive cross-runner latency safe.
+// identities are read first and benchstat runs only when they match. Allocated
+// bytes move with the machine as well — a different allocator size class turns
+// the same allocation into a different B/op — so that axis is left undecided
+// on a cross-runner pair too. The allocation count is exact on any machine: it
+// comes from the raw per-sample figures on both paths and stays enforced
+// either way, which is what makes the two undecided axes safe.
 //
 // The needs-rerun signal is raised by cause, not by verdict: only an
 // inconclusive cell a rerun could actually change raises it. A runner mismatch
@@ -218,12 +220,18 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 	}
 	sort.Strings(names)
 
+	var bytesNotComparable string
+	if crossRunner {
+		bytesNotComparable = fmt.Sprintf("baseline ran on %s, candidate on %s", oldID, newID)
+	}
+
 	var report bytes.Buffer
 	needsRerun := false
 	anyFail := false
 	for _, name := range names {
 		cell := cells[name]
 		cell.RaceClean = raceClean
+		cell.BytesNotComparable = bytesNotComparable
 		ct, ok := tiers[perfgate.TrimProcsSuffix(name)]
 		if !ok {
 			fmt.Fprintf(&report, "%s: FAIL no committed tier for this cell\n", name)
@@ -244,9 +252,10 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 			fmt.Fprintf(&report, "%s: %s (no baseline figure for this cell)\n", name, perfgate.VerdictInconclusive)
 			continue
 		}
-		// Bytes and allocs are exact counts that survive a change of runner,
-		// so they come from the raw per-sample figures rather than from
-		// benchstat, which is not consulted at all on a cross-runner pair.
+		// The allocation count is an exact count that survives a change of
+		// runner, so both figures come from the raw per-sample data rather
+		// than from benchstat, which is not consulted at all on a cross-runner
+		// pair.
 		cell.Bytes, cell.Allocs = perfgate.CompareSamples(baseline, newMetrics[name])
 
 		res := perfgate.Evaluate(cell, ct.Tier, mode)
@@ -257,9 +266,11 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 				// A rerun cannot change which machine the stored baseline came
 				// from, so this collapses now instead of spending the gate's
 				// most expensive step to reach the same place. The report line
-				// stays inconclusive: the latency evidence is genuinely absent,
-				// only the rerun is futile.
-				res.Reason = fmt.Sprintf("latency not comparable: baseline ran on %s, candidate on %s", oldID, newID)
+				// stays inconclusive: the latency and bytes evidence is
+				// genuinely absent, only the rerun is futile. A cell the
+				// allocation count decided is a FAIL, never reaching this
+				// branch, so it keeps the reason that decided it.
+				res.Reason = fmt.Sprintf("latency and bytes not comparable: baseline ran on %s, candidate on %s", oldID, newID)
 				if perfgate.Resolve(ct.Tier, mode) == perfgate.VerdictFail {
 					anyFail = true
 				}
