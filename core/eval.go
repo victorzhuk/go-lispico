@@ -290,6 +290,8 @@ func (c *lazyEvalStateCtx) Value(key any) any {
 // checkInterval thereafter.
 const checkInterval int64 = 128
 
+var nowFunc = time.Now
+
 // pollCancel checks the engine deadline and ctx for cancellation. A batched
 // (force=false) check only runs once every checkInterval calls; a forced
 // check always runs, for latency-bounding call/loop boundaries.

@@ -1,9 +1,6 @@
 package core
 
-import (
-	"context"
-	"time"
-)
+import "context"
 
 // BuiltinWorkBudget batches local work units performed inside a GoFunc so the
 // shared eval state is touched only once every 128 units instead of per unit.
@@ -53,7 +50,7 @@ func (b *BuiltinWorkBudget) flushPending() error {
 		b.latched = err
 		return err
 	}
-	if !b.st.deadline.IsZero() && !time.Now().Before(b.st.deadline) {
+	if !b.st.deadline.IsZero() && !nowFunc().Before(b.st.deadline) {
 		b.latched = context.DeadlineExceeded
 		return b.latched
 	}
