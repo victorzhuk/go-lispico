@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -69,6 +70,47 @@ func swapBenchstat(t *testing.T, fn func(oldPath, newPath string) ([]byte, error
 	t.Cleanup(func() { runBenchstat = prev })
 }
 
+// TestSameRunner_BytesStillEnforced is the case the narrowing leaves alone.
+// Both runs came off the pinned profile's own runner, so their B/op figures
+// are comparable and the non-increasing bytes bound still decides every cell
+// that moved on it. Roles are reversed against the profile's own direction --
+// the Evaluator arm is the candidate -- so the bytes axis has a real
+// regression to fail on. The failing set is a stated partition, not the whole
+// corpus: guard-nil's bytes fall by one and the thirteen reader cells are
+// bit-identical, so fourteen cells stay clean.
+func TestSameRunner_BytesStillEnforced(t *testing.T) {
+	csvData, err := os.ReadFile(filepath.Join(pinnedProfileDir, "benchstat.csv"))
+	require.NoError(t, err)
+	swapBenchstat(t, func(_, _ string) ([]byte, error) { return csvData, nil })
+
+	var stdout, stderr bytes.Buffer
+	code := run(&stdout, &stderr, []string{
+		"-old", filepath.Join(pinnedProfileDir, "bench-vm.txt"),
+		"-candidate", filepath.Join(pinnedProfileDir, "bench-evaluator.txt"),
+		"-tiers", committedTiers,
+		"-mode", "non-regression",
+	})
+
+	names := candidateCells(t)
+	wantFail := append(withoutCell(cellsWithPrefix(t, names, "Goldset/", 13), "Goldset/guard-nil-2"), callBoundaryCell)
+	sort.Strings(wantFail)
+
+	lines := reportLines(t, stdout.String())
+	var gotFail []string
+	for _, name := range names {
+		line, ok := lines[name]
+		require.True(t, ok, "cell %q missing from the report:\n%s", name, stdout.String())
+		if line.verdict != "FAIL" {
+			continue
+		}
+		gotFail = append(gotFail, name)
+		assert.Contains(t, line.reason, "bytes increased", "%s must fail on the axis it was decided on", name)
+	}
+
+	assert.Equal(t, wantFail, gotFail, "the bytes bound decides exactly the cells whose B/op rose")
+	assert.Equal(t, 1, code, "a bytes regression between two runs of one runner fails the gate; stderr: %s", stderr.String())
+}
+
 const (
 	// crossRunnerBaselineDir is a real stored VM baseline from a different
 	// runner than pinnedProfileDir's -- the post-authorization shape the gate
@@ -79,12 +121,13 @@ const (
 	callBoundaryCell = "GoldsetCall/call-boundary-2"
 )
 
-// TestCrossRunner_LatencyInconclusiveBytesEnforced pairs two committed VM runs
-// from different runners. Latency across a hardware change is not evidence, so
-// every cell's latency verdict is inconclusive and names both runners; the
-// exact byte and allocation counts survive the change and stay enforced, which
-// the swapped-roles subtest proves by failing on them.
-func TestCrossRunner_LatencyInconclusiveBytesEnforced(t *testing.T) {
+// TestCrossRunner_AllocsEnforcedBytesInconclusive pairs two committed VM runs
+// from different runners. Neither latency nor allocated bytes is evidence
+// across a hardware change, so both axes are undecided and the report names
+// both runners. An allocation count is exact on any machine and stays
+// enforced, which the swapped-roles subtests prove by failing on that axis and
+// leaving the bytes axis undecided on the cells where nothing else moved.
+func TestCrossRunner_AllocsEnforcedBytesInconclusive(t *testing.T) {
 	amdRun := filepath.Join(pinnedProfileDir, "bench-vm.txt")
 	intelRun := filepath.Join(crossRunnerBaselineDir, "bench-vm.txt")
 	amd := identityOf(t, amdRun)
@@ -104,26 +147,61 @@ func TestCrossRunner_LatencyInconclusiveBytesEnforced(t *testing.T) {
 		assert.Equal(t, 0, code, "a rerun cannot change which machine the stored baseline came from, so a runner mismatch raises no needs-rerun signal and the release stays authorized on the comparable bytes and allocs axes; stderr: %s", stderr)
 	})
 
-	t.Run("bytes still enforced across differing runners", func(t *testing.T) {
-		// Roles swapped: the older run allocates more on every cell, so a gate
-		// that skipped the bytes axis when the identities differ would report
-		// the same all-inconclusive result as the subtest above.
-		code, stdout, stderr := runGate(t, "-old", amdRun, "-candidate", intelRun, "-mode", "non-regression")
+	// Roles swapped for both subtests below: the candidate is the Intel run,
+	// which reads higher B/op on every cell and one more allocation on each
+	// Goldset/ cell. The two axes part company there -- the reader cells move
+	// on bytes alone.
+	t.Run("bytes inconclusive across differing runners", func(t *testing.T) {
+		_, stdout, stderr := runGate(t, "-old", amdRun, "-candidate", intelRun, "-mode", "non-regression")
 
-		names := withoutCell(candidateCells(t), callBoundaryCell)
-		assert.Equal(t, uniformVerdicts(names, "FAIL"), verdictsFor(t, stdout, names),
-			"a bytes regression stays a failure when the two runners differ")
+		parseCells := cellsWithPrefix(t, candidateCells(t), "GoldsetParse/", 13)
+		assert.Equal(t, uniformVerdicts(parseCells, "INCONCLUSIVE"), verdictsFor(t, stdout, parseCells),
+			"a B/op difference between two machines is an artifact of the machine, not evidence about the change; stderr: %s", stderr)
 
+		wantReason := fmt.Sprintf("latency and bytes not comparable: baseline ran on %s, candidate on %s", amd, intel)
 		lines := reportLines(t, stdout)
 		var unexplained []string
-		for _, name := range names {
-			if !strings.Contains(lines[name].reason, "bytes increased") {
+		for _, name := range parseCells {
+			if lines[name].reason != wantReason {
 				unexplained = append(unexplained, name+": "+lines[name].reason)
 			}
 		}
-		assert.Empty(t, unexplained, "every cross-runner failure must name the bytes axis it was decided on")
-		assert.Equal(t, 1, code, "a bytes regression must fail the gate even when latency is inconclusive; stderr: %s", stderr)
+		assert.Empty(t, unexplained, "an undecided cell must name the bytes axis alongside latency, and both runners")
 	})
+
+	t.Run("allocation counts still enforced across differing runners", func(t *testing.T) {
+		code, stdout, stderr := runGate(t, "-old", amdRun, "-candidate", intelRun, "-mode", "non-regression")
+
+		goldsetCells := cellsWithPrefix(t, candidateCells(t), "Goldset/", 13)
+		assert.Equal(t, uniformVerdicts(goldsetCells, "FAIL"), verdictsFor(t, stdout, goldsetCells),
+			"an allocation count is exact on any runner, so it still decides the cell")
+
+		lines := reportLines(t, stdout)
+		var unexplained []string
+		for _, name := range goldsetCells {
+			if !strings.Contains(lines[name].reason, "allocs increased") {
+				unexplained = append(unexplained, name+": "+lines[name].reason)
+			}
+		}
+		assert.Empty(t, unexplained, "a decided allocs failure keeps its own reason instead of the runner-mismatch sentence")
+		assert.Equal(t, 1, code, "an allocation regression must fail the gate even when latency and bytes are inconclusive; stderr: %s", stderr)
+	})
+}
+
+// TestCrossRunner_CleanRunExitsZero is the release the narrowing exists to let
+// through: a cross-runner pair whose allocation counts all held, with only the
+// two machine-dependent axes left undecided. Nothing there is a rerun's to
+// resolve, so every cell collapses and the gate authorizes the release.
+func TestCrossRunner_CleanRunExitsZero(t *testing.T) {
+	amdRun := filepath.Join(pinnedProfileDir, "bench-vm.txt")
+	intelParseRun := keepingCells(t, filepath.Join(crossRunnerBaselineDir, "bench-vm.txt"), "BenchmarkGoldsetParse/")
+
+	code, stdout, stderr := runGate(t, "-old", amdRun, "-candidate", intelParseRun, "-mode", "non-regression")
+
+	parseCells := cellsWithPrefix(t, candidateCells(t), "GoldsetParse/", 13)
+	assert.Equal(t, uniformVerdicts(parseCells, "INCONCLUSIVE"), verdictsFor(t, stdout, parseCells),
+		"the reader cells hold their allocation counts, so only the undecided axes are left")
+	assert.Equal(t, 0, code, "a cross-runner run whose allocation counts all held authorizes the release; stderr: %s", stderr)
 }
 
 // TestCrossRunner_UnknownIdentityIsNotAMatch feeds a baseline whose preamble
@@ -271,6 +349,47 @@ func withoutCPULines(t *testing.T, path string) string {
 	out := filepath.Join(t.TempDir(), "bench-no-cpu.txt")
 	require.NoError(t, os.WriteFile(out, []byte(strings.Join(kept, "\n")), 0o644))
 	return out
+}
+
+// keepingCells copies a committed raw bench file into the test's temp dir with
+// only the benchmark result lines under prefix kept. Every other line is
+// copied verbatim, the goos:/goarch:/pkg:/cpu: preamble each of the ten
+// appended runs repeats included: a filtered file that lost its preamble reads
+// as an unknown identity and stops being the cross-runner case. The committed
+// corpora are never edited.
+func keepingCells(t *testing.T, path, prefix string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "Benchmark") && !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+
+	out := filepath.Join(t.TempDir(), "bench-filtered.txt")
+	require.NoError(t, os.WriteFile(out, []byte(strings.Join(kept, "\n")), 0o644))
+	return out
+}
+
+// cellsWithPrefix is the cells of one benchmark group, read out of the
+// committed cell set rather than retyped, with the group's size pinned so a
+// corpus change cannot silently shrink what an assertion covers.
+func cellsWithPrefix(t *testing.T, names []string, prefix string, want int) []string {
+	t.Helper()
+
+	kept := make([]string, 0, want)
+	for _, name := range names {
+		if strings.HasPrefix(name, prefix) {
+			kept = append(kept, name)
+		}
+	}
+	require.Len(t, kept, want, "the committed cell set no longer holds %d %s cells", want, prefix)
+	return kept
 }
 
 // runGate invokes the gate with a benchstat that fails the test if it is
