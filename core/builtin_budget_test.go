@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -11,6 +12,128 @@ import (
 // reduction ceiling and an effectively unlimited allocation ceiling.
 func budgetCtx(parent context.Context, maxReductions int64) context.Context {
 	return WithEvalResourceLimits(parent, int(maxReductions), 1<<30)
+}
+
+func TestBuiltinWorkBudget_ShortCallsShareClockCadence(t *testing.T) {
+	for _, n := range []int{1, 8, 9, 16, 17, 37} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			base := time.Now()
+			var calls int
+			restore := nowFunc
+			nowFunc = func() time.Time {
+				calls++
+				return base
+			}
+			t.Cleanup(func() { nowFunc = restore })
+
+			ctx := WithEvalDeadline(budgetCtx(t.Context(), 1_000_000), base.Add(time.Hour))
+			for i := range n {
+				b := NewBuiltinWorkBudget(ctx)
+				stepN(t, b, 1)
+				if err := b.Flush(); err != nil {
+					t.Fatalf("short call %d: Flush: %v", i+1, err)
+				}
+			}
+
+			if want := (n + 7) / 8; calls != want {
+				t.Fatalf("%d short calls: want %d clock reads, got %d", n, want, calls)
+			}
+		})
+	}
+}
+
+func TestBuiltinWorkBudget_DeadlineCrossingBoundedSyncsAfterExpiry(t *testing.T) {
+	for _, units := range []int{1, 128} {
+		t.Run(fmt.Sprintf("units=%d", units), func(t *testing.T) {
+			base := time.Now()
+			deadline := base.Add(time.Hour)
+			now := base
+			restore := nowFunc
+			nowFunc = func() time.Time { return now }
+			t.Cleanup(func() { nowFunc = restore })
+
+			ctx := WithEvalDeadline(budgetCtx(t.Context(), 1_000_000), deadline)
+			b := NewBuiltinWorkBudget(ctx)
+			stepN(t, b, 1)
+			if err := b.Flush(); err != nil {
+				t.Fatalf("sync before expiry: %v", err)
+			}
+
+			now = deadline
+			for sync := 1; sync <= 8; sync++ {
+				b = NewBuiltinWorkBudget(ctx)
+				stepN(t, b, units-1)
+				err := b.Step()
+				if err == nil {
+					err = b.Flush()
+				}
+				if err == nil {
+					continue
+				}
+				if err != context.DeadlineExceeded {
+					t.Fatalf("sync %d after expiry: want bare context.DeadlineExceeded, got %T: %v", sync, err, err)
+				}
+				return
+			}
+			t.Fatal("expired deadline not observed within 8 synchronizations")
+		})
+	}
+}
+
+func TestBuiltinWorkBudget_CallerCancellationEverySync(t *testing.T) {
+	base := time.Now()
+	restore := nowFunc
+	nowFunc = func() time.Time { return base }
+	t.Cleanup(func() { nowFunc = restore })
+
+	for phase := 1; phase < 8; phase++ {
+		t.Run(fmt.Sprintf("phase=%d", phase), func(t *testing.T) {
+			parent, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			ctx := WithEvalDeadline(budgetCtx(parent, 1_000_000), base.Add(time.Hour))
+			for range phase {
+				b := NewBuiltinWorkBudget(ctx)
+				stepN(t, b, 1)
+				if err := b.Flush(); err != nil {
+					t.Fatalf("sync before cancellation: %v", err)
+				}
+			}
+
+			cancel()
+			b := NewBuiltinWorkBudget(ctx)
+			stepN(t, b, 1)
+			if err := b.Flush(); err != context.Canceled {
+				t.Fatalf("sync after cancellation at phase %d: want context.Canceled, got %v", phase, err)
+			}
+		})
+	}
+}
+
+func TestBuiltinWorkBudget_ReductionsChargedEverySync(t *testing.T) {
+	base := time.Now()
+	restore := nowFunc
+	nowFunc = func() time.Time { return base }
+	t.Cleanup(func() { nowFunc = restore })
+
+	for phase := 1; phase < 8; phase++ {
+		t.Run(fmt.Sprintf("phase=%d", phase), func(t *testing.T) {
+			ctx := WithEvalDeadline(budgetCtx(t.Context(), int64(phase)), base.Add(time.Hour))
+			for range phase {
+				b := NewBuiltinWorkBudget(ctx)
+				stepN(t, b, 1)
+				if err := b.Flush(); err != nil {
+					t.Fatalf("sync within reduction limit %d: %v", phase, err)
+				}
+			}
+
+			b := NewBuiltinWorkBudget(ctx)
+			stepN(t, b, 1)
+			err := b.Flush()
+			if !IsTerminalEvalError(err) || errCode(t, err) != CodeResourceLimit {
+				t.Fatalf("sync exceeding reduction limit at phase %d: want terminal %s, got %v", phase, CodeResourceLimit, err)
+			}
+		})
+	}
 }
 
 // errCode returns the LispicoError code of err via errors.As.
