@@ -544,8 +544,9 @@ example the default Common Lisp dialect, which has no `Vector` reader syntax).
 An empty binding list SHALL be valid in either shape. A malformed binding list —
 a Vector of odd length, or a List element that is not a two-element pair headed
 by a symbol — SHALL be a compile/eval error naming both accepted shapes.
-Binding semantics (parallel `let`, sequential `let*`, `loop`/`recur` targets)
-SHALL be unchanged.
+Binding semantics (sequential `let` and `let*`, enclosing-scope `loop`
+initializers, and `loop`/`recur` targets) SHALL be unchanged by the choice of
+binding-list shape.
 
 #### Scenario: Common Lisp list-pair bindings under the default dialect
 
@@ -565,7 +566,7 @@ SHALL be unchanged.
 #### Scenario: Malformed bindings are rejected clearly
 
 - **WHEN** a `let` binding list is neither a valid flat Vector nor a list of two-element pairs
-- **THEN** evaluation SHALL fail with an error naming both accepted binding shapes
+- **THEN** evaluation SHALL fail with an error naming both accepted shapes
 
 ### Requirement: loop/recur gives per-iteration binding identity for captured variables
 
