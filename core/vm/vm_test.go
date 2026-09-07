@@ -254,7 +254,8 @@ func TestVM_OpGetLocal(t *testing.T) {
 		Name:   "test",
 		Locals: 2,
 		Code: []Instruction{
-			Encode(OpNil, 0),
+			Encode(OpSetLocal, 1),
+			Encode(OpPop, 0),
 			Encode(OpTrue, 0),
 			Encode(OpGetLocal, 1),
 			Encode(OpReturn, 0),
