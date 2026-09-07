@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Compiler local-scope compilation: `let`, `let*`, `try`, and the loop body of
+  `loop` now consume the binding initializer's value before the form's tail
+  through an `OpPop` slot reservation, so a binding expression no longer
+  becomes the form's tail and cannot shadow an outer `set!` evaluation's
+  continuation. The frame-local reservation (`reserveLocals`) pre-extends the
+  frame with `chunk.Locals` slots below the operand region at function entry,
+  keeping `OpSetLocal` and `OpGetLocal` strictly below operand pushes and
+  letting `computeMaxStack` sum `chunk.Locals + peak` so the validation floor
+  is no longer the looser of two independent bounds. `set!` still leaves the
+  assignment's right-hand side on the operand stack, preserving the form's
+  value as before.
+
+### Fixed
+
+- The process-global `SetStdlibLazyDisabledForTesting` flag no longer races
+  concurrent engine constructions. The lazy-vs-eager decision is now latched
+  onto the engine's lazy materializer at construction time and threaded
+  through `RegisterValue`, `RegisterSource`, and `LookupAndMaterialize`, so a
+  mid-build flip from a parallel test cannot split one build into half-eager
+  half-lazy bindings (partial layer publication with `undefined:` errors)
+  nor route a direct eager build's writes into an already-published layer
+  (the `already published: refusing write` rejection). `putEntry` no longer
+  silently drops writes while the flag is flipped true mid-build.
 ## [0.13.0] - 2026-09-06
 
 ### Changed

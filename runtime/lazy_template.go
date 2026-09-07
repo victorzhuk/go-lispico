@@ -130,24 +130,24 @@ func (s *stdlibLazyEngineState) getNameMutex(name string) *sync.Mutex {
 	return mu
 }
 
+// layerFor resolves key's layer. It ignores the process-global disabled
+// flag: engines latched to lazy at plugin-load time must still see the
+// layer they build or attach, and eager-latched engines never route
+// registrations here, so the flag only belongs in the latch read.
 func (r *stdlibTemplateRegistry) layerFor(key stdlibTemplateKey) (*stdlibTemplateLayer, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.disabled {
-		return nil, false
-	}
 	l, ok := r.layers[key]
 	return l, ok
 }
 
 // entryFor is the miss-path lookup; it must stay a single-entry read under
-// RLock (no layer copy) so undefined-name lookups stay cheap.
+// RLock (no layer copy) so undefined-name lookups stay cheap. Like layerFor
+// it ignores the disabled flag; the per-engine eager latch on
+// stdlibLazyMaterializer gates the miss path instead.
 func (r *stdlibTemplateRegistry) entryFor(key stdlibTemplateKey, name string) (*stdlibTemplateEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.disabled {
-		return nil, false
-	}
 	l, ok := r.layers[key]
 	if !ok {
 		return nil, false
@@ -172,14 +172,14 @@ func (l *stdlibTemplateLayer) publishedEntries() map[string]*stdlibTemplateEntry
 // putEntry refuses to write once the layer is published: complete flips
 // under this same lock and is never undone, so a write reaching here after
 // that would mutate the exact map publishedEntries hands to every attached
-// engine. That path is not expected to be reachable today (task 2.1), but
-// the guard is what keeps it that way instead of merely documenting it.
+// engine. Only lazy-latched builds reach here at all (RegisterValue/
+// RegisterSource consult the per-engine eager latch), so the write is
+// unconditional below the publish guard: a concurrent flip of the global
+// disabled flag can no longer silently drop half of one build's entries,
+// which is how a partial layer used to get published.
 func (r *stdlibTemplateRegistry) putEntry(key stdlibTemplateKey, entry *stdlibTemplateEntry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.disabled {
-		return nil
-	}
 	layer, ok := r.layers[key]
 	if !ok {
 		layer = &stdlibTemplateLayer{entries: make(map[string]*stdlibTemplateEntry)}
@@ -193,18 +193,22 @@ func (r *stdlibTemplateRegistry) putEntry(key stdlibTemplateKey, entry *stdlibTe
 	return nil
 }
 
-// layerState reports whether key's layer is already complete, and whether
-// the registry is disabled (the test-only eager fallback). disabled always
-// wins so the caller bypasses single-flight and runs build directly, one
-// call per engine, exactly as an unshared plugin would.
-func (r *stdlibTemplateRegistry) layerState(key stdlibTemplateKey) (complete, disabled bool) {
+// layerState reports whether key's layer is already complete.
+func (r *stdlibTemplateRegistry) layerState(key stdlibTemplateKey) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.disabled {
-		return false, true
-	}
 	l, ok := r.layers[key]
-	return ok && l.complete, false
+	return ok && l.complete
+}
+
+// snapshotDisabled reads the process-global disable flag once. initPlugin
+// latches its value onto the engine's materializer for the whole plugin
+// load, so a test toggling the flag mid-build cannot split one build's
+// registrations between eager env binds and deferred template entries.
+func (r *stdlibTemplateRegistry) snapshotDisabled() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.disabled
 }
 
 // markComplete flips the layer's complete flag after its first successful
@@ -224,21 +228,24 @@ func (r *stdlibTemplateRegistry) markComplete(key stdlibTemplateKey) {
 }
 
 // ensureLayer builds key's layer at most once per process: concurrent first
-// calls single-flight onto one build, and any call once the layer is
-// complete returns immediately without calling build. build must never run
-// with r.mu held — it reenters putEntry (via RegisterValue/RegisterSource),
+// lazy calls single-flight onto one build, and any call once the layer is
+// complete returns immediately without calling build. eager is the
+// per-engine latch read by initPlugin before the build starts: an eager
+// build never touches the registry, so it runs directly, one call per
+// engine, exactly as an unshared plugin would — and never in a window that
+// races the flight builder for the same key. build must never run with
+// r.mu held — it reenters putEntry (via RegisterValue/RegisterSource),
 // which takes r.mu itself; flight's own lock is disjoint from r.mu, so this
 // can never deadlock against a held registry lock.
-func (r *stdlibTemplateRegistry) ensureLayer(key stdlibTemplateKey, build func() error) error {
-	if complete, disabled := r.layerState(key); disabled {
+func (r *stdlibTemplateRegistry) ensureLayer(key stdlibTemplateKey, eager bool, build func() error) error {
+	if eager {
 		return build()
-	} else if complete {
+	}
+	if r.layerState(key) {
 		return nil
 	}
 	_, err, _ := r.flight.Do(key.cacheKey(), func() (any, error) {
-		if complete, disabled := r.layerState(key); disabled {
-			return nil, build()
-		} else if complete {
+		if r.layerState(key) {
 			return nil, nil
 		}
 		if buildErr := build(); buildErr != nil {
@@ -265,6 +272,13 @@ type stdlibLazyMaterializer struct {
 	// that call's duration. RegisterValue/RegisterSource read it to build the
 	// template key: name+version identifies the layer (task 2.3).
 	loadingVersion string
+	// eager latches the registry's process-global disable flag for the
+	// duration of one plugin load (initPlugin sets and clears it around
+	// ensureLayer). Every routing decision inside a build — dispatch,
+	// RegisterValue, RegisterSource — reads this latch instead of the live
+	// flag, so a parallel test toggling SetStdlibLazyDisabledForTesting
+	// mid-build cannot split the build or corrupt the shared layer.
+	eager bool
 }
 
 func newStdlibLazyMaterializer(engine *engineImpl) *stdlibLazyMaterializer {
@@ -294,7 +308,7 @@ func (m *stdlibLazyMaterializer) activeKeys() []stdlibTemplateKey {
 // (found, canonical). A name the user explicitly deleted stays deleted:
 // the tombstone check runs before any template consultation.
 func (m *stdlibLazyMaterializer) LookupAndMaterialize(env *core.Env, name string, funcNS bool) (core.Value, bool, bool) {
-	if m == nil || m.engine == nil {
+	if m == nil || m.engine == nil || m.eager {
 		return nil, false, false
 	}
 	m.state.mu.Lock()
@@ -535,10 +549,7 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 	if m == nil {
 		return nil
 	}
-	stdlibLazyTemplateRegistry.mu.RLock()
-	disabled := stdlibLazyTemplateRegistry.disabled
-	stdlibLazyTemplateRegistry.mu.RUnlock()
-	if disabled || m.engine.loadingPlugin != "" {
+	if m.eager || m.engine.loadingPlugin != "" {
 		if canonical {
 			return env.SetCanonical(name, val)
 		}
@@ -587,10 +598,7 @@ func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source stri
 	if m == nil {
 		return false
 	}
-	stdlibLazyTemplateRegistry.mu.RLock()
-	disabled := stdlibLazyTemplateRegistry.disabled
-	stdlibLazyTemplateRegistry.mu.RUnlock()
-	if disabled || m.engine.loadingPlugin != "" {
+	if m.eager || m.engine.loadingPlugin != "" {
 		return false
 	}
 	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}

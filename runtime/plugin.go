@@ -73,12 +73,16 @@ func (e *engineImpl) populateTemplateBindings(pluginName, pluginVersion string) 
 // only observable effect is the shared, env-independent template entry.
 func (e *engineImpl) initPlugin(p core.Plugin, name, version string) error {
 	e.loadingPlugin = name
+	eager := false
 	if e.lazyMaterializer != nil {
+		eager = stdlibLazyTemplateRegistry.snapshotDisabled()
+		e.lazyMaterializer.eager = eager
 		e.lazyMaterializer.loadingVersion = version
 	}
 	defer func() {
 		e.loadingPlugin = ""
 		if e.lazyMaterializer != nil {
+			e.lazyMaterializer.eager = false
 			e.lazyMaterializer.loadingVersion = ""
 		}
 	}()
@@ -87,7 +91,7 @@ func (e *engineImpl) initPlugin(p core.Plugin, name, version string) error {
 		return p.Init(e.rootEnv)
 	}
 	key := stdlibTemplateKey{dialectFP: e.lazyMaterializer.dialectFP, pluginName: name, pluginVersion: version}
-	return stdlibLazyTemplateRegistry.ensureLayer(key, func() error {
+	return stdlibLazyTemplateRegistry.ensureLayer(key, eager, func() error {
 		return p.Init(e.rootEnv)
 	})
 }
