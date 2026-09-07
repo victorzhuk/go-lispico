@@ -2051,6 +2051,18 @@ func (vm *VM) routeRuntimeError(ip int, err error) error {
 		vm.Reset()
 		return err
 	}
+	// Settle consumed reductions and pending allocation bytes before a
+	// handler or the host observes the ordinary failure. A settlement error
+	// is a resource limit: terminal, so it outranks the pending error,
+	// bypasses every handler, and still leaves the charges on the ledger.
+	if flushErr := vm.flushConsumedReductions(); flushErr != nil {
+		vm.Reset()
+		return flushErr
+	}
+	if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+		vm.Reset()
+		return flushErr
+	}
 	var carrier interface{ ThrownValue() core.Value }
 	if errors.As(err, &carrier) {
 		if !vm.throw(carrier.ThrownValue()) {
