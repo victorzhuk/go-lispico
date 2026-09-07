@@ -42,6 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ordinary runtime errors now behave identically under the bytecode VM and
+  the tree-walking evaluator. Failures raised by valid opcodes — unbound
+  symbol lookups, `set!`, map construction, calls, and native operations —
+  unwind to the nearest active `try`/`catch` handler and bind the same value
+  the tree-walker's handler receives; an unhandled ordinary error reaches the
+  host as the original typed error. A caught explicit `throw` binds the
+  thrown value itself rather than its rendering, including across an
+  evaluator boundary, and an uncaught `throw` reaches the host as the same
+  `ThrowError`-coded `*core.LispicoError` the tree-walker produces — the VM
+  previously substituted a missing-handler `TypeError`. Terminal classes are
+  unchanged: `ResourceLimitError`, cancellation, and deadline expiry still
+  bypass every handler, and the VM settles pending resource charges before
+  transferring an ordinary error, so a limit breach surfaced by that
+  settlement outranks it and reaches the host. Compile-time refusals stay
+  non-catchable: a rejected form still falls back to the tree-walker whole.
+  Pinned by the VM/tree-walker error-parity and eval/call-reuse tests.
+
 - The bytecode VM no longer corrupts operands with nested binding forms and
   no longer leaks or clobbers `loop` bindings. A `let` in an operand position —
   a vector element, a call argument, or a call target — could leave the inner

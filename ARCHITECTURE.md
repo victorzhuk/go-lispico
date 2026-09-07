@@ -580,6 +580,7 @@ the error class. `Unwrap` exposes the cause for `errors.Is`/`errors.As`.
 | `TypeError` | — | an argument of the wrong runtime type |
 | `EvalError` | — | a correctly typed argument outside the operation's domain |
 | `UndefinedError` | — | a reference to an unbound symbol |
+| `ThrowError` | — | an explicit `throw` that reaches the host uncaught |
 | `ResourceLimitError` | `core.CodeResourceLimit` | a resource ceiling exceeded |
 | `PanicError` | `core.CodePanic` | a panic recovered from an embedded `GoFunc` at a runtime boundary |
 | `ConcurrentUseError` | `core.CodeConcurrentUse` | a `PinnedFn` entered concurrently or re-entered from its own execution |
@@ -599,6 +600,10 @@ Positions come from the reader alone: `Line` and `Col` are filled in by
 tokenizer and parser failures and by the reader depth ceiling. `core.Value`
 carries no position, so an error raised while evaluating a form has none.
 
+An uncaught explicit `throw` carries `ThrowError`; its message is the thrown
+string verbatim, without quotes, or the `%v` rendering of any other thrown
+value. Both evaluators produce this carrier identically at the host boundary.
+
 ### Classifying a stdlib failure
 
 Every evaluation failure originated by an active stdlib Builtin or a CL adapter
@@ -616,7 +621,15 @@ shared evaluation-state checkpoint, and a resource-helper failure all propagate
 unchanged. A terminal error is never rewritten into `EvalError`.
 
 The tree-walking evaluator and the VM report the same `Code`, with equivalent
-diagnostic meaning, for the same invalid call.
+diagnostic meaning, for the same invalid call. Parity extends to propagation:
+an ordinary runtime failure raised while executing valid bytecode — an unbound
+symbol, a `set!` whose target resolves nowhere, a map-literal build, a call,
+or a native operation — unwinds to the nearest active `try`/`catch` handler,
+which binds what the tree-walker's handler would bind, and an unhandled
+ordinary failure reaches the host as the original typed error. Compile-time
+refusals are not runtime errors: a form the bytecode compiler rejects never
+produces a catchable failure, because the runtime tree-walks the whole
+enclosing top-level form instead.
 
 ### Recovering an error in the host
 
@@ -660,10 +673,16 @@ _, ceiling := limited.Eval(ctx, "host", "(list (list (list (list (list 1)))))")
 
 Resource-limit failures, context cancellation, and deadline expiry are
 terminal: they abort the enclosing evaluation, and Lisp `try`/`catch` cannot
-intercept them. A `catch` clause recovers an ordinary `TypeError`, while a
-`ResourceLimitError` reaches the host exactly as it would have without the
-`try`. An in-language handler is bound the rendered message string, not the
-code, so classification stays a host-side concern.
+intercept them, under either evaluator. A `catch` clause recovers an ordinary
+`TypeError`, while a `ResourceLimitError` reaches the host exactly as it would
+have without the `try`. For an ordinary failure the in-language handler is
+bound the rendered message string, not the code, so classification stays a
+host-side concern; for an explicit `throw` the handler is bound the thrown
+value itself, and that identity survives an unwind across an evaluator
+boundary. In the VM, consumed resource charges are settled before an ordinary
+error is transferred to a handler or the host; a limit breach surfaced by that
+settlement is itself terminal — it outranks the pending error, bypasses every
+handler, and reaches the host.
 
 Test for terminal errors with `core.IsTerminalEvalError`, and test first: a
 cancelled or expired evaluation returns a wrapped `context` error rather than a
