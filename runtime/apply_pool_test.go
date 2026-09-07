@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,6 +154,72 @@ func TestBytecodeRuntime_CallSequenceNoStateLeak(t *testing.T) {
 		require.NoError(t, err, "case %d: n=%d", i, c.n)
 		assert.True(t, core.Int{V: c.n}.Equals(res), "case %d: count-down(%d) => %d, got %v", i, c.n, c.n, res)
 	}
+}
+
+// TestBytecodeRuntime_EvalCallReuseAfterUnhandledError verifies an unhandled
+// evaluation failure leaves both pooled VM release paths fit for reuse: the
+// next public Eval/Call matches a fresh engine's result with the full
+// eval-depth allowance restored — on the general vmPool path and the lean
+// engine-slot path alike.
+func TestBytecodeRuntime_EvalCallReuseAfterUnhandledError(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithMaxEvalDepth(20))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	fresh, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = fresh.Close() })
+
+	ctx := t.Context()
+
+	bindBuiltin(t, eng, "+")
+	bindBuiltin(t, eng, "-")
+	bindBuiltin(t, eng, "=")
+	bindBuiltin(t, fresh, "+")
+
+	_, err = eng.Eval(ctx, "def-count-down",
+		"(defn count-down [n] (if (= n 0) 0 (+ 1 (count-down (- n 1)))))")
+	require.NoError(t, err)
+	_, err = eng.Eval(ctx, "def-broken", "(defn broken [] (nosuch-function 1))")
+	require.NoError(t, err)
+
+	// Unhandled Eval failure through the general pool path...
+	_, err = eng.Eval(ctx, "eval-failure", "(broken)")
+	require.Error(t, err, "the undefined-head call must fail unhandled")
+
+	// ...must not poison the next Eval: fresh state.
+	r, err := eng.Eval(ctx, "after-eval-failure", "(+ 40 2)")
+	require.NoError(t, err, "a failed Eval must leave the pooled VM fit for the next Eval")
+	freshR, err := fresh.Eval(ctx, "fresh-reference", "(+ 40 2)")
+	require.NoError(t, err)
+	assert.True(t, r.Equals(freshR), "want the fresh engine's result %v from the reused engine, got %v", freshR, r)
+	assert.True(t, core.Int{V: 42}.Equals(r), "want 42 after the failed Eval, got %v", r)
+
+	// Full eval-depth allowance: the failed Eval must not consume budget.
+	r, err = eng.Call(ctx, "count-down", core.Int{V: 15})
+	require.NoError(t, err, "the failed Eval must leave the full eval-depth allowance")
+	assert.True(t, core.Int{V: 15}.Equals(r), "want 15 after the failed Eval, got %v", r)
+	_, err = eng.Call(ctx, "count-down", core.Int{V: 30})
+	require.Error(t, err, "the eval-depth ceiling must hold after the failed Eval")
+
+	// Unhandled Call failure through the lean engine-slot path (plain ctx)...
+	_, err = eng.Call(ctx, "broken")
+	require.Error(t, err, "the broken call must fail unhandled on the lean path")
+	r, err = eng.Call(ctx, "count-down", core.Int{V: 3})
+	require.NoError(t, err, "a failed lean-path Call must leave the engine slot fit for reuse")
+	assert.True(t, core.Int{V: 3}.Equals(r), "want 3 after the failed lean-path Call, got %v", r)
+
+	// ...and through the general vmPool path: an eval-state context forces
+	// Call through callBoundary with a pool VM.
+	meteredCtx, _, _ := core.AdoptEvalStateWithMeter(context.Background(), time.Time{}, 0,
+		core.EvalMeterSnapshot{MaxReductions: 1 << 40, MaxAllocationBytes: 1 << 40})
+	_, err = eng.Call(meteredCtx, "broken")
+	require.Error(t, err, "the broken call must fail unhandled on the general pool path")
+	r, err = eng.Call(meteredCtx, "count-down", core.Int{V: 4})
+	require.NoError(t, err, "a failed general-path Call must leave the pooled VM fit for reuse")
+	assert.True(t, core.Int{V: 4}.Equals(r), "want 4 after the failed general-path Call, got %v", r)
 }
 
 // TestBytecodeRuntime_CallConcurrentDistinctClosures verifies concurrent
