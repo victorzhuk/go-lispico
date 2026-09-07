@@ -4,6 +4,7 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync/atomic"
@@ -1045,7 +1046,11 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			sym := chunk.Constants[instr.A()].(core.Symbol)
 			val, _, ok := vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
 			if !ok {
-				return nil, core.NewUndefinedError(sym.V)
+				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 			vm.push(val)
 
@@ -1053,7 +1058,11 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			sym := chunk.Constants[instr.A()].(core.Symbol)
 			val, canon, ok := vm.resolveGlobalValue(chunk.site(ip-1), env, sym)
 			if !ok {
-				return nil, core.NewUndefinedError(sym.V)
+				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 			// No push. Record the freeze marker (or the head-time value) at the
 			// current stack depth — the depth that the upcoming fused native op
@@ -1100,17 +1109,29 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			}
 			owner, ok := env.Find(sym.V)
 			if !ok {
-				return nil, core.NewUndefinedError(sym.V)
+				if retErr := vm.routeRuntimeError(ip, setLexicalError(sym)); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 			if err := owner.SetWithContext(ctx, sym.V, top); err != nil {
-				return nil, err
+				if retErr := vm.routeRuntimeError(ip, err); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 
 		case OpGetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
 			v, _, found := vm.resolveFuncValue(chunk.site(ip-1), env, sym)
 			if !found {
-				return nil, core.NewUndefinedError(sym.V)
+				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 			vm.push(v)
 
@@ -1118,7 +1139,11 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			sym := chunk.Constants[instr.A()].(core.Symbol)
 			v, canon, found := vm.resolveFuncValue(chunk.site(ip-1), env, sym)
 			if !found {
-				return nil, core.NewUndefinedError(sym.V)
+				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 			d := len(vm.stack)
 			if canon && isNativeOpSymbol(sym.V) {
@@ -1161,15 +1186,8 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 		case OpCall:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), false); err != nil {
-				if core.IsTerminalEvalError(err) {
-					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
-						err = flushErr
-					}
-					vm.Reset()
-					return nil, err
-				}
-				if !vm.throw(core.String{V: err.Error()}) {
-					return nil, err
+				if retErr := vm.routeRuntimeError(ip, err); retErr != nil {
+					return nil, retErr
 				}
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
@@ -1177,15 +1195,8 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 		case OpTailCall:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.call(ctx, instr.A(), true); err != nil {
-				if core.IsTerminalEvalError(err) {
-					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
-						err = flushErr
-					}
-					vm.Reset()
-					return nil, err
-				}
-				if !vm.throw(core.String{V: err.Error()}) {
-					return nil, err
+				if retErr := vm.routeRuntimeError(ip, err); retErr != nil {
+					return nil, retErr
 				}
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
@@ -1254,14 +1265,28 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			}
 			pairs := vm.stack[len(vm.stack)-n:]
 			hm := core.NewHashMap()
+			var setErr error
 			for i := 0; i < len(pairs); i += 2 {
 				if err := hm.Set(pairs[i], pairs[i+1]); err != nil {
-					return nil, &core.LispicoError{
-						Code:    "EvalError",
-						Message: fmt.Sprintf("map literal: %v", err),
-						Cause:   err,
-					}
+					setErr = err
+					break
 				}
+			}
+			if setErr != nil {
+				wrapped := &core.LispicoError{
+					Code:    "EvalError",
+					Message: fmt.Sprintf("map literal: %v", setErr),
+					Cause:   setErr,
+				}
+				// The tree-walker hands evalMap's raw rejection to its
+				// catch clause; the compiled path keeps the typed wrap
+				// for the host but delivers that same message when a
+				// handler is active.
+				if retErr := vm.routeRuntimeError(ip, &catchParityError{err: wrapped, handlerMsg: setErr.Error()}); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
 			}
 			if err := vm.checkConstructionDepth(hm); err != nil {
 				return nil, err
@@ -1335,15 +1360,8 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.dispatchNativeOp(ctx, env, instr.Op(), instr.A()); err != nil {
-				if core.IsTerminalEvalError(err) {
-					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
-						err = flushErr
-					}
-					vm.Reset()
-					return nil, err
-				}
-				if !vm.throw(core.String{V: err.Error()}) {
-					return nil, err
+				if retErr := vm.routeRuntimeError(ip, err); retErr != nil {
+					return nil, retErr
 				}
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
@@ -1351,15 +1369,8 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 		case OpFusedNativeOp:
 			vm.frames[len(vm.frames)-1].ip = ip
 			if err := vm.dispatchFusedNativeOp(ctx, chunk, env, base, ip, instr.A()); err != nil {
-				if core.IsTerminalEvalError(err) {
-					if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
-						err = flushErr
-					}
-					vm.Reset()
-					return nil, err
-				}
-				if !vm.throw(core.String{V: err.Error()}) {
-					return nil, err
+				if retErr := vm.routeRuntimeError(ip, err); retErr != nil {
+					return nil, retErr
 				}
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
@@ -1961,6 +1972,66 @@ func toFloat(name string, v core.Value) (float64, error) {
 	}
 }
 
+// catchParityError pairs a VM runtime error with the message its catch
+// handler must receive when the tree-walker renders a different text for the
+// same fault. The wrapped error reaches the host boundary unchanged -
+// identity, class, and wrap chain intact - while a caught fault transfers
+// handlerMsg, binding the same core.String under both evaluators.
+type catchParityError struct {
+	err        error
+	handlerMsg string
+}
+
+func (e *catchParityError) Error() string { return e.err.Error() }
+func (e *catchParityError) Unwrap() error { return e.err }
+
+// setLexicalError builds the OpSetLexical failure for a set! whose target
+// resolves in no lexically visible scope: the host boundary keeps the VM's
+// UndefinedError class (TestVMVsTreeWalker_SetUndefined), while a catch
+// handler receives evalSet's own wording.
+func setLexicalError(sym core.Symbol) *catchParityError {
+	return &catchParityError{
+		err: core.NewUndefinedError(sym.V),
+		handlerMsg: (&core.LispicoError{
+			Code:    "EvalError",
+			Message: fmt.Sprintf("set!: cannot mutate undefined variable %q", sym.V),
+		}).Error(),
+	}
+}
+
+// routeRuntimeError funnels an error raised by a correctly dispatched
+// instruction through the VM's one runtime-error policy: it records the
+// current frame's ip; a terminal error settles pending allocation charges (a
+// flush-induced resource-limit error overrides the original) and resets the
+// machine before reaching the host; an ordinary error transfers its handler
+// rendering - a catchParityError's message, otherwise err.Error() - as
+// core.String to the nearest active handler, mirroring the tree-walker's
+// catch binding. A nil return means the handler was entered and the caller
+// must reload the selected frame; a non-nil return is the error to surface:
+// the terminal error, or the untouched original object when no handler is
+// active.
+func (vm *VM) routeRuntimeError(ip int, err error) error {
+	if len(vm.frames) > 0 {
+		vm.frames[len(vm.frames)-1].ip = ip
+	}
+	if core.IsTerminalEvalError(err) {
+		if flushErr := vm.flushPendingAllocBytes(); flushErr != nil {
+			err = flushErr
+		}
+		vm.Reset()
+		return err
+	}
+	msg := err.Error()
+	var cpe *catchParityError
+	if errors.As(err, &cpe) {
+		msg = cpe.handlerMsg
+	}
+	if !vm.throw(core.String{V: msg}) {
+		return err
+	}
+	return nil
+}
+
 // throw unwinds the VM to the nearest active exception handler and leaves
 // value on the handler frame's stack. It returns true if a handler was found.
 func (vm *VM) throw(value core.Value) bool {
@@ -2141,7 +2212,10 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 		}
 
 	default:
-		return core.NewTypeError("callable", fn)
+		return &catchParityError{
+			err:        core.NewTypeError("callable", fn),
+			handlerMsg: core.NewTypeError("function", fn).Error(),
+		}
 	}
 	return nil
 }
