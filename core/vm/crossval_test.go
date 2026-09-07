@@ -517,6 +517,20 @@ func caughtStringValue(t *testing.T, evaluator string, val core.Value, err error
 	return s.V
 }
 
+// caughtOrErr renders one evaluator's outcome as the got side of the
+// handler-value assertion: the catch handler's String payload when the
+// ordinary error unwound to it, or the error itself when it bypassed the
+// handler — either way one comparable string for one want/got assertion.
+func caughtOrErr(val core.Value, err error) string {
+	if err != nil {
+		return fmt.Sprintf("uncaught error: %v", err)
+	}
+	if s, ok := val.(core.String); ok {
+		return s.V
+	}
+	return fmt.Sprintf("non-string result %T: %v", val, val)
+}
+
 // runErrorParity runs each src on the tree-walker and on the bytecode VM,
 // each against its own env from newEnv, sharing that env across srcs, and
 // returns the final value and error each evaluator produced per src.
@@ -577,7 +591,7 @@ func TestVMOrdinaryErrorCatchParity(t *testing.T) {
 				treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, tt.src)
 				assert.Equal(t, want, caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0]),
 					"tree-walker handler value for undefined %q", tt.sym)
-				assert.Equal(t, want, caughtStringValue(t, "VM", vmVals[0], vmErrs[0]),
+				assert.Equal(t, want, caughtOrErr(vmVals[0], vmErrs[0]),
 					"VM handler value for undefined %q", tt.sym)
 			})
 		}
@@ -590,8 +604,8 @@ func TestVMOrdinaryErrorCatchParity(t *testing.T) {
 
 		treeCaught := caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0])
 		assert.NotEmpty(t, treeCaught, "tree-walker handler value for the failed set!")
-		vmCaught := caughtStringValue(t, "VM", vmVals[0], vmErrs[0])
-		assert.NotEmpty(t, vmCaught, "VM handler value for the failed set!")
+		assert.Equal(t, treeCaught, caughtOrErr(vmVals[0], vmErrs[0]),
+			"VM handler value for the failed set! must match the tree-walker's")
 
 		// The failed mutation must not have created the binding in either
 		// evaluator's environment: the follow-up lookup still reports
@@ -617,7 +631,7 @@ func TestVMOrdinaryErrorCatchParity(t *testing.T) {
 			"(try ((fn [] missing)) (catch e e))")
 		assert.Equal(t, want, caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0]),
 			"tree-walker handler value for a closure-body lookup failure")
-		assert.Equal(t, want, caughtStringValue(t, "VM", vmVals[0], vmErrs[0]),
+		assert.Equal(t, want, caughtOrErr(vmVals[0], vmErrs[0]),
 			"VM must unwind a closure-body lookup failure to the enclosing handler with the same value")
 	})
 
@@ -628,8 +642,7 @@ func TestVMOrdinaryErrorCatchParity(t *testing.T) {
 		require.NoError(t, treeErrs[0], "tree-walker binding of k")
 		require.NoError(t, vmErrs[0], "VM binding of k")
 		treeCaught := caughtStringValue(t, "tree-walker", treeVals[1], treeErrs[1])
-		vmCaught := caughtStringValue(t, "VM", vmVals[1], vmErrs[1])
-		assert.Equal(t, treeCaught, vmCaught,
+		assert.Equal(t, treeCaught, caughtOrErr(vmVals[1], vmErrs[1]),
 			"VM map-construction handler value must render the tree-walker-equivalent message")
 	})
 
@@ -640,9 +653,7 @@ func TestVMOrdinaryErrorCatchParity(t *testing.T) {
 		require.Error(t, treeErrs[0], "tree-walker must reject calling a non-callable uncaught")
 		require.Error(t, vmErrs[0], "VM must reject calling a non-callable uncaught")
 		treeCaught := caughtStringValue(t, "tree-walker", treeVals[1], treeErrs[1])
-		vmCaught := caughtStringValue(t, "VM", vmVals[1], vmErrs[1])
-		assert.NotEmpty(t, treeCaught, "tree-walker call-failure handler value")
-		assert.Equal(t, treeCaught, vmCaught,
+		assert.Equal(t, treeCaught, caughtOrErr(vmVals[1], vmErrs[1]),
 			"VM call-failure handler value must match the tree-walker's rendered message")
 	})
 
@@ -662,7 +673,7 @@ func TestVMOrdinaryErrorCatchParity(t *testing.T) {
 		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newEnv, `(try (+ 1 "a") (catch e e))`)
 		assert.Equal(t, want, caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0]),
 			"tree-walker native-op failure handler value")
-		assert.Equal(t, want, caughtStringValue(t, "VM", vmVals[0], vmErrs[0]),
+		assert.Equal(t, want, caughtOrErr(vmVals[0], vmErrs[0]),
 			"VM native-op failure handler value")
 	})
 
