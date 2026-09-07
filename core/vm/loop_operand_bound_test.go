@@ -207,15 +207,3 @@ func TestVMLoopOperandBound(t *testing.T) {
 		})
 	}
 }
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var digits []byte
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	return string(digits)
-}
