@@ -554,16 +554,25 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 	// bindings leave the scope when the loop form ends.
 	base := len(c.locals)
 	slots := make([]int, len(bindings))
+	// The binding slots are reserved before any initializer compiles — as
+	// nameless locals invisible to resolution — so nested binding forms in
+	// an initializer allocate above the loop region instead of clobbering
+	// it. The names appear only after all inits, keeping binding parallel
+	// and enclosing-scope-visible, like the tree-walker.
 	for i, binding := range bindings {
 		slots[i] = base + i
+		c.locals = append(c.locals, local{name: "", depth: c.depth})
+		c.chunk.Locals++
+		c.chunk.LocalNames = append(c.chunk.LocalNames, "")
 		if err := c.Compile(binding.Value); err != nil {
 			return err
 		}
 		c.emitBind(slots[i])
 		c.emit(vm.OpPop, 0)
 	}
-	for _, binding := range bindings {
-		c.addLocal(binding.Name.V)
+	for i, binding := range bindings {
+		c.locals[slots[i]].name = binding.Name.V
+		c.chunk.LocalNames[slots[i]] = binding.Name.V
 	}
 	startIP := len(c.chunk.Code)
 	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots})
