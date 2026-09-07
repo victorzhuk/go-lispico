@@ -491,7 +491,9 @@ func (be *bytecodeEvaluator) CollectionLimit() int        { return be.maxCollect
 func (be *bytecodeEvaluator) ConstructionDepthLimit() int { return be.maxStructuralDepth }
 
 // EvalCached evaluates form with caching: checks the chunk cache, macro-expands
-// and compiles only on a miss, then runs via a pooled VM.
+// and compiles only on a miss, then runs via a pooled VM. A form the compiler
+// refuses with CodeUnsupported never reaches the VM: the tree-walker evaluates
+// the whole expanded form instead.
 func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash sourceHash, formIndex int) (core.Value, error) {
 	ctx = be.evalResourceContext(ctx)
 	if err := core.PollEvalState(ctx); err != nil {
@@ -527,6 +529,9 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		comp.SetEvalMeter(core.EvalMeterFrom(ctx))
 		comp.SetContext(ctx)
 		if err := comp.Compile(expanded); err != nil {
+			// A typed refusal pulls the entire expanded form back to the
+			// tree-walker before any of its bytecode executes, so the form's
+			// side effects run exactly once.
 			if isUnsupportedInBytecode(err) {
 				return be.tree.Eval(be.treeFallbackCtx(ctx), expanded, env)
 			}
@@ -584,8 +589,10 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 }
 
 // isUnsupportedInBytecode reports whether err is the compiler's typed
-// "unsupported in bytecode" error (a defmacro nested inside a larger form, unquote-splicing),
-// so the caller can fall back to the tree-walker instead of failing the eval.
+// "unsupported in bytecode" error (a defmacro nested inside a larger form, a
+// def/defn inside a lexical scope, unquote-splicing), so the caller can fall
+// back to the tree-walker — the whole form, before any of its bytecode runs —
+// instead of failing the eval.
 func isUnsupportedInBytecode(err error) bool {
 	var lerr *core.LispicoError
 	return errors.As(err, &lerr) && lerr.Code == compiler.CodeUnsupported

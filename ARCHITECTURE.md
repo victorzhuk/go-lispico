@@ -171,6 +171,15 @@ executions is sound for the same reason promotion is: the values are immutable
 and compared structurally. Literals containing a symbol or a nested call compile
 unchanged.
 
+A form the compiler refuses — a `defmacro` nested inside a larger form, a
+`def`/`defn` inside a lexical scope (a `fn` body, a `let`/`let*`/`loop` body,
+a `catch` handler), or `unquote-splicing` — falls back whole: the runtime
+tree-walks the entire top-level form before any of its bytecode executes, so
+the form's side effects run exactly once and lexical definitions bind in their
+scope. This refusal keeps the closure architecture flat: unaffected compiled
+functions keep slot locals and captures, and the VM allocates no per-call
+lexical environment to mirror definitions.
+
 Tail-call optimization is explicit: `loop`/`recur` iterate without growing the Go
 stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
 bounded by the configured max eval depth.

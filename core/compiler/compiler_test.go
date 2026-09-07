@@ -1624,8 +1624,8 @@ func TestCompiler_UnquoteSplicing_Unsupported(t *testing.T) {
 // that is the whole form compiles; one nested inside a larger form does not,
 // and the reason is not incidental: macro expansion is a pre-pass over the
 // whole form, so a sibling use of a macro defined in that same form would
-// compile as a plain call and fail at run time. unquote-splicing is the only
-// other trigger.
+// compile as a plain call and fail at run time. unquote-splicing and a
+// def/defn inside a lexical scope are the other triggers.
 func TestUnsupported_NestedDefmacro(t *testing.T) {
 	mustUnsupported := func(t *testing.T, src string) {
 		t.Helper()
