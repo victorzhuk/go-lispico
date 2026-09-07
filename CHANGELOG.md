@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Added
 
+- VM loop compilation parity and operand-stack bound regression tests:
+  `TestVMLoopScopeParity` pins loop initializers resolving against the
+  enclosing scope (tree-walker as control), and `TestVMLoopOperandBound`
+  keeps live operand height constant across `recur` iterations.
+
+### Changed
 - Compiler local-scope compilation: `let`, `let*`, `try`, and the loop body of
   `loop` now consume the binding initializer's value before the form's tail
   through an `OpPop` slot reservation, so a binding expression no longer
