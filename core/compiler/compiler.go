@@ -453,6 +453,7 @@ func (c *Compiler) compileLet(args []core.Value) error {
 		}
 		c.addLocal(binding.Name.V)
 		c.emitBind(len(c.locals) - 1)
+		c.emit(vm.OpPop, 0)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -481,6 +482,7 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 		}
 		c.addLocal(binding.Name.V)
 		c.emitBind(len(c.locals) - 1)
+		c.emit(vm.OpPop, 0)
 	}
 	if err := c.compileDo(args[1:]); err != nil {
 		return err
@@ -546,14 +548,22 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 	if err != nil {
 		return compileErrf("%s", err)
 	}
-	var slots []int
-	for _, binding := range bindings {
+	// Loop initializers evaluate in the enclosing scope (parallel binding,
+	// like the tree-walker): every init is compiled before any loop binding
+	// enters the local scope, each binding into a pre-reserved slot. The
+	// bindings leave the scope when the loop form ends.
+	base := len(c.locals)
+	slots := make([]int, len(bindings))
+	for i, binding := range bindings {
+		slots[i] = base + i
 		if err := c.Compile(binding.Value); err != nil {
 			return err
 		}
-		slots = append(slots, len(c.locals))
+		c.emitBind(slots[i])
+		c.emit(vm.OpPop, 0)
+	}
+	for _, binding := range bindings {
 		c.addLocal(binding.Name.V)
-		c.emitBind(len(c.locals) - 1)
 	}
 	startIP := len(c.chunk.Code)
 	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots})
@@ -561,6 +571,7 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 		return err
 	}
 	c.loops = c.loops[:len(c.loops)-1]
+	c.locals = c.locals[:base]
 	return nil
 }
 
@@ -634,6 +645,7 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	catchSlot := len(c.locals)
 	c.addLocal(errSym.V)
 	c.emitBind(catchSlot)
+	c.emit(vm.OpPop, 0)
 	if err := c.compileDo(items[bodyStart:]); err != nil {
 		return err
 	}

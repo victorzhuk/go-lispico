@@ -143,9 +143,9 @@ var plainErrorAllowlist = []struct {
 
 	// Wrapping, not origination: %w carries an already-typed inner error or a
 	// terminal sentinel through, so errors.As and errors.Is still reach it.
-	{file: "core/vm/vm.go", line: 860},
-	{file: "core/vm/vm.go", line: 867},
-	{file: "core/vm/vm.go", line: 921},
+	{file: "core/vm/vm.go", line: 877},
+	{file: "core/vm/vm.go", line: 884},
+	{file: "core/vm/vm.go", line: 939},
 
 	// Malformed-bytecode assertions: a constant or subchunk index out of range
 	// means the chunk is corrupt, not that the program failed.

@@ -12,9 +12,10 @@ import "github.com/victorzhuk/go-lispico/core/vm"
 // to a fresh value inside a loop body, never reclaimed) is underestimated by
 // this single pass; that only costs the pre-grow optimization a reallocation
 // for such chunks, since push still grows the stack safely. The result is
-// floored at Locals and at the highest local slot index actually referenced,
-// so Validate's OpGetLocal/OpSetLocal bound is never too tight regardless of
-// how well the height estimate tracks reality.
+// plus the frame-local reservation: every frame reserves its chunk.Locals
+// slots below the operand region at entry, so the frame's total peak is
+// Locals + the operand height above it. The result keeps the old floors so
+// Validate's OpGetLocal/OpSetLocal bound is never too tight.
 func computeMaxStack(chunk *vm.Chunk) int {
 	height, peak, maxSlot := 0, 0, -1
 	for _, inst := range chunk.Code {
@@ -30,10 +31,7 @@ func computeMaxStack(chunk *vm.Chunk) int {
 			peak = height
 		}
 	}
-	result := peak
-	if chunk.Locals > result {
-		result = chunk.Locals
-	}
+	result := chunk.Locals + peak
 	if maxSlot+1 > result {
 		result = maxSlot + 1
 	}

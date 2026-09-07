@@ -599,6 +599,23 @@ func (vm *VM) growStack(base, maxStack int) {
 	vm.stack = grown
 }
 
+// reserveLocals ensures the frame-local region [base, base+locals) exists in
+// the value stack: slots past the current length are appended as nil
+// placeholders and anything above the region is truncated. Frame-local
+// storage is therefore reserved separately from temporary operands — operand
+// pushes always land at or above base+locals and can never clobber a local
+// slot, even when a binding form sits in an operand position.
+func (vm *VM) reserveLocals(base, locals int) {
+	if locals <= 0 {
+		return
+	}
+	end := base + locals
+	for len(vm.stack) < end {
+		vm.stack = append(vm.stack, core.Nil{})
+	}
+	vm.stack = vm.stack[:end]
+}
+
 // reloadFrame reads the top frame's state into Run's per-frame dispatch
 // locals after a helper that can push, pop, or replace frames (vm.call,
 // vm.throw) returns. Callers must only call it when vm.frames is non-empty.
@@ -887,6 +904,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 	base := len(vm.stack)
 	vm.frames = append(vm.frames, Frame{chunk: chunk, base: base, env: vm.globals})
 	vm.growStack(base, chunk.MaxStack)
+	vm.reserveLocals(base, chunk.Locals)
 	result, err := vm.run(ctx)
 	if core.IsTerminalEvalError(err) {
 		vm.Reset()
@@ -2094,6 +2112,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 			frame.caps = f.caps
 			frame.isClosure = true
 			vm.growStack(target, f.Chunk.MaxStack)
+			vm.reserveLocals(target, f.Chunk.Locals)
 		} else {
 			base := len(vm.stack) - argc - 1
 			if f.Chunk.Variadic {
@@ -2118,6 +2137,7 @@ func (vm *VM) call(ctx context.Context, argc int, tail bool) error {
 				isClosure: true,
 			})
 			vm.growStack(base, f.Chunk.MaxStack)
+			vm.reserveLocals(base, f.Chunk.Locals)
 		}
 
 	default:
