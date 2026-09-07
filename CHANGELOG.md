@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps live operand height constant across `recur` iterations.
 
 ### Changed
+
 - Compiler local-scope compilation: `let`, `let*`, `try`, and the loop body of
   `loop` now consume the binding initializer's value before the form's tail
   through an `OpPop` slot reservation, so a binding expression no longer
@@ -29,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The bytecode VM no longer corrupts operands with nested binding forms and
+  no longer leaks or clobbers `loop` bindings. A `let` in an operand position —
+  a vector element, a call argument, or a call target — could leave the inner
+  form's value on the operand stack where the enclosing form consumed it as
+  data; every binding initializer now stores into its frame-local slot and
+  pops its operand through `OpPop`. `loop` binding slots are reserved before
+  any initializer compiles, so a nested binding form inside an initializer
+  allocates above the loop region instead of clobbering the loop counter —
+  `(loop [i 0 acc (let [x 5] x)] ...)` no longer diverges. Initializers
+  evaluate against the enclosing scope, the bindings leave the local scope
+  when the loop form ends, and `recur`'s slot writes pop as they bind, so
+  live operand height is constant across iterations. Pinned by
+  `TestVMLocalOperandParity`, `TestVMLoopScopeParity`, and
+  `TestVMLoopOperandBound` against the tree-walker as control.
+
 - The process-global `SetStdlibLazyDisabledForTesting` flag no longer races
   concurrent engine constructions. The lazy-vs-eager decision is now latched
   onto the engine's lazy materializer at construction time and threaded
@@ -38,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nor route a direct eager build's writes into an already-published layer
   (the `already published: refusing write` rejection). `putEntry` no longer
   silently drops writes while the flag is flipped true mid-build.
+
 ## [0.13.0] - 2026-09-06
 
 ### Changed

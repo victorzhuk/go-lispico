@@ -175,6 +175,31 @@ Tail-call optimization is explicit: `loop`/`recur` iterate without growing the G
 stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
 bounded by the configured max eval depth.
 
+#### VM Frame Layout
+
+Each call frame reserves its `chunk.Locals` slots as a contiguous region at
+the bottom of the frame's value-stack slice (`reserveLocals`, run at frame
+entry): frame-local storage lives at `[base, base+Locals)` and temporary
+operands always push at or above `base+Locals`, so `OpGetLocal`/`OpSetLocal`
+and operand traffic can never touch each other's slots. `computeMaxStack`
+sizes the frame as `Locals + peak operand height`, so one bound covers both
+regions.
+
+The binding forms (`let`, `let*`, the `catch` binding of `try`, the
+initializers of `loop`) compile each initializer, store it into its reserved
+slot, and immediately `OpPop` the operand — the initializer's value is
+consumed and never left standing where the enclosing form (a vector element,
+a call argument or target) would pick it up as data.
+
+`loop` bindings have a scoped lifetime. Each slot is reserved before its
+initializer compiles but stays nameless and invisible to resolution until all
+initializers have bound, so loop initializers evaluate against the enclosing
+scope (parallel binding, matching the tree-walker, with shadowed outer names
+still visible), and the bindings leave the local scope when the loop form
+ends. `recur` compiles its arguments above the loop-entry operand height,
+then writes each into its slot followed by `OpPop`, so every iteration
+re-enters the body at the same operand height it had at loop entry.
+
 #### Special Forms
 
 22 special forms handled directly by the evaluator:
