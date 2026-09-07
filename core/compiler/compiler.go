@@ -10,7 +10,8 @@ import (
 )
 
 // CodeUnsupported identifies a *core.LispicoError for a form the bytecode
-// compiler does not support (a defmacro nested inside a larger form, unquote-splicing).
+// compiler does not support (a defmacro nested inside a larger form, a
+// def/defn inside a lexical-definition scope, unquote-splicing).
 // Callers use it to distinguish "fall back to the tree-walker" from a real
 // compile error.
 const CodeUnsupported = "BytecodeUnsupported"
@@ -48,6 +49,10 @@ type Compiler struct {
 	// binds marks instruction indices that bind (rather than mutate) a local,
 	// so finalize can tell a box-allocating store from a write-through.
 	binds map[int]bool
+	// inScopeDef marks the region opened by a lexical-definition scope (fn
+	// body, let/let*/loop body, catch handler): a def/defn compiled there
+	// cannot become a global store and must fall back to the tree-walker.
+	inScopeDef bool
 }
 
 type loopFrame struct {
@@ -362,6 +367,13 @@ func (c *Compiler) compileDef(args []core.Value) error {
 	if !ok {
 		return compileErrf("compile def: name must be symbol, got %T", args[0])
 	}
+	if c.inScopeDef {
+		// The VM's only definition opcodes are OpSetGlobal and OpSetFunc; a
+		// definition inside a lexical scope would silently bind globally
+		// instead of into the enclosing scope like the tree-walker. Defer the
+		// whole form to the tree-walker, as a nested defmacro does.
+		return unsupportedErr("scoped def is not supported by the bytecode compiler")
+	}
 	if err := c.Compile(args[1]); err != nil {
 		return err
 	}
@@ -395,11 +407,13 @@ func (c *Compiler) compileFn(args []core.Value) error {
 	if variadic.V != "" {
 		sub.addLocal(variadic.V)
 	}
+	sub.inScopeDef = true
 	for _, body := range args[1:] {
 		if err := sub.Compile(body); err != nil {
 			return err
 		}
 	}
+	sub.inScopeDef = false
 	sub.emit(vm.OpReturn, 0)
 	if sub.err != nil {
 		return sub.err
@@ -455,7 +469,10 @@ func (c *Compiler) compileLet(args []core.Value) error {
 		c.emitBind(len(c.locals) - 1)
 		c.emit(vm.OpPop, 0)
 	}
-	if err := c.compileDo(args[1:]); err != nil {
+	c.inScopeDef = true
+	err = c.compileDo(args[1:])
+	c.inScopeDef = false
+	if err != nil {
 		return err
 	}
 	c.locals = c.locals[:base]
@@ -484,7 +501,10 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 		c.emitBind(len(c.locals) - 1)
 		c.emit(vm.OpPop, 0)
 	}
-	if err := c.compileDo(args[1:]); err != nil {
+	c.inScopeDef = true
+	err = c.compileDo(args[1:])
+	c.inScopeDef = false
+	if err != nil {
 		return err
 	}
 	c.locals = c.locals[:base]
@@ -576,7 +596,10 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 	}
 	startIP := len(c.chunk.Code)
 	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots})
-	if err := c.compileDo(args[1:]); err != nil {
+	c.inScopeDef = true
+	err = c.compileDo(args[1:])
+	c.inScopeDef = false
+	if err != nil {
 		return err
 	}
 	c.loops = c.loops[:len(c.loops)-1]
@@ -655,7 +678,10 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	c.addLocal(errSym.V)
 	c.emitBind(catchSlot)
 	c.emit(vm.OpPop, 0)
-	if err := c.compileDo(items[bodyStart:]); err != nil {
+	c.inScopeDef = true
+	err := c.compileDo(items[bodyStart:])
+	c.inScopeDef = false
+	if err != nil {
 		return err
 	}
 	c.locals = c.locals[:base]
@@ -1007,6 +1033,9 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		if err != nil {
 			return err
 		}
+		if c.inScopeDef {
+			return unsupportedErr("scoped defn is not supported by the bytecode compiler")
+		}
 		body := args[2:]
 		sub := NewCompiler("<fn>")
 		if c.dialect != nil {
@@ -1040,6 +1069,9 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		c.emit(vm.OpClosure, idx)
 		c.emit(vm.OpSetFunc, c.chunk.AddConstant(name))
 		return nil
+	}
+	if c.inScopeDef {
+		return unsupportedErr("scoped defn is not supported by the bytecode compiler")
 	}
 	fnItems := append([]core.Value{core.Symbol{V: "fn"}, args[1]}, args[2:]...)
 	def := core.NewList([]core.Value{core.Symbol{V: "def"}, name, core.NewList(fnItems)})

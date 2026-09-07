@@ -1299,7 +1299,7 @@ func TestVMVsTreeWalker_ErrorPropagation(t *testing.T) {
 func TestVMVsTreeWalker_NativeOpThrowCatchSlotReuse(t *testing.T) {
 	t.Parallel()
 
-	src := "(try (+ (boom) 2) (catch e (do (def + custom-plus) (+ 1 2))))"
+	src := "(try (+ (boom) 2) (catch e (do (set! + custom-plus) (+ 1 2))))"
 
 	makeEnv := func() *core.Env {
 		env := core.NewEnv(nil)
@@ -1366,7 +1366,7 @@ func TestVMVsTreeWalker_ClosureCapture(t *testing.T) {
 		{"capture loop var", "(let [f (fn [] (loop [i 0] (if (< i 3) (recur (+ i 1)) i)))] (f))"},
 		{"escaping closure", "(def mkadd (fn [x] (fn [y] (+ x y)))) ((mkadd 10) 20)"},
 		{"deeply nested fn", "(def f (fn [x] (fn [y] (fn [z] (+ x y z))))) (((f 1) 2) 3)"},
-		{"multiple closures same local", "(let [x 100] (def a (fn [] x)) (def b (fn [] x)) (+ (a) (b)))"},
+		{"multiple closures same local", "(let [x 100] (let [a (fn [] x) b (fn [] x)] (+ (a) (b))))"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2426,9 +2426,9 @@ func TestVMVsTreeWalker_FusedNativeOp_CapturedOperandMutatedBySibling(t *testing
 			src: `
 (def result
   (let [x 1]
-    (def mutate (fn [] (set! x 99)))
-    (mutate)
-    (= x 99)))
+    (let [mutate (fn [] (set! x 99))]
+      (mutate)
+      (= x 99))))
 result`,
 		},
 		{
@@ -2437,9 +2437,9 @@ result`,
 			src: `
 (def result
   (let ((x 1))
-    (defun mutate () (setq x 99))
-    (mutate)
-    (= x 99)))
+    (let ((mutate (fn [] (setq x 99))))
+      (funcall mutate)
+      (= x 99))))
 result`,
 		},
 	}

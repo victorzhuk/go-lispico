@@ -244,8 +244,7 @@ func TestClosure_LexicalCapture_Let(t *testing.T) {
 	env := newTestEnv()
 
 	src := `
-(let [n 100]
-  (def get-n (fn [] n)))
+(def get-n (let [n 100] (fn [] n)))
 (get-n)`
 
 	result := compileAndRun(t, env, src)
@@ -451,9 +450,9 @@ func TestSetBangAfterClosure(t *testing.T) {
 
 	src := `
 (let [x 10]
-  (def get-x (fn [] x))
-  (set! x 20)
-  (get-x))`
+  (let [get-x (fn [] x)]
+    (set! x 20)
+    (get-x)))`
 
 	result := compileAndRun(t, env, src)
 	assert.True(t, result.Equals(core.Int{V: 20}), "expected 20, got %v", result)
