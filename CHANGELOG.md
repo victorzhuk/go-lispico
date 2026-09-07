@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The compiled subset is narrower: the bytecode compiler now refuses a `def` or
+  `defn` inside a lexical scope — a `fn` body, a `let`, `let*` or `loop` body,
+  or a `try` form with a `catch` handler — with the same typed
+  `BytecodeUnsupported` error a nested `defmacro` already returns, and the
+  runtime tree-walks the whole enclosing top-level form before any of its
+  bytecode executes. Such forms — and any top-level form sharing a `do` with
+  one — now run on the tree-walking evaluator, with its representation,
+  performance, and metering characteristics: reduction and allocation counts
+  for affected forms can change in either direction, and none of these counts
+  is promised to stay unchanged. Unaffected compiled functions keep slot
+  locals and flat closures: no per-call lexical environment is allocated.
+
 - Compiler local-scope compilation: `let`, `let*`, `try`, and the loop body of
   `loop` now consume the binding initializer's value before the form's tail
   through an `OpPop` slot reservation, so a binding expression no longer
@@ -54,6 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nor route a direct eager build's writes into an already-published layer
   (the `already published: refusing write` rejection). `putEntry` no longer
   silently drops writes while the flag is flipped true mid-build.
+
+- The bytecode VM no longer binds a lexical `def`/`defn` as a global write. A
+  definition inside a lexical scope — a `fn` body, a `let`, `let*` or `loop`
+  body, or a `catch` handler — compiled to `OpSetGlobal`/`OpSetFunc` and
+  landed in the global namespace: `(def x 10) ((fn [] (def x 1))) x` returned
+  `1` under the VM where the tree-walker returns `10`. The compiler refuses
+  these scopes (binding list empty or not) after shape validation, and the
+  whole enclosing top-level form is evaluated by the tree-walker before any
+  of its bytecode executes, so mutations earlier in the form run exactly once
+  per evaluation. Top-level definitions, including those inside a top-level
+  `do`, stay compiled. Pinned by `TestCompilerScopedDefinitionFallback`,
+  `TestRuntimeScopedDefinitionParity`, and
+  `TestRuntimeScopedDefinitionFallbackOnce`.
 
 ## [0.13.0] - 2026-09-06
 
