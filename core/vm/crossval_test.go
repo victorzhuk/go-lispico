@@ -507,6 +507,286 @@ func TestVMVsTreeWalker_TryCatch(t *testing.T) {
 	}
 }
 
+// caughtStringValue asserts that evaluator finished without error and that
+// its result is the catch handler's String payload, returning that payload.
+func caughtStringValue(t *testing.T, evaluator string, val core.Value, err error) string {
+	t.Helper()
+	require.NoError(t, err, "%s must unwind the ordinary error to the active catch handler, got: %v", evaluator, err)
+	s, ok := val.(core.String)
+	require.True(t, ok, "%s handler must receive core.String{V: err.Error()}, got %T: %v", evaluator, val, val)
+	return s.V
+}
+
+// runErrorParity runs each src on the tree-walker and on the bytecode VM,
+// each against its own env from newEnv, sharing that env across srcs, and
+// returns the final value and error each evaluator produced per src.
+func runErrorParity(t *testing.T, newEnv func() *core.Env, srcs ...string) (treeVals, vmVals []core.Value, treeErrs, vmErrs []error) {
+	t.Helper()
+
+	treeEnv := newEnv()
+	treeEval := core.NewEvaluator()
+	vmEnv := newEnv()
+	v := vm.New(vmEnv)
+	for _, src := range srcs {
+		forms, err := core.Read(src)
+		require.NoError(t, err, "read %q", src)
+
+		var treeVal core.Value = core.Nil{}
+		var treeErr error
+		for _, form := range forms {
+			treeVal, treeErr = treeEval.Eval(context.Background(), form, treeEnv)
+		}
+		treeVals, treeErrs = append(treeVals, treeVal), append(treeErrs, treeErr)
+
+		chunks, err := compiler.CompileAll(forms)
+		require.NoError(t, err, "compile %q", src)
+		var vmVal core.Value = core.Nil{}
+		var vmErr error
+		for _, chunk := range chunks {
+			vmVal, vmErr = v.Run(context.Background(), chunk)
+		}
+		vmVals, vmErrs = append(vmVals, vmVal), append(vmErrs, vmErr)
+	}
+	return treeVals, vmVals, treeErrs, vmErrs
+}
+
+// TestVMOrdinaryErrorCatchParity pins the vm-runtime-error-parity seam:
+// ordinary (non-terminal) errors raised by valid VM runtime opcodes must
+// unwind to the nearest active catch handler with the same handler value the
+// tree-walker delivers, undefined mutation must leave the environment
+// unbound, unhandled ordinary errors must keep their original error class at
+// the host boundary, and terminal errors must never enter a catch body.
+func TestVMOrdinaryErrorCatchParity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("undefined lookup", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []struct {
+			name string
+			src  string
+			sym  string
+		}{
+			{"value cell", "(try missing (catch e e))", "missing"},
+			{"head symbol", "(try (nosuchfn 1) (catch e e))", "nosuchfn"},
+			{"fused operand", "(try (< nosuchoperand 1) (catch e e))", "nosuchoperand"},
+		} {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				want := core.NewUndefinedError(tt.sym).Error()
+				treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, tt.src)
+				assert.Equal(t, want, caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0]),
+					"tree-walker handler value for undefined %q", tt.sym)
+				assert.Equal(t, want, caughtStringValue(t, "VM", vmVals[0], vmErrs[0]),
+					"VM handler value for undefined %q", tt.sym)
+			})
+		}
+	})
+
+	t.Run("undefined mutation stays unbound", func(t *testing.T) {
+		t.Parallel()
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv,
+			"(try (set! missing 1) (catch e e))", "missing")
+
+		treeCaught := caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0])
+		assert.NotEmpty(t, treeCaught, "tree-walker handler value for the failed set!")
+		vmCaught := caughtStringValue(t, "VM", vmVals[0], vmErrs[0])
+		assert.NotEmpty(t, vmCaught, "VM handler value for the failed set!")
+
+		// The failed mutation must not have created the binding in either
+		// evaluator's environment: the follow-up lookup still reports
+		// UndefinedError.
+		for _, side := range []struct {
+			name string
+			err  error
+		}{
+			{"tree-walker", treeErrs[1]},
+			{"VM", vmErrs[1]},
+		} {
+			require.Error(t, side.err, "%s follow-up lookup of missing after the caught set! must fail", side.name)
+			var le *core.LispicoError
+			require.ErrorAs(t, side.err, &le, "%s follow-up lookup error type", side.name)
+			assert.Equal(t, "UndefinedError", le.Code, "%s follow-up lookup of missing after the caught set! must stay undefined", side.name)
+		}
+	})
+
+	t.Run("nested closure lookup", func(t *testing.T) {
+		t.Parallel()
+		want := core.NewUndefinedError("missing").Error()
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv,
+			"(try ((fn [] missing)) (catch e e))")
+		assert.Equal(t, want, caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0]),
+			"tree-walker handler value for a closure-body lookup failure")
+		assert.Equal(t, want, caughtStringValue(t, "VM", vmVals[0], vmErrs[0]),
+			"VM must unwind a closure-body lookup failure to the enclosing handler with the same value")
+	})
+
+	t.Run("map construction unhashable key", func(t *testing.T) {
+		t.Parallel()
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv,
+			"(def k [1 2])", "(try {k 3} (catch e e))")
+		require.NoError(t, treeErrs[0], "tree-walker binding of k")
+		require.NoError(t, vmErrs[0], "VM binding of k")
+		treeCaught := caughtStringValue(t, "tree-walker", treeVals[1], treeErrs[1])
+		vmCaught := caughtStringValue(t, "VM", vmVals[1], vmErrs[1])
+		assert.Equal(t, treeCaught, vmCaught,
+			"VM map-construction handler value must render the tree-walker-equivalent message")
+	})
+
+	t.Run("call non-callable", func(t *testing.T) {
+		t.Parallel()
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv,
+			"(1)", "(try (1) (catch e e))")
+		require.Error(t, treeErrs[0], "tree-walker must reject calling a non-callable uncaught")
+		require.Error(t, vmErrs[0], "VM must reject calling a non-callable uncaught")
+		treeCaught := caughtStringValue(t, "tree-walker", treeVals[1], treeErrs[1])
+		vmCaught := caughtStringValue(t, "VM", vmVals[1], vmErrs[1])
+		assert.NotEmpty(t, treeCaught, "tree-walker call-failure handler value")
+		assert.Equal(t, treeCaught, vmCaught,
+			"VM call-failure handler value must match the tree-walker's rendered message")
+	})
+
+	t.Run("native op failure", func(t *testing.T) {
+		t.Parallel()
+		want := core.NewTypeError("number", core.String{V: "a"}).Error()
+		newEnv := func() *core.Env {
+			env := newCrossValEnv()
+			env.Set("+", core.GoFunc{
+				Name: "+",
+				Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+					return nil, core.NewTypeError("number", core.String{V: "a"})
+				},
+			})
+			return env
+		}
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newEnv, `(try (+ 1 "a") (catch e e))`)
+		assert.Equal(t, want, caughtStringValue(t, "tree-walker", treeVals[0], treeErrs[0]),
+			"tree-walker native-op failure handler value")
+		assert.Equal(t, want, caughtStringValue(t, "VM", vmVals[0], vmErrs[0]),
+			"VM native-op failure handler value")
+	})
+
+	t.Run("unhandled keeps original class", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []struct {
+			name     string
+			src      string
+			wantCode string
+			wantMsg  string
+		}{
+			{"undefined lookup", "missing", "UndefinedError", core.NewUndefinedError("missing").Error()},
+			{"non-callable call", "(1)", "TypeError", ""},
+		} {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				_, _, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, tt.src)
+				for _, side := range []struct {
+					name string
+					err  error
+				}{
+					{"tree-walker", treeErrs[0]},
+					{"VM", vmErrs[0]},
+				} {
+					require.Error(t, side.err, "%s must surface the uncaught error", side.name)
+					var le *core.LispicoError
+					require.ErrorAs(t, side.err, &le, "%s uncaught error type", side.name)
+					assert.Equal(t, tt.wantCode, le.Code,
+						"%s uncaught error must keep its original class, not a replacement", side.name)
+					if tt.wantMsg != "" {
+						assert.Equal(t, tt.wantMsg, side.err.Error(), "%s uncaught error message", side.name)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("terminal side effects", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []struct {
+			name    string
+			boomErr error
+			check   func(t *testing.T, err error)
+		}{
+			{
+				name:    "wrapped context.Canceled",
+				boomErr: fmt.Errorf("wrapped: %w", context.Canceled),
+				check: func(t *testing.T, err error) {
+					require.ErrorIs(t, err, context.Canceled, "terminal identity must reach the caller")
+				},
+			},
+			{
+				name:    "wrapped context.DeadlineExceeded",
+				boomErr: fmt.Errorf("wrapped: %w", context.DeadlineExceeded),
+				check: func(t *testing.T, err error) {
+					require.ErrorIs(t, err, context.DeadlineExceeded, "terminal identity must reach the caller")
+				},
+			},
+			{
+				name:    "resource limit",
+				boomErr: core.NewResourceLimitError("limit"),
+				check: func(t *testing.T, err error) {
+					var le *core.LispicoError
+					require.ErrorAs(t, err, &le, "resource limit error type")
+					assert.Equal(t, core.CodeResourceLimit, le.Code, "resource limit class must reach the caller")
+				},
+			},
+		} {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				const src = `(try (boom) (catch e (marker)))`
+				forms, err := core.Read(src)
+				require.NoError(t, err, "read %q", src)
+
+				newSideEnv := func(counter *int) *core.Env {
+					env := newCrossValEnv()
+					env.Set("boom", core.GoFunc{
+						Name: "boom",
+						Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+							return nil, tt.boomErr
+						},
+					})
+					env.Set("marker", core.GoFunc{
+						Name: "marker",
+						Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+							*counter++
+							return core.Nil{}, nil
+						},
+					})
+					return env
+				}
+
+				var treeCaught int
+				treeEval := core.NewEvaluator()
+				var treeErr error
+				for _, form := range forms {
+					_, treeErr = treeEval.Eval(context.Background(), form, newSideEnv(&treeCaught))
+				}
+				require.Error(t, treeErr, "tree-walker must surface the terminal error uncaught")
+				require.True(t, core.IsTerminalEvalError(treeErr),
+					"tree-walker terminal error must stay terminal, got %T: %v", treeErr, treeErr)
+				tt.check(t, treeErr)
+				assert.Equal(t, 0, treeCaught, "tree-walker must never enter the catch body for a terminal error")
+
+				var vmCaught int
+				chunks, err := compiler.CompileAll(forms)
+				require.NoError(t, err, "compile %q", src)
+				v := vm.New(newSideEnv(&vmCaught))
+				var vmErr error
+				for _, chunk := range chunks {
+					_, vmErr = v.Run(context.Background(), chunk)
+				}
+				require.Error(t, vmErr, "VM must surface the terminal error uncaught")
+				require.True(t, core.IsTerminalEvalError(vmErr),
+					"VM terminal error must stay terminal, got %T: %v", vmErr, vmErr)
+				tt.check(t, vmErr)
+				assert.Equal(t, 0, vmCaught, "VM must never enter the catch body for a terminal error")
+			})
+		}
+	})
+}
+
 func runTerminalErrorNotCaught(t *testing.T, src string, newRun func() (context.Context, *core.Env, func()), opts ...vm.VMOption) {
 	t.Helper()
 
