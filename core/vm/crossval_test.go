@@ -1141,6 +1141,99 @@ func TestVMVsTreeWalker_Macro(t *testing.T) {
 		vmResult, vmResult, treeResult, treeResult)
 }
 
+// throwCarrier extracts the host-visible throw contract from err: the
+// *core.LispicoError that errors.As must reach, carrying the Code and Message
+// halves of the uncaught-throw boundary contract in one want/got value.
+// Returns nil when errors.As cannot reach *core.LispicoError.
+func throwCarrier(err error) *core.LispicoError {
+	var lerr *core.LispicoError
+	errors.As(err, &lerr)
+	return lerr
+}
+
+// assertCaughtStructuredValue asserts that val — the catch binding after a
+// structured throw reached handler e — is the original *core.HashMap runtime
+// type (never its rendered string) and that keyword lookup on it yields the
+// thrown entry intact.
+func assertCaughtStructuredValue(t *testing.T, evaluator string, val core.Value) {
+	t.Helper()
+	m, ok := val.(*core.HashMap)
+	require.True(t, ok, "%s: catch must bind the original *core.HashMap, got %T: %v", evaluator, val, val)
+	kw, found := m.Get(core.Keyword{V: "code"})
+	require.True(t, found, "%s: caught map must retain the :code entry", evaluator)
+	assert.Equal(t, core.Keyword{V: "denied"}, kw, "%s: caught map's :code must survive as :denied", evaluator)
+}
+
+// TestVMUncaughtThrowParity pins the explicit-throw half of the
+// vm-runtime-error-parity seam against the tree-walker's carrier protocol.
+// Uncaught, a throw must reach the host as *core.LispicoError{Code:
+// "ThrowError"} rendering the thrown core.Value exactly as the tree-walker
+// renders it — String.V without quotes for strings, fmt.Sprintf("%v", value)
+// otherwise — never the missing-handler TypeError substitution. Caught, the
+// handler must bind the original core.Value runtime type, and rethrowing
+// that binding must preserve the original value through the outer catch.
+func TestVMUncaughtThrowParity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uncaught_string_throw", func(t *testing.T) {
+		t.Parallel()
+		_, _, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, `(throw "boom")`)
+		require.Equal(t,
+			&core.LispicoError{Code: "ThrowError", Message: "boom"},
+			throwCarrier(treeErrs[0]),
+			"tree-walker baseline: uncaught string throw must carry Code ThrowError with Message \"boom\" (String.V without quotes)")
+		assert.Equal(t,
+			&core.LispicoError{Code: "ThrowError", Message: "boom"},
+			throwCarrier(vmErrs[0]),
+			"vm: uncaught string throw must surface LispicoError{Code: ThrowError, Message: boom} at the host boundary, got %v", vmErrs[0])
+	})
+
+	t.Run("uncaught_int_throw", func(t *testing.T) {
+		t.Parallel()
+		_, _, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, `(throw 42)`)
+		require.Equal(t,
+			&core.LispicoError{Code: "ThrowError", Message: fmt.Sprintf("%v", core.Int{V: 42})},
+			throwCarrier(treeErrs[0]),
+			"tree-walker baseline: uncaught Int throw must render via the value's %%v form")
+		assert.Equal(t,
+			&core.LispicoError{Code: "ThrowError", Message: fmt.Sprintf("%v", core.Int{V: 42})},
+			throwCarrier(vmErrs[0]),
+			"vm: uncaught Int throw must surface ThrowError with the value's %%v rendering at the host boundary, got %v", vmErrs[0])
+	})
+
+	t.Run("uncaught_keyword_throw", func(t *testing.T) {
+		t.Parallel()
+		_, _, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, `(throw :denied)`)
+		require.Equal(t,
+			&core.LispicoError{Code: "ThrowError", Message: fmt.Sprintf("%v", core.Keyword{V: "denied"})},
+			throwCarrier(treeErrs[0]),
+			"tree-walker baseline: uncaught Keyword throw must render via the value's %%v form")
+		assert.Equal(t,
+			&core.LispicoError{Code: "ThrowError", Message: fmt.Sprintf("%v", core.Keyword{V: "denied"})},
+			throwCarrier(vmErrs[0]),
+			"vm: uncaught Keyword throw must surface ThrowError with the value's %%v rendering at the host boundary, got %v", vmErrs[0])
+	})
+
+	t.Run("caught_structured_value", func(t *testing.T) {
+		t.Parallel()
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, `(try (throw {:code :denied}) (catch e e))`)
+		require.NoError(t, treeErrs[0], "tree-walker: structured catch must not leak the throw as an error")
+		assertCaughtStructuredValue(t, "tree-walker", treeVals[0])
+		require.NoError(t, vmErrs[0], "vm: structured catch must not leak the throw as an error")
+		assertCaughtStructuredValue(t, "vm", vmVals[0])
+	})
+
+	t.Run("rethrow_preserves_value", func(t *testing.T) {
+		t.Parallel()
+		src := `(try (try (throw {:code :denied}) (catch e (throw e))) (catch e e))`
+		treeVals, vmVals, treeErrs, vmErrs := runErrorParity(t, newCrossValEnv, src)
+		require.NoError(t, treeErrs[0], "tree-walker: rethrow must unwind to the outer catch")
+		assertCaughtStructuredValue(t, "tree-walker", treeVals[0])
+		require.NoError(t, vmErrs[0], "vm: rethrow must unwind to the outer catch")
+		assertCaughtStructuredValue(t, "vm", vmVals[0])
+	})
+}
+
 func TestVMVsTreeWalker_NonStringThrow(t *testing.T) {
 	t.Parallel()
 
