@@ -1353,7 +1353,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			}
 			vm.frames[len(vm.frames)-1].ip = ip
 			if !vm.throw(value) {
-				return nil, core.NewTypeError("handler", core.Nil{})
+				return nil, newThrowError(value)
 			}
 			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
 
@@ -1985,6 +1985,35 @@ type catchParityError struct {
 func (e *catchParityError) Error() string { return e.err.Error() }
 func (e *catchParityError) Unwrap() error { return e.err }
 
+// throwError is the VM's uncaught-explicit-throw carrier: the private type
+// mirrors core's tree-walker carrier so an uncaught OpThrow reaches the host
+// as the same *core.LispicoError{Code: "ThrowError"} with the same rendering,
+// never a missing-handler TypeError substitution. ThrownValue completes the
+// cross-package carrier protocol: a receiving evaluator's try/catch recovers
+// the original core.Value via errors.As without stringifying it.
+type throwError struct {
+	value core.Value
+	err   *core.LispicoError
+}
+
+func (e *throwError) Error() string { return e.err.Message }
+func (e *throwError) Unwrap() error { return e.err }
+
+// ThrownValue implements the throw value-carrier protocol shared with
+// core.evalTry and the VM's runtime-error routing.
+func (e *throwError) ThrownValue() core.Value { return e.value }
+
+// newThrowError builds the uncaught-throw carrier for value, rendering it as
+// evalThrow does: String.V without quotes for strings, fmt.Sprintf("%v")
+// otherwise.
+func newThrowError(value core.Value) *throwError {
+	msg := fmt.Sprintf("%v", value)
+	if s, ok := value.(core.String); ok {
+		msg = s.V
+	}
+	return &throwError{value: value, err: &core.LispicoError{Code: "ThrowError", Message: msg}}
+}
+
 // setLexicalError builds the OpSetLexical failure for a set! whose target
 // resolves in no lexically visible scope: the host boundary keeps the VM's
 // UndefinedError class (TestVMVsTreeWalker_SetUndefined), while a catch
@@ -2003,10 +2032,11 @@ func setLexicalError(sym core.Symbol) *catchParityError {
 // instruction through the VM's one runtime-error policy: it records the
 // current frame's ip; a terminal error settles pending allocation charges (a
 // flush-induced resource-limit error overrides the original) and resets the
-// machine before reaching the host; an ordinary error transfers its handler
+// machine before reaching the host; an explicit-throw carrier transfers its
+// original core.Value unchanged to the nearest active handler, mirroring the
+// tree-walker's catch binding; any other ordinary error transfers its handler
 // rendering - a catchParityError's message, otherwise err.Error() - as
-// core.String to the nearest active handler, mirroring the tree-walker's
-// catch binding. A nil return means the handler was entered and the caller
+// core.String. A nil return means the handler was entered and the caller
 // must reload the selected frame; a non-nil return is the error to surface:
 // the terminal error, or the untouched original object when no handler is
 // active.
@@ -2020,6 +2050,13 @@ func (vm *VM) routeRuntimeError(ip int, err error) error {
 		}
 		vm.Reset()
 		return err
+	}
+	var carrier interface{ ThrownValue() core.Value }
+	if errors.As(err, &carrier) {
+		if !vm.throw(carrier.ThrownValue()) {
+			return err
+		}
+		return nil
 	}
 	msg := err.Error()
 	var cpe *catchParityError

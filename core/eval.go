@@ -1960,9 +1960,9 @@ func evalTry(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 			return nil, err
 		}
 		catchEnv := env.Child()
-		var te *throwError
-		if errors.As(err, &te) {
-			if err := catchEnv.Set(errSym.V, te.value); err != nil {
+		var carrier interface{ ThrownValue() Value }
+		if errors.As(err, &carrier) {
+			if err := catchEnv.Set(errSym.V, carrier.ThrownValue()); err != nil {
 				return nil, err
 			}
 		} else {
@@ -1989,6 +1989,13 @@ type throwError struct {
 
 func (e *throwError) Error() string { return e.cause.Message }
 func (e *throwError) Unwrap() error { return e.cause }
+
+// ThrownValue exposes the original thrown value to any receiving evaluator's
+// try/catch — including the bytecode VM, whose catch routing and GoFunc
+// re-entry paths recognize the carrier through
+// errors.As to interface{ ThrownValue() Value } — so an explicit throw
+// unwinding across an evaluator boundary binds its value, not a rendering.
+func (e *throwError) ThrownValue() Value { return e.value }
 
 func evalThrow(ctx context.Context, e *engine, args []Value, env *Env) (Value, error) {
 	if len(args) != 1 {
