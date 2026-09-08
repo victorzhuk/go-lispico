@@ -617,12 +617,24 @@ func (be *bytecodeEvaluator) evalResourceContext(ctx context.Context) context.Co
 	if !core.HasEvalMeter(ctx) && be.engineMeter != nil {
 		ctx = WithMeter(ctx, be.engineMeter)
 	}
+	// When the caller already set resource limits via AdoptEvalStateWithMeter,
+	// HasEvalState is true and those limits must be preserved — overwriting them
+	// with the engine defaults would destroy a cumulative caller-meter budget.
+	if core.HasEvalState(ctx) {
+		return ctx
+	}
 	return core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
 }
 
 func (e *engineImpl) evalResourceContext(ctx context.Context) context.Context {
 	if !core.HasEvalMeter(ctx) && e.config.engineMeter != nil {
 		ctx = WithMeter(ctx, e.config.engineMeter)
+	}
+	// When the caller already set resource limits via AdoptEvalStateWithMeter,
+	// HasEvalState is true and those limits must be preserved — overwriting them
+	// with the engine defaults would destroy a cumulative caller-meter budget.
+	if core.HasEvalState(ctx) {
+		return ctx
 	}
 	return core.WithEvalResourceLimits(ctx, e.config.limits.MaxReductions, e.config.limits.MaxAllocationBytes)
 }
