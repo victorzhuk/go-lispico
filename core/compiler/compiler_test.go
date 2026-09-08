@@ -152,7 +152,11 @@ func TestCompiler_List_Empty(t *testing.T) {
 
 	chunk := c.Chunk()
 	require.Len(t, chunk.Code, 1)
-	assert.Equal(t, vm.OpNil, chunk.Code[0].Op())
+	assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
+	lst, ok := chunk.Constants[chunk.Code[0].A()].(core.List)
+	require.True(t, ok, "empty list must compile to a plain core.List constant")
+	assert.Equal(t, 0, lst.Len())
+	assert.Empty(t, chunk.ConstCharges)
 }
 
 // The tree-walker evaluates an empty list to itself: core/eval.go returns the

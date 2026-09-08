@@ -222,7 +222,9 @@ func (c *Compiler) compileList(f core.List) error {
 	}
 	items := f.ToSlice()
 	if len(items) == 0 {
-		c.emit(vm.OpNil, 0)
+		// Plain OpConst (like quote), not OpNil: the tree-walker returns the
+		// empty List itself, and a charge here would diverge the eval ledger.
+		c.emit(vm.OpConst, c.chunk.AddConstant(f))
 		return nil
 	}
 	head, isSym := items[0].(core.Symbol)
