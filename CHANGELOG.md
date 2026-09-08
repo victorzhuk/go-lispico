@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `json/decode` now charges its decoded result exactly once per call. Public
+  dispatch billed the result's root allocation twice — the plugin's deep
+  charge followed by a second shallow charge at the call site — so a payload
+  that fit the allocation budget exactly could be refused. The full deep
+  result size is now charged once per dispatch under both the tree-walking
+  evaluator and the bytecode VM; deep accounting, numeric conversion, and
+  terminal refusals are unchanged. Pinned by
+  `TestDecodeApplyChargesResultOnce`, `TestDecodeApplyExactBudgetMatrix`,
+  and the JSON result-metering regressions.
+
 - `min` and `max` return an exact integer whenever every argument is an
   integer. Both built-ins compared through a `float64` accumulator, so integer
   operands above 2^53 were rounded on the way in and the returned integer could
