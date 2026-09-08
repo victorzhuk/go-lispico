@@ -155,6 +155,24 @@ func TestCompiler_List_Empty(t *testing.T) {
 	assert.Equal(t, vm.OpNil, chunk.Code[0].Op())
 }
 
+// The tree-walker evaluates an empty list to itself: core/eval.go returns the
+// List value when Len()==0. The VM path must yield the same empty-list value,
+// never nil.
+func TestCompilerEmptyListValue(t *testing.T) {
+	t.Parallel()
+
+	chunks, err := CompileAll([]core.Value{core.List{}})
+	require.NoError(t, err)
+
+	v := vm.New(core.NewEnv(nil))
+	result, err := v.Run(t.Context(), chunks[0])
+	require.NoError(t, err)
+
+	lst, ok := result.(core.List)
+	require.True(t, ok, "() must evaluate to the empty list value; got %T", result)
+	assert.Equal(t, 0, lst.Len(), "() must be the empty list")
+}
+
 func TestCompiler_List_Literal(t *testing.T) {
 	c := NewCompiler("test")
 	lst := core.NewList([]core.Value{

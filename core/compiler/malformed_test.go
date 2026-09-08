@@ -40,6 +40,7 @@ func TestCompiler_MalformedForms(t *testing.T) {
 		{"loop no body", mlist("loop", mvec())},
 		{"loop no args", mlist("loop")},
 		{"quote no args", mlist("quote")},
+		{"quote two args", mlist("quote", core.Int{V: 1}, core.Int{V: 2})},
 		{"catch outside try", mlist("catch", msym("e"), msym("e"))},
 		{"throw no args", mlist("throw")},
 		{"throw two args", mlist("throw", core.Int{V: 1}, core.Int{V: 2})},
