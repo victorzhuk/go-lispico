@@ -256,13 +256,45 @@ func TestArithmetic_MinMax(t *testing.T) {
 		{"min ints", "(min 1 5 3)", core.Int{V: 1}},
 		{"max with float", "(max 1 5.5 3)", core.Float{V: 5.5}},
 		{"min with float", "(min 1.5 5 3)", core.Float{V: 1.5}},
+		{"max singleton max int", "(max 9223372036854775807)", core.Int{V: 9223372036854775807}},
+		{"min singleton max int", "(min 9223372036854775807)", core.Int{V: 9223372036854775807}},
+		{"max singleton min int", "(max -9223372036854775808)", core.Int{V: -9223372036854775808}},
+		{"min singleton min int", "(min -9223372036854775808)", core.Int{V: -9223372036854775808}},
+		{"max adjacent above 2^53 ascending", "(max 9007199254740992 9007199254740993)", core.Int{V: 9007199254740993}},
+		{"max adjacent above 2^53 descending", "(max 9007199254740993 9007199254740992)", core.Int{V: 9007199254740993}},
+		{"min adjacent above 2^53 ascending", "(min 9007199254740992 9007199254740993)", core.Int{V: 9007199254740992}},
+		{"min adjacent above 2^53 descending", "(min 9007199254740993 9007199254740992)", core.Int{V: 9007199254740992}},
+		{"max adjacent below -2^53 ascending", "(max -9007199254740993 -9007199254740992)", core.Int{V: -9007199254740992}},
+		{"max adjacent below -2^53 descending", "(max -9007199254740992 -9007199254740993)", core.Int{V: -9007199254740992}},
+		{"min adjacent below -2^53 ascending", "(min -9007199254740993 -9007199254740992)", core.Int{V: -9007199254740993}},
+		{"min adjacent below -2^53 descending", "(min -9007199254740992 -9007199254740993)", core.Int{V: -9007199254740993}},
+		{"max repeated extremum", "(max 9007199254740993 9007199254740993 9007199254740992)", core.Int{V: 9007199254740993}},
+		{"min repeated extremum", "(min 9007199254740992 9007199254740992 9007199254740993)", core.Int{V: 9007199254740992}},
+		{"max full range mixed signs", "(max -9223372036854775808 0 9223372036854775807)", core.Int{V: 9223372036854775807}},
+		{"min full range mixed signs", "(min 9223372036854775807 0 -9223372036854775808)", core.Int{V: -9223372036854775808}},
+		{"max mixed signs reordered", "(max 0 9223372036854775807 -9223372036854775808)", core.Int{V: 9223372036854775807}},
+		{"min mixed signs reordered", "(min 0 -9223372036854775808 9223372036854775807)", core.Int{V: -9223372036854775808}},
+		{"max int wins over float", "(max 2 1.5)", core.Float{V: 2}},
+		{"min int wins over float", "(min 1 1.5)", core.Float{V: 1}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := eval(t, env, tt.input)
 			if !result.Equals(tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, result)
+				t.Fatalf("expected %v, got %v", tt.expected, result)
+			}
+			switch want := tt.expected.(type) {
+			case core.Int:
+				got, ok := result.(core.Int)
+				if !ok || got.V != want.V {
+					t.Errorf("expected core.Int %d, got %T %v", want.V, result, result)
+				}
+			case core.Float:
+				got, ok := result.(core.Float)
+				if !ok || got.V != want.V {
+					t.Errorf("expected core.Float %v, got %T %v", want.V, result, result)
+				}
 			}
 		})
 	}
