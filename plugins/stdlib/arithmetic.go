@@ -435,6 +435,7 @@ func minMaxFunc(name string, isMax bool) func(context.Context, core.Evaluator, [
 			return finishBuiltin(budget, nil, arityErrorf("%s: requires at least 1 argument", name))
 		}
 
+		var intResult int64
 		var result float64
 		hasFloat := false
 
@@ -443,7 +444,7 @@ func minMaxFunc(name string, isMax bool) func(context.Context, core.Evaluator, [
 		}
 		switch v := args[0].(type) {
 		case core.Int:
-			result = float64(v.V)
+			intResult = v.V
 		case core.Float:
 			result = v.V
 			hasFloat = true
@@ -458,10 +459,21 @@ func minMaxFunc(name string, isMax bool) func(context.Context, core.Evaluator, [
 			var x float64
 			switch v := arg.(type) {
 			case core.Int:
+				// Integers stay exact until a float operand forces promotion:
+				// float64 cannot distinguish adjacent integers past 2^53.
+				if !hasFloat {
+					if (isMax && v.V > intResult) || (!isMax && v.V < intResult) {
+						intResult = v.V
+					}
+					continue
+				}
 				x = float64(v.V)
 			case core.Float:
+				if !hasFloat {
+					result = float64(intResult)
+					hasFloat = true
+				}
 				x = v.V
-				hasFloat = true
 			default:
 				return finishBuiltin(budget, nil, typeErrorf("%s: expected number, got %T", name, arg))
 			}
@@ -480,6 +492,6 @@ func minMaxFunc(name string, isMax bool) func(context.Context, core.Evaluator, [
 		if hasFloat {
 			return finishBuiltin(budget, core.Float{V: result}, nil)
 		}
-		return finishBuiltin(budget, core.BoxInt(int64(result)), nil)
+		return finishBuiltin(budget, core.BoxInt(intResult), nil)
 	}
 }
