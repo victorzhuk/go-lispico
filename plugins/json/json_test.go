@@ -5,6 +5,7 @@ import (
 	stdjson "encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -477,16 +478,115 @@ func TestErrors(t *testing.T) {
 func TestDecodeLargeIntegers(t *testing.T) {
 	env := setupEnv(t)
 
+	decodeJSON := func(t *testing.T, src string) core.Value {
+		t.Helper()
+		return eval(t, env, `(json/decode `+strconv.Quote(src)+`)`)
+	}
+
+	// wantInt asserts the concrete core.Int type and the exact value, not just
+	// .Equals, so a number that took a float64 round trip goes red.
+	wantInt := func(t *testing.T, got core.Value, want int64) {
+		t.Helper()
+		iv, ok := got.(core.Int)
+		require.True(t, ok, "expected core.Int, got %T (%v)", got, got)
+		assert.Equal(t, want, iv.V)
+	}
+
 	t.Run("large int within safe range", func(t *testing.T) {
 		result := eval(t, env, `(json/decode "9007199254740991")`)
 		_, isInt := result.(core.Int)
 		assert.True(t, isInt, "expected Int for safe large integer, got %T", result)
 	})
 
-	t.Run("float for large int outside safe range", func(t *testing.T) {
-		result := eval(t, env, `(json/decode "9007199254740992")`)
-		_, isFloat := result.(core.Float)
-		assert.True(t, isFloat, "expected Float for large integer, got %T", result)
+	// Both signed int64 endpoints and the integers adjacent to +/-2^53 must
+	// survive decoding as exact core.Int values, at the root and nested.
+	endpoints := []struct {
+		name string
+		json string
+		want int64
+	}{
+		{"2^53", "9007199254740992", 9007199254740992},
+		{"2^53 plus one", "9007199254740993", 9007199254740993},
+		{"negative 2^53", "-9007199254740992", -9007199254740992},
+		{"negative 2^53 minus one", "-9007199254740993", -9007199254740993},
+		{"max int64", "9223372036854775807", math.MaxInt64},
+		{"min int64", "-9223372036854775808", math.MinInt64},
+	}
+	for _, tc := range endpoints {
+		t.Run(tc.name+" at root", func(t *testing.T) {
+			wantInt(t, decodeJSON(t, tc.json), tc.want)
+		})
+		t.Run(tc.name+" inside array", func(t *testing.T) {
+			vec, ok := decodeJSON(t, "["+tc.json+"]").(core.Vector)
+			require.True(t, ok, "expected Vector, got %T", vec)
+			require.Len(t, vec.ToSlice(), 1)
+			wantInt(t, vec.At(0), tc.want)
+		})
+		t.Run(tc.name+" inside object", func(t *testing.T) {
+			m, ok := decodeJSON(t, `{"v":`+tc.json+`}`).(*core.HashMap)
+			require.True(t, ok, "expected *core.HashMap, got %T", m)
+			got, found := m.Get(core.Keyword{V: "v"})
+			require.True(t, found, "object key :v missing")
+			wantInt(t, got, tc.want)
+		})
+	}
+
+	t.Run("whole decimal and exponent spellings remain exact", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			json string
+			want int64
+		}{
+			{"trailing zero decimal at max int64", "9223372036854775807.0", math.MaxInt64},
+			{"exponent spelling of min int64", "-9.223372036854775808e18", math.MinInt64},
+			{"trailing zero decimal above 2^53", "9007199254740993.0", 9007199254740993},
+			{"exponent spelling within int64", "9.2233720368547758e18", 9223372036854775800},
+			{"decimal spelling of small integer", "42.0", 42},
+			{"exponent spelling of small integer", "4.2e1", 42},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				wantInt(t, decodeJSON(t, tc.json), tc.want)
+			})
+		}
+	})
+
+	t.Run("zero remains exact regardless of spelling", func(t *testing.T) {
+		for _, src := range []string{"-0", "-0.0", "0.0", "0e0"} {
+			wantInt(t, decodeJSON(t, src), 0)
+		}
+	})
+
+	t.Run("nonzero fractional part below float precision stays Float", func(t *testing.T) {
+		got := decodeJSON(t, "1.0000000000000000001")
+		fv, ok := got.(core.Float)
+		require.True(t, ok, "expected core.Float, got %T (%v)", got, got)
+		assert.Equal(t, float64(1), fv.V)
+	})
+
+	t.Run("underflow to zero stays Float", func(t *testing.T) {
+		got := decodeJSON(t, "1e-400")
+		fv, ok := got.(core.Float)
+		require.True(t, ok, "expected core.Float, got %T (%v)", got, got)
+		assert.Equal(t, float64(0), fv.V)
+	})
+
+	t.Run("finite float fallback beyond int64", func(t *testing.T) {
+		for _, src := range []string{"9223372036854775808", "-9223372036854775809", "1e19"} {
+			got := decodeJSON(t, src)
+			_, isFloat := got.(core.Float)
+			assert.True(t, isFloat, "expected Float for whole number outside int64 range (%s), got %T (%v)", src, got, got)
+		}
+	})
+
+	t.Run("adjacent integers around 2^53 stay distinct", func(t *testing.T) {
+		a := decodeJSON(t, "9007199254740992")
+		b := decodeJSON(t, "9007199254740993")
+		assert.False(t, a.Equals(b), "9007199254740992 and 9007199254740993 decoded to equal values (%v %T, %v %T)", a, a, b, b)
+	})
+
+	t.Run("encode-decode round trip preserves exact integer", func(t *testing.T) {
+		got := eval(t, env, `(json/decode (json/encode 9007199254740993))`)
+		wantInt(t, got, 9007199254740993)
 	})
 }
 
@@ -754,8 +854,12 @@ func TestDecodeHashMap_Scaling(t *testing.T) {
 	}
 
 	timeDecode := func(jsonStr string) time.Duration {
+		// Build the same decoded intermediate the production decode path
+		// builds (json.Decoder with UseNumber), not a float64 tree.
+		dec := stdjson.NewDecoder(strings.NewReader(jsonStr))
+		dec.UseNumber()
 		var raw any
-		if err := stdjson.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		if err := dec.Decode(&raw); err != nil {
 			t.Fatal(err)
 		}
 		start := time.Now()
