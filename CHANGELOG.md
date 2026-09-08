@@ -42,6 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The bytecode compiler now matches the tree-walking evaluator on quotation
+  arity and the evaluated empty list. A malformed quotation — `(quote)` or
+  `(quote 1 2)` — is refused as a typed `*core.LispicoError` (`CompileError`)
+  before any bytecode is emitted, where `(quote 1 2)` previously compiled by
+  ignoring its second operand and the VM returned `1`; the tree-walker
+  rejected both shapes before and still does. A bare `()` in evaluation
+  position now compiles to a plain constant carrying the `core.List` value
+  itself, so the VM yields the empty list where it previously yielded `nil`,
+  with no construction charge and the eval ledger identical across
+  evaluators. Quoted data and `(quote ())` are unchanged, the reader parses
+  all of these forms exactly as before, and no dialect vocabulary is
+  touched — both fixes are compile/eval-path only and hold under both
+  shipped dialects. Pinned by `TestCompiler_MalformedForms`,
+  `TestCompilerEmptyListValue`, and `TestVMLiteralParity`.
+
 - Ordinary runtime errors now behave identically under the bytecode VM and
   the tree-walking evaluator. Failures raised by valid opcodes — unbound
   symbol lookups, `set!`, map construction, calls, and native operations —
