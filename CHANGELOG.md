@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `min` and `max` return an exact integer whenever every argument is an
+  integer. Both built-ins compared through a `float64` accumulator, so integer
+  operands above 2^53 were rounded on the way in and the returned integer could
+  be a value no argument held. The comparison now runs on `int64` for as long as
+  the call stays all-integer, so the result is one of the arguments itself, the
+  same under the tree-walking evaluator and the bytecode VM. A float argument
+  still promotes the call to float arithmetic, where a large integer operand can
+  still round — mixed integer/float calls keep their existing behavior. Arity
+  and type errors are unchanged. Pinned by
+  `TestMinMax_ExactIntegersAcrossDispatchModes` and `TestArithmetic_MinMax`.
+
 - The bytecode compiler now matches the tree-walking evaluator on quotation
   arity and the evaluated empty list. A malformed quotation — `(quote)` or
   `(quote 1 2)` — is refused as a typed `*core.LispicoError` (`CompileError`)
