@@ -206,16 +206,16 @@ register its own IO primitives, so the pure-computation plugins (`stdlib`,
 **frozen** — security and correctness fixes only
 (see `docs/adr/0004-kernel-first-mission.md`).
 
-| Plugin   | Status | Description                                                      |
-| -------- | ------ | ---------------------------------------------------------------- |
-| `stdlib` | active | Standard library (arithmetic, comparison, collections, strings) |
-| `json`   | active | JSON encode/decode (`plugins/json`)                              |
-| `fsm`    | idle   | Finite state machines (pure, no consumer)                        |
-| `llm`    | frozen | LLM API bindings (OpenAI, etc.)                                  |
-| `agent`  | frozen | Agent orchestration                                              |
-| `lio`    | frozen | File I/O and environment                                         |
-| `net`    | frozen | HTTP client                                                      |
-| `exec`   | frozen | Shell execution and crypto                                       |
+| Plugin   | Status | Description                                                                                                             |
+| -------- | ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `stdlib` | active | Standard library (arithmetic, comparison, collections, strings)                                                         |
+| `json`   | active | JSON encode/decode (`plugins/json`); exact `Int` for integral numbers within `int64`, finite `Float` fallback otherwise |
+| `fsm`    | idle   | Finite state machines (pure, no consumer)                                                                               |
+| `llm`    | frozen | LLM API bindings (OpenAI, etc.)                                                                                         |
+| `agent`  | frozen | Agent orchestration                                                                                                     |
+| `lio`    | frozen | File I/O and environment                                                                                                |
+| `net`    | frozen | HTTP client                                                                                                             |
+| `exec`   | frozen | Shell execution and crypto                                                                                              |
 
 ### Map lookup
 

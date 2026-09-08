@@ -40,6 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assignment's right-hand side on the operand stack, preserving the form's
   value as before.
 
+- **Breaking:** `json/decode` classifies JSON numbers by their exact decimal
+  value before any float rounding: every mathematically integral number in
+  the signed 64-bit integer range now decodes as an exact `core.Int`,
+  including decimal and exponent spellings. This changes the concrete type in
+  both directions. Integral values from `9007199254740992` upward, and their
+  negative counterparts down to `int64` minimum, arrive as `core.Int` where
+  the old decoder returned a rounded `core.Float`. Fractional tokens whose
+  rounded float64 was a whole number within the old `±9007199254740991` safe
+  range — `1.0000000000000000001`, or `1e-400` underflowing to zero — arrive
+  as `core.Float` where they were previously misclassified as `core.Int`.
+  Fractional tokens that round to a whole float stay `core.Float`;
+  out-of-`int64` whole numbers keep the finite `core.Float` fallback, and
+  conversion overflow remains an error. Pinned by the JSON numeric decoding
+  regressions.
+
 ### Fixed
 
 - `min` and `max` return an exact integer whenever every argument is an
