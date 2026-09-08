@@ -180,6 +180,15 @@ type lazyEvalStateCtx struct {
 	maxAllocBytes atomic.Int64
 	reductions    atomic.Int64
 	allocBytes    atomic.Int64
+	// callerBudget records budget provenance: AdoptEvalStateWithMeter sets
+	// it iff the adopter armed at least one explicit ceiling with the
+	// snapshot (MaxReductions or MaxAllocationBytes greater than zero), so
+	// HasCallerEvalBudget can tell a caller-owned ledger from a wrapper
+	// whose ceilings merely normalized to the package defaults — even when
+	// the two are numerically identical. Written once at build time before
+	// the wrapper is published; reentrant wrappers never set it because
+	// their ceilings come from the VM's engine configuration, not a caller.
+	callerBudget atomic.Bool
 	// lastRawMaxReductions/lastRawMaxAllocBytes/lastTimeoutNs remember the
 	// raw inputs the wrapper was last armed with, so RearmReentrantEvalState
 	// can compare them against the incoming request with plain loads and
@@ -452,6 +461,7 @@ func AdoptEvalStateWithMeter(ctx context.Context, deadline time.Time, structSeed
 		callDepth = callSeed[0]
 	}
 	w := &lazyEvalStateCtx{Context: ctx, deadline: deadline}
+	w.callerBudget.Store(snap.MaxReductions > 0 || snap.MaxAllocationBytes > 0)
 	w.maxReductions.Store(maxReductions)
 	w.maxAllocBytes.Store(maxAllocBytes)
 	w.reductions.Store(snap.Reductions)
@@ -679,14 +689,18 @@ func HasEvalState(ctx context.Context) bool {
 }
 
 // HasCallerEvalBudget reports whether ctx is a lazily adopted evaluation
-// state (see AdoptEvalStateWithMeter) whose adopter armed an explicit
-// resource ceiling with it: a snapshot MaxReductions or MaxAllocationBytes
-// other than the package defaults. That is the shape of a cumulative
-// caller-owned ledger — the host keeps one context across Engine calls and
-// each dispatch's charges accumulate against the ceilings carried on it —
-// so an engine applying its own ResourceLimits must leave such a ledger's
-// ceilings alone: overwriting them with engine defaults would destroy the
-// caller's budget and let later dispatches refuse nothing.
+// state (see AdoptEvalStateWithMeter) carrying a caller-owned cumulative
+// budget. The flag it reads is set iff the adopter armed at least one
+// explicit ceiling with the wrapper — a snapshot MaxReductions or
+// MaxAllocationBytes greater than zero — so the wrapper's stored ceilings
+// govern as stored even when they happen to equal the package defaults,
+// and an adopter that arms only one field owns both ceilings. That is the
+// shape of a cumulative caller-owned ledger — the host keeps one context
+// across Engine calls and each dispatch's charges accumulate against the
+// ceilings carried on it — so an engine applying its own ResourceLimits
+// must leave such a ledger's ceilings alone: overwriting them with engine
+// defaults would destroy the caller's budget and let later dispatches
+// refuse nothing.
 //
 // Every other context answers false, and an engine's limits govern it as
 // always: a plain context; an eager evalState attached by EnsureEvalState,
@@ -694,17 +708,13 @@ func HasEvalState(ctx context.Context) bool {
 // of who set its limits, and fresh states seed the package defaults, so
 // engine dispatches onto borrowed default-ceiling states must still be
 // bounded by the engine; a lazily adopted wrapper armed with a zero
-// snapshot, whose ceilings are the defaults; and a stale reentrant wrapper
-// past its run, which behaves like a context carrying no evaluation state.
-// A caller that adopts ceilings numerically equal to the defaults is
-// indistinguishable from an unarmed adopter and gets overridden.
+// snapshot, which adopted no ceiling to own; a reentrant wrapper, whose
+// ceilings come from the VM's engine configuration rather than an external
+// caller; and a stale wrapper past its run, which behaves like a context
+// carrying no evaluation state.
 func HasCallerEvalBudget(ctx context.Context) bool {
 	w, ok := ctx.(*lazyEvalStateCtx)
-	if !ok || !w.live() {
-		return false
-	}
-	return w.maxReductions.Load() != DefaultMaxReductions ||
-		w.maxAllocBytes.Load() != DefaultMaxAllocationBytes
+	return ok && w.live() && w.callerBudget.Load()
 }
 
 func (e *engine) SetFallbackEvalMeter(m any) {

@@ -883,3 +883,25 @@ func TestBuiltinWorkBudget_FinishCustomErrorClassification(t *testing.T) {
 		}
 	}
 }
+
+// TestHasCallerEvalBudget_TracksArmedSnapshotProvenance pins that ownership
+// is recorded at adoption rather than inferred from ceiling values: an
+// adopter arming ceilings numerically equal to the package defaults still
+// owns the budget (the engine must not override it), while an all-zero
+// snapshot — whose ceilings normalize to those same defaults — adopts no
+// budget and stays engine-governed.
+func TestHasCallerEvalBudget_TracksArmedSnapshotProvenance(t *testing.T) {
+	armed, _, _ := AdoptEvalStateWithMeter(context.Background(), time.Time{}, 0,
+		EvalMeterSnapshot{
+			MaxReductions:      DefaultMaxReductions,
+			MaxAllocationBytes: DefaultMaxAllocationBytes,
+		})
+	if !HasCallerEvalBudget(armed) {
+		t.Fatal("adopter arming default-valued ceilings must own the budget")
+	}
+
+	unarmed, _, _ := AdoptEvalStateWithMeter(context.Background(), time.Time{}, 0, EvalMeterSnapshot{})
+	if HasCallerEvalBudget(unarmed) {
+		t.Fatal("all-zero snapshot arms no ceiling and must not own the budget")
+	}
+}
