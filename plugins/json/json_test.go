@@ -91,6 +91,81 @@ func TestDecodeChargesDeepResultBytes(t *testing.T) {
 	require.Equal(t, core.CodeResourceLimit, lerr.Code)
 }
 
+// TestDecodeApplyChargesResultOnce pins the dispatch seam of json/decode's
+// result charge: a decode dispatched through core.Evaluator.Apply must bill
+// its decoded result exactly once, at the result's deep size — the same
+// single charge the dispatch-free fn.Fn arm produces. Today the apply-site
+// fallback also bills ValueShallowBytes on the unmarked callee, so decoding
+// "42" bills 32 bytes against a 16-byte deep result.
+func TestDecodeApplyChargesResultOnce(t *testing.T) {
+	env := setupEnv(t)
+	fn := decodeGoFunc(t, env)
+	deep := core.ValueDeepBytes(core.Int{V: 42})
+
+	direct := core.WithEvalResourceLimits(t.Context(), 1<<20, 1<<20)
+	_, err := fn.Fn(direct, nil, []core.Value{core.String{V: "42"}}, env)
+	require.NoError(t, err)
+	require.Equal(t, deep, core.EvalMeterFrom(direct).Snapshot().AllocationBytes,
+		"direct fn.Fn arm: no dispatch wrapper, want exactly one deep charge")
+
+	ev := core.NewEvaluator()
+	through := core.WithEvalResourceLimits(t.Context(), 1<<20, 1<<20)
+	_, err = ev.Apply(through, fn, []core.Value{core.String{V: "42"}}, env)
+	require.NoError(t, err)
+	require.Equalf(t, deep, core.EvalMeterFrom(through).Snapshot().AllocationBytes,
+		"apply arm: dispatch must bill \"42\" exactly once at its deep size (%d bytes), not deep+shallow", deep)
+}
+
+// TestDecodeApplyExactBudgetMatrix pins the exact-budget edge of the same
+// dispatch: a fresh budget of exactly the deep bytes of the expected value
+// must admit the decode (one full result charge, value parity against an
+// independently built expected), while one byte below must fail closed with
+// a terminal ResourceLimit error and no published value.
+func TestDecodeApplyExactBudgetMatrix(t *testing.T) {
+	env := setupEnv(t)
+	fn := decodeGoFunc(t, env)
+
+	rows := []struct {
+		name    string
+		payload string
+		want    core.Value
+	}{
+		{"int 42", "42", core.Int{V: 42}},
+		{"string hi", `"hi"`, core.String{V: "hi"}},
+		{"empty array", "[]", core.NewVector(nil)},
+		{"empty object", "{}", core.NewHashMap()},
+		{"nested array", "[1,[2,3]]", core.NewVector([]core.Value{
+			core.Int{V: 1},
+			core.NewVector([]core.Value{core.Int{V: 2}, core.Int{V: 3}}),
+		})},
+	}
+
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			deep := core.ValueDeepBytes(row.want)
+			ev := core.NewEvaluator()
+
+			t.Run("exact", func(t *testing.T) {
+				ctx := core.WithEvalResourceLimits(t.Context(), 1<<20, int(deep))
+				got, err := ev.Apply(ctx, fn, []core.Value{core.String{V: row.payload}}, env)
+				require.NoErrorf(t, err,
+					"budget exactly deep (%d bytes) must admit one full result charge", deep)
+				require.True(t, row.want.Equals(got),
+					"decoded value must equal the independently built expected value")
+			})
+
+			t.Run("below", func(t *testing.T) {
+				ctx := core.WithEvalResourceLimits(t.Context(), 1<<20, int(deep-1))
+				got, err := ev.Apply(ctx, fn, []core.Value{core.String{V: row.payload}}, env)
+				var lerr *core.LispicoError
+				require.ErrorAs(t, err, &lerr)
+				require.Equal(t, core.CodeResourceLimit, lerr.Code)
+				require.Nil(t, got, "no value may be published alongside the refusal")
+			})
+		})
+	}
+}
+
 func TestDecodeRejectsOverDeepJSON(t *testing.T) {
 	env := setupEnv(t)
 	fn := decodeGoFunc(t, env)
