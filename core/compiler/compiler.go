@@ -281,8 +281,8 @@ func (c *Compiler) compileList(f core.List) error {
 			case "do":
 				return c.compileDo(items[1:])
 			case "quote":
-				if len(items) < 2 {
-					return compileErrf("quote: missing value")
+				if len(items) != 2 {
+					return compileErrf("quote: expected 1 argument, got %d", len(items)-1)
 				}
 				// Quote must stay a plain OpConst: the tree-walker's evalQuote
 				// returns the datum with no construction charge or depth check,
