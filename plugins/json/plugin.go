@@ -160,9 +160,10 @@ func fromJSONValue(v any) (core.Value, error) {
 
 // exactInt classifies a validated JSON number lexeme: it returns the value
 // and true when the exact decimal is an integer in the signed int64 range.
-// Digit count gates accumulation (max 19), so a huge exponent never expands;
-// a saturated one agrees with the rounded lexeme. Integration with the float
-// fallback is the caller's: any false result falls through to Number.Float64.
+// Digit count gates accumulation (max 19) and the exponent saturates at a
+// token-length bound, so work and storage stay linear in the lexeme and no
+// power of ten expands. Integration with the float fallback is the caller's:
+// any false result falls through to Number.Float64.
 func exactInt(s string) (int64, bool) {
 	neg := false
 	if s[0] == '-' {
@@ -200,9 +201,13 @@ func exactInt(s string) (int64, bool) {
 			}
 			es = es[1:]
 		}
-		// JSON exponents are short; saturating a longer one is task 2.2.
+		// Saturate at len(s)+20 — a bound from token length and the fixed
+		// int64 domain: the Int path needs scale at most 19 with fracDigits
+		// below len(s), so an exponent at or past the bound forces the
+		// float-fallback outcome however many digits it carries.
+		bound := len(s) + 20
 		for i := range len(es) {
-			if exp >= 1e9 {
+			if exp >= bound {
 				break
 			}
 			exp = exp*10 + int(es[i]-'0')
