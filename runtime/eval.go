@@ -617,10 +617,14 @@ func (be *bytecodeEvaluator) evalResourceContext(ctx context.Context) context.Co
 	if !core.HasEvalMeter(ctx) && be.engineMeter != nil {
 		ctx = WithMeter(ctx, be.engineMeter)
 	}
-	// When the caller already set resource limits via AdoptEvalStateWithMeter,
-	// HasEvalState is true and those limits must be preserved — overwriting them
-	// with the engine defaults would destroy a cumulative caller-meter budget.
-	if core.HasEvalState(ctx) {
+	// A context that adopted explicit resource ceilings with it
+	// (AdoptEvalStateWithMeter's snapshot budget) carries a cumulative
+	// caller-owned ledger: overwriting those limits with the engine
+	// defaults would destroy the caller's budget and let later dispatches
+	// refuse nothing. Every other eval-state shape — including a fresh
+	// state merely borrowed from the caller, seeded with the package
+	// defaults — stays governed by the engine's configured limits.
+	if core.HasCallerEvalBudget(ctx) {
 		return ctx
 	}
 	return core.WithEvalResourceLimits(ctx, be.maxReductions, be.maxAllocBytes)
@@ -630,10 +634,9 @@ func (e *engineImpl) evalResourceContext(ctx context.Context) context.Context {
 	if !core.HasEvalMeter(ctx) && e.config.engineMeter != nil {
 		ctx = WithMeter(ctx, e.config.engineMeter)
 	}
-	// When the caller already set resource limits via AdoptEvalStateWithMeter,
-	// HasEvalState is true and those limits must be preserved — overwriting them
-	// with the engine defaults would destroy a cumulative caller-meter budget.
-	if core.HasEvalState(ctx) {
+	// See bytecodeEvaluator.evalResourceContext: an adopted caller ledger
+	// keeps its ceilings; any other context gets the engine's limits.
+	if core.HasCallerEvalBudget(ctx) {
 		return ctx
 	}
 	return core.WithEvalResourceLimits(ctx, e.config.limits.MaxReductions, e.config.limits.MaxAllocationBytes)

@@ -678,6 +678,35 @@ func HasEvalState(ctx context.Context) bool {
 	return ok
 }
 
+// HasCallerEvalBudget reports whether ctx is a lazily adopted evaluation
+// state (see AdoptEvalStateWithMeter) whose adopter armed an explicit
+// resource ceiling with it: a snapshot MaxReductions or MaxAllocationBytes
+// other than the package defaults. That is the shape of a cumulative
+// caller-owned ledger — the host keeps one context across Engine calls and
+// each dispatch's charges accumulate against the ceilings carried on it —
+// so an engine applying its own ResourceLimits must leave such a ledger's
+// ceilings alone: overwriting them with engine defaults would destroy the
+// caller's budget and let later dispatches refuse nothing.
+//
+// Every other context answers false, and an engine's limits govern it as
+// always: a plain context; an eager evalState attached by EnsureEvalState,
+// DetachEvalState, or WithEvalResourceLimits — that state carries no trace
+// of who set its limits, and fresh states seed the package defaults, so
+// engine dispatches onto borrowed default-ceiling states must still be
+// bounded by the engine; a lazily adopted wrapper armed with a zero
+// snapshot, whose ceilings are the defaults; and a stale reentrant wrapper
+// past its run, which behaves like a context carrying no evaluation state.
+// A caller that adopts ceilings numerically equal to the defaults is
+// indistinguishable from an unarmed adopter and gets overridden.
+func HasCallerEvalBudget(ctx context.Context) bool {
+	w, ok := ctx.(*lazyEvalStateCtx)
+	if !ok || !w.live() {
+		return false
+	}
+	return w.maxReductions.Load() != DefaultMaxReductions ||
+		w.maxAllocBytes.Load() != DefaultMaxAllocationBytes
+}
+
 func (e *engine) SetFallbackEvalMeter(m any) {
 	e.meter, _ = m.(sessionMeter)
 }
