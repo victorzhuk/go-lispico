@@ -590,6 +590,98 @@ func TestDecodeLargeIntegers(t *testing.T) {
 	})
 }
 
+// TestDecodeNumericClassification is the numeric classification matrix: every
+// JSON number spelling pins its terminal state — exact core.Int, finite
+// core.Float fallback, or overflow error — independent of float64 rounding.
+// The long-exponent fixtures prove exponent magnitude does not amplify
+// parsing work: they classify within bounded time by completing far inside
+// the package timeout, with no wall-clock assertion.
+func TestDecodeNumericClassification(t *testing.T) {
+	env := setupEnv(t)
+
+	decodeJSON := func(t *testing.T, src string) core.Value {
+		t.Helper()
+		return eval(t, env, `(json/decode `+strconv.Quote(src)+`)`)
+	}
+
+	// wantInt asserts the concrete core.Int type and the exact value, not
+	// just .Equals, so a number that took a float64 round trip goes red.
+	wantInt := func(t *testing.T, got core.Value, want int64) {
+		t.Helper()
+		iv, ok := got.(core.Int)
+		require.True(t, ok, "expected core.Int, got %T (%v)", got, got)
+		assert.Equal(t, want, iv.V)
+	}
+
+	// wantFloat asserts the concrete core.Float type and value, so an
+	// exact-int misclassification of a finite fallback goes red.
+	wantFloat := func(t *testing.T, got core.Value, want float64) {
+		t.Helper()
+		fv, ok := got.(core.Float)
+		require.True(t, ok, "expected core.Float, got %T (%v)", got, got)
+		assert.Equal(t, want, fv.V)
+	}
+
+	intCases := []struct {
+		name string
+		json string
+		want int64
+	}{
+		{"trailing zero decimal at max int64", "9223372036854775807.0", math.MaxInt64},
+		{"exponent spelling of min int64", "-9.223372036854775808e18", math.MinInt64},
+		{"trailing zero decimal above 2^53", "9007199254740993.0", 9007199254740993},
+		{"exponent spelling of small integer", "4.2e1", 42},
+		{"zero with large positive exponent", "0e1000", 0},
+		{"zero with large negative exponent", "0.0e-1000", 0},
+		{"zero with 21-digit exponent", "0e999999999999999999999", 0},
+		{"zero with 10000-digit exponent", "0e" + strings.Repeat("9", 10000), 0},
+		{"all-zero fraction at large scale", "0." + strings.Repeat("0", 400), 0},
+	}
+	for _, tt := range intCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wantInt(t, decodeJSON(t, tt.json), tt.want)
+		})
+	}
+
+	floatCases := []struct {
+		name string
+		json string
+		want float64
+	}{
+		{"underflow to zero stays Float", "1e-400", 0},
+		{"fraction below float precision rounds to one", "0.999999999999999999999", 1},
+		{"fraction just above one stays Float", "1.0000000000000000001", 1},
+		{"max int64 plus one falls back to Float", "9223372036854775808", 9223372036854775808},
+		{"min int64 minus one falls back to Float", "-9223372036854775809", -9223372036854775808},
+		{"nonzero fraction at scale 400 underflows to Float zero", "0." + strings.Repeat("0", 399) + "1", 0},
+		{"10000-digit negative exponent underflows to Float zero", "1e-" + strings.Repeat("9", 10000), 0},
+	}
+	for _, tt := range floatCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wantFloat(t, decodeJSON(t, tt.json), tt.want)
+		})
+	}
+
+	errCases := []struct {
+		name string
+		json string
+	}{
+		{"positive exponent overflow", "1e400"},
+		{"21-digit exponent overflow", "1e999999999999999999999"},
+		{"10000-digit exponent overflow", "1e" + strings.Repeat("9", 10000)},
+		{"401-digit integer overflow", "1" + strings.Repeat("0", 400)},
+	}
+	for _, tt := range errCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := evalErr(t, env, `(json/decode `+strconv.Quote(tt.json)+`)`)
+			require.Error(t, err, "expected overflow error for %s", tt.json)
+		})
+	}
+}
+
 func TestDecodeMixedArray(t *testing.T) {
 	env := setupEnv(t)
 
