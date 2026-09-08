@@ -815,6 +815,49 @@ func TestDecodeErrors(t *testing.T) {
 	})
 }
 
+// TestDecodeParsingBoundary pins the single-value parsing contract of
+// json/decode: exactly one JSON value followed only by optional whitespace
+// is accepted; malformed input, a second top-level value, or trailing
+// garbage after the first value is rejected with a json/decode: error.
+func TestDecodeParsingBoundary(t *testing.T) {
+	env := setupEnv(t)
+
+	t.Run("malformed input is rejected", func(t *testing.T) {
+		err := evalErr(t, env, `(json/decode `+strconv.Quote("not json")+`)`)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "json/decode:")
+	})
+
+	t.Run("int followed only by whitespace is accepted", func(t *testing.T) {
+		got := eval(t, env, `(json/decode `+strconv.Quote("1   \t\n")+`)`)
+		iv, ok := got.(core.Int)
+		require.True(t, ok, "expected core.Int, got %T (%v)", got, got)
+		assert.Equal(t, int64(1), iv.V)
+	})
+
+	t.Run("array followed only by whitespace is accepted", func(t *testing.T) {
+		got := eval(t, env, `(json/decode `+strconv.Quote("[1,2] ")+`)`)
+		want := core.NewVector([]core.Value{core.Int{V: 1}, core.Int{V: 2}})
+		assert.True(t, want.Equals(got), "want %v, got %v", want, got)
+	})
+
+	rejectCases := []struct {
+		name string
+		json string
+	}{
+		{"second top-level value", "1 2"},
+		{"trailing garbage after value", "1 x"},
+		{"trailing garbage after object", `{"a":1}garbage`},
+	}
+	for _, tt := range rejectCases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := evalErr(t, env, `(json/decode `+strconv.Quote(tt.json)+`)`)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "json/decode:")
+		})
+	}
+}
+
 func TestEncodeWithLargeVector(t *testing.T) {
 	env := setupEnv(t)
 
