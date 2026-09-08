@@ -87,7 +87,7 @@ func (p *Plugin) decode(ctx context.Context, eval core.Evaluator, args []core.Va
 	if err != nil {
 		return nil, err
 	}
-	if err := core.ChargeEvalAllocBytes(ctx, deep); err != nil {
+	if err := chargeDecodedResult(ctx, deep); err != nil {
 		return nil, err
 	}
 	return res, nil
