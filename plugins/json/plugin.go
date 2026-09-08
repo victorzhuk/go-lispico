@@ -4,6 +4,9 @@ import (
 	"context"
 	stdjson "encoding/json"
 	"fmt"
+	"io"
+	"math"
+	"strings"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -64,9 +67,14 @@ func (p *Plugin) decode(ctx context.Context, eval core.Evaluator, args []core.Va
 	if !ok {
 		return nil, fmt.Errorf("json/decode: requires string argument, got %T", args[0])
 	}
+	dec := stdjson.NewDecoder(strings.NewReader(s.V))
+	dec.UseNumber()
 	var raw any
-	if err := stdjson.Unmarshal([]byte(s.V), &raw); err != nil {
+	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("json/decode: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("json/decode: invalid character after top-level value")
 	}
 	res, err := fromJSONValue(raw)
 	if err != nil {
@@ -109,11 +117,18 @@ func fromJSONValue(v any) (core.Value, error) {
 		return core.Nil{}, nil
 	case bool:
 		return core.Bool{V: x}, nil
-	case float64:
-		if x == float64(int64(x)) && x >= -9007199254740991 && x <= 9007199254740991 {
-			return core.Int{V: int64(x)}, nil
+	case stdjson.Number:
+		if n, ok := exactInt(x.String()); ok {
+			return core.BoxInt(n), nil
 		}
-		return core.Float{V: x}, nil
+		f, err := x.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("json/decode: %w", err)
+		}
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return nil, fmt.Errorf("json/decode: number %s is out of float64 range", x.String())
+		}
+		return core.Float{V: f}, nil
 	case string:
 		return core.String{V: x}, nil
 	case map[string]any:
@@ -141,4 +156,92 @@ func fromJSONValue(v any) (core.Value, error) {
 	default:
 		return nil, fmt.Errorf("json/decode: unsupported JSON type %T", v)
 	}
+}
+
+// exactInt classifies a validated JSON number lexeme: it returns the value
+// and true when the exact decimal is an integer in the signed int64 range.
+// Digit count gates accumulation (max 19), so a huge exponent never expands;
+// a saturated one agrees with the rounded lexeme. Integration with the float
+// fallback is the caller's: any false result falls through to Number.Float64.
+func exactInt(s string) (int64, bool) {
+	neg := false
+	if s[0] == '-' {
+		neg = true
+		s = s[1:]
+	}
+	fracOff, expOff := -1, -1
+	for i := range len(s) {
+		switch s[i] {
+		case '.':
+			if fracOff < 0 {
+				fracOff = i
+			}
+		case 'e', 'E':
+			expOff = i
+		}
+	}
+	mantEnd := len(s)
+	if expOff >= 0 {
+		mantEnd = expOff
+	}
+	fracDigits := 0
+	digits := s[:mantEnd]
+	if fracOff >= 0 {
+		digits = s[:fracOff] + s[fracOff+1:mantEnd]
+		fracDigits = mantEnd - fracOff - 1
+	}
+	exp := 0
+	if expOff >= 0 {
+		es := s[expOff+1:]
+		esign := 1
+		if es[0] == '-' || es[0] == '+' {
+			if es[0] == '-' {
+				esign = -1
+			}
+			es = es[1:]
+		}
+		// JSON exponents are short; saturating a longer one is task 2.2.
+		for i := range len(es) {
+			if exp >= 1e9 {
+				break
+			}
+			exp = exp*10 + int(es[i]-'0')
+		}
+		exp *= esign
+	}
+	for len(digits) > 0 && digits[0] == '0' {
+		digits = digits[1:]
+	}
+	if len(digits) == 0 {
+		return 0, true
+	}
+	scale := exp - fracDigits
+	for scale < 0 && len(digits) > 0 && digits[len(digits)-1] == '0' {
+		digits = digits[:len(digits)-1]
+		scale++
+	}
+	if scale < 0 || len(digits)+scale > 19 {
+		return 0, false
+	}
+	var mag uint64
+	for i := range len(digits) {
+		mag = mag*10 + uint64(digits[i]-'0')
+	}
+	for range scale {
+		mag *= 10
+	}
+	const negLimit = uint64(-(math.MinInt64 + 1)) + 1
+	if neg {
+		if mag > negLimit {
+			return 0, false
+		}
+		if mag == negLimit {
+			return math.MinInt64, true
+		}
+		return -int64(mag), true
+	}
+	if mag > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(mag), true
 }
