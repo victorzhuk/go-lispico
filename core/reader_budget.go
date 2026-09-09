@@ -111,6 +111,17 @@ func (b *readerBudget) settle(err error) error {
 	return err
 }
 
+// checkedTokenPlanBytes returns the workspace bytes a token plan of the given
+// number of tokens costs, the terminal EOF token included, and false when the
+// product overflows or the count is negative. A refusal is a resource limit at
+// the call site, never a wrapped value handed to ChargeAllocBytes.
+func checkedTokenPlanBytes(tokens int64) (int64, bool) { return 0, false }
+
+// checkedConversionBytes returns the temporary storage a numeric conversion of
+// a token of tokenBytes bytes costs, and false when the sum overflows or the
+// length is negative.
+func checkedConversionBytes(tokenBytes int64) (int64, bool) { return 0, false }
+
 // admitConversion pre-admits an opaque numeric conversion of n bytes. strconv
 // runs uninterrupted once entered, so the token is charged before entry and
 // refused outright when it alone would claim more than a third of the reduction

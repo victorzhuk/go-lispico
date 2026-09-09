@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -274,6 +275,71 @@ func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read of a %d-digit overflowing number needing %d bytes under a 1024-byte ceiling returned %v (code %q), want a %s before conversion",
 				len(long), conversionBytes(int64(len(long))), err, code, CodeResourceLimit)
+		}
+	})
+}
+
+// TestReaderPlanArithmetic_RefusesOverflow pins the checked arithmetic behind
+// the plan and conversion charges. The magnitudes it refuses are unreachable
+// through a source string, so the helpers are driven directly.
+func TestReaderPlanArithmetic_RefusesOverflow(t *testing.T) {
+	t.Run("token-plan", func(t *testing.T) {
+		const maxTokens = math.MaxInt64 / readerTokenPlanBytes
+
+		cases := []struct {
+			name   string
+			tokens int64
+			want   int64
+			ok     bool
+		}{
+			{"ordinary", 6, planBytes(6), true},
+			{"zero", 0, 0, true},
+			{"largest-fitting-plan", maxTokens, maxTokens * readerTokenPlanBytes, true},
+			{"one-token-past-the-ceiling", maxTokens + 1, 0, false},
+			{"max-int", math.MaxInt64, 0, false},
+			{"negative", -1, 0, false},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, ok := checkedTokenPlanBytes(tc.tokens)
+				if ok != tc.ok {
+					t.Fatalf("checkedTokenPlanBytes(%d) admitted = %v, want %v", tc.tokens, ok, tc.ok)
+				}
+				if ok && got != tc.want {
+					t.Fatalf("checkedTokenPlanBytes(%d) = %d bytes, want %d", tc.tokens, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("conversion", func(t *testing.T) {
+		const maxTokenBytes = (math.MaxInt64 - 256) / 2
+
+		cases := []struct {
+			name       string
+			tokenBytes int64
+			want       int64
+			ok         bool
+		}{
+			{"ordinary", 5, conversionBytes(5), true},
+			{"zero", 0, conversionBytes(0), true},
+			{"largest-fitting-token", maxTokenBytes, 2*maxTokenBytes + 256, true},
+			{"diagnostic-storage-overflows", math.MaxInt64 / 2, 0, false},
+			{"doubling-overflows", math.MaxInt64/2 + 1, 0, false},
+			{"negative", -1, 0, false},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, ok := checkedConversionBytes(tc.tokenBytes)
+				if ok != tc.ok {
+					t.Fatalf("checkedConversionBytes(%d) admitted = %v, want %v", tc.tokenBytes, ok, tc.ok)
+				}
+				if ok && got != tc.want {
+					t.Fatalf("checkedConversionBytes(%d) = %d bytes, want %d", tc.tokenBytes, got, tc.want)
+				}
+			})
 		}
 	})
 }
