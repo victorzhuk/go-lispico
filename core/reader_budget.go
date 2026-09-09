@@ -24,6 +24,16 @@ const readerListCellBytes int64 = 32
 // terminal-state checks, so a long chain stays interruptible.
 const readerLinkBatch = 128
 
+// readerClearBatch bounds how many retained slots a scratch clears on release
+// between two terminal-state checks, so returning a large scratch to the pool
+// stays as interruptible as the read that filled it.
+const readerClearBatch = 128
+
+// readerScratchNoCeiling is the allocation ceiling an unguarded read releases
+// its scratch under: with no allowance to respect, retained capacity can never
+// be over it.
+const readerScratchNoCeiling int64 = math.MaxInt64
+
 // readerSourceRenderLimit bounds the source an invalid-number diagnostic
 // renders, truncation marker included: the token that provoked it is only
 // bounded by the input.

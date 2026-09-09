@@ -504,16 +504,19 @@ type readerScratch struct {
 }
 
 // Reset clears everything a subsequent Read must not observe, retaining
-// slice capacity. It does not touch reader.input, reader.flags,
-// parser.maxDepth, or parser.tokens — those are set at checkout, once the
-// caller knows which source, dialect, and depth limit the read is for.
+// slice capacity. It leaves reader.flags and parser.maxDepth alone — those are
+// set at checkout, once the caller knows which dialect and depth limit the read
+// is for — but drops the previous read's source and token view, so a scratch
+// that never reached release pins neither.
 func (s *readerScratch) Reset() {
+	s.reader.input = ""
 	s.reader.pos = 0
 	s.reader.line = 1
 	s.reader.col = 1
 	s.reader.countOnly = false
 	s.reader.copiedPayload = 0
 	s.reader.budget = nil
+	s.parser.tokens = nil
 	s.parser.pos = 0
 	s.parser.depth = 0
 	s.parser.stats = ReaderStats{}
@@ -522,6 +525,64 @@ func (s *readerScratch) Reset() {
 	s.parser.budget = nil
 	s.tokens = s.tokens[:0]
 	s.budget = nil
+}
+
+// retained models the storage the scratch's buffers hold on to between reads,
+// on the same units the reader admits them by: a planned token each and a value
+// slot per node the parser stacked.
+func (s *readerScratch) retained() int64 {
+	return int64(cap(s.tokens))*readerTokenUnitBytes + ValueSlotsBytes(cap(s.parser.nodes))
+}
+
+// release readies s for the pool and reports whether it may go back in. It
+// clears every reference this read or an earlier one left behind — the source
+// string, the token vals, the node stack, and the budget the guarded entry
+// point installed — so a pooled entry pins none of them.
+//
+// Two cases refuse the pool outright rather than clear. A scratch retaining
+// more storage than ceiling, the allowance the read ran under, is dropped: the
+// next read off this entry could be a far smaller one, and it must inherit
+// neither the buffers nor the allowance this one was given. A read that ended
+// terminally is dropped too — traversing input-sized storage to clear it is
+// exactly the work a cancelled, expired or exhausted read must stop doing.
+func (s *readerScratch) release(ceiling int64) bool {
+	if s.budget.err() != nil || s.retained() > ceiling {
+		return false
+	}
+
+	s.reader.input = ""
+	s.parser.tokens = nil
+	if !clearSlots(s.budget, s.tokens[:cap(s.tokens)]) {
+		return false
+	}
+	if !clearSlots(s.budget, s.parser.nodes[:cap(s.parser.nodes)]) {
+		return false
+	}
+	s.tokens = s.tokens[:0]
+	s.parser.nodes = s.parser.nodes[:0]
+
+	if err := s.budget.checkpoint(); err != nil {
+		return false
+	}
+	s.reader.budget = nil
+	s.parser.budget = nil
+	s.budget = nil
+	return true
+}
+
+// clearSlots zeroes buf in bounded batches, charging one work unit per cleared
+// slot, and reports whether it got through the whole buffer: a batch that turns
+// the read terminal leaves the rest to the garbage collector instead.
+func clearSlots[T any](b *readerBudget, buf []T) bool {
+	for len(buf) > 0 {
+		n := min(len(buf), readerClearBatch)
+		clear(buf[:n])
+		if err := b.work(int64(n)); err != nil {
+			return false
+		}
+		buf = buf[n:]
+	}
+	return true
 }
 
 var readerScratchPool = sync.Pool{

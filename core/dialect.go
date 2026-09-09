@@ -409,7 +409,11 @@ func (d Dialect) ReadWithMaxDepth(src string, maxDepth int) ([]Value, error) {
 func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, ReaderStats, error) {
 	s := readerScratchPool.Get().(*readerScratch)
 	s.Reset()
-	defer readerScratchPool.Put(s)
+	defer func() {
+		if s.release(readerScratchNoCeiling) {
+			readerScratchPool.Put(s)
+		}
+	}()
 	return s.read(src, d.readerFlags(), maxDepth)
 }
 
@@ -422,9 +426,11 @@ func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth 
 	s := readerScratchPool.Get().(*readerScratch)
 	s.Reset()
 	s.budget = newReaderBudget(ctx)
+	ceiling := s.budget.allocHeadroom()
 	defer func() {
-		s.budget = nil
-		readerScratchPool.Put(s)
+		if s.release(ceiling) {
+			readerScratchPool.Put(s)
+		}
 	}()
 
 	if err := s.budget.checkpoint(); err != nil {
