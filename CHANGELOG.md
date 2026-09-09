@@ -210,15 +210,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flush or the retained charge is recovered where settlement happens and
   reported as a settlement error carrying the `CodePanic` cause; the
   evaluation lease is now returned on that path instead of being leaked. An
-  `OnEval` observer that panics is contained at publication and logged at
-  `Warn`, so the settled result and error stand as published and the
-  invocation still counts exactly one evaluation — such a panic previously
-  replaced the evaluation's outcome with the recovered panic error and
-  recorded a second evaluation with a second event. `Engine.Eval`,
-  `EvalWithBindings`, and `LoadScope` are the entry points this covers; the
-  known gaps are recorded in ADR 0011. Pinned by
-  `TestPanicBoundary_SettlementPanicIsContained` and
-  `TestEngine_OnEvalCallbackPanicIsContained`.
+  `OnEval` observer that panics is contained per callback and logged at `Warn`,
+  so the settled result and error stand as published, every other registered
+  callback still receives its one event, and the invocation still counts
+  exactly one evaluation — such a panic previously replaced the evaluation's
+  outcome with the recovered panic error and recorded a second evaluation with
+  a second event. `Engine.Eval`, `EvalWithBindings`, and `LoadScope` are the
+  entry points this covers; the known gaps are recorded in ADR 0011. Pinned by
+  `TestPanicBoundary_SettlementPanicIsContained`,
+  `TestEngine_OnEvalCallbackPanicIsContained`, and
+  `TestEngine_OnEvalCallbackPanicDoesNotStarveLaterObservers`.
 
 ## [0.13.0] - 2026-09-06
 

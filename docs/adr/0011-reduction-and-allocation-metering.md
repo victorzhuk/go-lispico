@@ -157,21 +157,36 @@ A panic does not cross the settlement point. A recovered evaluation panic is
 turned into the evaluation's error before settlement rules on the outcome, so
 a terminal settlement error still replaces it. A host meter that panics from
 inside the reduction flush or the retained charge is recovered in
-`(*evalState).finishEval` and reported as a settlement error carrying the
-`CodePanic` cause; the evaluation lease is returned on that path as well. That
-error is not terminal, so it follows the same precedence as any other
-settlement error: it surfaces when the evaluation otherwise succeeded, and an
-evaluation that already failed keeps its own cause. An `OnEval` observer that
-panics is contained at publication and logged at `Warn` — the settled result
-and error stand as published, counted once — because the evaluation is over by
-then and an observer must not become its outcome.
+`(*evalState).finishEval` — the single place that turns a settlement panic into
+an error — and reported as a settlement error carrying the `CodePanic` cause;
+the evaluation lease is returned on that path as well. That error is not
+terminal, so it follows the same precedence as any other settlement error: it
+surfaces when the evaluation otherwise succeeded, and an evaluation that
+already failed keeps its own cause. An `OnEval` observer that panics is
+contained per callback and logged at `Warn` — the settled result and error
+stand as published, counted once, and every other registered callback still
+receives its one event — because the evaluation is over by then and an observer
+must neither become the evaluation's outcome nor cost the observers behind it
+theirs.
+
+An abandoned settlement leaves nothing behind for the next one. The eval state
+outlives the evaluation on the caller's context and `StartEval` reuses it, so
+`finishEval`'s recover resets the pending retained ledger
+(`(*evalState).resetRetained`): a panic in the reduction flush cannot bill the
+next evaluation on that context for charges this one never settled. The
+compensating release is symmetric on the panic path for the same reason.
+`settleRetained` releases the meters it has already charged from a `defer` that
+runs unless the charge loop ran to completion, so a meter that panics part way
+through leaves no meter holding a charge for a settlement that never happened,
+exactly as a denial part way through does.
 
 Two limits bound that containment:
 
 - A meter that panics inside `ReturnEval` still unwinds into the caller. The
   recover runs before the lease is returned, which is what makes the lease
   return survive a panic on every path it does cover.
-- Only the source-evaluation entry points settle and publish this way. The
-  `Engine.Call` family fires its `OnPluginCall` observers uncontained from
-  `callBoundary`, and the hot-reload path (`runtime/watch.go`) neither settles
-  through `core.FinishEval` nor publishes an event.
+- Containment covers the source-evaluation entry points only. The
+  `Engine.Call` family settles through `core.FinishEval` at `callBoundary` but
+  fires its `OnPluginCall` observers uncontained, and the hot-reload path
+  (`runtime/watch.go`) flushes pending state without settling through
+  `core.FinishEval` and publishes no event.
