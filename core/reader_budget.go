@@ -247,6 +247,15 @@ func (g *growthPlan) admit(b *readerBudget, n int64) error {
 	return nil
 }
 
+// allocLimit normalizes the allocation ceiling a snapshot arms: an unset one
+// runs under the package default.
+func allocLimit(snap EvalMeterSnapshot) int64 {
+	if snap.MaxAllocationBytes <= 0 {
+		return DefaultMaxAllocationBytes
+	}
+	return snap.MaxAllocationBytes
+}
+
 // allocHeadroom reports the storage the ledger can still admit. Nothing charges
 // storage while the counting pass runs, so one reading covers the whole pass.
 func (b *readerBudget) allocHeadroom() int64 {
@@ -254,14 +263,23 @@ func (b *readerBudget) allocHeadroom() int64 {
 		return math.MaxInt64
 	}
 	snap := b.meter.Snapshot()
-	limit := snap.MaxAllocationBytes
-	if limit <= 0 {
-		limit = DefaultMaxAllocationBytes
-	}
+	limit := allocLimit(snap)
 	if snap.AllocationBytes >= limit {
 		return 0
 	}
 	return limit - snap.AllocationBytes
+}
+
+// allocCeiling reports the allocation limit this read runs under, which is what
+// its scratch is released against: a buffer larger than the whole allowance is
+// storage no read under this limit may inherit. Headroom is deliberately not
+// that number — it falls as a long-lived ledger fills, and releasing against it
+// would make a warm engine discard its pooled scratch on every read.
+func (b *readerBudget) allocCeiling() int64 {
+	if b == nil || !b.meter.Valid() {
+		return readerScratchNoCeiling
+	}
+	return allocLimit(b.meter.Snapshot())
 }
 
 // checkPlan refuses a plan that cannot fit headroom, so the counting pass stops
