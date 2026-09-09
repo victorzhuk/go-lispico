@@ -930,8 +930,8 @@ func TestEval_TerminalSettlementErrorWinsOverRecoveredPanic(t *testing.T) {
 // to treat differently. Both are lower bounds a spin loop guarantees, so the
 // assertions hold on any machine speed without a clock race.
 const (
-	settlementBurn = 5 * time.Millisecond
-	callbackBurn   = 50 * time.Millisecond
+	settlementBurn = 2 * time.Millisecond
+	callbackBurn   = 10 * time.Millisecond
 )
 
 func burnFor(d time.Duration) {
