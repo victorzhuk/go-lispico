@@ -996,3 +996,80 @@ func TestEval_DurationCoversSettlementAndExcludesCallbacks(t *testing.T) {
 		})
 	}
 }
+
+// TestEngine_OnEvalCallbackPanicDoesNotStarveLaterObservers pins that
+// containment is per callback, not per publication: one observer that panics
+// must not cost every observer registered behind it the event it was promised,
+// and the evaluation still counts once with its own outcome intact.
+func TestEngine_OnEvalCallbackPanicDoesNotStarveLaterObservers(t *testing.T) {
+	cases := []struct {
+		name    string
+		source  string
+		wantErr error
+	}{
+		{name: "success", source: retainingSource},
+		{name: "failure", source: "(fail-soft)", wantErr: errNonterminalEval},
+	}
+	for _, entry := range outcomeEntries() {
+		for _, tc := range cases {
+			t.Run(entry.name+"/"+tc.name, func(t *testing.T) {
+				name := entry.name + "/" + tc.name
+				eng := newSettlementEngine(t)
+
+				var mu sync.Mutex
+				var before, after []EvalEvent
+				eng.OnEval(func(e EvalEvent) {
+					mu.Lock()
+					before = append(before, e)
+					mu.Unlock()
+				})
+				eng.OnEval(func(EvalEvent) { panic("observer failure") })
+				eng.OnEval(func(e EvalEvent) {
+					mu.Lock()
+					after = append(after, e)
+					mu.Unlock()
+				})
+				base := eng.Stats()
+
+				var result core.Value
+				var evalErr error
+				escaped := catchPanic(func() {
+					result, evalErr = entry.invoke(t, t.Context(), eng, tc.source, precedenceBindings())
+				})
+				if escaped != nil {
+					t.Fatalf("%s: observer panic escaped the entry point (%v); a callback panic must not reach the caller", name, escaped)
+				}
+
+				switch {
+				case tc.wantErr == nil && evalErr != nil:
+					t.Fatalf("%s: error = %v, want the evaluation's own success", name, evalErr)
+				case tc.wantErr == nil && result == nil:
+					t.Fatalf("%s: result = nil, want the evaluation's own result", name)
+				case tc.wantErr != nil && !errors.Is(evalErr, tc.wantErr):
+					t.Fatalf("%s: error = %v, want the evaluation's own cause", name, evalErr)
+				}
+
+				mu.Lock()
+				gotBefore := append([]EvalEvent(nil), before...)
+				gotAfter := append([]EvalEvent(nil), after...)
+				mu.Unlock()
+				if len(gotBefore) != 1 {
+					t.Fatalf("%s: observer registered before the panicking one saw %d events, want exactly 1", name, len(gotBefore))
+				}
+				if len(gotAfter) != 1 {
+					t.Fatalf("%s: observer registered after the panicking one saw %d events, want exactly 1; containment must be per callback, not per publication",
+						name, len(gotAfter))
+				}
+				if (gotAfter[0].Error != nil) != (tc.wantErr != nil) {
+					t.Fatalf("%s: later observer event error = %v, want failure = %v", name, gotAfter[0].Error, tc.wantErr != nil)
+				}
+				if tc.wantErr != nil && !errors.Is(gotAfter[0].Error, tc.wantErr) {
+					t.Fatalf("%s: later observer event error = %v, want the evaluation's own cause", name, gotAfter[0].Error)
+				}
+				if d := eng.Stats().TotalEvals - base.TotalEvals; d != 1 {
+					t.Fatalf("%s: TotalEvals delta = %d, want exactly 1; a recovered observer panic must not count the evaluation twice", name, d)
+				}
+			})
+		}
+	}
+}
