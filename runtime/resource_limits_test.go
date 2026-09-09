@@ -459,7 +459,10 @@ func TestLimits_DirectEvaluatorEvalFlushesResidualReductions(t *testing.T) {
 func TestLimits_EngineResourceLimitsOverrideCallerEvalState(t *testing.T) {
 	skipUntilMeteringFields(t)
 
-	limits := meteringLimits(t, 64, 1<<30)
+	// The ledger charges the read, so the ceiling must clear reading and
+	// defining spin (215 tree / 233 bytecode) and stay under the loop it
+	// guards (8720 tree / 3592 bytecode).
+	limits := meteringLimits(t, 1024, 1<<30)
 	src := reductionLoopSource(512)
 
 	for _, bytecode := range []bool{false, true} {
@@ -908,10 +911,12 @@ func TestMetering_MapStillChargedByApplySiteFallback(t *testing.T) {
 // traversal's reductions in a batch.
 const getInDeepLevels = 200
 
-// getInReductionCeiling is calibrated against the measured ledger: it clears
-// the 2-key control and sits under the getInDeepLevels-key traversal, so only
-// the traversal's own reductions can exhaust it.
-const getInReductionCeiling = 64
+// getInReductionCeiling is calibrated against the measured ledger, which now
+// includes reading the source: it clears the 2-key control and sits under the
+// getInDeepLevels-key traversal, so only the traversal's own reductions can
+// exhaust it. Measured window: control 62 (tree) / 106 (bytecode), traversal
+// 262 (tree) / 306 (bytecode).
+const getInReductionCeiling = 180
 
 // getInDeepMap builds a getInDeepLevels-deep chain of maps, every level keyed
 // :k and resolvable. Built in Go and bound, so no reader or construction cost
