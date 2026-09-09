@@ -55,6 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conversion overflow remains an error. Pinned by the JSON numeric decoding
   regressions.
 
+- Meter attachment no longer disables a configured call deadline. A
+  top-level `Engine.Call`, `Fn.Call`, or `PinnedFn.Call` that arrives with a
+  context meter, an engine meter, or evaluation state carrying no deadline
+  now arms the engine timeout through that same state — one boundary clock
+  read, no second lease — where it previously dispatched with the deadline
+  cleared and ran unbounded. Reentry keeps the enclosing absolute deadline
+  and the shared resource budget instead of re-deriving `now+timeout` over
+  it, in both evaluators. `WithTimeout(0)` is unchanged in intent and
+  narrower in effect: it still adds no engine deadline and can no longer
+  erase an inherited one. An earlier caller deadline still governs, a later
+  one still cannot weaken the engine bound, and an unmetered lean call still
+  reads no clock at the boundary. Pinned by
+  `TestEngineDeadline_ContextMeterRetainsBound`,
+  `TestEngineDeadline_HandlesRetainEngineBound`,
+  `TestEngineDeadline_ReentryRetainsAbsoluteDeadlineAndBudget`, and
+  `TestEngineDeadline_DisabledTimeoutPreservesInheritedDeadline`.
+
 ### Fixed
 
 - `json/decode` now charges its decoded result exactly once per call. Public

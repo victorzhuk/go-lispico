@@ -21,3 +21,31 @@ now runs up to `checkInterval` instructions between checks regardless of path
 Because checkpoints budget instruction count only, a host `GoFunc` runs to
 completion and extends the wall-clock window over which a caller's expired
 deadline goes undetected by at most the `GoFunc`'s own duration.
+
+## Amendment (metered call boundaries)
+
+Deadline enforcement is meter-independent. Attaching a context meter or an
+engine meter — or entering a call with host-seeded evaluation state that
+carries no deadline — no longer drops the configured engine timeout at
+`Engine.Call`, `Fn.Call`, or `PinnedFn.Call`. The shared call boundary now
+owns the engine bound exactly when the state it entered carries none: a
+top-level metered call resolves `now+timeout` once, installs that instant
+into the same eval state, and dispatches with it — one boundary clock read,
+no second state or lease lifecycle. `SetDeadline`'s treatment of zero is
+unchanged; it remains the intentional VM contract, including under an
+explicitly disabled timeout.
+
+Inherited bounds survive reentry. An absolute evaluation deadline already
+installed on the state is never overwritten: the boundary does not
+re-derive `now+timeout` over it, and the tree-walker branch no longer
+installs its own resolved instant — or a zero one under `WithTimeout(0)` —
+on top of the caller's. A nested call through the enclosing context keeps
+the enclosing deadline and the shared reduction, allocation, and depth
+counters, so reentry can neither extend a bound nor reset a budget, and
+callback registration never touches the inherited deadline.
+
+Explicit disablement keeps its promise and loses its collateral:
+`WithTimeout(0)` still arms no engine deadline, but it can no longer clear
+an inherited one. Caller-bound composition is unchanged — an earlier caller
+deadline still suppresses the engine bound, a later one still cannot weaken
+it — and the unmetered lean path still reads no clock at the boundary.
