@@ -700,37 +700,40 @@ func compiledChunkBytes(ctx context.Context, chunk *vm.Chunk) (int64, error) {
 
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {
 	start := time.Now()
-	defer func() {
-		if r := recover(); r != nil {
-			panicErr := core.NewPanicError(source, r)
-			result = nil
-			dur := time.Since(start)
-			e.stats.recordEval(dur, panicErr)
-			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: panicErr})
-			err = fmt.Errorf("eval: %w", panicErr)
-		}
-	}()
-
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
-	if metered {
-		var top bool
-		top, err = core.StartEval(ctx)
-		if err != nil {
-			return nil, err
+
+	// Single settlement point: every return, including a panic unwind, reaches
+	// the observers through here, so the lease is returned once and the caller,
+	// the stats counters and the event agree on one outcome.
+	var leased, top bool
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = fmt.Errorf("eval: %w", core.NewPanicError(source, r))
 		}
-		defer func() {
+		if leased {
 			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
 				result = nil
 				err = ferr
 			}
-		}()
-	}
-	forms, err := e.readForms(ctx, input)
-	if err != nil {
+		}
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
 		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		if err == nil {
+			e.logger.Debug("eval", "source", source, "duration", dur)
+		}
+	}()
+
+	if metered {
+		if top, err = core.StartEval(ctx); err != nil {
+			return nil, err
+		}
+		leased = true
+	}
+	forms, err := e.readForms(ctx, input)
+	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
 
@@ -748,25 +751,15 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 		for i, form := range forms {
 			result, err = be.EvalCached(ctx, form, env, sourceHash, i)
 			if err != nil {
-				if ferr := core.FlushEvalState(ctx); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+				if ferr := core.FlushEvalState(ctx); ferr != nil && core.IsTerminalEvalError(ferr) {
 					err = ferr
 				}
-				dur := time.Since(start)
-				e.stats.recordEval(dur, err)
-				e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 				return nil, fmt.Errorf("eval: %w", err)
 			}
 		}
-		if err := core.FlushEvalState(ctx); err != nil {
-			dur := time.Since(start)
-			e.stats.recordEval(dur, err)
-			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-			return nil, fmt.Errorf("eval: %w", err)
+		if ferr := core.FlushEvalState(ctx); ferr != nil {
+			return nil, fmt.Errorf("eval: %w", ferr)
 		}
-		dur := time.Since(start)
-		e.stats.recordEval(dur, nil)
-		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
-		e.logger.Debug("eval", "source", source, "duration", dur)
 		return result, nil
 	}
 
@@ -774,26 +767,16 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, env)
 		if err != nil {
-			if ferr := core.FlushEvalState(ctx); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+			if ferr := core.FlushEvalState(ctx); ferr != nil && core.IsTerminalEvalError(ferr) {
 				err = ferr
 			}
-			dur := time.Since(start)
-			e.stats.recordEval(dur, err)
-			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 			return nil, fmt.Errorf("eval: %w", err)
 		}
 	}
-	if err := core.FlushEvalState(ctx); err != nil {
-		dur := time.Since(start)
-		e.stats.recordEval(dur, err)
-		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-		return nil, fmt.Errorf("eval: %w", err)
+	if ferr := core.FlushEvalState(ctx); ferr != nil {
+		return nil, fmt.Errorf("eval: %w", ferr)
 	}
 
-	dur := time.Since(start)
-	e.stats.recordEval(dur, nil)
-	e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
-	e.logger.Debug("eval", "source", source, "duration", dur)
 	return result, nil
 }
 
