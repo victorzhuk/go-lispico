@@ -542,9 +542,9 @@ func (s *readerScratch) retained() int64 {
 }
 
 // release readies s for the pool and reports whether it may go back in. It
-// clears every reference this read or an earlier one left behind — the source
-// string, the token vals, the node stack, and the budget the guarded entry
-// point installed — so a pooled entry pins none of them.
+// clears every reference this read left behind — the source string, the token
+// vals, the node stack, and the budget the guarded entry point installed — so
+// a pooled entry pins none of them.
 //
 // Two cases refuse the pool outright rather than clear. A scratch retaining
 // more storage than ceiling, the allowance the read ran under, is dropped: the
@@ -559,10 +559,19 @@ func (s *readerScratch) release(ceiling int64) bool {
 
 	s.reader.input = ""
 	s.parser.tokens = nil
-	if !clearSlots(s.budget, s.tokens[:cap(s.tokens)]) {
+	// Only the slots this read wrote are cleared: on a pooled scratch every
+	// slot above the previous read's high-water is already zero — append
+	// growth hands out zeroed memory, nothing writes past the high-water, and
+	// every release either clears to its own high-water or refuses the pool.
+	// Break that and the cost is retention, stale vals and Values pinned in a
+	// pooled buffer, not a wrong read. Tokens are only appended, so their len
+	// is the high-water; the node stack is marked and truncated back down, so
+	// the plan's tracked high-water stands in, clamped to the capacity append
+	// actually handed out.
+	if !clearSlots(s.budget, s.tokens) {
 		return false
 	}
-	if !clearSlots(s.budget, s.parser.nodes[:cap(s.parser.nodes)]) {
+	if !clearSlots(s.budget, s.parser.nodes[:min(int(s.parser.nodePlan.capacity), cap(s.parser.nodes))]) {
 		return false
 	}
 	s.tokens = s.tokens[:0]
