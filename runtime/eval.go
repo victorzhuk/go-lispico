@@ -944,6 +944,10 @@ func (e *engineImpl) reportUndefinedCall(name string, counter *atomic.Int64) err
 // single apply step is shared across every entry point.
 func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Value, env *core.Env, counter *atomic.Int64, args []core.Value, v *vm.VM, fast bool) (result core.Value, err error) {
 	needsEvalState := !fast && (core.HasEvalState(ctx) || core.HasEvalMeter(ctx) || e.config.engineMeter != nil)
+	// boundOwned records that the metered top-level boundary below has
+	// already resolved and installed the engine bound on the eval state, so
+	// the tree-walker arm never derives it a second time.
+	boundOwned := false
 	if needsEvalState {
 		ctx = e.evalResourceContext(ctx)
 		var top bool
@@ -958,6 +962,7 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 		// state, never through a second state or lease lifecycle.
 		if top && e.config.timeout > 0 && core.EvalDeadlineFrom(ctx).IsZero() {
 			ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, nowFunc()))
+			boundOwned = true
 		}
 		defer func() {
 			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
@@ -985,18 +990,19 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 	if be := e.bytecodeEvaluator; be != nil {
 		result, err = be.applyOnVM(v, ctx, fn, args, env, e.config.timeout)
 	} else {
-		var deadline time.Time
-		if e.config.timeout > 0 {
+		if !core.HasEvalState(ctx) {
+			ctx = e.evalResourceContext(ctx)
+		}
+		// Arm only an absent bound: a disabled timeout must not clear an
+		// inherited deadline, and an enabled one must not re-derive
+		// now+timeout over it.
+		if !boundOwned && e.config.timeout > 0 && core.EvalDeadlineFrom(ctx).IsZero() {
 			deadlineStart := start
 			if !active {
 				deadlineStart = nowFunc()
 			}
-			deadline = e.evalDeadline(ctx, deadlineStart)
+			ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, deadlineStart))
 		}
-		if !core.HasEvalState(ctx) {
-			ctx = e.evalResourceContext(ctx)
-		}
-		ctx = core.WithEvalDeadline(ctx, deadline)
 		result, err = e.evaluator.Apply(ctx, fn, args, env)
 		if err == nil {
 			err = core.FlushEvalState(ctx)
