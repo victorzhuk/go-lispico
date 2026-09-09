@@ -24,6 +24,32 @@ func planBytes(tokens int64) int64 { return tokens * readerTokenPlanBytes }
 // plus bounded diagnostic storage.
 func conversionBytes(n int64) int64 { return 2*n + 256 }
 
+// workBufferBytes is the value-slot storage a reader work buffer — the parser
+// node scratch or the top-level form buffer — charges to reach a logical
+// capacity of n entries: an initial required slot, then every doubled buffer
+// charged whole before the growth that fills it. The schedule is logical, so
+// retained physical capacity never discounts it.
+func workBufferBytes(n int) int64 {
+	total, capacity := 0, 0
+	for capacity < n {
+		if capacity == 0 {
+			capacity = 1
+		} else {
+			capacity *= 2
+		}
+		total += capacity
+	}
+	return ValueSlotsBytes(total)
+}
+
+// flatFormBytes is the construction storage one top-level flat collection of
+// the given number of children admits beyond its token plan: the form buffer
+// holding the finished value, the node scratch its children stack on, and the
+// slots they are copied into.
+func flatFormBytes(children int) int64 {
+	return workBufferBytes(1) + workBufferBytes(children) + ValueSlotsBytes(children)
+}
+
 // allocCeilingContext builds a context whose ledger carries an ample reduction
 // budget and exactly maxAllocBytes of allocation allowance, so a read under it
 // fails on storage admission and never on reader work.
@@ -76,8 +102,8 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(4); got != want {
-			t.Fatalf("admitted %d bytes, want %d: trivia carries no token storage", got, want)
+		if got, want := admittedBytes(meter), planBytes(4)+flatFormBytes(1); got != want {
+			t.Fatalf("admitted %d bytes, want %d for the 4-token plan and the construction of a 1-child list: trivia carries no token storage", got, want)
 		}
 	})
 
@@ -92,33 +118,35 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(2); got != want {
-			t.Fatalf("admitted %d bytes for a symbol and an EOF token, want %d: token storage is per token, not per byte", got, want)
+		if got, want := admittedBytes(meter), planBytes(2)+workBufferBytes(1); got != want {
+			t.Fatalf("admitted %d bytes for a symbol and an EOF token, want %d for their plan and the top-level form buffer: token storage is per token, not per byte", got, want)
 		}
 	})
 
 	t.Run("exact-ceiling/admits-the-plan", func(t *testing.T) {
-		ctx, meter := allocCeilingContext(planBytes(6))
+		want := planBytes(6) + flatFormBytes(3)
+		ctx, meter := allocCeilingContext(want)
 
 		forms, _, err := readContextStats(ctx, FullDialect(), "(a b c)", 0)
 		if err != nil {
-			t.Fatalf("read under a ceiling of exactly %d bytes failed: %v", planBytes(6), err)
+			t.Fatalf("read under a ceiling of exactly %d bytes failed: %v", want, err)
 		}
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(6); got != want {
-			t.Fatalf("admitted %d bytes for 6 tokens, want %d", got, want)
+		if got := admittedBytes(meter); got != want {
+			t.Fatalf("admitted %d bytes for 6 tokens and a 3-child list, want %d", got, want)
 		}
 	})
 
 	t.Run("one-byte-below/rejects-the-plan", func(t *testing.T) {
-		ctx, _ := allocCeilingContext(planBytes(6) - 1)
+		want := planBytes(6) + flatFormBytes(3)
+		ctx, _ := allocCeilingContext(want - 1)
 
 		_, _, err := readContextStats(ctx, FullDialect(), "(a b c)", 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
-			t.Fatalf("read of a %d-byte plan under a %d-byte ceiling returned %v (code %q), want a %s",
-				planBytes(6), planBytes(6)-1, err, code, CodeResourceLimit)
+			t.Fatalf("read of a %d-byte plan and construction under a %d-byte ceiling returned %v (code %q), want a %s",
+				want, want-1, err, code, CodeResourceLimit)
 		}
 	})
 }
@@ -136,8 +164,8 @@ func TestGuardedRead_PoolReuseKeepsPayingThePlan(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d returned %d forms, want 1", read, len(forms))
 		}
-		if got, want := admittedBytes(meter), read*planBytes(6); got != want {
-			t.Fatalf("after read %d the scratch admitted %d bytes, want %d: a reused buffer pays the same plan", read, got, want)
+		if got, want := admittedBytes(meter), read*(planBytes(6)+flatFormBytes(3)); got != want {
+			t.Fatalf("after read %d the scratch admitted %d bytes, want %d: a reused buffer pays the same plan and construction", read, got, want)
 		}
 	}
 }
@@ -179,9 +207,9 @@ func TestGuardedRead_MalformedSuffixAdmission(t *testing.T) {
 		t.Fatalf("guarded read returned %v (code %q), want the legacy code %q", err, got, want)
 	}
 
-	want := planBytes(7) + conversionBytes(int64(len(malformed)))
+	want := planBytes(7) + flatFormBytes(3) + conversionBytes(int64(len(malformed)))
 	if got := admittedBytes(meter); got != want {
-		t.Fatalf("admitted %d bytes, want %d for 7 tokens plus the refused conversion", got, want)
+		t.Fatalf("admitted %d bytes, want %d for 7 tokens, the 3-child list built before the suffix, and the refused conversion", got, want)
 	}
 }
 
@@ -210,8 +238,8 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(2); got != want {
-			t.Fatalf("admitted %d bytes for an escaped string, want %d: the copy charge is credited when the string node is created", got, want)
+		if got, want := admittedBytes(meter), planBytes(2)+workBufferBytes(1); got != want {
+			t.Fatalf("admitted %d bytes for an escaped string, want %d for its plan and form buffer: the copy charge is credited when the string node is created", got, want)
 		}
 	})
 
@@ -225,15 +253,15 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(2); got != want {
-			t.Fatalf("admitted %d bytes for a zero-copy string, want %d: an aliased payload is never copied", got, want)
+		if got, want := admittedBytes(meter), planBytes(2)+workBufferBytes(1); got != want {
+			t.Fatalf("admitted %d bytes for a zero-copy string, want %d for its plan and form buffer: an aliased payload is never copied", got, want)
 		}
 	})
 }
 
 func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 	const src = "12345"
-	want := planBytes(2) + conversionBytes(int64(len(src)))
+	want := planBytes(2) + workBufferBytes(1) + conversionBytes(int64(len(src)))
 
 	t.Run("charges-the-temporary-on-success", func(t *testing.T) {
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
