@@ -152,3 +152,26 @@ settlement are released back (`settleRetained`). The fail-closed guarantee in
 ADR 0012 covers the individual write that would breach a per-env capacity
 ceiling — that write does not occur — not an evaluation whose retained charge
 a meter later denies.
+
+A panic does not cross the settlement point. A recovered evaluation panic is
+turned into the evaluation's error before settlement rules on the outcome, so
+a terminal settlement error still replaces it. A host meter that panics from
+inside the reduction flush or the retained charge is recovered in
+`(*evalState).finishEval` and reported as a settlement error carrying the
+`CodePanic` cause; the evaluation lease is returned on that path as well. That
+error is not terminal, so it follows the same precedence as any other
+settlement error: it surfaces when the evaluation otherwise succeeded, and an
+evaluation that already failed keeps its own cause. An `OnEval` observer that
+panics is contained at publication and logged at `Warn` — the settled result
+and error stand as published, counted once — because the evaluation is over by
+then and an observer must not become its outcome.
+
+Two limits bound that containment:
+
+- A meter that panics inside `ReturnEval` still unwinds into the caller. The
+  recover runs before the lease is returned, which is what makes the lease
+  return survive a panic on every path it does cover.
+- Only the source-evaluation entry points settle and publish this way. The
+  `Engine.Call` family fires its `OnPluginCall` observers uncontained from
+  `callBoundary`, and the hot-reload path (`runtime/watch.go`) neither settles
+  through `core.FinishEval` nor publishes an event.

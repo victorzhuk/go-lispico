@@ -190,14 +190,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity. `EvalEvent.Duration` now covers settlement as well, and still
   excludes the callbacks' own execution. A failed evaluation is still not a
   transaction: a retained charge denied at settlement fails after the
-  evaluation's writes have occurred. Terminal-error precedence,
-  recovered-panic behavior, `LoadScope`'s scope return, and the callback-panic
-  policy are unchanged. Pinned by `TestEval_SettledOutcomeIsPublishedOnce`,
+  evaluation's writes have occurred. A recovered panic no longer outranks the
+  settlement verdict: settlement now runs after the panic is recovered, so a
+  recovered GoFunc panic that meets a denied retained charge surfaces the
+  terminal `ResourceLimitError` where the old ordering settled first, with the
+  panic still unwinding, and then overwrote that verdict with the panic error.
+  Terminal-error precedence between an evaluation error and a settlement error,
+  and `LoadScope`'s scope return, are unchanged. Pinned by
+  `TestEval_SettledOutcomeIsPublishedOnce`,
   `TestEvalWithBindings_SettledOutcomeIsPublishedOnce`,
   `TestLoadScope_SettledOutcomeIsPublishedOnce`,
   `TestEval_RetainedDenialIsSettledFailure`,
-  `TestEval_TerminalSettlementErrorWinsOverEvalError`, and
+  `TestEval_TerminalSettlementErrorWinsOverEvalError`,
+  `TestEval_TerminalSettlementErrorWinsOverRecoveredPanic`, and
   `TestEval_PublicErrorWrappingSurvivesSettlement`.
+
+- A panic raised while a source evaluation settles or publishes no longer
+  reaches the embedder. A host meter that panics from inside the reduction
+  flush or the retained charge is recovered where settlement happens and
+  reported as a settlement error carrying the `CodePanic` cause; the
+  evaluation lease is now returned on that path instead of being leaked. An
+  `OnEval` observer that panics is contained at publication and logged at
+  `Warn`, so the settled result and error stand as published and the
+  invocation still counts exactly one evaluation — such a panic previously
+  replaced the evaluation's outcome with the recovered panic error and
+  recorded a second evaluation with a second event. `Engine.Eval`,
+  `EvalWithBindings`, and `LoadScope` are the entry points this covers; the
+  known gaps are recorded in ADR 0011. Pinned by
+  `TestPanicBoundary_SettlementPanicIsContained` and
+  `TestEngine_OnEvalCallbackPanicIsContained`.
 
 ## [0.13.0] - 2026-09-06
 
