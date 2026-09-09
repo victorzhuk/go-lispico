@@ -202,35 +202,6 @@ func (m EvalMeter) ChargeAllocBytes(n int64) error {
 	return m.st.chargeAllocBytes(n)
 }
 
-// creditAllocBytes returns bytes this caller admitted earlier and then found it
-// did not own — the reader prepays a decoded payload before the pass that
-// copies it, and the output node that copy becomes accounts for the same bytes.
-// Only an amount the caller itself charged may be returned, and only while the
-// counter still holds a plain total: one already pinned at the ceiling by a
-// refused charge keeps that reading.
-func (m EvalMeter) creditAllocBytes(n int64) {
-	if m.st == nil || n <= 0 {
-		return
-	}
-	m.st.creditAllocBytes(n)
-}
-
-func (st *evalState) creditAllocBytes(n int64) {
-	if st.currentMeter() != nil {
-		st.leasedAllocBytes += n
-		return
-	}
-	for {
-		used := st.allocBytes.Load()
-		if used < n {
-			return
-		}
-		if st.allocBytes.CompareAndSwap(used, used-n) {
-			return
-		}
-	}
-}
-
 func ChargeEvalReductions(ctx context.Context, n int64) error {
 	return evalStateFrom(ctx).chargeReductions(n)
 }

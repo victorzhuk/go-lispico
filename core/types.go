@@ -227,6 +227,22 @@ func newListChain(items []Value) *listNode {
 	return node
 }
 
+// newGuardedListChain builds the same chain newListChain does, yielding to b
+// every readerLinkBatch cells so linking a long list stays interruptible. Its
+// caller admits the cells before the first one is allocated.
+func newGuardedListChain(items []Value, b *readerBudget) (*listNode, error) {
+	var node *listNode
+	for i := len(items) - 1; i >= 0; i-- {
+		node = &listNode{head: items[i], tail: node, count: len(items) - i}
+		if (len(items)-i)%readerLinkBatch == 0 {
+			if err := b.checkpoint(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return node, nil
+}
+
 func (l List) Len() int {
 	if l.shared != nil {
 		return l.shared.count
@@ -749,9 +765,15 @@ type hamtNode struct {
 // hamtNodeBytes approximates one node's allocation for the ledger, on the same
 // arch-independent basis as the Meter* constants.
 func hamtNodeBytes(n *hamtNode) int64 {
+	return hamtSizeBytes(len(n.entries), len(n.children))
+}
+
+// hamtSizeBytes is hamtNodeBytes for a node not yet allocated, so a guarded
+// build can admit it from the counts the layout is about to have.
+func hamtSizeBytes(entries, children int) int64 {
 	return MeterCollectionHeaderBytes +
-		int64(len(n.entries))*MeterHashMapEntryBytes +
-		int64(len(n.children))*MeterTrieChildBytes
+		int64(entries)*MeterHashMapEntryBytes +
+		int64(children)*MeterTrieChildBytes
 }
 
 // isCollision reports whether n stores its entries as a flat scanned list
@@ -866,6 +888,146 @@ func (n *hamtNode) assoc(e entry, h uint32, shift uint) (*hamtNode, int64, bool)
 		out.entries = append(out.entries, n.entries[idx:]...)
 		return out, hamtNodeBytes(out), true
 	}
+}
+
+// newGuardedTrie promotes small-form entries plus one more into trie storage,
+// admitting every node it allocates first. It is the reader's promotion path:
+// the map it builds is unpublished, so a refusal mid-build abandons storage no
+// caller ever held.
+func newGuardedTrie(entries []entry, extra entry, b *readerBudget) (*hamtNode, error) {
+	if err := b.admitAlloc(hamtSizeBytes(0, 0)); err != nil {
+		return nil, err
+	}
+	root := &hamtNode{}
+	for _, e := range entries {
+		next, _, err := root.assocGuarded(b, e, hashOfKey(e.hk), 0)
+		if err != nil {
+			return nil, err
+		}
+		root = next
+	}
+	next, _, err := root.assocGuarded(b, extra, hashOfKey(extra.hk), 0)
+	if err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+// assocGuarded inserts e the way assoc does, admitting each node to b before
+// allocating it and charging the collision scans it walks. It reports whether e
+// introduced a key the subtree did not already hold.
+func (n *hamtNode) assocGuarded(b *readerBudget, e entry, h uint32, shift uint) (*hamtNode, bool, error) {
+	if n.isCollision() {
+		return n.assocCollisionGuarded(b, e)
+	}
+
+	bit := uint32(1) << ((h >> shift) & (vecBranch - 1))
+	switch {
+	case n.dataMap&bit != 0:
+		idx := bits.OnesCount32(n.dataMap & (bit - 1))
+		existing := n.entries[idx]
+		if existing.hk == e.hk {
+			if err := b.admitAlloc(hamtNodeBytes(n)); err != nil {
+				return nil, false, err
+			}
+			out := n.clone()
+			out.entries[idx] = e
+			return out, false, nil
+		}
+		if err := b.admitAlloc(hamtSizeBytes(len(n.entries)-1, len(n.children)+1)); err != nil {
+			return nil, false, err
+		}
+		child, err := mergeEntriesGuarded(b, existing, hashOfKey(existing.hk), e, h, shift+vecBits)
+		if err != nil {
+			return nil, false, err
+		}
+		cidx := bits.OnesCount32(n.nodeMap & (bit - 1))
+		out := &hamtNode{dataMap: n.dataMap &^ bit, nodeMap: n.nodeMap | bit}
+		out.entries = append(out.entries, n.entries[:idx]...)
+		out.entries = append(out.entries, n.entries[idx+1:]...)
+		out.children = append(out.children, n.children[:cidx]...)
+		out.children = append(out.children, child)
+		out.children = append(out.children, n.children[cidx:]...)
+		return out, true, nil
+	case n.nodeMap&bit != 0:
+		cidx := bits.OnesCount32(n.nodeMap & (bit - 1))
+		child, added, err := n.children[cidx].assocGuarded(b, e, h, shift+vecBits)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := b.admitAlloc(hamtNodeBytes(n)); err != nil {
+			return nil, false, err
+		}
+		out := n.clone()
+		out.children[cidx] = child
+		return out, added, nil
+	default:
+		idx := bits.OnesCount32(n.dataMap & (bit - 1))
+		if err := b.admitAlloc(hamtSizeBytes(len(n.entries)+1, len(n.children))); err != nil {
+			return nil, false, err
+		}
+		out := &hamtNode{dataMap: n.dataMap | bit, nodeMap: n.nodeMap, children: n.children}
+		out.entries = append(out.entries, n.entries[:idx]...)
+		out.entries = append(out.entries, e)
+		out.entries = append(out.entries, n.entries[idx:]...)
+		return out, true, nil
+	}
+}
+
+// assocCollisionGuarded is assocGuarded's flat-scan arm, where the trie ran out
+// of hash bits: every comparison the scan makes is charged.
+func (n *hamtNode) assocCollisionGuarded(b *readerBudget, e entry) (*hamtNode, bool, error) {
+	for i := range n.entries {
+		if err := b.work(1); err != nil {
+			return nil, false, err
+		}
+		if n.entries[i].hk != e.hk {
+			continue
+		}
+		if err := b.admitAlloc(hamtSizeBytes(len(n.entries), 0)); err != nil {
+			return nil, false, err
+		}
+		out := &hamtNode{entries: append([]entry(nil), n.entries...)}
+		out.entries[i] = e
+		return out, false, nil
+	}
+	if err := b.admitAlloc(hamtSizeBytes(len(n.entries)+1, 0)); err != nil {
+		return nil, false, err
+	}
+	return &hamtNode{entries: append(append([]entry(nil), n.entries...), e)}, true, nil
+}
+
+// mergeEntriesGuarded is mergeEntries with every level admitted before it is
+// allocated.
+func mergeEntriesGuarded(b *readerBudget, a entry, ha uint32, c entry, hc uint32, shift uint) (*hamtNode, error) {
+	if shift >= 32 {
+		if err := b.admitAlloc(hamtSizeBytes(2, 0)); err != nil {
+			return nil, err
+		}
+		return &hamtNode{entries: []entry{a, c}}, nil
+	}
+	fa := (ha >> shift) & (vecBranch - 1)
+	fc := (hc >> shift) & (vecBranch - 1)
+	if fa == fc {
+		if err := b.admitAlloc(hamtSizeBytes(0, 1)); err != nil {
+			return nil, err
+		}
+		child, err := mergeEntriesGuarded(b, a, ha, c, hc, shift+vecBits)
+		if err != nil {
+			return nil, err
+		}
+		return &hamtNode{nodeMap: uint32(1) << fa, children: []*hamtNode{child}}, nil
+	}
+	if err := b.admitAlloc(hamtSizeBytes(2, 0)); err != nil {
+		return nil, err
+	}
+	out := &hamtNode{dataMap: (uint32(1) << fa) | (uint32(1) << fc)}
+	if fa < fc {
+		out.entries = []entry{a, c}
+	} else {
+		out.entries = []entry{c, a}
+	}
+	return out, nil
 }
 
 // dissoc returns the node without hk, the bytes the rebuild allocated, and

@@ -16,6 +16,14 @@ const readerTokenUnitBytes int64 = 32
 // conversion carries on top of its two token copies.
 const readerConversionSlackBytes int64 = 256
 
+// readerListCellBytes is the storage one shared-tail list cell costs. A list
+// at or below listFlatThreshold links none.
+const readerListCellBytes int64 = 32
+
+// readerLinkBatch bounds how many cells a list chain links between two
+// terminal-state checks, so a long chain stays interruptible.
+const readerLinkBatch = 128
+
 // readerSourceRenderLimit bounds the source an invalid-number diagnostic
 // renders, truncation marker included: the token that provoked it is only
 // bounded by the input.
@@ -174,15 +182,49 @@ func (b *readerBudget) admitAlloc(n int64) error {
 	return nil
 }
 
-// creditAlloc returns storage admitted before this read knew who would own it:
-// a decoded payload is reserved before the second pass copies it, and the
-// output node that copy becomes accounts for the same bytes. Only the reserved
-// amount is ever returned, so the ledger records the payload exactly once.
-func (b *readerBudget) creditAlloc(n int64) {
-	if b == nil {
-		return
+// admitOutputNode reserves one parsed node: the node unit plus the payload it
+// carries. A payload the counting pass already reserved is passed as zero, so
+// the ledger records it once and never has to move back down.
+func (b *readerBudget) admitOutputNode(payload int64) error {
+	return b.admitAlloc(MeterReaderNodeBytes + payload)
+}
+
+// admitSlots reserves the value slots a collection copies its children into.
+func (b *readerBudget) admitSlots(n int) error {
+	return b.admitAlloc(ValueSlotsBytes(n))
+}
+
+// admitListCells reserves the shared-tail cells a list past listFlatThreshold
+// links, before the first of them is allocated.
+func (b *readerBudget) admitListCells(n int) error {
+	return b.admitAlloc(int64(n) * readerListCellBytes)
+}
+
+// growthPlan is the logical doubling schedule a reader work buffer charges
+// against: an initial slot, then the whole doubled capacity before the growth
+// that fills it, because the old and new buffers coexist during the copy. The
+// schedule is logical, so a pooled buffer's retained capacity avoids the Go
+// allocation but never the charge.
+type growthPlan struct {
+	unit     int64
+	capacity int64
+}
+
+// admit reserves whatever growth reaching a logical capacity of n entries
+// costs. Capacity only ever rises, so a buffer shared across nested forms
+// follows the read's high-water mark rather than one schedule per form.
+func (g *growthPlan) admit(b *readerBudget, n int64) error {
+	for g.capacity < n {
+		if g.capacity == 0 {
+			g.capacity = 1
+		} else {
+			g.capacity *= 2
+		}
+		if err := b.admitAlloc(g.capacity * g.unit); err != nil {
+			return err
+		}
 	}
-	b.meter.creditAllocBytes(n)
+	return nil
 }
 
 // allocHeadroom reports the storage the ledger can still admit. Nothing charges

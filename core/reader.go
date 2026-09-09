@@ -42,7 +42,7 @@ type token struct {
 	typ tokenType
 	// copied marks a val the scanner decoded into fresh storage instead of
 	// aliasing the input. The counting pass reserves that storage up front, so
-	// the node built from such a token credits the reservation back.
+	// the node built from such a token admits its node unit alone.
 	copied bool
 	val    string
 	line   int32
@@ -469,6 +469,10 @@ type Parser struct {
 	// nil for a Parser built directly via NewParser/NewParserWithDepth, which
 	// grows it from scratch like any other append-based slice.
 	nodes []Value
+	// nodePlan is the one growth schedule nodes follows for a whole read. It
+	// tracks the shared high-water mark across nesting, so a nested form's
+	// children stack on its parent's rather than restarting the schedule.
+	nodePlan growthPlan
 	// budget is nil for a context-free read; a guarded read installs the same
 	// per-read work budget the scanner charges against.
 	budget *readerBudget
@@ -482,7 +486,7 @@ func NewParserWithDepth(tokens []token, maxDepth int) *Parser {
 	if maxDepth <= 0 {
 		maxDepth = defaultReaderDepth
 	}
-	return &Parser{tokens: tokens, maxDepth: maxDepth}
+	return &Parser{tokens: tokens, maxDepth: maxDepth, nodePlan: growthPlan{unit: MeterValueSlotBytes}}
 }
 
 // readerScratch bundles a Reader, a Parser, and their token buffer as one
@@ -514,6 +518,7 @@ func (s *readerScratch) Reset() {
 	s.parser.depth = 0
 	s.parser.stats = ReaderStats{}
 	s.parser.nodes = s.parser.nodes[:0]
+	s.parser.nodePlan = growthPlan{unit: MeterValueSlotBytes}
 	s.parser.budget = nil
 	s.tokens = s.tokens[:0]
 	s.budget = nil
@@ -543,10 +548,14 @@ func (s *readerScratch) read(src string, flags readerFlags, maxDepth int) ([]Val
 	}
 	s.parser.tokens = s.tokens
 
+	formPlan := growthPlan{unit: MeterValueSlotBytes}
 	var forms []Value
 	for s.parser.peek().typ != tokenEOF {
 		form, err := s.parser.Parse()
 		if err != nil {
+			return nil, ReaderStats{}, s.budget.settle(err)
+		}
+		if err := formPlan.admit(s.budget, int64(len(forms)+1)); err != nil {
 			return nil, ReaderStats{}, s.budget.settle(err)
 		}
 		forms = append(forms, form)
@@ -559,12 +568,59 @@ func (s *readerScratch) read(src string, flags readerFlags, maxDepth int) ([]Val
 
 func (p *Parser) Stats() ReaderStats { return p.stats }
 
+// addNode accounts for one output node before it is built: the node unit plus
+// the payload it carries. Admission comes first, so a refusal never leaves
+// ReaderStats describing a node the read never produced.
 func (p *Parser) addNode(bytes int64) error {
+	return p.admitNode(bytes, bytes)
+}
+
+// admitNode admits one node unit plus payload — the storage the ledger has not
+// seen yet, which is zero for a decoded string the counting pass already
+// reserved — while bytes stays the payload the output holds and the stats
+// report.
+func (p *Parser) admitNode(bytes, payload int64) error {
+	if err := p.budget.admitOutputNode(payload); err != nil {
+		return err
+	}
+	if err := p.budget.work(1); err != nil {
+		return err
+	}
 	p.stats.Nodes++
 	if bytes > 0 {
 		p.stats.Bytes += bytes
 	}
-	return p.budget.work(1)
+	return nil
+}
+
+// addChild admits the workspace slot a collection's next child occupies on the
+// shared node scratch, then stacks it there.
+func (p *Parser) addChild(item Value) error {
+	if err := p.nodePlan.admit(p.budget, int64(len(p.nodes)+1)); err != nil {
+		return err
+	}
+	p.nodes = append(p.nodes, item)
+	return nil
+}
+
+// takeChildren copies the children stacked since mark into their own storage,
+// admitted first and copied in bounded batches, then unwinds the scratch back
+// to mark.
+func (p *Parser) takeChildren(mark int) ([]Value, error) {
+	n := len(p.nodes) - mark
+	if err := p.budget.admitSlots(n); err != nil {
+		return nil, err
+	}
+	items := make([]Value, n)
+	for i := 0; i < n; i += readerLinkBatch {
+		end := min(i+readerLinkBatch, n)
+		if err := p.budget.work(int64(end - i)); err != nil {
+			return nil, err
+		}
+		copy(items[i:end], p.nodes[mark+i:mark+end])
+	}
+	p.nodes = p.nodes[:mark]
+	return items, nil
 }
 
 func (p *Parser) peek() token {
@@ -636,11 +692,13 @@ func (p *Parser) parseForm() (Value, error) {
 		return p.parseUnquoteSplicing()
 	case tokenString:
 		p.next()
-		if err := p.addNode(int64(len(tok.val))); err != nil {
-			return nil, err
-		}
+		payload := int64(len(tok.val))
+		admit := payload
 		if tok.copied {
-			p.budget.creditAlloc(int64(len(tok.val)))
+			admit = 0
+		}
+		if err := p.admitNode(payload, admit); err != nil {
+			return nil, err
 		}
 		return String{V: tok.val}, nil
 	case tokenNumber:
@@ -692,11 +750,13 @@ func (p *Parser) parseList() (Value, error) {
 
 	for p.peek().typ != tokenRParen && p.peek().typ != tokenEOF {
 		item, err := p.parseForm()
+		if err == nil {
+			err = p.addChild(item)
+		}
 		if err != nil {
 			p.nodes = p.nodes[:mark]
 			return nil, err
 		}
-		p.nodes = append(p.nodes, item)
 	}
 
 	if _, err := p.expect(tokenRParen); err != nil {
@@ -704,18 +764,33 @@ func (p *Parser) parseList() (Value, error) {
 		return nil, err
 	}
 
-	items := make([]Value, len(p.nodes)-mark)
-	if err := p.budget.work(int64(len(items))); err != nil {
+	items, err := p.takeChildren(mark)
+	if err != nil {
 		p.nodes = p.nodes[:mark]
 		return nil, err
 	}
-	copy(items, p.nodes[mark:])
-	p.nodes = p.nodes[:mark]
 
 	if err := p.addNode(0); err != nil {
 		return nil, err
 	}
-	return NewList(items), nil
+	return p.buildList(items)
+}
+
+// buildList finalizes a parsed list, admitting the shared-tail cells a list
+// past listFlatThreshold links before any of them is allocated. At or below
+// the threshold the list stays flat and links none.
+func (p *Parser) buildList(items []Value) (Value, error) {
+	if len(items) <= listFlatThreshold {
+		return NewList(items), nil
+	}
+	if err := p.budget.admitListCells(len(items)); err != nil {
+		return nil, err
+	}
+	chain, err := newGuardedListChain(items, p.budget)
+	if err != nil {
+		return nil, err
+	}
+	return List{shared: chain}, nil
 }
 
 func (p *Parser) parseVector() (Value, error) {
@@ -724,11 +799,13 @@ func (p *Parser) parseVector() (Value, error) {
 
 	for p.peek().typ != tokenRBracket && p.peek().typ != tokenEOF {
 		item, err := p.parseForm()
+		if err == nil {
+			err = p.addChild(item)
+		}
 		if err != nil {
 			p.nodes = p.nodes[:mark]
 			return nil, err
 		}
-		p.nodes = append(p.nodes, item)
 	}
 
 	if _, err := p.expect(tokenRBracket); err != nil {
@@ -736,13 +813,11 @@ func (p *Parser) parseVector() (Value, error) {
 		return nil, err
 	}
 
-	items := make([]Value, len(p.nodes)-mark)
-	if err := p.budget.work(int64(len(items))); err != nil {
+	items, err := p.takeChildren(mark)
+	if err != nil {
 		p.nodes = p.nodes[:mark]
 		return nil, err
 	}
-	copy(items, p.nodes[mark:])
-	p.nodes = p.nodes[:mark]
 
 	if err := p.addNode(0); err != nil {
 		return nil, err
@@ -753,6 +828,7 @@ func (p *Parser) parseVector() (Value, error) {
 func (p *Parser) parseHashMap() (Value, error) {
 	p.next() // consume {
 	m := NewHashMap()
+	entryPlan := growthPlan{unit: MeterHashMapEntryBytes}
 
 	for p.peek().typ != tokenRBrace && p.peek().typ != tokenEOF {
 		key, err := p.parseForm()
@@ -769,8 +845,7 @@ func (p *Parser) parseHashMap() (Value, error) {
 			return nil, err
 		}
 
-		err = m.Set(key, val)
-		if err != nil {
+		if err := p.mapSet(m, &entryPlan, key, val); err != nil {
 			return nil, err
 		}
 	}
@@ -785,6 +860,59 @@ func (p *Parser) parseHashMap() (Value, error) {
 	return m, nil
 }
 
+// mapSet inserts one literal pair into a map the read still owns exclusively,
+// admitting the storage each insert claims before claiming it. Past
+// hashMapSmallLimit it builds straight into the trie: the Go-map branch of Set
+// hashes and rehashes a whole bucket table with no point at which the read can
+// be interrupted or refused.
+func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
+	hk, err := toHashKey(key)
+	if err != nil {
+		return err
+	}
+	if err := p.budget.work(int64(len(hk.str)) + 1); err != nil {
+		return err
+	}
+	e := entry{hk: hk, k: key, v: val}
+
+	if m.large != nil {
+		root, added, err := m.large.root.assocGuarded(p.budget, e, hashOfKey(hk), 0)
+		if err != nil {
+			return err
+		}
+		m.large.root = root
+		if added {
+			m.large.count++
+		}
+		return nil
+	}
+
+	i, found := m.find(hk)
+	if err := p.budget.work(int64(i) + 1); err != nil {
+		return err
+	}
+	if found {
+		m.entries[i] = e
+		return nil
+	}
+	if len(m.entries) >= hashMapSmallLimit {
+		root, err := newGuardedTrie(m.entries, e, p.budget)
+		if err != nil {
+			return err
+		}
+		m.large = &largeMap{root: root, count: len(m.entries) + 1}
+		m.entries = nil
+		return nil
+	}
+	if err := plan.admit(p.budget, int64(len(m.entries)+1)); err != nil {
+		return err
+	}
+	m.entries = append(m.entries, entry{})
+	copy(m.entries[i+1:], m.entries[i:len(m.entries)-1])
+	m.entries[i] = e
+	return nil
+}
+
 // wrapForm builds the (sym form) list a reader macro expands to, accounting
 // for both the generated symbol node and the list node holding it.
 func (p *Parser) wrapForm(sym string, form Value) (Value, error) {
@@ -792,6 +920,9 @@ func (p *Parser) wrapForm(sym string, form Value) (Value, error) {
 		return nil, err
 	}
 	if err := p.addNode(0); err != nil {
+		return nil, err
+	}
+	if err := p.budget.admitSlots(2); err != nil {
 		return nil, err
 	}
 	return NewList([]Value{Symbol{V: sym}, form}), nil
@@ -812,11 +943,13 @@ func (p *Parser) parseReaderVector() (Value, error) {
 
 	for p.peek().typ != tokenRParen && p.peek().typ != tokenEOF {
 		item, err := p.parseForm()
+		if err == nil {
+			err = p.addChild(item)
+		}
 		if err != nil {
 			p.nodes = p.nodes[:mark]
 			return nil, err
 		}
-		p.nodes = append(p.nodes, item)
 	}
 
 	if _, err := p.expect(tokenRParen); err != nil {
@@ -824,13 +957,11 @@ func (p *Parser) parseReaderVector() (Value, error) {
 		return nil, err
 	}
 
-	items := make([]Value, len(p.nodes)-mark)
-	if err := p.budget.work(int64(len(items))); err != nil {
+	items, err := p.takeChildren(mark)
+	if err != nil {
 		p.nodes = p.nodes[:mark]
 		return nil, err
 	}
-	copy(items, p.nodes[mark:])
-	p.nodes = p.nodes[:mark]
 
 	if err := p.addNode(0); err != nil {
 		return nil, err
