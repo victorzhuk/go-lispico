@@ -113,14 +113,18 @@ func TestGuardedRead_ScratchReleaseDropsOversizedCapacity(t *testing.T) {
 		if _, err := guardedScratchRead(ctx, s, wide); err != nil {
 			t.Fatalf("read of a %d-byte form failed: %v", len(wide), err)
 		}
-		slots := int64(cap(s.tokens) + cap(s.parser.nodes))
+		// Tokens are only ever appended, so len is their high-water mark. The
+		// node stack is marked and truncated, so its len is back near zero here
+		// and the plan's tracked high-water stands in, clamped against the
+		// capacity append actually handed out.
+		slots := int64(len(s.tokens) + min(int(s.parser.nodePlan.capacity), cap(s.parser.nodes)))
 		before := chargedReductions(meter)
 
 		if !s.release(s.retained()) {
 			t.Fatal("a scratch retaining exactly its ceiling was dropped, want it cleared and pooled")
 		}
 		if got := chargedReductions(meter) - before; got != slots {
-			t.Errorf("clearing %d retained slots charged %d reductions, want one per slot", slots, got)
+			t.Errorf("clearing the %d slots this read wrote charged %d reductions, want one per slot", slots, got)
 		}
 	})
 }
