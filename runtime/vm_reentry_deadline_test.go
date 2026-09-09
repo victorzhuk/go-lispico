@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,4 +241,110 @@ func TestCallReentrancy_VMLateGoFuncEntryDoesNotReDeriveDeadline(t *testing.T) {
 		assert.True(t, errors.Is(flushErr, context.DeadlineExceeded),
 			"retained deadline must be expired by the late entry's flush, got %v", flushErr)
 	})
+}
+
+// TestEngineDeadline_DisabledTimeoutPreservesInheritedDeadline proves the
+// tree-walker boundary never clears a caller's inherited deadline when the
+// engine timeout is disabled: today the boundary installs the (zero)
+// disabled-timeout deadline unconditionally, wiping the inherited instant.
+func TestEngineDeadline_DisabledTimeoutPreservesInheritedDeadline(t *testing.T) {
+	eng, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()), WithTimeout(0))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	var observed time.Time
+	bindEvalDeadlineProbe(t, eng, "probe", &observed)
+	_, err = eng.Eval(context.Background(), "def-run", "(defn run [] (probe))")
+	require.NoError(t, err)
+
+	inherited := time.Now().Add(time.Hour)
+	_, err = eng.Call(core.WithEvalDeadline(context.Background(), inherited), "run")
+	require.NoError(t, err)
+
+	assert.True(t, observed.Equal(inherited),
+		"WithTimeout(0) must not clear an inherited deadline: want %v, got %v", inherited, observed)
+}
+
+// TestEngineDeadline_TreeWalkerPreservesInheritedDeadline proves the
+// tree-walker boundary keeps a caller's inherited deadline instead of
+// re-deriving now+timeout over it when the engine timeout is enabled.
+func TestEngineDeadline_TreeWalkerPreservesInheritedDeadline(t *testing.T) {
+	eng, err := New(nil, WithTreeWalker(), WithDialect(clojure.Dialect()), WithTimeout(250*time.Millisecond))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	var observed time.Time
+	bindEvalDeadlineProbe(t, eng, "probe", &observed)
+	_, err = eng.Eval(context.Background(), "def-run", "(defn run [] (probe))")
+	require.NoError(t, err)
+
+	inherited := time.Now().Add(time.Hour)
+	_, err = eng.Call(core.WithEvalDeadline(context.Background(), inherited), "run")
+	require.NoError(t, err)
+
+	assert.True(t, observed.Equal(inherited),
+		"tree-walker boundary must not re-derive the deadline over an inherited one: want %v, got %v", inherited, observed)
+}
+
+// TestEngineDeadline_ReentryRetainsAbsoluteDeadlineAndBudget proves a nested
+// Engine.Call from a GoFunc during an enclosing evaluation keeps the
+// enclosing absolute deadline — never a fresh now+timeout derivation — and
+// shares the same eval state: identical structural-depth and call-depth
+// counters across the nested boundary, in both evaluators.
+func TestEngineDeadline_ReentryRetainsAbsoluteDeadlineAndBudget(t *testing.T) {
+	const timeout = 250 * time.Millisecond
+	inherited := time.Now().Add(time.Hour)
+
+	for _, tc := range []struct {
+		name string
+		opts []EngineOption
+	}{
+		{name: "vm evaluator", opts: []EngineOption{WithBytecode()}},
+		{name: "tree walker", opts: []EngineOption{WithTreeWalker()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append([]EngineOption{WithDialect(clojure.Dialect()), WithTimeout(timeout)}, tc.opts...)
+			eng, err := New(nil, opts...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = eng.Close() })
+
+			type obs struct {
+				deadline    time.Time
+				structCount *atomic.Int64
+				callCount   *atomic.Int64
+			}
+			var outer, inner obs
+
+			require.NoError(t, eng.Bind("inner", core.GoFunc{
+				Name: "inner",
+				Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+					inner = obs{core.EvalDeadlineFrom(ctx), core.EvalStructCounter(ctx), core.EvalCallCounter(ctx)}
+					return core.Nil{}, nil
+				},
+			}))
+			require.NoError(t, eng.Bind("bridge", core.GoFunc{
+				Name: "bridge",
+				Fn: func(ctx context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
+					outer = obs{core.EvalDeadlineFrom(ctx), core.EvalStructCounter(ctx), core.EvalCallCounter(ctx)}
+					_, err := eng.Call(ctx, "inner-run")
+					return core.Nil{}, err
+				},
+			}))
+			base := context.Background()
+			_, err = eng.Eval(base, "def-inner", "(defn inner-run [] (inner))")
+			require.NoError(t, err)
+			_, err = eng.Eval(base, "def-outer", "(defn outer-run [] (bridge))")
+			require.NoError(t, err)
+
+			_, err = eng.Call(core.WithEvalDeadline(base, inherited), "outer-run")
+			require.NoError(t, err)
+
+			assert.True(t, outer.deadline.Equal(inherited),
+				"enclosing evaluation must keep the inherited deadline: want %v, got %v", inherited, outer.deadline)
+			assert.True(t, inner.deadline.Equal(inherited),
+				"nested call must retain the enclosing absolute deadline, not re-derive now+timeout: want %v, got %v", inherited, inner.deadline)
+			require.Same(t, outer.structCount, inner.structCount, "nested call must share the structural-depth counter")
+			require.Same(t, outer.callCount, inner.callCount, "nested call must share the call-depth counter")
+		})
+	}
 }
