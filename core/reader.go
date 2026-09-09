@@ -138,9 +138,11 @@ func (r *Reader) skipWhitespace() {
 	}
 }
 
-// Tokenize scans the whole input twice: once through countTokens to size the
-// result exactly, once for real. Both passes drive the same nextToken, so the
-// count can never drift from what the second pass actually emits.
+// Tokenize scans a guarded read's input twice: once through countTokens to
+// size the result exactly, once for real. Both passes drive the same nextToken,
+// so the count can never drift from what the second pass actually emits. A
+// context-free read has no plan to reserve and no allowance to check the plan
+// against, so it scans once.
 func (r *Reader) Tokenize() ([]token, error) {
 	return r.tokenizeInto(nil)
 }
@@ -152,17 +154,22 @@ func (r *Reader) Tokenize() ([]token, error) {
 // pool slot's retained buffer never has that capacity discarded just because
 // this particular read failed.
 func (r *Reader) tokenizeInto(buf []token) ([]token, error) {
-	n, err := r.countTokens()
-	if err != nil {
-		return buf, err
-	}
-	if err := r.budget.reservePlan(int64(n), r.copiedPayload); err != nil {
-		return buf, err
-	}
-
 	tokens := buf[:0]
-	if cap(tokens) < n {
-		tokens = make([]token, 0, n)
+	// The counting pass exists to refuse an oversized plan before the slice
+	// backing it is allocated. Nothing is reserved and nothing is bounded
+	// without a budget, so a context-free read skips it and lets append size
+	// the buffer, as it did before reads could be guarded.
+	if r.budget != nil {
+		n, err := r.countTokens()
+		if err != nil {
+			return buf, err
+		}
+		if err := r.budget.reservePlan(int64(n), r.copiedPayload); err != nil {
+			return buf, err
+		}
+		if cap(tokens) < n {
+			tokens = make([]token, 0, n)
+		}
 	}
 	for {
 		tok, err := r.nextToken()
