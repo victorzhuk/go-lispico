@@ -296,13 +296,14 @@ func TestCLAdapters_LateVMDeadline(t *testing.T) {
 	t.Run("resource-limit-wins-over-pending-type-error", func(t *testing.T) {
 		eng := newGoldenEngine(t, cl.Dialect(), true,
 			WithBytecode(),
-			WithResourceLimits(ResourceLimits{MaxReductions: 700, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}),
+			WithResourceLimits(ResourceLimits{MaxReductions: 838, MaxCollectionLen: 1 << 30, MaxCacheEntries: 1 << 12}),
 		)
 		// Measured by sweeping MaxReductions over these 380 elements and
-		// observing where the run turns: it has accrued 648 reductions when
-		// the predicate's second call returns its TypeError, and sort's
-		// mandatory Flush takes the total to 776. Every ceiling in [648, 775]
-		// therefore falls between the two, and 700 sits mid-window.
+		// observing where the run turns: reading the source, the predicate's
+		// calls and sort's mandatory Flush all charge one ledger. The
+		// predicate's second call first reaches its TypeError at a ceiling of
+		// 803, and the Flush stops crossing at 875, so every ceiling in
+		// [803, 874] falls between the two and 838 sits mid-window.
 		bindPrebuiltSubject(t, eng, "clbudget-subject", 380)
 		var predCalls int
 		require.NoError(t, eng.Bind("clbudget-pred", core.GoFunc{
