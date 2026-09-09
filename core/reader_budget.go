@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -59,4 +60,75 @@ func (b *readerBudget) checkpoint() error {
 		return err
 	}
 	return nil
+}
+
+// work records n reduction units of interruptible reader work. It settles at
+// every checkInterval boundary rather than at the end of the run, so a span
+// far larger than the interval — a long copy, a long token, a long comment —
+// is still interrupted within checkInterval units of work.
+func (b *readerBudget) work(n int64) error {
+	if b == nil {
+		return nil
+	}
+	if b.failed != nil {
+		return b.failed
+	}
+	for n > 0 {
+		room := checkInterval - b.pending
+		if n < room {
+			b.pending += n
+			return nil
+		}
+		b.pending += room
+		n -= room
+		if err := b.checkpoint(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// err reports the terminal failure already observed, without charging or
+// re-reading anything.
+func (b *readerBudget) err() error {
+	if b == nil {
+		return nil
+	}
+	return b.failed
+}
+
+// settle closes out a read that is returning err. The terminal state is read
+// one last time first and outranks err: a cancelled, expired or exhausted read
+// truncates its own input, and the syntax error that truncation produces must
+// never be what the caller sees.
+func (b *readerBudget) settle(err error) error {
+	if b == nil {
+		return err
+	}
+	if failed := b.checkpoint(); failed != nil {
+		return failed
+	}
+	return err
+}
+
+// admitConversion pre-admits an opaque numeric conversion of n bytes. strconv
+// runs uninterrupted once entered, so the token is charged before entry and
+// refused outright when it alone would claim more than a third of the reduction
+// budget; earlier reader work tightens that further, since the charge below has
+// to fit in what the budget has left. The diagnostic reports lengths only —
+// the token that provoked it can be arbitrarily long.
+func (b *readerBudget) admitConversion(n int64) error {
+	if b == nil {
+		return nil
+	}
+	if b.failed != nil {
+		return b.failed
+	}
+	if limit := b.meter.Snapshot().MaxReductions / 3; limit > 0 && n > limit {
+		b.failed = NewResourceLimitError(
+			fmt.Sprintf("numeric token of %d bytes exceeds the reader conversion limit of %d", n, limit),
+		)
+		return b.failed
+	}
+	return b.work(n)
 }

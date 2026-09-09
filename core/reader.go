@@ -66,6 +66,9 @@ type Reader struct {
 	line  int
 	col   int
 	flags readerFlags
+	// budget is nil for a context-free read; a guarded read installs the
+	// per-read work budget every advanced byte is charged against.
+	budget *readerBudget
 	// countOnly is set while countTokens scans for the exact token count.
 	// It tells readString's escape path to skip materializing a decoded
 	// value — the counting pass only needs to know where the string ends.
@@ -83,6 +86,15 @@ func NewReaderWithFlags(input string, flags readerFlags) *Reader {
 func (r *Reader) next() byte {
 	if r.pos >= len(r.input) {
 		return 0
+	}
+	if r.budget != nil {
+		if err := r.budget.work(1); err != nil {
+			// A failed budget ends the scan the way end of input does, so
+			// every byte loop above it unwinds at once instead of running
+			// the rest of the source uninterrupted.
+			r.pos = len(r.input)
+			return 0
+		}
 	}
 	ch := r.input[r.pos]
 	r.pos++
@@ -177,10 +189,22 @@ func (r *Reader) countTokens() (int, error) {
 	}
 }
 
-// nextToken scans and returns the next token, skipping whitespace and
+// nextToken scans the next token and reports the read's terminal state ahead
+// of any syntax error the scan produced: a budget that fails mid-token
+// truncates the input, and the unterminated string or unexpected character
+// that truncation reports must not mask the failure behind it.
+func (r *Reader) nextToken() (token, error) {
+	tok, err := r.scanToken()
+	if failed := r.budget.err(); failed != nil {
+		return token{}, failed
+	}
+	return tok, err
+}
+
+// scanToken scans and returns the next token, skipping whitespace and
 // comments first. At end of input it returns a tokenEOF token rather than an
 // error.
-func (r *Reader) nextToken() (token, error) {
+func (r *Reader) scanToken() (token, error) {
 	for {
 		r.skipWhitespace()
 
@@ -294,6 +318,12 @@ func (r *Reader) readString() (token, error) {
 func (r *Reader) readStringEscaped(prefix string) (token, error) {
 	var buf strings.Builder
 	if !r.countOnly {
+		// The decoded tail copies one byte per byte the loop below scans, so
+		// next already charges it. This bulk prefix copy is the one that
+		// advances with no scan behind it.
+		if err := r.budget.work(int64(len(prefix))); err != nil {
+			return token{}, err
+		}
 		buf.WriteString(prefix)
 	}
 
@@ -413,6 +443,9 @@ type Parser struct {
 	// nil for a Parser built directly via NewParser/NewParserWithDepth, which
 	// grows it from scratch like any other append-based slice.
 	nodes []Value
+	// budget is nil for a context-free read; a guarded read installs the same
+	// per-read work budget the scanner charges against.
+	budget *readerBudget
 }
 
 func NewParser(tokens []token) *Parser {
@@ -449,10 +482,12 @@ func (s *readerScratch) Reset() {
 	s.reader.line = 1
 	s.reader.col = 1
 	s.reader.countOnly = false
+	s.reader.budget = nil
 	s.parser.pos = 0
 	s.parser.depth = 0
 	s.parser.stats = ReaderStats{}
 	s.parser.nodes = s.parser.nodes[:0]
+	s.parser.budget = nil
 	s.tokens = s.tokens[:0]
 	s.budget = nil
 }
@@ -470,12 +505,14 @@ func (s *readerScratch) read(src string, flags readerFlags, maxDepth int) ([]Val
 	}
 	s.reader.input = src
 	s.reader.flags = flags
+	s.reader.budget = s.budget
 	s.parser.maxDepth = maxDepth
+	s.parser.budget = s.budget
 
 	tokens, err := s.reader.tokenizeInto(s.tokens)
 	s.tokens = tokens
 	if err != nil {
-		return nil, ReaderStats{}, err
+		return nil, ReaderStats{}, s.budget.settle(err)
 	}
 	s.parser.tokens = s.tokens
 
@@ -483,20 +520,24 @@ func (s *readerScratch) read(src string, flags readerFlags, maxDepth int) ([]Val
 	for s.parser.peek().typ != tokenEOF {
 		form, err := s.parser.Parse()
 		if err != nil {
-			return nil, ReaderStats{}, err
+			return nil, ReaderStats{}, s.budget.settle(err)
 		}
 		forms = append(forms, form)
+	}
+	if err := s.budget.checkpoint(); err != nil {
+		return nil, ReaderStats{}, err
 	}
 	return forms, s.parser.Stats(), nil
 }
 
 func (p *Parser) Stats() ReaderStats { return p.stats }
 
-func (p *Parser) addNode(bytes int64) {
+func (p *Parser) addNode(bytes int64) error {
 	p.stats.Nodes++
 	if bytes > 0 {
 		p.stats.Bytes += bytes
 	}
+	return p.budget.work(1)
 }
 
 func (p *Parser) peek() token {
@@ -568,30 +609,44 @@ func (p *Parser) parseForm() (Value, error) {
 		return p.parseUnquoteSplicing()
 	case tokenString:
 		p.next()
-		p.addNode(int64(len(tok.val)))
+		if err := p.addNode(int64(len(tok.val))); err != nil {
+			return nil, err
+		}
 		return String{V: tok.val}, nil
 	case tokenNumber:
 		p.next()
-		p.addNode(0)
-		return parseNumber(tok.val, int(tok.line), int(tok.col))
+		if err := p.addNode(0); err != nil {
+			return nil, err
+		}
+		return p.parseNumberToken(tok)
 	case tokenSymbol:
 		p.next()
 		switch tok.val {
 		case "nil":
-			p.addNode(0)
+			if err := p.addNode(0); err != nil {
+				return nil, err
+			}
 			return Nil{}, nil
 		case "true":
-			p.addNode(0)
+			if err := p.addNode(0); err != nil {
+				return nil, err
+			}
 			return Bool{V: true}, nil
 		case "false":
-			p.addNode(0)
+			if err := p.addNode(0); err != nil {
+				return nil, err
+			}
 			return Bool{V: false}, nil
 		}
-		p.addNode(int64(len(tok.val)))
+		if err := p.addNode(int64(len(tok.val))); err != nil {
+			return nil, err
+		}
 		return Symbol{V: tok.val}, nil
 	case tokenKeyword:
 		p.next()
-		p.addNode(int64(len(tok.val)))
+		if err := p.addNode(int64(len(tok.val))); err != nil {
+			return nil, err
+		}
 		return Keyword{V: tok.val}, nil
 	default:
 		return nil, NewReadError(
@@ -620,10 +675,16 @@ func (p *Parser) parseList() (Value, error) {
 	}
 
 	items := make([]Value, len(p.nodes)-mark)
+	if err := p.budget.work(int64(len(items))); err != nil {
+		p.nodes = p.nodes[:mark]
+		return nil, err
+	}
 	copy(items, p.nodes[mark:])
 	p.nodes = p.nodes[:mark]
 
-	p.addNode(0)
+	if err := p.addNode(0); err != nil {
+		return nil, err
+	}
 	return NewList(items), nil
 }
 
@@ -646,10 +707,16 @@ func (p *Parser) parseVector() (Value, error) {
 	}
 
 	items := make([]Value, len(p.nodes)-mark)
+	if err := p.budget.work(int64(len(items))); err != nil {
+		p.nodes = p.nodes[:mark]
+		return nil, err
+	}
 	copy(items, p.nodes[mark:])
 	p.nodes = p.nodes[:mark]
 
-	p.addNode(0)
+	if err := p.addNode(0); err != nil {
+		return nil, err
+	}
 	return NewVector(items), nil
 }
 
@@ -682,8 +749,22 @@ func (p *Parser) parseHashMap() (Value, error) {
 		return nil, err
 	}
 
-	p.addNode(0)
+	if err := p.addNode(0); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+// wrapForm builds the (sym form) list a reader macro expands to, accounting
+// for both the generated symbol node and the list node holding it.
+func (p *Parser) wrapForm(sym string, form Value) (Value, error) {
+	if err := p.addNode(int64(len(sym))); err != nil {
+		return nil, err
+	}
+	if err := p.addNode(0); err != nil {
+		return nil, err
+	}
+	return NewList([]Value{Symbol{V: sym}, form}), nil
 }
 
 func (p *Parser) parseFunctionRef() (Value, error) {
@@ -692,9 +773,7 @@ func (p *Parser) parseFunctionRef() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.addNode(int64(len("function")))
-	p.addNode(0)
-	return NewList([]Value{Symbol{V: "function"}, form}), nil
+	return p.wrapForm("function", form)
 }
 
 func (p *Parser) parseReaderVector() (Value, error) {
@@ -716,10 +795,16 @@ func (p *Parser) parseReaderVector() (Value, error) {
 	}
 
 	items := make([]Value, len(p.nodes)-mark)
+	if err := p.budget.work(int64(len(items))); err != nil {
+		p.nodes = p.nodes[:mark]
+		return nil, err
+	}
 	copy(items, p.nodes[mark:])
 	p.nodes = p.nodes[:mark]
 
-	p.addNode(0)
+	if err := p.addNode(0); err != nil {
+		return nil, err
+	}
 	return NewVector(items), nil
 }
 
@@ -729,9 +814,7 @@ func (p *Parser) parseQuote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.addNode(int64(len("quote")))
-	p.addNode(0)
-	return NewList([]Value{Symbol{V: "quote"}, form}), nil
+	return p.wrapForm("quote", form)
 }
 
 func (p *Parser) parseQuasiquote() (Value, error) {
@@ -740,9 +823,7 @@ func (p *Parser) parseQuasiquote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.addNode(int64(len("quasiquote")))
-	p.addNode(0)
-	return NewList([]Value{Symbol{V: "quasiquote"}, form}), nil
+	return p.wrapForm("quasiquote", form)
 }
 
 func (p *Parser) parseUnquote() (Value, error) {
@@ -751,9 +832,7 @@ func (p *Parser) parseUnquote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.addNode(int64(len("unquote")))
-	p.addNode(0)
-	return NewList([]Value{Symbol{V: "unquote"}, form}), nil
+	return p.wrapForm("unquote", form)
 }
 
 func (p *Parser) parseUnquoteSplicing() (Value, error) {
@@ -762,9 +841,25 @@ func (p *Parser) parseUnquoteSplicing() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.addNode(int64(len("unquote-splicing")))
-	p.addNode(0)
-	return NewList([]Value{Symbol{V: "unquote-splicing"}, form}), nil
+	return p.wrapForm("unquote-splicing", form)
+}
+
+// parseNumberToken admits the token into strconv before converting it. The
+// conversion is the one span of reader work that cannot be interrupted, so it
+// is charged and bounded up front and the terminal state is re-read the moment
+// it returns.
+func (p *Parser) parseNumberToken(tok token) (Value, error) {
+	if err := p.budget.admitConversion(int64(len(tok.val))); err != nil {
+		return nil, err
+	}
+	v, err := parseNumber(tok.val, int(tok.line), int(tok.col))
+	if err != nil {
+		return nil, err
+	}
+	if err := p.budget.checkpoint(); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 func parseNumber(s string, line, col int) (Value, error) {
