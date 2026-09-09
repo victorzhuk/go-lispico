@@ -420,3 +420,294 @@ func TestLoadScope_RetainedDenialIsSettledFailure(t *testing.T) {
 		})
 	}
 }
+
+// errNonterminalEval is the ordinary evaluation failure the precedence cases
+// race against settlement. Matching it by identity keeps the assertions on the
+// selected cause instead of on a wrapper's pointer or its formatted message.
+var errNonterminalEval = errors.New("nonterminal evaluation failure")
+
+// precedenceSource retains a binding and then fails, so settlement has a
+// retained charge left to deny after the evaluation has already produced a
+// nonterminal error of its own.
+const precedenceSource = "(def kept [1 2 3]) (fail-soft)"
+
+func precedenceBindings() map[string]core.Value {
+	fixtures := settlementFixtures()
+	fixtures["fail-soft"] = core.GoFunc{
+		Name: "fail-soft",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			return nil, errNonterminalEval
+		},
+	}
+	return fixtures
+}
+
+// precedenceEntry drives one public entry point through the precedence and
+// wrapping cases. panicWrapped records the entry's public panic shape: Eval
+// wraps a recovered panic behind its eval prefix, while the binding-scope
+// entries hand back the panic error itself.
+type precedenceEntry struct {
+	name         string
+	panicWrapped bool
+	prepare      func(t *testing.T, eng Engine, bindings map[string]core.Value)
+	invoke       settlementInvoke
+}
+
+func precedenceEntries() []precedenceEntry {
+	return []precedenceEntry{
+		{
+			name:         "Eval",
+			panicWrapped: true,
+			prepare: func(t *testing.T, eng Engine, bindings map[string]core.Value) {
+				t.Helper()
+				for name, val := range bindings {
+					if err := eng.Bind(name, val); err != nil {
+						t.Fatalf("Bind %s: %v", name, err)
+					}
+				}
+			},
+			invoke: func(t *testing.T, ctx context.Context, eng Engine, source string, _ map[string]core.Value) (*core.Env, error) {
+				t.Helper()
+				_, err := eng.Eval(ctx, "precedence", source)
+				return nil, err
+			},
+		},
+		{
+			name: "EvalWithBindings",
+			invoke: func(t *testing.T, ctx context.Context, eng Engine, source string, bindings map[string]core.Value) (*core.Env, error) {
+				t.Helper()
+				_, err := eng.EvalWithBindings(ctx, source, bindings)
+				return nil, err
+			},
+		},
+		{
+			name: "LoadScope",
+			invoke: func(t *testing.T, ctx context.Context, eng Engine, source string, bindings map[string]core.Value) (*core.Env, error) {
+				t.Helper()
+				_, scope, err := eng.LoadScope(ctx, source, bindings)
+				return scope, err
+			},
+		},
+	}
+}
+
+func precedenceEvaluators() []struct {
+	name string
+	opt  EngineOption
+} {
+	return []struct {
+		name string
+		opt  EngineOption
+	}{
+		{name: "bytecode", opt: WithBytecode()},
+		{name: "treewalker", opt: WithTreeWalker()},
+	}
+}
+
+// runPrecedence drives every entry point and evaluator through an evaluation
+// that fails with a nonterminal error while settlement either denies or accepts
+// the retained charge that same evaluation left pending, then hands the settled
+// outcome to check.
+func runPrecedence(t *testing.T, denyRetained bool, check func(t *testing.T, name string, err error, event EvalEvent)) {
+	t.Helper()
+	for _, ev := range precedenceEvaluators() {
+		for _, entry := range precedenceEntries() {
+			t.Run(ev.name+"/"+entry.name, func(t *testing.T) {
+				name := ev.name + "/" + entry.name
+				// A context meter, not an engine meter: the chunk cache charges
+				// an engine meter for every chunk it admits, which would bury
+				// the one charge settlement itself has to rule on.
+				meter := &recordingMeter{}
+				eng, err := New(nil, WithDialect(clojure.Dialect()), ev.opt)
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
+				t.Cleanup(func() { _ = eng.Close() })
+
+				bindings := precedenceBindings()
+				if entry.prepare != nil {
+					entry.prepare(t, eng, bindings)
+				}
+				if denyRetained {
+					meter.mu.Lock()
+					meter.chargeErr = errors.New("retained denied")
+					meter.mu.Unlock()
+				}
+				meter.reset()
+
+				var mu sync.Mutex
+				var events []EvalEvent
+				eng.OnEval(func(e EvalEvent) {
+					mu.Lock()
+					events = append(events, e)
+					mu.Unlock()
+				})
+				base := eng.Stats()
+
+				_, evalErr := entry.invoke(t, WithMeter(t.Context(), meter), eng, precedenceSource, bindings)
+				snap := eng.Stats()
+
+				// Without a retained charge to settle there is nothing for the
+				// evaluation error to lose to, and either direction would pass
+				// on an outcome settlement never took part in.
+				if charges := meter.snapshot().chargeCalls; charges != 1 {
+					t.Fatalf("%s: ChargeRetained calls = %d, want 1; the case must leave settlement a charge to rule on", name, charges)
+				}
+
+				mu.Lock()
+				got := append([]EvalEvent(nil), events...)
+				mu.Unlock()
+				if len(got) != 1 {
+					t.Fatalf("%s: OnEval events = %d, want exactly 1", name, len(got))
+				}
+				if d := snap.TotalEvals - base.TotalEvals; d != 1 {
+					t.Fatalf("%s: TotalEvals delta = %d, want 1", name, d)
+				}
+				if d := snap.TotalErrors - base.TotalErrors; d != 1 {
+					t.Fatalf("%s: TotalErrors delta = %d, want 1", name, d)
+				}
+				check(t, name, evalErr, got[0])
+			})
+		}
+	}
+}
+
+// forEachPublishedError applies check to the two places a settled failure has to
+// agree on: what the caller got back and what the OnEval event carried.
+func forEachPublishedError(t *testing.T, err error, event EvalEvent, check func(where string, got error)) {
+	t.Helper()
+	check("returned error", err)
+	check("event error", event.Error)
+}
+
+// TestEval_TerminalSettlementErrorWinsOverEvalError pins the terminal half of
+// the precedence rule: a terminal settlement failure replaces the nonterminal
+// error the evaluation returned, and the caller, the event and the error
+// statistics all report that one selected cause.
+func TestEval_TerminalSettlementErrorWinsOverEvalError(t *testing.T) {
+	runPrecedence(t, true, func(t *testing.T, name string, err error, event EvalEvent) {
+		t.Helper()
+		forEachPublishedError(t, err, event, func(where string, got error) {
+			var lerr *core.LispicoError
+			if !errors.As(got, &lerr) || lerr.Code != core.CodeResourceLimit {
+				t.Fatalf("%s: %s = %v, want %s cause", name, where, got, core.CodeResourceLimit)
+			}
+			if !core.IsTerminalEvalError(got) {
+				t.Fatalf("%s: %s = %v, want a terminal cause", name, where, got)
+			}
+			if errors.Is(got, errNonterminalEval) {
+				t.Fatalf("%s: %s = %v, want the terminal settlement cause to replace the nonterminal evaluation error", name, where, got)
+			}
+		})
+	})
+}
+
+// TestEval_NonterminalEvalErrorSurvivesSettlement pins the other direction: a
+// settlement that raises nothing leaves the evaluation's own nonterminal cause
+// as the published outcome, so settlement never wins by default.
+func TestEval_NonterminalEvalErrorSurvivesSettlement(t *testing.T) {
+	runPrecedence(t, false, func(t *testing.T, name string, err error, event EvalEvent) {
+		t.Helper()
+		forEachPublishedError(t, err, event, func(where string, got error) {
+			if !errors.Is(got, errNonterminalEval) {
+				t.Fatalf("%s: %s = %v, want the evaluation's own cause to survive settlement", name, where, got)
+			}
+			if core.IsTerminalEvalError(got) {
+				t.Fatalf("%s: %s = %v, want a nonterminal cause", name, where, got)
+			}
+		})
+	})
+}
+
+// wrappingCase is one public failure shape the settlement point must leave
+// alone: the typed cause it carries, and whether the entry point returns that
+// cause behind a wrapper.
+type wrappingCase struct {
+	name      string
+	source    string
+	wantCode  string
+	wantIs    error
+	panicPath bool
+	wantScope bool
+}
+
+func wrappingCases() []wrappingCase {
+	return []wrappingCase{
+		{name: "parse-error", source: "(def ok", wantCode: "ReadError"},
+		{name: "eval-error", source: "(fail-soft)", wantIs: errNonterminalEval, wantScope: true},
+		{name: "recovered-panic", source: "(boom)", wantCode: core.CodePanic, panicPath: true},
+	}
+}
+
+func newPrecedenceEngine(t *testing.T, opt EngineOption) Engine {
+	t.Helper()
+	eng, err := New(nil, WithDialect(clojure.Dialect()), opt, WithEngineMeter(&recordingMeter{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return eng
+}
+
+// TestEval_PublicErrorWrappingSurvivesSettlement pins the public error shapes
+// the settlement point must not change: the read and eval paths still return
+// their typed cause behind a wrapper, while the binding-scope panic path still
+// returns the panic error itself.
+func TestEval_PublicErrorWrappingSurvivesSettlement(t *testing.T) {
+	for _, ev := range precedenceEvaluators() {
+		for _, entry := range precedenceEntries() {
+			for _, tc := range wrappingCases() {
+				t.Run(ev.name+"/"+entry.name+"/"+tc.name, func(t *testing.T) {
+					name := ev.name + "/" + entry.name + "/" + tc.name
+					eng := newPrecedenceEngine(t, ev.opt)
+					bindings := precedenceBindings()
+					if entry.prepare != nil {
+						entry.prepare(t, eng, bindings)
+					}
+
+					_, err := entry.invoke(t, t.Context(), eng, tc.source, bindings)
+					if err == nil {
+						t.Fatalf("%s: error = nil, want a failure", name)
+					}
+					if tc.wantCode != "" {
+						var lerr *core.LispicoError
+						if !errors.As(err, &lerr) || lerr.Code != tc.wantCode {
+							t.Fatalf("%s: error = %v, want %s cause", name, err, tc.wantCode)
+						}
+					}
+					if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+						t.Fatalf("%s: error = %v, want the evaluation's own cause", name, err)
+					}
+
+					wrapped := errors.Unwrap(err) != nil
+					wantWrapped := !tc.panicPath || entry.panicWrapped
+					if wrapped != wantWrapped {
+						t.Fatalf("%s: error wraps its cause = %v, want %v; the entry point's public error wrapping must not change",
+							name, wrapped, wantWrapped)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestLoadScope_ScopeReturnSurvivesSettlement pins which failures still hand the
+// caller the child scope the evaluation ran in, and which hand back none.
+func TestLoadScope_ScopeReturnSurvivesSettlement(t *testing.T) {
+	for _, ev := range precedenceEvaluators() {
+		for _, tc := range wrappingCases() {
+			t.Run(ev.name+"/"+tc.name, func(t *testing.T) {
+				name := ev.name + "/" + tc.name
+				eng := newPrecedenceEngine(t, ev.opt)
+
+				_, scope, err := eng.LoadScope(t.Context(), tc.source, precedenceBindings())
+				if err == nil {
+					t.Fatalf("%s: error = nil, want a failure", name)
+				}
+				if (scope != nil) != tc.wantScope {
+					t.Fatalf("%s: LoadScope returned a scope = %v, want %v", name, scope != nil, tc.wantScope)
+				}
+			})
+		}
+	}
+}
