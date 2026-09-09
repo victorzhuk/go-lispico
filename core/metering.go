@@ -324,6 +324,10 @@ func (st *evalState) finishEval() (err error) {
 	st.evalDepth.Add(-1)
 	defer func() {
 		if r := recover(); r != nil {
+			// The eval state outlives the evaluation on the caller's context and
+			// StartEval reuses it, so an abandoned settlement must not leave its
+			// pending cells to be charged against the next evaluation's meter.
+			st.resetRetained()
 			err = NewPanicError("settlement", r)
 		}
 		st.returnEvalLease()
@@ -334,6 +338,12 @@ func (st *evalState) finishEval() (err error) {
 		return flushErr
 	}
 	return retainedErr
+}
+
+func (st *evalState) resetRetained() {
+	st.pendingCellAllocs = nil
+	st.retainedBytes = 0
+	st.retainedSlots = 0
 }
 
 type retainedCharge struct {
@@ -356,11 +366,7 @@ func (st *evalState) settleRetained() error {
 	if len(st.pendingCellAllocs) == 0 {
 		return nil
 	}
-	defer func() {
-		st.pendingCellAllocs = nil
-		st.retainedBytes = 0
-		st.retainedSlots = 0
-	}()
+	defer st.resetRetained()
 
 	for _, pending := range st.pendingCellAllocs {
 		if pending.env.RetainedMeter() == nil && pending.meter != nil {
@@ -383,15 +389,25 @@ func (st *evalState) settleRetained() error {
 		charge.slots += pending.slots
 	}
 	var charged []*retainedCharge
+	settled := false
+	// A meter that panics mid-charge abandons the settlement the same way a
+	// denial does, so the compensating release runs on that unwind too and the
+	// panic travels on to finishEval, the single place that turns it into an error.
+	defer func() {
+		if settled {
+			return
+		}
+		for _, prev := range charged {
+			prev.meter.ReleaseRetained(prev.bytes, prev.slots)
+		}
+	}()
 	for _, charge := range chargeOrder {
 		if err := charge.meter.ChargeRetained(charge.bytes, charge.slots); err != nil {
-			for _, prev := range charged {
-				prev.meter.ReleaseRetained(prev.bytes, prev.slots)
-			}
 			return NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
 		}
 		charged = append(charged, charge)
 	}
+	settled = true
 
 	var releases []retainedRelease
 	for _, pending := range st.pendingCellAllocs {

@@ -398,6 +398,11 @@ func (e *engineImpl) recomputeFastPathLocked() {
 	e.fastPath.Store(e.bytecodeEvaluator != nil && e.config.engineMeter == nil && noCallbacks)
 }
 
+// fireEvalCallbacks hands the settled outcome to the embedder's observers. The
+// evaluation has already settled by then, so a panicking observer must neither
+// reach the caller nor become the evaluation's outcome: it is contained per
+// callback — one failing observer must not starve the ones registered after
+// it — and the settled result and error stand as published.
 func (e *engineImpl) fireEvalCallbacks(event EvalEvent) {
 	if !e.callbacksActive.Load() {
 		return
@@ -408,8 +413,17 @@ func (e *engineImpl) fireEvalCallbacks(event EvalEvent) {
 	e.mu.RUnlock()
 
 	for _, cb := range callbacks {
-		cb(event)
+		e.deliverEvalEvent(cb, event)
 	}
+}
+
+func (e *engineImpl) deliverEvalEvent(cb func(EvalEvent), event EvalEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Warn("eval observer panic", "source", event.Source, "panic", r)
+		}
+	}()
+	cb(event)
 }
 
 func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
