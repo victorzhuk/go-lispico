@@ -137,6 +137,7 @@ func (p *settlementProbe) seen() ([]EvalEvent, []settledAt) {
 type settlementOutcome struct {
 	name        string
 	source      string
+	limits      func(t *testing.T) ResourceLimits
 	denyLease   bool
 	wantErr     bool
 	wantCode    string
@@ -150,6 +151,7 @@ func settlementOutcomes() []settlementOutcome {
 		{name: "success", source: "(def ok [1 2 3])", wantReturns: 1, wantCharges: 1, checkCharge: true},
 		{name: "setup-failure", source: "1", denyLease: true, wantErr: true},
 		{name: "parse-error", source: "(def ok", wantErr: true, wantReturns: 1},
+		{name: "reader-refusal", source: readerSettlementSource(), limits: tightReaderLimits, wantErr: true, wantCode: core.CodeResourceLimit, wantReturns: 1},
 		{name: "eval-error", source: "(fail)", wantErr: true, wantReturns: 1},
 		{name: "recovered-panic", source: "(boom)", wantErr: true, wantCode: core.CodePanic, wantReturns: 1},
 	}
@@ -192,7 +194,11 @@ func runSettlementOutcomes(t *testing.T, entry string, invoke settlementInvoke, 
 				if tc.denyLease {
 					meter = &denyLeaseMeter{}
 				}
-				eng, err := New(nil, WithDialect(clojure.Dialect()), ev.opt)
+				opts := []EngineOption{WithDialect(clojure.Dialect()), ev.opt}
+				if tc.limits != nil {
+					opts = append(opts, WithResourceLimits(tc.limits(t)))
+				}
+				eng, err := New(nil, opts...)
 				if err != nil {
 					t.Fatalf("New: %v", err)
 				}
