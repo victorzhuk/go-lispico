@@ -951,6 +951,14 @@ func (e *engineImpl) callBoundary(ctx context.Context, name string, fn core.Valu
 		if err != nil {
 			return nil, err
 		}
+		// A top-level boundary owns the engine bound when the state it
+		// entered carries none: a context meter, an engine meter, or a
+		// host-seeded state without a deadline must not lose the timeout.
+		// Arm once — the boundary's only clock read — through the existing
+		// state, never through a second state or lease lifecycle.
+		if top && e.config.timeout > 0 && core.EvalDeadlineFrom(ctx).IsZero() {
+			ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, nowFunc()))
+		}
 		defer func() {
 			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
 				result = nil
