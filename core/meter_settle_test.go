@@ -12,18 +12,28 @@ type chargeFailingMeter struct {
 	failOn   int
 	charges  int
 	releases int
+	returns  int
 
-	chargedBytes  int64
-	chargedSlots  int64
-	releasedBytes int64
-	releasedSlots int64
+	chargedBytes       int64
+	chargedSlots       int64
+	releasedBytes      int64
+	releasedSlots      int64
+	returnedReductions int64
+	returnedAllocBytes int64
 }
 
 func (m *chargeFailingMeter) LeaseEval(reductions, allocBytes int64) (int64, int64, error) {
 	return reductions, allocBytes, nil
 }
 
-func (m *chargeFailingMeter) ReturnEval(reductions, allocBytes int64) {}
+func (m *chargeFailingMeter) ReturnEval(reductions, allocBytes int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.returns++
+	m.returnedReductions += reductions
+	m.returnedAllocBytes += allocBytes
+}
 
 func (m *chargeFailingMeter) ChargeRetained(bytes, slots int64) error {
 	m.mu.Lock()
@@ -52,13 +62,16 @@ func (m *chargeFailingMeter) snapshot() chargeFailingMeter {
 	defer m.mu.Unlock()
 
 	return chargeFailingMeter{
-		failOn:        m.failOn,
-		charges:       m.charges,
-		releases:      m.releases,
-		chargedBytes:  m.chargedBytes,
-		chargedSlots:  m.chargedSlots,
-		releasedBytes: m.releasedBytes,
-		releasedSlots: m.releasedSlots,
+		failOn:             m.failOn,
+		charges:            m.charges,
+		releases:           m.releases,
+		returns:            m.returns,
+		chargedBytes:       m.chargedBytes,
+		chargedSlots:       m.chargedSlots,
+		releasedBytes:      m.releasedBytes,
+		releasedSlots:      m.releasedSlots,
+		returnedReductions: m.returnedReductions,
+		returnedAllocBytes: m.returnedAllocBytes,
 	}
 }
 
@@ -137,6 +150,18 @@ type panicChargeMeter struct {
 func (m *panicChargeMeter) ChargeRetained(bytes, slots int64) error {
 	_ = m.chargeFailingMeter.ChargeRetained(bytes, slots)
 	panic("retained charge failure")
+}
+
+// panicReleaseMeter is a host meter that panics from ReleaseRetained, the way a
+// buggy embedder implementation would. It records the release before panicking,
+// so a test can tell a release that was never attempted from one that was.
+type panicReleaseMeter struct {
+	chargeFailingMeter
+}
+
+func (m *panicReleaseMeter) ReleaseRetained(bytes, slots int64) {
+	m.chargeFailingMeter.ReleaseRetained(bytes, slots)
+	panic("retained release failure")
 }
 
 // panicLeaseMeter grants one reduction per lease so every reduction charge
@@ -276,5 +301,152 @@ func TestFinishEval_FlushPanicDoesNotLeakRetainedIntoNextEval(t *testing.T) {
 	if snap.charges != 1 || snap.chargedBytes != wantBytes || snap.chargedSlots != 1 {
 		t.Fatalf("second evaluation ChargeRetained = %d calls (%d,%d), want 1 call (%d,1); it must pay only its own retained state",
 			snap.charges, snap.chargedBytes, snap.chargedSlots, wantBytes)
+	}
+}
+
+const (
+	settleLeaseReductions int64 = 5
+	settleLeaseAllocBytes int64 = 7
+)
+
+// settleRetainedCell binds one retained cell in its own scope and returns the
+// env and cell a pendingCellAlloc entry needs.
+func settleRetainedCell(t *testing.T, name string, val Value) (*Env, *Cell) {
+	t.Helper()
+
+	env := NewEnvWithRetainedLimits(nil, 0, 0)
+	if err := env.Set(name, val); err != nil {
+		t.Fatalf("set %s: %v", name, err)
+	}
+	cell, ok := env.CellLocal(name)
+	if !ok {
+		t.Fatalf("missing cell %s", name)
+	}
+	return env, cell
+}
+
+// settleRetainedRebuiltCell is settleRetainedCell for a cell the scope has since
+// compacted away, which is what sends the cell's pending charge down
+// settleRetained's release path instead of finalizing it onto the cell.
+func settleRetainedRebuiltCell(t *testing.T, name string, val Value) (*Env, *Cell) {
+	t.Helper()
+
+	env, cell := settleRetainedCell(t, name, val)
+	env.Delete(name)
+	env.Rebuild()
+	if !cell.rebuilt {
+		t.Fatalf("cell %s survived Rebuild unmarked; the case needs settleRetained's release path", name)
+	}
+	return env, cell
+}
+
+// assertSettlementClosedOut checks the guarantees a release panic must leave
+// intact: the failure is reported as a panic cause, the pending retained ledger
+// is clean, and the evaluation lease went back exactly once.
+func assertSettlementClosedOut(t *testing.T, st *evalState, lease *chargeFailingMeter, err error) {
+	t.Helper()
+
+	var lerr *LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != CodePanic {
+		t.Fatalf("finishEval error = %v, want a %s cause; a panicking release must be reported, not swallowed", err, CodePanic)
+	}
+	if len(st.pendingCellAllocs) != 0 || st.retainedBytes != 0 || st.retainedSlots != 0 {
+		t.Fatalf("pending retained ledger left after a release panic: pending=%d bytes=%d slots=%d",
+			len(st.pendingCellAllocs), st.retainedBytes, st.retainedSlots)
+	}
+	snap := lease.snapshot()
+	if snap.returns != 1 || snap.returnedReductions != settleLeaseReductions || snap.returnedAllocBytes != settleLeaseAllocBytes {
+		t.Fatalf("ReturnEval = %d calls (%d,%d), want 1 call (%d,%d); the evaluation lease goes back exactly once",
+			snap.returns, snap.returnedReductions, snap.returnedAllocBytes, settleLeaseReductions, settleLeaseAllocBytes)
+	}
+}
+
+// TestSettleRetained_PanicMidCompensationReleasesLaterCharges pins that the
+// compensating release a denied charge triggers is not cut short by one broken
+// meter: a meter panicking from ReleaseRetained must not leave the meters behind
+// it in that loop charged for retained state the settlement gave up on.
+func TestSettleRetained_PanicMidCompensationReleasesLaterCharges(t *testing.T) {
+	st := newEvalState()
+	first := &chargeFailingMeter{}
+	panicking := &panicReleaseMeter{}
+	last := &chargeFailingMeter{}
+	denying := &chargeFailingMeter{failOn: 1}
+
+	envFirst, cellFirst := settleRetainedCell(t, "first", Int{V: 1})
+	envPanic, cellPanic := settleRetainedCell(t, "panicking", Int{V: 2})
+	envLast, cellLast := settleRetainedCell(t, "last", Int{V: 3})
+	envDeny, cellDeny := settleRetainedCell(t, "denying", Int{V: 4})
+
+	bytesFirst, bytesPanic, bytesLast, bytesDeny := int64(11), int64(17), int64(23), int64(29)
+	st.pendingCellAllocs = []pendingCellAlloc{
+		{env: envFirst, cell: cellFirst, meter: first, bytes: bytesFirst, slots: 1},
+		{env: envPanic, cell: cellPanic, meter: panicking, bytes: bytesPanic, slots: 1},
+		{env: envLast, cell: cellLast, meter: last, bytes: bytesLast, slots: 1},
+		{env: envDeny, cell: cellDeny, meter: denying, bytes: bytesDeny, slots: 1},
+	}
+	st.retainedBytes = bytesFirst + bytesPanic + bytesLast + bytesDeny
+	st.retainedSlots = 4
+	st.evalDepth.Store(1)
+	st.setMeter(first)
+	st.leasedReductions, st.leasedAllocBytes = settleLeaseReductions, settleLeaseAllocBytes
+
+	err := st.finishEval()
+	assertSettlementClosedOut(t, st, first, err)
+
+	if snap := first.snapshot(); snap.charges != 1 || snap.releases != 1 || snap.releasedBytes != bytesFirst || snap.releasedSlots != 1 {
+		t.Fatalf("meter before the panicking one: %d charges, %d releases (%d,%d), want 1 charge and 1 release (%d,1)",
+			snap.charges, snap.releases, snap.releasedBytes, snap.releasedSlots, bytesFirst)
+	}
+	if snap := last.snapshot(); snap.charges != 1 || snap.releases != 1 || snap.releasedBytes != bytesLast || snap.releasedSlots != 1 {
+		t.Fatalf("meter after the panicking one: %d charges, %d releases (%d,%d), want 1 charge and 1 release (%d,1); a meter panicking from ReleaseRetained must not cost a later meter its compensating release",
+			snap.charges, snap.releases, snap.releasedBytes, snap.releasedSlots, bytesLast)
+	}
+	if snap := denying.snapshot(); snap.charges != 1 || snap.releases != 0 {
+		t.Fatalf("denying meter charges/releases = %d/%d, want 1/0", snap.charges, snap.releases)
+	}
+	if cellFirst.retainedMeter != nil || cellPanic.retainedMeter != nil || cellLast.retainedMeter != nil || cellDeny.retainedMeter != nil {
+		t.Fatal("settleRetained finalized cells after a denied charge")
+	}
+}
+
+// TestSettleRetained_PanicMidRebuiltReleaseReleasesLaterCells pins the same
+// guarantee for the releases a settled charge owes cells the scope compacted
+// away while the evaluation ran. The pending ledger is dropped immediately after
+// that loop, so a release it skips is charged for good, with nothing to retry from.
+func TestSettleRetained_PanicMidRebuiltReleaseReleasesLaterCells(t *testing.T) {
+	st := newEvalState()
+	first := &chargeFailingMeter{}
+	panicking := &panicReleaseMeter{}
+	last := &chargeFailingMeter{}
+
+	envFirst, cellFirst := settleRetainedRebuiltCell(t, "first", Int{V: 1})
+	envPanic, cellPanic := settleRetainedRebuiltCell(t, "panicking", Int{V: 2})
+	envLast, cellLast := settleRetainedRebuiltCell(t, "last", Int{V: 3})
+
+	bytesFirst, bytesPanic, bytesLast := int64(11), int64(17), int64(23)
+	st.pendingCellAllocs = []pendingCellAlloc{
+		{env: envFirst, cell: cellFirst, meter: first, bytes: bytesFirst, slots: 1},
+		{env: envPanic, cell: cellPanic, meter: panicking, bytes: bytesPanic, slots: 1},
+		{env: envLast, cell: cellLast, meter: last, bytes: bytesLast, slots: 1},
+	}
+	st.retainedBytes = bytesFirst + bytesPanic + bytesLast
+	st.retainedSlots = 3
+	st.evalDepth.Store(1)
+	st.setMeter(first)
+	st.leasedReductions, st.leasedAllocBytes = settleLeaseReductions, settleLeaseAllocBytes
+
+	err := st.finishEval()
+	assertSettlementClosedOut(t, st, first, err)
+
+	if snap := first.snapshot(); snap.charges != 1 || snap.releases != 1 || snap.releasedBytes != bytesFirst || snap.releasedSlots != 1 {
+		t.Fatalf("meter before the panicking one: %d charges, %d releases (%d,%d), want 1 charge and 1 release (%d,1)",
+			snap.charges, snap.releases, snap.releasedBytes, snap.releasedSlots, bytesFirst)
+	}
+	if snap := last.snapshot(); snap.charges != 1 || snap.releases != 1 || snap.releasedBytes != bytesLast || snap.releasedSlots != 1 {
+		t.Fatalf("meter after the panicking one: %d charges, %d releases (%d,%d), want 1 charge and 1 release (%d,1); a rebuilt cell's release must survive a sibling meter panicking",
+			snap.charges, snap.releases, snap.releasedBytes, snap.releasedSlots, bytesLast)
+	}
+	if cellFirst.retainedMeter != nil || cellPanic.retainedMeter != nil || cellLast.retainedMeter != nil {
+		t.Fatal("settleRetained finalized rebuilt cells; their charge is owed back, not recorded on the cell")
 	}
 }
