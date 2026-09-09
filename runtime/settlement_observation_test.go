@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
@@ -510,6 +511,13 @@ func precedenceEvaluators() []struct {
 // outcome to check.
 func runPrecedence(t *testing.T, denyRetained bool, check func(t *testing.T, name string, err error, event EvalEvent)) {
 	t.Helper()
+	runPrecedenceSource(t, precedenceSource, denyRetained, check)
+}
+
+// runPrecedenceSource is runPrecedence over a caller-chosen source, so a case
+// can pick which kind of evaluation failure settlement has to rule against.
+func runPrecedenceSource(t *testing.T, source string, denyRetained bool, check func(t *testing.T, name string, err error, event EvalEvent)) {
+	t.Helper()
 	for _, ev := range precedenceEvaluators() {
 		for _, entry := range precedenceEntries() {
 			t.Run(ev.name+"/"+entry.name, func(t *testing.T) {
@@ -544,7 +552,7 @@ func runPrecedence(t *testing.T, denyRetained bool, check func(t *testing.T, nam
 				})
 				base := eng.Stats()
 
-				_, evalErr := entry.invoke(t, WithMeter(t.Context(), meter), eng, precedenceSource, bindings)
+				_, evalErr := entry.invoke(t, WithMeter(t.Context(), meter), eng, source, bindings)
 				snap := eng.Stats()
 
 				// Without a retained charge to settle there is nothing for the
@@ -709,5 +717,282 @@ func TestLoadScope_ScopeReturnSurvivesSettlement(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// retainingSource leaves settlement a retained charge to rule on and nothing
+// else to fail against, so the outcome under test is settlement's alone.
+const retainingSource = "(def kept [1 2 3])"
+
+// precedencePanicSource retains a binding and then panics, so a recovered
+// GoFunc panic and a settlement verdict race for the published cause.
+const precedencePanicSource = "(def kept [1 2 3]) (boom)"
+
+// catchPanic runs fn and hands back whatever escaped it, so a panic crossing a
+// public entry point becomes an assertion instead of a dead test binary.
+func catchPanic(fn func()) (escaped any) {
+	defer func() { escaped = recover() }()
+	fn()
+	return nil
+}
+
+// panicSettlementMeter is a host meter that panics from inside the settlement
+// path, the way a buggy embedder implementation would.
+type panicSettlementMeter struct {
+	recordingMeter
+}
+
+func (m *panicSettlementMeter) ChargeRetained(bytes, slots int64) error {
+	_ = m.recordingMeter.ChargeRetained(bytes, slots)
+	panic("settlement meter failure")
+}
+
+// outcomeEntry drives one public entry point and hands back the result value
+// too, which the precedence entries drop.
+type outcomeEntry struct {
+	name   string
+	invoke func(t *testing.T, ctx context.Context, eng Engine, source string, bindings map[string]core.Value) (core.Value, error)
+}
+
+func outcomeEntries() []outcomeEntry {
+	return []outcomeEntry{
+		{
+			name: "Eval",
+			invoke: func(t *testing.T, ctx context.Context, eng Engine, source string, bindings map[string]core.Value) (core.Value, error) {
+				t.Helper()
+				for name, val := range bindings {
+					if err := eng.Bind(name, val); err != nil {
+						t.Fatalf("Bind %s: %v", name, err)
+					}
+				}
+				return eng.Eval(ctx, "outcome", source)
+			},
+		},
+		{
+			name: "EvalWithBindings",
+			invoke: func(t *testing.T, ctx context.Context, eng Engine, source string, bindings map[string]core.Value) (core.Value, error) {
+				t.Helper()
+				return eng.EvalWithBindings(ctx, source, bindings)
+			},
+		},
+		{
+			name: "LoadScope",
+			invoke: func(t *testing.T, ctx context.Context, eng Engine, source string, bindings map[string]core.Value) (core.Value, error) {
+				t.Helper()
+				result, _, err := eng.LoadScope(ctx, source, bindings)
+				return result, err
+			},
+		},
+	}
+}
+
+func newSettlementEngine(t *testing.T, opts ...EngineOption) Engine {
+	t.Helper()
+	eng, err := New(nil, append([]EngineOption{WithDialect(clojure.Dialect())}, opts...)...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	return eng
+}
+
+// collectEvents registers an observer and returns a reader for what it saw.
+func collectEvents(eng Engine) func() []EvalEvent {
+	var mu sync.Mutex
+	var events []EvalEvent
+	eng.OnEval(func(e EvalEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	})
+	return func() []EvalEvent {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]EvalEvent(nil), events...)
+	}
+}
+
+// TestPanicBoundary_SettlementPanicIsContained pins the boundary a host meter
+// panic must not cross: the entry point returns an error instead of unwinding
+// into the embedder, publishes one settled outcome, and still returns the
+// evaluation lease it drew.
+func TestPanicBoundary_SettlementPanicIsContained(t *testing.T) {
+	for _, ev := range precedenceEvaluators() {
+		for _, entry := range precedenceEntries() {
+			t.Run(ev.name+"/"+entry.name, func(t *testing.T) {
+				name := ev.name + "/" + entry.name
+				meter := &panicSettlementMeter{}
+				eng := newSettlementEngine(t, ev.opt)
+				bindings := precedenceBindings()
+				if entry.prepare != nil {
+					entry.prepare(t, eng, bindings)
+				}
+				seen := collectEvents(eng)
+				base := eng.Stats()
+
+				var evalErr error
+				escaped := catchPanic(func() {
+					_, evalErr = entry.invoke(t, WithMeter(t.Context(), meter), eng, retainingSource, bindings)
+				})
+				if escaped != nil {
+					t.Fatalf("%s: settlement panic escaped the entry point (%v); a host meter panic must come back as an error", name, escaped)
+				}
+
+				var lerr *core.LispicoError
+				if !errors.As(evalErr, &lerr) || lerr.Code != core.CodePanic {
+					t.Fatalf("%s: error = %v, want %s cause", name, evalErr, core.CodePanic)
+				}
+				events := seen()
+				if len(events) != 1 {
+					t.Fatalf("%s: OnEval events = %d, want exactly 1", name, len(events))
+				}
+				snap := eng.Stats()
+				if d := snap.TotalEvals - base.TotalEvals; d != 1 {
+					t.Fatalf("%s: TotalEvals delta = %d, want 1", name, d)
+				}
+				if d := snap.TotalErrors - base.TotalErrors; d != 1 {
+					t.Fatalf("%s: TotalErrors delta = %d, want 1", name, d)
+				}
+				if returns := meter.snapshot().returnCalls; returns != 1 {
+					t.Fatalf("%s: ReturnEval calls = %d, want 1; a settlement panic must not leak the evaluation lease", name, returns)
+				}
+			})
+		}
+	}
+}
+
+// TestEngine_OnEvalCallbackPanicIsContained pins that an embedder observer
+// which panics is contained at the publication point: it never reaches the
+// caller, never replaces the evaluation's own outcome, and never buys the
+// evaluation a second count.
+func TestEngine_OnEvalCallbackPanicIsContained(t *testing.T) {
+	cases := []struct {
+		name    string
+		source  string
+		wantErr error
+	}{
+		{name: "success", source: retainingSource},
+		{name: "failure", source: "(fail-soft)", wantErr: errNonterminalEval},
+	}
+	for _, entry := range outcomeEntries() {
+		for _, tc := range cases {
+			t.Run(entry.name+"/"+tc.name, func(t *testing.T) {
+				name := entry.name + "/" + tc.name
+				eng := newSettlementEngine(t)
+				eng.OnEval(func(EvalEvent) { panic("observer failure") })
+				base := eng.Stats()
+
+				var result core.Value
+				var evalErr error
+				escaped := catchPanic(func() {
+					result, evalErr = entry.invoke(t, t.Context(), eng, tc.source, precedenceBindings())
+				})
+				if escaped != nil {
+					t.Fatalf("%s: observer panic escaped the entry point (%v); a callback panic must not reach the caller", name, escaped)
+				}
+
+				switch {
+				case tc.wantErr == nil && evalErr != nil:
+					t.Fatalf("%s: error = %v, want the evaluation's own success", name, evalErr)
+				case tc.wantErr == nil && result == nil:
+					t.Fatalf("%s: result = nil, want the evaluation's own result", name)
+				case tc.wantErr != nil && !errors.Is(evalErr, tc.wantErr):
+					t.Fatalf("%s: error = %v, want the evaluation's own cause", name, evalErr)
+				}
+				if d := eng.Stats().TotalEvals - base.TotalEvals; d != 1 {
+					t.Fatalf("%s: TotalEvals delta = %d, want exactly 1; a recovered observer panic must not count the evaluation twice", name, d)
+				}
+			})
+		}
+	}
+}
+
+// TestEval_TerminalSettlementErrorWinsOverRecoveredPanic pins which cause wins
+// when a recovered GoFunc panic meets a settlement that denies the retained
+// charge the same evaluation left pending: the terminal settlement error is the
+// one the caller, the event and the error statistics all report.
+func TestEval_TerminalSettlementErrorWinsOverRecoveredPanic(t *testing.T) {
+	runPrecedenceSource(t, precedencePanicSource, true, func(t *testing.T, name string, err error, event EvalEvent) {
+		t.Helper()
+		forEachPublishedError(t, err, event, func(where string, got error) {
+			var lerr *core.LispicoError
+			if !errors.As(got, &lerr) || lerr.Code != core.CodeResourceLimit {
+				t.Fatalf("%s: %s = %v, want %s cause", name, where, got, core.CodeResourceLimit)
+			}
+			if !core.IsTerminalEvalError(got) {
+				t.Fatalf("%s: %s = %v, want a terminal cause", name, where, got)
+			}
+		})
+	})
+}
+
+// settlementBurn and callbackBurn are the two spans the reported duration has
+// to treat differently. Both are lower bounds a spin loop guarantees, so the
+// assertions hold on any machine speed without a clock race.
+const (
+	settlementBurn = 5 * time.Millisecond
+	callbackBurn   = 50 * time.Millisecond
+)
+
+func burnFor(d time.Duration) {
+	end := time.Now().Add(d)
+	for time.Now().Before(end) {
+	}
+}
+
+// burningSettlementMeter spends a known minimum inside the settlement path.
+type burningSettlementMeter struct {
+	recordingMeter
+}
+
+func (m *burningSettlementMeter) ChargeRetained(bytes, slots int64) error {
+	burnFor(settlementBurn)
+	return m.recordingMeter.ChargeRetained(bytes, slots)
+}
+
+// TestEval_DurationCoversSettlementAndExcludesCallbacks pins the span the
+// reported duration measures. Settlement burns inside that span, so the
+// duration is at least that long; the observer burns after it, so the whole
+// call is at least that much longer than the duration it was handed.
+func TestEval_DurationCoversSettlementAndExcludesCallbacks(t *testing.T) {
+	for _, entry := range outcomeEntries() {
+		t.Run(entry.name, func(t *testing.T) {
+			meter := &burningSettlementMeter{}
+			eng := newSettlementEngine(t)
+
+			var mu sync.Mutex
+			var events []EvalEvent
+			eng.OnEval(func(e EvalEvent) {
+				burnFor(callbackBurn)
+				mu.Lock()
+				events = append(events, e)
+				mu.Unlock()
+			})
+
+			started := time.Now()
+			_, err := entry.invoke(t, WithMeter(t.Context(), meter), eng, retainingSource, precedenceBindings())
+			total := time.Since(started)
+			if err != nil {
+				t.Fatalf("%s: error = %v, want success", entry.name, err)
+			}
+
+			mu.Lock()
+			got := append([]EvalEvent(nil), events...)
+			mu.Unlock()
+			if len(got) != 1 {
+				t.Fatalf("%s: OnEval events = %d, want exactly 1", entry.name, len(got))
+			}
+			if charges := meter.snapshot().chargeCalls; charges != 1 {
+				t.Fatalf("%s: ChargeRetained calls = %d, want 1; the case must leave settlement work to time", entry.name, charges)
+			}
+			if got[0].Duration < settlementBurn {
+				t.Fatalf("%s: event Duration = %v, want at least the %v settlement spent; the reported duration must cover settlement",
+					entry.name, got[0].Duration, settlementBurn)
+			}
+			if total-got[0].Duration < callbackBurn {
+				t.Fatalf("%s: call took %v against an event Duration of %v; the reported duration must exclude the %v spent in the callback",
+					entry.name, total, got[0].Duration, callbackBurn)
+			}
+		})
 	}
 }
