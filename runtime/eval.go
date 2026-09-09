@@ -651,11 +651,8 @@ func (e *engineImpl) retainedMeter(ctx context.Context) Meter {
 }
 
 func (e *engineImpl) readForms(ctx context.Context, input string) ([]core.Value, error) {
-	forms, stats, err := e.config.dialect.ReadWithMaxDepthStats(input, e.config.limits.MaxReaderDepth)
+	forms, _, err := e.config.dialect.ReadWithContextStats(ctx, input, e.config.limits.MaxReaderDepth)
 	if err != nil {
-		return nil, err
-	}
-	if err := core.ChargeEvalReader(ctx, stats); err != nil {
 		return nil, err
 	}
 	return forms, nil
@@ -732,6 +729,10 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 		}
 		leased = true
 	}
+	if d := e.evalDeadline(ctx, start); !d.IsZero() && core.EvalDeadlineFrom(ctx).IsZero() {
+		ctx = core.WithEvalDeadline(ctx, d)
+	}
+
 	forms, err := e.readForms(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
@@ -740,10 +741,6 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 	e.mu.RLock()
 	env := e.rootEnv
 	e.mu.RUnlock()
-
-	if d := e.evalDeadline(ctx, start); !d.IsZero() && core.EvalDeadlineFrom(ctx).IsZero() {
-		ctx = core.WithEvalDeadline(ctx, d)
-	}
 
 	if be := e.bytecodeEvaluator; be != nil {
 		result = core.Nil{}

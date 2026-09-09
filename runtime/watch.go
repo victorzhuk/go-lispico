@@ -106,6 +106,9 @@ func (w *fileWatcher) reloadFile(path string) {
 	}
 
 	ctx := w.engine.evalResourceContext(core.DetachEvalState(w.ctx))
+	if d := w.engine.evalDeadline(ctx, start); !d.IsZero() {
+		ctx = core.WithEvalDeadline(ctx, d)
+	}
 	forms, err := w.engine.readForms(ctx, string(content))
 	if err != nil {
 		w.engine.logger.Error("parse file", "path", path, "error", err)
