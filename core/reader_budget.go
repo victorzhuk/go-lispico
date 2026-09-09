@@ -3,8 +3,25 @@ package core
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 )
+
+// readerTokenUnitBytes is the deterministic workspace one planned token costs,
+// the terminal EOF token included. It budgets the token slice the second pass
+// fills; it is not a measurement of the Go token struct.
+const readerTokenUnitBytes int64 = 32
+
+// readerConversionSlackBytes is the bounded diagnostic storage a numeric
+// conversion carries on top of its two token copies.
+const readerConversionSlackBytes int64 = 256
+
+// readerSourceRenderLimit bounds the source an invalid-number diagnostic
+// renders, truncation marker included: the token that provoked it is only
+// bounded by the input.
+const readerSourceRenderLimit = 128
+
+const readerTruncationMarker = "..."
 
 // readerBudget is the per-read state the guarded reader entry point installs
 // on its scratch. It batches reader work against the evaluation ledger carried
@@ -115,12 +132,141 @@ func (b *readerBudget) settle(err error) error {
 // number of tokens costs, the terminal EOF token included, and false when the
 // product overflows or the count is negative. A refusal is a resource limit at
 // the call site, never a wrapped value handed to ChargeAllocBytes.
-func checkedTokenPlanBytes(tokens int64) (int64, bool) { return 0, false }
+func checkedTokenPlanBytes(tokens int64) (int64, bool) {
+	if tokens < 0 || tokens > math.MaxInt64/readerTokenUnitBytes {
+		return 0, false
+	}
+	return tokens * readerTokenUnitBytes, true
+}
 
 // checkedConversionBytes returns the temporary storage a numeric conversion of
 // a token of tokenBytes bytes costs, and false when the sum overflows or the
 // length is negative.
-func checkedConversionBytes(tokenBytes int64) (int64, bool) { return 0, false }
+func checkedConversionBytes(tokenBytes int64) (int64, bool) {
+	if tokenBytes < 0 || tokenBytes > (math.MaxInt64-readerConversionSlackBytes)/2 {
+		return 0, false
+	}
+	return 2*tokenBytes + readerConversionSlackBytes, true
+}
+
+// boundedSource renders at most readerSourceRenderLimit bytes of src, marking a
+// truncated one. Numeric tokens are ASCII, so the cut never splits a rune.
+func boundedSource(src string) string {
+	if len(src) <= readerSourceRenderLimit {
+		return src
+	}
+	return src[:readerSourceRenderLimit-len(readerTruncationMarker)] + readerTruncationMarker
+}
+
+// admitAlloc reserves n bytes of storage on the ledger before the reader
+// allocates them. A refusal is terminal for the read.
+func (b *readerBudget) admitAlloc(n int64) error {
+	if b == nil {
+		return nil
+	}
+	if b.failed != nil {
+		return b.failed
+	}
+	if err := b.meter.ChargeAllocBytes(n); err != nil {
+		b.failed = err
+		return err
+	}
+	return nil
+}
+
+// creditAlloc returns storage admitted before this read knew who would own it:
+// a decoded payload is reserved before the second pass copies it, and the
+// output node that copy becomes accounts for the same bytes. Only the reserved
+// amount is ever returned, so the ledger records the payload exactly once.
+func (b *readerBudget) creditAlloc(n int64) {
+	if b == nil {
+		return
+	}
+	b.meter.creditAllocBytes(n)
+}
+
+// allocHeadroom reports the storage the ledger can still admit. Nothing charges
+// storage while the counting pass runs, so one reading covers the whole pass.
+func (b *readerBudget) allocHeadroom() int64 {
+	if b == nil || !b.meter.Valid() {
+		return math.MaxInt64
+	}
+	snap := b.meter.Snapshot()
+	limit := snap.MaxAllocationBytes
+	if limit <= 0 {
+		limit = DefaultMaxAllocationBytes
+	}
+	if snap.AllocationBytes >= limit {
+		return 0
+	}
+	return limit - snap.AllocationBytes
+}
+
+// checkPlan refuses a plan that cannot fit headroom, so the counting pass stops
+// at the token that overruns it instead of allocating the token slice to
+// discover the failure. It charges nothing; reservePlan admits the plan once
+// the count is final.
+func (b *readerBudget) checkPlan(tokens, payload, headroom int64) error {
+	if b == nil {
+		return nil
+	}
+	if b.failed != nil {
+		return b.failed
+	}
+	if plan, ok := checkedTokenPlanBytes(tokens); ok && payload >= 0 && plan <= headroom && payload <= headroom-plan {
+		return nil
+	}
+	b.failed = NewResourceLimitError(fmt.Sprintf(
+		"reader storage for %d tokens and %d decoded bytes exceeds the remaining allocation allowance of %d bytes",
+		tokens, payload, headroom,
+	))
+	return b.failed
+}
+
+// reservePlan admits the counted token plan and the payload the second pass
+// decodes, before either is allocated. A reused scratch buffer pays the same
+// plan: the charge is the deterministic count, never the storage the pool
+// happens to have retained.
+func (b *readerBudget) reservePlan(tokens, payload int64) error {
+	if b == nil {
+		return nil
+	}
+	if b.failed != nil {
+		return b.failed
+	}
+	plan, ok := checkedTokenPlanBytes(tokens)
+	if !ok {
+		b.failed = NewResourceLimitError(
+			fmt.Sprintf("reader token plan of %d tokens overflows the storage budget", tokens),
+		)
+		return b.failed
+	}
+	if err := b.admitAlloc(plan); err != nil {
+		return err
+	}
+	return b.admitAlloc(payload)
+}
+
+// admitConversionStorage reserves the temporary storage a numeric conversion
+// carries into strconv — the conversion and error token copies plus bounded
+// diagnostic storage — before entry, so neither a successful conversion nor a
+// pooled buffer can bypass admission.
+func (b *readerBudget) admitConversionStorage(tokenBytes int64) error {
+	if b == nil {
+		return nil
+	}
+	if b.failed != nil {
+		return b.failed
+	}
+	n, ok := checkedConversionBytes(tokenBytes)
+	if !ok {
+		b.failed = NewResourceLimitError(
+			fmt.Sprintf("numeric token of %d bytes overflows the reader conversion storage budget", tokenBytes),
+		)
+		return b.failed
+	}
+	return b.admitAlloc(n)
+}
 
 // admitConversion pre-admits an opaque numeric conversion of n bytes. strconv
 // runs uninterrupted once entered, so the token is charged before entry and

@@ -39,10 +39,14 @@ const (
 )
 
 type token struct {
-	typ  tokenType
-	val  string
-	line int32
-	col  int32
+	typ tokenType
+	// copied marks a val the scanner decoded into fresh storage instead of
+	// aliasing the input. The counting pass reserves that storage up front, so
+	// the node built from such a token credits the reservation back.
+	copied bool
+	val    string
+	line   int32
+	col    int32
 }
 
 // readerFlags gates the reader syntax a Dialect turns on or off. Its zero value
@@ -73,6 +77,9 @@ type Reader struct {
 	// It tells readString's escape path to skip materializing a decoded
 	// value — the counting pass only needs to know where the string ends.
 	countOnly bool
+	// copiedPayload is the decoded storage the counting pass found the second
+	// pass will have to copy, reserved before that pass runs.
+	copiedPayload int64
 }
 
 func NewReader(input string) *Reader {
@@ -149,6 +156,9 @@ func (r *Reader) tokenizeInto(buf []token) ([]token, error) {
 	if err != nil {
 		return buf, err
 	}
+	if err := r.budget.reservePlan(int64(n), r.copiedPayload); err != nil {
+		return buf, err
+	}
 
 	tokens := buf[:0]
 	if cap(tokens) < n {
@@ -167,15 +177,20 @@ func (r *Reader) tokenizeInto(buf []token) ([]token, error) {
 }
 
 // countTokens runs nextToken to completion to get the exact token count,
-// including the terminal EOF token, then rewinds r to where it started.
+// including the terminal EOF token, then rewinds r to where it started. It also
+// sizes the storage the second pass will need — the token plan and the payload
+// escaped strings decode into — and stops at the token that overruns the
+// allocation allowance rather than allocating the slice to discover it.
 func (r *Reader) countTokens() (int, error) {
 	pos, line, col := r.pos, r.line, r.col
 	r.countOnly = true
+	r.copiedPayload = 0
 	defer func() {
 		r.pos, r.line, r.col = pos, line, col
 		r.countOnly = false
 	}()
 
+	headroom := r.budget.allocHeadroom()
 	n := 0
 	for {
 		tok, err := r.nextToken()
@@ -183,6 +198,9 @@ func (r *Reader) countTokens() (int, error) {
 			return 0, err
 		}
 		n++
+		if err := r.budget.checkPlan(int64(n), r.copiedPayload, headroom); err != nil {
+			return 0, err
+		}
 		if tok.typ == tokenEOF {
 			return n, nil
 		}
@@ -317,6 +335,7 @@ func (r *Reader) readString() (token, error) {
 // only where the string ends, not its decoded value.
 func (r *Reader) readStringEscaped(prefix string) (token, error) {
 	var buf strings.Builder
+	decoded := int64(len(prefix))
 	if !r.countOnly {
 		// The decoded tail copies one byte per byte the loop below scans, so
 		// next already charges it. This bulk prefix copy is the one that
@@ -330,6 +349,7 @@ func (r *Reader) readStringEscaped(prefix string) (token, error) {
 	if err := r.appendEscape(&buf); err != nil {
 		return token{}, err
 	}
+	decoded++
 
 	for {
 		ch := r.next()
@@ -343,14 +363,20 @@ func (r *Reader) readStringEscaped(prefix string) (token, error) {
 			if err := r.appendEscape(&buf); err != nil {
 				return token{}, err
 			}
+			decoded++
 			continue
 		}
 		if !r.countOnly {
 			buf.WriteByte(ch)
 		}
+		decoded++
 	}
 
-	return token{typ: tokenString, val: buf.String()}, nil
+	if r.countOnly {
+		r.copiedPayload += decoded
+		return token{typ: tokenString}, nil
+	}
+	return token{typ: tokenString, copied: true, val: buf.String()}, nil
 }
 
 // appendEscape consumes the character following a backslash, validates it,
@@ -482,6 +508,7 @@ func (s *readerScratch) Reset() {
 	s.reader.line = 1
 	s.reader.col = 1
 	s.reader.countOnly = false
+	s.reader.copiedPayload = 0
 	s.reader.budget = nil
 	s.parser.pos = 0
 	s.parser.depth = 0
@@ -611,6 +638,9 @@ func (p *Parser) parseForm() (Value, error) {
 		p.next()
 		if err := p.addNode(int64(len(tok.val))); err != nil {
 			return nil, err
+		}
+		if tok.copied {
+			p.budget.creditAlloc(int64(len(tok.val)))
 		}
 		return String{V: tok.val}, nil
 	case tokenNumber:
@@ -852,7 +882,14 @@ func (p *Parser) parseNumberToken(tok token) (Value, error) {
 	if err := p.budget.admitConversion(int64(len(tok.val))); err != nil {
 		return nil, err
 	}
-	v, err := parseNumber(tok.val, int(tok.line), int(tok.col))
+	if err := p.budget.admitConversionStorage(int64(len(tok.val))); err != nil {
+		return nil, err
+	}
+	shown := tok.val
+	if p.budget != nil {
+		shown = boundedSource(tok.val)
+	}
+	v, err := convertNumber(tok.val, int(tok.line), int(tok.col), shown)
 	if err != nil {
 		return nil, err
 	}
@@ -862,17 +899,21 @@ func (p *Parser) parseNumberToken(tok token) (Value, error) {
 	return v, nil
 }
 
-func parseNumber(s string, line, col int) (Value, error) {
+// convertNumber converts s, rendering a failure against shown rather than s:
+// the guarded reader bounds how much of an arbitrarily long token a diagnostic
+// carries, while the context-free reader keeps rendering the whole token.
+// strconv's own error renderer is never called — it repeats the full input.
+func convertNumber(s string, line, col int, shown string) (Value, error) {
 	if strings.Contains(s, ".") {
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
-			return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), line, col)
+			return nil, NewReadError("invalid number: "+shown, line, col)
 		}
 		return Float{V: f}, nil
 	}
 	i, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return nil, NewReadError(fmt.Sprintf("invalid number: %s", s), line, col)
+		return nil, NewReadError("invalid number: "+shown, line, col)
 	}
 	return BoxInt(i), nil
 }
