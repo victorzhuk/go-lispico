@@ -1086,39 +1086,41 @@ func (e *engineImpl) LoadScope(ctx context.Context, source string, bindings map[
 
 func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bindings map[string]core.Value) (result core.Value, childEnv *core.Env, err error) {
 	start := time.Now()
+	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
+	ctx = e.evalResourceContext(ctx)
+	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+
+	// Single settlement point, as in Eval: every return, including a panic
+	// unwind and a lease refused before the evaluation starts, reaches the
+	// observers through here, so the lease is returned once and the caller,
+	// the stats counters and the event agree on one outcome.
+	var leased, top bool
 	defer func() {
 		if r := recover(); r != nil {
 			result = nil
 			childEnv = nil
 			err = core.NewPanicError(source, r)
-			dur := time.Since(start)
-			e.stats.recordEval(dur, err)
-			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 		}
-	}()
-
-	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
-	ctx = e.evalResourceContext(ctx)
-	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
-	if metered {
-		var top bool
-		top, err = core.StartEval(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		defer func() {
+		if leased {
 			if ferr := core.FinishEval(ctx, top); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
 				result = nil
 				err = ferr
 			}
-		}()
+		}
+		dur := time.Since(start)
+		e.stats.recordEval(dur, err)
+		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+	}()
+
+	if metered {
+		if top, err = core.StartEval(ctx); err != nil {
+			return nil, nil, err
+		}
+		leased = true
 	}
 
 	forms, err := e.readForms(ctx, source)
 	if err != nil {
-		dur := time.Since(start)
-		e.stats.recordEval(dur, err)
-		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 		return nil, nil, fmt.Errorf("read: %w", err)
 	}
 
@@ -1136,7 +1138,7 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 			}
 			continue
 		}
-		if err := childEnv.Set(name, val); err != nil {
+		if err := childEnv.SetWithContext(ctx, name, val); err != nil {
 			return nil, childEnv, err
 		}
 	}
@@ -1144,25 +1146,16 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	for _, form := range forms {
 		result, err = e.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
-			if ferr := core.FlushEvalState(ctx); ferr != nil && (err == nil || core.IsTerminalEvalError(ferr)) {
+			if ferr := core.FlushEvalState(ctx); ferr != nil && core.IsTerminalEvalError(ferr) {
 				err = ferr
 			}
-			dur := time.Since(start)
-			e.stats.recordEval(dur, err)
-			e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
 			return nil, childEnv, fmt.Errorf("eval: %w", err)
 		}
 	}
-	if err := core.FlushEvalState(ctx); err != nil {
-		dur := time.Since(start)
-		e.stats.recordEval(dur, err)
-		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
-		return nil, childEnv, fmt.Errorf("eval: %w", err)
+	if ferr := core.FlushEvalState(ctx); ferr != nil {
+		return nil, childEnv, fmt.Errorf("eval: %w", ferr)
 	}
 
-	dur := time.Since(start)
-	e.stats.recordEval(dur, nil)
-	e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: nil})
 	return result, childEnv, nil
 }
 
