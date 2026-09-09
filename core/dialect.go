@@ -413,6 +413,15 @@ func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, Reade
 	return s.read(src, d.readerFlags(), maxDepth)
 }
 
+// ReadWithContextStats tokenizes and parses src under the Dialect's reader
+// flags, honoring the cancellation state and allocation budget carried by ctx
+// while it reads, and returns the parsed forms with the same deterministic
+// allocation-metering stats ReadWithMaxDepthStats reports. maxDepth ≤ 0
+// selects the default (1024).
+func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth int) ([]Value, ReaderStats, error) {
+	panic("not implemented")
+}
+
 // IsIdentity reports whether d is the identity dialect — the full kernel base
 // with no delta and no vocabulary. The bytecode VM dispatches canonical form
 // names directly, so only the identity dialect is safe to run under it.
