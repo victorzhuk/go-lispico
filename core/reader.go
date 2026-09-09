@@ -982,10 +982,20 @@ func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 	return nil
 }
 
+// Reader-macro heads are pre-boxed so wrapForm passes an interface value the
+// compiler can keep static, instead of boxing a string parameter per form.
+var (
+	symFunction        Value = Symbol{V: "function"}
+	symQuote           Value = Symbol{V: "quote"}
+	symQuasiquote      Value = Symbol{V: "quasiquote"}
+	symUnquote         Value = Symbol{V: "unquote"}
+	symUnquoteSplicing Value = Symbol{V: "unquote-splicing"}
+)
+
 // wrapForm builds the (sym form) list a reader macro expands to, accounting
 // for both the generated symbol node and the list node holding it.
-func (p *Parser) wrapForm(sym string, form Value) (Value, error) {
-	if err := p.addNode(int64(len(sym))); err != nil {
+func (p *Parser) wrapForm(sym Value, name string, form Value) (Value, error) {
+	if err := p.addNode(int64(len(name))); err != nil {
 		return nil, err
 	}
 	if err := p.addNode(0); err != nil {
@@ -994,7 +1004,7 @@ func (p *Parser) wrapForm(sym string, form Value) (Value, error) {
 	if err := p.budget.admitSlots(2); err != nil {
 		return nil, err
 	}
-	return NewList([]Value{Symbol{V: sym}, form}), nil
+	return NewList([]Value{sym, form}), nil
 }
 
 func (p *Parser) parseFunctionRef() (Value, error) {
@@ -1003,7 +1013,7 @@ func (p *Parser) parseFunctionRef() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.wrapForm("function", form)
+	return p.wrapForm(symFunction, "function", form)
 }
 
 func (p *Parser) parseReaderVector() (Value, error) {
@@ -1044,7 +1054,7 @@ func (p *Parser) parseQuote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.wrapForm("quote", form)
+	return p.wrapForm(symQuote, "quote", form)
 }
 
 func (p *Parser) parseQuasiquote() (Value, error) {
@@ -1053,7 +1063,7 @@ func (p *Parser) parseQuasiquote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.wrapForm("quasiquote", form)
+	return p.wrapForm(symQuasiquote, "quasiquote", form)
 }
 
 func (p *Parser) parseUnquote() (Value, error) {
@@ -1062,7 +1072,7 @@ func (p *Parser) parseUnquote() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.wrapForm("unquote", form)
+	return p.wrapForm(symUnquote, "unquote", form)
 }
 
 func (p *Parser) parseUnquoteSplicing() (Value, error) {
@@ -1071,7 +1081,7 @@ func (p *Parser) parseUnquoteSplicing() (Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.wrapForm("unquote-splicing", form)
+	return p.wrapForm(symUnquoteSplicing, "unquote-splicing", form)
 }
 
 // parseNumberToken admits the token into strconv before converting it. The
