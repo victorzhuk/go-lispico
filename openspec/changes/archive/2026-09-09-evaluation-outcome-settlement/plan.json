@@ -1,0 +1,260 @@
+{
+  "v": 2,
+  "change": "evaluation-outcome-settlement",
+  "baseSha": "7c2271278af43379e31c8ed70add8c55ef430a43",
+  "generatedAt": "2026-09-09T06:48:29.860Z",
+  "tier": "standard",
+  "mode": "existing-service-strict",
+  "chunks": [
+    {
+      "id": "eval-settle",
+      "taskIds": [
+        "1.1",
+        "2.1"
+      ],
+      "prev": null,
+      "sharedPkg": null,
+      "parallel": false,
+      "seam": "fastpass-eval-settle",
+      "shard": "",
+      "pkgDirs": [
+        "runtime"
+      ],
+      "pkgs": [
+        "./runtime/"
+      ],
+      "sites": [
+        {
+          "task": "1.1",
+          "file": "runtime/settlement_observation_test.go",
+          "symbol": "",
+          "anchor": "",
+          "change": "new: retained-denial and settled-outcome regressions for engineImpl.Eval, both evaluators, context and engine meter attachment"
+        },
+        {
+          "task": "1.1",
+          "file": "runtime/meter_test.go",
+          "symbol": "recordingMeter",
+          "anchor": "recordingMeter",
+          "change": "extend the existing recording seam to capture lease return and charge order if the regressions need it"
+        },
+        {
+          "task": "2.1",
+          "file": "runtime/eval.go",
+          "symbol": "engineImpl.Eval",
+          "anchor": "func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {",
+          "change": "restructure completion into panic recovery, owned lifecycle settlement, final error selection, then one stats/event publication"
+        }
+      ],
+      "redTasks": [
+        "1.1"
+      ],
+      "codeTasks": [
+        "2.1"
+      ],
+      "redTests": [],
+      "redRun": "go test -timeout 2m -p 2 -parallel 2 ./runtime/",
+      "verify": "go test -timeout 2m -p 2 -parallel 2 ./runtime/",
+      "coder": "go-coder"
+    },
+    {
+      "id": "scope-settle",
+      "taskIds": [
+        "1.2",
+        "2.2"
+      ],
+      "prev": "eval-settle",
+      "sharedPkg": "runtime",
+      "parallel": false,
+      "seam": "fastpass-scope-settle",
+      "shard": "",
+      "pkgDirs": [
+        "runtime"
+      ],
+      "pkgs": [
+        "./runtime/"
+      ],
+      "sites": [
+        {
+          "task": "1.2",
+          "file": "runtime/settlement_observation_test.go",
+          "symbol": "",
+          "anchor": "",
+          "change": "exactly-one event/count ordering assertions across success, setup failure, parse error, returned evaluation error and recovered GoFunc panic, plus the EvalWithBindings and LoadScope retained-denial regressions deferred from chunk eval-settle"
+        },
+        {
+          "task": "1.2",
+          "file": "runtime/stats_test.go",
+          "symbol": "",
+          "anchor": "",
+          "change": "extend the existing stats fixtures if the ordering assertions belong beside them"
+        },
+        {
+          "task": "1.2",
+          "file": "runtime/panic_boundary_test.go",
+          "symbol": "",
+          "anchor": "",
+          "change": "extend the existing recovered-GoFunc panic fixtures with the exactly-once event assertion"
+        },
+        {
+          "task": "2.2",
+          "file": "runtime/eval.go",
+          "symbol": "engineImpl.evalWithBindingScope",
+          "anchor": "func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bindings map[string]core.Value) (result core.Value, childEnv *core.Env, err error) {",
+          "change": "apply the same completion ordering; leave EvalWithBindings delegation and LoadScope scope ownership intact"
+        }
+      ],
+      "redTasks": [
+        "1.2"
+      ],
+      "codeTasks": [
+        "2.2"
+      ],
+      "redTests": [],
+      "redRun": "go test -timeout 2m -p 2 -parallel 2 ./runtime/",
+      "verify": "go test -timeout 2m -p 2 -parallel 2 ./runtime/",
+      "coder": "go-coder"
+    },
+    {
+      "id": "precedence",
+      "taskIds": [
+        "1.3",
+        "2.3"
+      ],
+      "prev": "scope-settle",
+      "sharedPkg": "runtime",
+      "parallel": false,
+      "seam": "fastpass-precedence",
+      "shard": "",
+      "pkgDirs": [
+        "runtime"
+      ],
+      "pkgs": [
+        "./runtime/"
+      ],
+      "sites": [
+        {
+          "task": "1.3",
+          "file": "runtime/settlement_observation_test.go",
+          "symbol": "",
+          "anchor": "",
+          "change": "pin terminal settlement-error precedence over a nonterminal evaluation error, and the existing scope-return and error-wrapping behavior, by cause rather than wrapper pointer identity"
+        },
+        {
+          "task": "2.3",
+          "file": "runtime/eval.go",
+          "symbol": "engineImpl.Eval",
+          "anchor": "func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {",
+          "change": "preserve charge-after-write effects, terminal-error precedence and callback-panic policy while measuring duration through settlement"
+        }
+      ],
+      "redTasks": [
+        "1.3"
+      ],
+      "codeTasks": [
+        "2.3"
+      ],
+      "redTests": [],
+      "redRun": "go test -timeout 2m -p 2 -parallel 2 ./runtime/",
+      "verify": "go test -timeout 2m -p 2 -parallel 2 ./runtime/",
+      "coder": "go-coder"
+    },
+    {
+      "id": "docs",
+      "taskIds": [
+        "3.3"
+      ],
+      "prev": "precedence",
+      "sharedPkg": "runtime",
+      "parallel": false,
+      "seam": "fastpass-docs",
+      "shard": "",
+      "pkgDirs": [],
+      "pkgs": [],
+      "sites": [
+        {
+          "task": "3.3",
+          "file": "docs/adr/0011-reduction-and-allocation-metering.md",
+          "symbol": "",
+          "anchor": "",
+          "change": "record settlement-inclusive duration, early-failure counting and preserved ordinary evaluation writes"
+        },
+        {
+          "task": "3.3",
+          "file": "CHANGELOG.md",
+          "symbol": "",
+          "anchor": "## [Unreleased]",
+          "change": "Fixed entry for the settlement/observation mismatch"
+        }
+      ],
+      "redTasks": [],
+      "codeTasks": [
+        "3.3"
+      ],
+      "redTests": [],
+      "redRun": "",
+      "verify": "openspec validate evaluation-outcome-settlement --strict --json",
+      "coder": "zdocs"
+    }
+  ],
+  "seams": [
+    {
+      "id": "fastpass-eval-settle",
+      "tasks": [
+        "1.1",
+        "2.1"
+      ],
+      "redTasks": [
+        "1.1"
+      ],
+      "summary": "Fastpass chunk eval-settle: tasks 1.1, 2.1 from tasks.md, no authored contract — the red stage works from the task text and the sites."
+    },
+    {
+      "id": "fastpass-scope-settle",
+      "tasks": [
+        "1.2",
+        "2.2"
+      ],
+      "redTasks": [
+        "1.2"
+      ],
+      "summary": "Fastpass chunk scope-settle: tasks 1.2, 2.2 from tasks.md, no authored contract — the red stage works from the task text and the sites."
+    },
+    {
+      "id": "fastpass-precedence",
+      "tasks": [
+        "1.3",
+        "2.3"
+      ],
+      "redTasks": [
+        "1.3"
+      ],
+      "summary": "Fastpass chunk precedence: tasks 1.3, 2.3 from tasks.md, no authored contract — the red stage works from the task text and the sites."
+    },
+    {
+      "id": "fastpass-docs",
+      "tasks": [
+        "3.3"
+      ],
+      "redTasks": [],
+      "summary": "NO-RED-WAIVER: fastpass run with the red stage waived by the user (documentation and CHANGELOG only; there is no Go behavior in this chunk for a red test to pin, and the behavior it documents is pinned by chunks eval-settle, scope-settle and precedence); tasks 3.3 are verified by the chunk command and the floor alone."
+    }
+  ],
+  "requirements": [],
+  "testHarness": [],
+  "floor": "make test GOTESTFLAGS='-timeout 2m -p 2 -parallel 2' && go test -race -timeout 10m -count=1 -p 2 -parallel 2 ./runtime/ && make lint",
+  "lenses": [
+    "spec",
+    "quality"
+  ],
+  "fastpass": true,
+  "fastpassReason": "user chose inline plan at the plan-gate ask; regression-first refactor of one file (runtime/eval.go) with the spec delta already naming every observable outcome",
+  "planRulings": [
+    "Fastpass: no planner fan-out, no seam contracts, no plan review. Stated reason: user chose inline plan at the plan-gate ask; regression-first refactor of one file (runtime/eval.go) with the spec delta already naming every observable outcome. Every mechanical guard still applies — chunk cap, seal, guard, verify-or-waiver, floor."
+  ],
+  "planReview": {
+    "verdict": "fastpass",
+    "reviewer": "none",
+    "rounds": 0
+  }
+}
