@@ -388,7 +388,7 @@ func (st *evalState) settleRetained() error {
 		charge.bytes += pending.bytes
 		charge.slots += pending.slots
 	}
-	var charged []*retainedCharge
+	var charged []retainedRelease
 	settled := false
 	// A meter that panics mid-charge abandons the settlement the same way a
 	// denial does, so the compensating release runs on that unwind too and the
@@ -397,15 +397,13 @@ func (st *evalState) settleRetained() error {
 		if settled {
 			return
 		}
-		for _, prev := range charged {
-			prev.meter.ReleaseRetained(prev.bytes, prev.slots)
-		}
+		releaseAll(charged)
 	}()
 	for _, charge := range chargeOrder {
 		if err := charge.meter.ChargeRetained(charge.bytes, charge.slots); err != nil {
 			return NewResourceLimitError(fmt.Sprintf("retained meter: %v", err))
 		}
-		charged = append(charged, charge)
+		charged = append(charged, retainedRelease{meter: charge.meter, bytes: charge.bytes, slots: charge.slots})
 	}
 	settled = true
 
@@ -422,10 +420,32 @@ func (st *evalState) settleRetained() error {
 		}
 		pending.env.mu.Unlock()
 	}
-	for _, release := range releases {
-		release.meter.ReleaseRetained(release.bytes, release.slots)
-	}
+	releaseAll(releases)
 	return nil
+}
+
+// releaseAll releases every entry even when a host meter panics: the pending
+// ledger is dropped once settlement ends, so a release skipped here is charged
+// for good. The first panic is re-raised after the loop so finishEval still
+// reports the broken meter.
+func releaseAll(releases []retainedRelease) {
+	var (
+		first    any
+		panicked bool
+	)
+	for _, release := range releases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil && !panicked {
+					first, panicked = r, true
+				}
+			}()
+			release.meter.ReleaseRetained(release.bytes, release.slots)
+		}()
+	}
+	if panicked {
+		panic(first)
+	}
 }
 
 func (st *evalState) drawInitialLease() error {
