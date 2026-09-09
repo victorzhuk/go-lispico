@@ -72,6 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestEngineDeadline_ReentryRetainsAbsoluteDeadlineAndBudget`, and
   `TestEngineDeadline_DisabledTimeoutPreservesInheritedDeadline`.
 
+- A Lisp-1 binding passed to `EvalWithBindings` or `LoadScope` now charges the
+  retained meter at the evaluation's settlement point instead of inline. The
+  binding write carries the evaluation's context, as the Lisp-2 branch already
+  did, so its retained charge joins the evaluation's pending settlement: an
+  embedder with a retained meter sees a denial of that write as the
+  evaluation's terminal `ResourceLimitError` at the end of the call rather than
+  as an immediate refusal of the write itself. Per-env capacity reservation is
+  unchanged and still fails inline at the write.
+
 ### Fixed
 
 - `json/decode` now charges its decoded result exactly once per call. Public
@@ -164,6 +173,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `do`, stay compiled. Pinned by `TestCompilerScopedDefinitionFallback`,
   `TestRuntimeScopedDefinitionParity`, and
   `TestRuntimeScopedDefinitionFallbackOnce`.
+
+- `Engine.Eval`, `EvalWithBindings`, and `LoadScope` now publish the outcome
+  they return. Each invocation settles its ledger — reduction flush, retained
+  charge, lease return — before recording statistics and firing `OnEval`, so a
+  retained-meter denial that reaches the caller as a `ResourceLimitError` no
+  longer arrives at the callback as `Error == nil` with `Stats().TotalErrors`
+  flat; settlement previously replaced the returned error after publication had
+  already happened. Every invocation now contributes exactly one evaluation
+  count and one event per registered callback, including the failures that
+  produced neither before: a lease the meter refuses before any form runs, and
+  a binding write refused during scope setup. On the reader and evaluation
+  failure paths the event carries the same public wrapped error the caller
+  receives (`read: %w`, `eval: %w`) where it previously carried the unwrapped
+  cause — read the cause with `errors.As` or `errors.Is`, not by pointer
+  identity. `EvalEvent.Duration` now covers settlement as well, and still
+  excludes the callbacks' own execution. A failed evaluation is still not a
+  transaction: a retained charge denied at settlement fails after the
+  evaluation's writes have occurred. Terminal-error precedence,
+  recovered-panic behavior, `LoadScope`'s scope return, and the callback-panic
+  policy are unchanged. Pinned by `TestEval_SettledOutcomeIsPublishedOnce`,
+  `TestEvalWithBindings_SettledOutcomeIsPublishedOnce`,
+  `TestLoadScope_SettledOutcomeIsPublishedOnce`,
+  `TestEval_RetainedDenialIsSettledFailure`,
+  `TestEval_TerminalSettlementErrorWinsOverEvalError`, and
+  `TestEval_PublicErrorWrappingSurvivesSettlement`.
 
 ## [0.13.0] - 2026-09-06
 

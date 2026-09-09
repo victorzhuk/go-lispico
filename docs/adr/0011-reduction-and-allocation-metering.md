@@ -117,3 +117,38 @@ budgets, allocation ceilings, cooperative cancellation — applies at the
 body runs on the host's trust. The `BuiltinWorkBudget` lets well-behaved
 builtins participate in cooperative metering, but core cannot enforce
 metering correctness on untrusted Go code that ignores the budget API.
+
+## Per-evaluation settlement and observation
+
+Charges accrue during an evaluation and settle at its end. `Engine.Eval`,
+`EvalWithBindings`, and `LoadScope` each reach one settlement point on every
+return, panic unwind included: pending reductions flush, pending retained
+charges settle, and the evaluation lease returns exactly once
+(`core.FinishEval`). Statistics and the `OnEval` event are published from that
+same point, after settlement.
+
+What a host observing the meter can rely on:
+
+- The published outcome is the returned outcome. Settlement itself can fail —
+  a retained-meter denial turns an otherwise successful evaluation into a
+  terminal `ResourceLimitError` — so the event's failure status and cause are
+  recorded once that verdict is known. A settlement error surfaces whenever
+  the evaluation otherwise succeeded; when the evaluation already failed, only
+  a terminal settlement error replaces its error.
+- `EvalEvent.Duration` covers the work required to produce the returned
+  outcome, settlement included. It excludes the callbacks' own execution.
+- Failures that never execute a form are counted like any other: a lease
+  refused by the meter at `core.StartEval`, a reader refusal, a binding write
+  refused before the first form. Each invocation contributes exactly one
+  evaluation count and one event per registered callback.
+- On the reader and evaluation failure paths the event carries the same public
+  wrapped error the caller receives (`read: %w`, `eval: %w`); the cause is
+  reachable with `errors.As` / `errors.Is`, not by pointer identity.
+
+Settlement is not a rollback. A retained charge denied at settlement fails
+after the evaluation's writes have already occurred: bindings the evaluation
+created stay in their env, and only the meters already charged in that same
+settlement are released back (`settleRetained`). The fail-closed guarantee in
+ADR 0012 covers the individual write that would breach a per-env capacity
+ceiling — that write does not occur — not an evaluation whose retained charge
+a meter later denies.
