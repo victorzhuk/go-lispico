@@ -314,11 +314,22 @@ func BeginEval(ctx context.Context) (func() error, error) {
 	}, nil
 }
 
-func (st *evalState) finishEval() error {
+// finishEval settles the top-level evaluation and is the single owner of that
+// settlement. A host meter may panic from inside the flush or the retained
+// charge; unwinding through here would both leak the evaluation lease and
+// carry the panic out of the public entry point, so the panic is recovered,
+// the lease is returned regardless, and the panic is reported as the
+// settlement error.
+func (st *evalState) finishEval() (err error) {
 	st.evalDepth.Add(-1)
+	defer func() {
+		if r := recover(); r != nil {
+			err = NewPanicError("settlement", r)
+		}
+		st.returnEvalLease()
+	}()
 	flushErr := st.flushReductions()
 	retainedErr := st.settleRetained()
-	st.returnEvalLease()
 	if flushErr != nil {
 		return flushErr
 	}

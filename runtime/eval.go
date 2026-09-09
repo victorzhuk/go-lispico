@@ -698,6 +698,19 @@ func compiledChunkBytes(ctx context.Context, chunk *vm.Chunk) (int64, error) {
 	return bytes, nil
 }
 
+// publishEvalEvent hands the settled outcome to the embedder's observers. The
+// evaluation has already settled by then, so a panicking observer must neither
+// reach the caller nor become the evaluation's outcome: it is contained here
+// and the settled result and error stand as published.
+func (e *engineImpl) publishEvalEvent(event EvalEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Warn("eval observer panic", "source", event.Source, "panic", r)
+		}
+	}()
+	e.fireEvalCallbacks(event)
+}
+
 func (e *engineImpl) Eval(ctx context.Context, source, input string) (result core.Value, err error) {
 	start := time.Now()
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
@@ -720,7 +733,7 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 		}
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
-		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		e.publishEvalEvent(EvalEvent{Source: source, Duration: dur, Error: err})
 		if err == nil {
 			e.logger.Debug("eval", "source", source, "duration", dur)
 		}
@@ -1109,7 +1122,7 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 		}
 		dur := time.Since(start)
 		e.stats.recordEval(dur, err)
-		e.fireEvalCallbacks(EvalEvent{Source: source, Duration: dur, Error: err})
+		e.publishEvalEvent(EvalEvent{Source: source, Duration: dur, Error: err})
 	}()
 
 	if metered {
