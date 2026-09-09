@@ -435,6 +435,9 @@ type readerScratch struct {
 	reader Reader
 	parser Parser
 	tokens []token
+	// budget is nil for a context-free read and holds the per-read work
+	// budget for a guarded one; the shared scanner and parser run either way.
+	budget *readerBudget
 }
 
 // Reset clears everything a subsequent Read must not observe, retaining
@@ -451,6 +454,7 @@ func (s *readerScratch) Reset() {
 	s.parser.stats = ReaderStats{}
 	s.parser.nodes = s.parser.nodes[:0]
 	s.tokens = s.tokens[:0]
+	s.budget = nil
 }
 
 var readerScratchPool = sync.Pool{

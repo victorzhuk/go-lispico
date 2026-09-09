@@ -419,7 +419,18 @@ func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, Reade
 // allocation-metering stats ReadWithMaxDepthStats reports. maxDepth ≤ 0
 // selects the default (1024).
 func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth int) ([]Value, ReaderStats, error) {
-	panic("not implemented")
+	s := readerScratchPool.Get().(*readerScratch)
+	s.Reset()
+	s.budget = newReaderBudget(ctx)
+	defer func() {
+		s.budget = nil
+		readerScratchPool.Put(s)
+	}()
+
+	if err := s.budget.checkpoint(); err != nil {
+		return nil, ReaderStats{}, err
+	}
+	return s.read(src, d.readerFlags(), maxDepth)
 }
 
 // IsIdentity reports whether d is the identity dialect — the full kernel base
