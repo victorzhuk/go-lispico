@@ -50,6 +50,20 @@ func flatFormBytes(children int) int64 {
 	return workBufferBytes(1) + workBufferBytes(children) + ValueSlotsBytes(children)
 }
 
+// outputBytes is the output-node storage a source admits: one node unit per
+// parsed node plus that node's payload, which is exactly what the context-free
+// reader already reports for the same source. Stating the term through
+// ReaderStats keeps the guarded charge tied to the totals the reader publishes
+// instead of a node count re-derived by hand in every case.
+func outputBytes(t *testing.T, src string) int64 {
+	t.Helper()
+	_, stats, err := FullDialect().ReadWithMaxDepthStats(src, 0)
+	if err != nil {
+		t.Fatalf("context-free read of %d bytes failed: %v", len(src), err)
+	}
+	return ReaderAllocationBytes(stats)
+}
+
 // allocCeilingContext builds a context whose ledger carries an ample reduction
 // budget and exactly maxAllocBytes of allocation allowance, so a read under it
 // fails on storage admission and never on reader work.
@@ -102,14 +116,15 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(4)+flatFormBytes(1); got != want {
-			t.Fatalf("admitted %d bytes, want %d for the 4-token plan and the construction of a 1-child list: trivia carries no token storage", got, want)
+		if got, want := admittedBytes(meter), planBytes(4)+flatFormBytes(1)+outputBytes(t, src); got != want {
+			t.Fatalf("admitted %d bytes, want %d for the 4-token plan, the construction of a 1-child list and its output nodes: trivia carries no token storage", got, want)
 		}
 	})
 
-	t.Run("long-token/costs-one-workspace-unit", func(t *testing.T) {
-		src := strings.Repeat("s", 8000)
-		ctx, meter := allocCeilingContext(1024)
+	t.Run("long-token/costs-one-token-unit-and-its-payload", func(t *testing.T) {
+		const symbolBytes = 8000
+		src := strings.Repeat("s", symbolBytes)
+		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 
 		forms, _, err := readContextStats(ctx, FullDialect(), src, 0)
 		if err != nil {
@@ -118,13 +133,23 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(2)+workBufferBytes(1); got != want {
-			t.Fatalf("admitted %d bytes for a symbol and an EOF token, want %d for their plan and the top-level form buffer: token storage is per token, not per byte", got, want)
+		narrow := admittedBytes(meter)
+		if want := planBytes(2) + workBufferBytes(1) + MeterReaderNodeBytes + symbolBytes; narrow != want {
+			t.Fatalf("admitted %d bytes for a symbol and an EOF token, want %d for their plan, the top-level form buffer and the symbol node carrying %d payload bytes",
+				narrow, want, symbolBytes)
+		}
+
+		wideCtx, wideMeter := allocCeilingContext(DefaultMaxAllocationBytes)
+		if _, _, err := readContextStats(wideCtx, FullDialect(), strings.Repeat("s", 2*symbolBytes), 0); err != nil {
+			t.Fatalf("read of one %d-byte symbol failed: %v", 2*symbolBytes, err)
+		}
+		if got, want := admittedBytes(wideMeter)-narrow, int64(symbolBytes); got != want {
+			t.Fatalf("doubling the symbol admitted %d more bytes, want %d: token storage is per token, so only the payload grows", got, want)
 		}
 	})
 
 	t.Run("exact-ceiling/admits-the-plan", func(t *testing.T) {
-		want := planBytes(6) + flatFormBytes(3)
+		want := planBytes(6) + flatFormBytes(3) + outputBytes(t, "(a b c)")
 		ctx, meter := allocCeilingContext(want)
 
 		forms, _, err := readContextStats(ctx, FullDialect(), "(a b c)", 0)
@@ -135,12 +160,12 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
 		if got := admittedBytes(meter); got != want {
-			t.Fatalf("admitted %d bytes for 6 tokens and a 3-child list, want %d", got, want)
+			t.Fatalf("admitted %d bytes for 6 tokens, a 3-child list and its 4 output nodes, want %d", got, want)
 		}
 	})
 
 	t.Run("one-byte-below/rejects-the-plan", func(t *testing.T) {
-		want := planBytes(6) + flatFormBytes(3)
+		want := planBytes(6) + flatFormBytes(3) + outputBytes(t, "(a b c)")
 		ctx, _ := allocCeilingContext(want - 1)
 
 		_, _, err := readContextStats(ctx, FullDialect(), "(a b c)", 0)
@@ -164,8 +189,8 @@ func TestGuardedRead_PoolReuseKeepsPayingThePlan(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d returned %d forms, want 1", read, len(forms))
 		}
-		if got, want := admittedBytes(meter), read*(planBytes(6)+flatFormBytes(3)); got != want {
-			t.Fatalf("after read %d the scratch admitted %d bytes, want %d: a reused buffer pays the same plan and construction", read, got, want)
+		if got, want := admittedBytes(meter), read*(planBytes(6)+flatFormBytes(3)+outputBytes(t, src)); got != want {
+			t.Fatalf("after read %d the scratch admitted %d bytes, want %d: a reused buffer pays the same plan, construction and output", read, got, want)
 		}
 	}
 }
@@ -207,9 +232,33 @@ func TestGuardedRead_MalformedSuffixAdmission(t *testing.T) {
 		t.Fatalf("guarded read returned %v (code %q), want the legacy code %q", err, got, want)
 	}
 
-	want := planBytes(7) + flatFormBytes(3) + conversionBytes(int64(len(malformed)))
+	want := planBytes(7) + flatFormBytes(3) + conversionBytes(int64(len(malformed))) +
+		outputBytes(t, "(a b c)") + MeterReaderNodeBytes
 	if got := admittedBytes(meter); got != want {
-		t.Fatalf("admitted %d bytes, want %d for 7 tokens, the 3-child list built before the suffix, and the refused conversion", got, want)
+		t.Fatalf("admitted %d bytes, want %d for 7 tokens, the 3-child list built before the suffix, its output nodes, the refused conversion and the number node itself: a node charge admitted before a failed conversion is never refunded",
+			got, want)
+	}
+}
+
+// TestGuardedRead_FailedConversionKeepsItsNodeCharge isolates that node charge
+// against the same source without the malformed suffix, so the difference is
+// the failed number alone rather than a whole-read total.
+func TestGuardedRead_FailedConversionKeepsItsNodeCharge(t *testing.T) {
+	const (
+		prefix    = "(a b c)"
+		malformed = "1.2.3"
+	)
+
+	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
+	_, _, err := readContextStats(ctx, FullDialect(), prefix+" "+malformed, 0)
+	if err == nil {
+		t.Fatalf("read of %q succeeded, want a read error on the malformed suffix", prefix+" "+malformed)
+	}
+
+	want := planBytes(1) + conversionBytes(int64(len(malformed))) + MeterReaderNodeBytes
+	if got := admittedBytes(meter) - admittedForSource(t, prefix); got != want {
+		t.Fatalf("the malformed suffix admitted %d bytes beyond the same source without it, want %d for its token, its conversion storage and the %d-byte node it had already admitted when the conversion failed",
+			got, want, MeterReaderNodeBytes)
 	}
 }
 
@@ -228,7 +277,8 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 		}
 	})
 
-	t.Run("credits-the-copy-when-the-node-lands", func(t *testing.T) {
+	t.Run("charges-the-prepaid-payload-once", func(t *testing.T) {
+		const decoded = "a\nb"
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 
 		forms, _, err := readContextStats(ctx, FullDialect(), `"a\nb"`, 0)
@@ -238,8 +288,10 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(2)+workBufferBytes(1); got != want {
-			t.Fatalf("admitted %d bytes for an escaped string, want %d for its plan and form buffer: the copy charge is credited when the string node is created", got, want)
+		want := planBytes(2) + int64(len(decoded)) + workBufferBytes(1) + MeterReaderNodeBytes
+		if got := admittedBytes(meter); got != want {
+			t.Fatalf("admitted %d bytes for an escaped string, want %d for its plan, the %d payload bytes reserved before decoding, its form buffer and its node: a prepaid payload is charged once, and the node it becomes admits its node unit alone",
+				got, want, len(decoded))
 		}
 	})
 
@@ -253,15 +305,17 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 		if len(forms) != 1 {
 			t.Fatalf("read %d forms, want 1", len(forms))
 		}
-		if got, want := admittedBytes(meter), planBytes(2)+workBufferBytes(1); got != want {
-			t.Fatalf("admitted %d bytes for a zero-copy string, want %d for its plan and form buffer: an aliased payload is never copied", got, want)
+		want := planBytes(2) + workBufferBytes(1) + MeterReaderNodeBytes + int64(len("ab"))
+		if got := admittedBytes(meter); got != want {
+			t.Fatalf("admitted %d bytes for a zero-copy string, want %d for its plan, form buffer and the node carrying its aliased payload: an aliased payload reserves nothing and is charged when its node lands",
+				got, want)
 		}
 	})
 }
 
 func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 	const src = "12345"
-	want := planBytes(2) + workBufferBytes(1) + conversionBytes(int64(len(src)))
+	want := planBytes(2) + workBufferBytes(1) + conversionBytes(int64(len(src))) + MeterReaderNodeBytes
 
 	t.Run("charges-the-temporary-on-success", func(t *testing.T) {
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)

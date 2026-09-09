@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,6 +32,35 @@ func pairSource(pairs int) string {
 // entry the map already holds.
 func sameKeySource(pairs int) string {
 	return "{" + strings.Repeat(":dup v ", pairs) + "}"
+}
+
+// entryBufferBytes is the storage a small map's entry buffer charges to hold
+// the given number of entries: the doubling schedule the reader work buffers
+// follow, in entry units rather than value slots.
+func entryBufferBytes(entries int64) int64 {
+	total, capacity := int64(0), int64(0)
+	for capacity < entries {
+		if capacity == 0 {
+			capacity = 1
+		} else {
+			capacity *= 2
+		}
+		total += capacity
+	}
+	return total * MeterHashMapEntryBytes
+}
+
+// allocationProbe records the allocation ledger at every terminal-state check
+// the read makes, which is where a charge returned to the ledger would show.
+type allocationProbe struct {
+	context.Context
+	meter EvalMeter
+	seen  []int64
+}
+
+func (p *allocationProbe) Err() error {
+	p.seen = append(p.seen, admittedBytes(p.meter))
+	return p.Context.Err()
 }
 
 func admittedForSource(t *testing.T, src string) int64 {
@@ -73,9 +103,9 @@ func TestGuardedRead_ExactCharges(t *testing.T) {
 		quoted := admittedForSource(t, "'a")
 		bare := admittedForSource(t, "a")
 
-		want := planBytes(1) + 2*MeterValueSlotBytes
+		want := planBytes(1) + 2*MeterValueSlotBytes + 2*MeterReaderNodeBytes + int64(len("quote"))
 		if got := quoted - bare; got != want {
-			t.Fatalf("'a admitted %d bytes more than a, want %d for the quote token plus the two slots of the generated (quote a) node",
+			t.Fatalf("'a admitted %d bytes more than a, want %d for the quote token, the two slots of the generated (quote a) node, and the two output nodes it wraps them in — the quote symbol carrying its 5-byte payload and the list carrying none",
 				got, want)
 		}
 	})
@@ -84,12 +114,112 @@ func TestGuardedRead_ExactCharges(t *testing.T) {
 		wide := admittedForSource(t, listSource(5))
 		narrow := admittedForSource(t, listSource(4))
 
-		want := planBytes(1) + MeterValueSlotBytes + 8*MeterValueSlotBytes
+		want := planBytes(1) + MeterValueSlotBytes + 8*MeterValueSlotBytes + MeterReaderNodeBytes + int64(len("a"))
 		if got := wide - narrow; got != want {
-			t.Fatalf("a 5-child list admitted %d bytes more than a 4-child one, want %d for its token, its copied slot, and the whole doubled 8-slot parser buffer",
+			t.Fatalf("a 5-child list admitted %d bytes more than a 4-child one, want %d for its token, its copied slot, the whole doubled 8-slot parser buffer, and the output node of the extra child",
 				got, want)
 		}
 	})
+}
+
+// TestGuardedRead_AdmitsOutputStorage pins the whole allowance a successful
+// read admits: the token plan, the parser workspace, the construction storage
+// of the collections it builds, and the output nodes themselves.
+func TestGuardedRead_AdmitsOutputStorage(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		want   int64
+		reason string
+	}{
+		{
+			"flat-list", "(a b c)",
+			planBytes(6) + flatFormBytes(3) + outputBytes(t, "(a b c)"),
+			"6 tokens, the workspace and slots of a 3-child list, and its 4 output nodes",
+		},
+		{
+			"generated-quote", "'a",
+			planBytes(3) + workBufferBytes(1) + ValueSlotsBytes(2) + outputBytes(t, "'a"),
+			"3 tokens, the form buffer, the two slots of (quote a), and its 3 output nodes",
+		},
+		{
+			"zero-copy-string", `"ab"`,
+			planBytes(2) + workBufferBytes(1) + outputBytes(t, `"ab"`),
+			"2 tokens, the form buffer, and the string node carrying its aliased payload",
+		},
+		{
+			"linked-list", listSource(40),
+			planBytes(43) + flatFormBytes(40) + 40*listCellBytes + outputBytes(t, listSource(40)),
+			"43 tokens, the doubling workspace, the copied slots, 40 linked cells, and 41 output nodes",
+		},
+		{
+			"small-map", pairSource(4),
+			planBytes(11) + workBufferBytes(1) + entryBufferBytes(4) + outputBytes(t, pairSource(4)),
+			"11 tokens, the form buffer, the doubled 4-entry buffer, and 9 output nodes",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
+			_, stats, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			if err != nil {
+				t.Fatalf("read failed: %v", err)
+			}
+			if got := admittedBytes(meter); got != tc.want {
+				t.Fatalf("admitted %d bytes, want %d for %s", got, tc.want, tc.reason)
+			}
+			if got, want := ReaderAllocationBytes(stats), outputBytes(t, tc.src); got != want {
+				t.Fatalf("the read reports %d bytes of output storage, want the %d the context-free reader reports: the output term is admitted, not redefined",
+					got, want)
+			}
+		})
+	}
+}
+
+// TestGuardedRead_AdmittedBytesNeverDecrease holds the allocation ledger to a
+// total that only grows. A payload reserved before decoding is charged once
+// and never returned, so no terminal-state check may see a lower total than
+// the one before it.
+func TestGuardedRead_AdmittedBytesNeverDecrease(t *testing.T) {
+	escaped := `"` + strings.Repeat("a", 5000) + `\n` + strings.Repeat("b", 5000) + `"`
+	src := "(" + escaped + ` "plain" ` + pairSource(9) + " " + listSource(40) + ")"
+
+	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
+	probe := &allocationProbe{Context: ctx, meter: meter}
+
+	if _, _, err := readContextStats(probe, FullDialect(), src, 0); err != nil {
+		t.Fatalf("read of %d bytes failed: %v", len(src), err)
+	}
+	if len(probe.seen) < 2 {
+		t.Fatalf("the read checked its terminal state %d times, want it checked while building so the ledger can be observed moving", len(probe.seen))
+	}
+
+	for i := 1; i < len(probe.seen); i++ {
+		if probe.seen[i] < probe.seen[i-1] {
+			t.Fatalf("the ledger fell from %d to %d bytes between checks %d and %d of %d, want a total that only grows: an admitted charge is never returned to the ledger",
+				probe.seen[i-1], probe.seen[i], i-1, i, len(probe.seen))
+		}
+	}
+	if got, last := admittedBytes(meter), probe.seen[len(probe.seen)-1]; got < last {
+		t.Fatalf("the read settled at %d bytes below its last check of %d, want the final total to be the high point", got, last)
+	}
+}
+
+// TestGuardedRead_WorkspaceHighWaterSpansNesting pins the parser node scratch
+// as one schedule for the whole read: a nested collection's children stack on
+// the outer collection's, so the charge follows the shared high-water mark.
+func TestGuardedRead_WorkspaceHighWaterSpansNesting(t *testing.T) {
+	src := "(" + pairSource(3) + " " + vectorSource(4) + ")"
+
+	want := planBytes(17) + outputBytes(t, src) +
+		workBufferBytes(1) + workBufferBytes(5) +
+		entryBufferBytes(3) + ValueSlotsBytes(4) + ValueSlotsBytes(2)
+
+	if got := admittedForSource(t, src); got != want {
+		t.Fatalf("admitted %d bytes, want %d: the vector's 4 children stack on the map already held at index 0, so the shared node scratch reaches 5 slots (%d bytes) rather than 4 (%d)",
+			got, want, workBufferBytes(5), workBufferBytes(4))
+	}
 }
 
 // TestGuardedRead_ConstructionStorage pins the storage each collection form
@@ -298,8 +428,10 @@ func TestGuardedRead_StatsUnchanged(t *testing.T) {
 }
 
 // TestGuardedRead_PrepaidPayloadKeepsOutputTotals pins what a prepaid payload
-// leaves on the ledger — only the unpaid delta — and that ReaderStats still
-// reports the final output totals rather than the ledger's view of them.
+// leaves on the ledger: the payload is charged once, at reservation, and the
+// node it becomes admits its node unit alone, so an escaped read costs exactly
+// what an equal-length zero-copy one does. ReaderStats still reports the final
+// output totals rather than the ledger's view of them.
 func TestGuardedRead_PrepaidPayloadKeepsOutputTotals(t *testing.T) {
 	const (
 		escaped = `("a\nb")`
@@ -324,7 +456,7 @@ func TestGuardedRead_PrepaidPayloadKeepsOutputTotals(t *testing.T) {
 	}
 
 	if got, want := admittedBytes(meter), admittedForSource(t, plain); got != want {
-		t.Fatalf("a prepaid payload admitted %d bytes, want the %d an equal-length zero-copy read pays: the copy is credited when its node lands",
+		t.Fatalf("a prepaid payload admitted %d bytes, want the %d an equal-length zero-copy read pays: the reservation is the only charge the copy carries",
 			got, want)
 	}
 }
