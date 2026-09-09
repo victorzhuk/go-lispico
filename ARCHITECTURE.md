@@ -158,6 +158,29 @@ Supports:
 - Lists `()`, vectors `[]`, maps `{}`
 - Comments starting with `;`
 
+Both stages are one scan each over the source, and the guarded entry point
+(`Dialect.ReadWithContextStats`) charges every scanned byte of both to the
+evaluation's ledger, settling at a 128-unit checkpoint that also reads the
+armed deadline and caller cancellation. Storage is admitted before it is
+obtained, never after: the token plan is reserved once when counting finishes,
+the parser workspace is charged for its whole new logical capacity before each
+doubling, each output node is charged before the node value is built, and
+collection construction — flat copy-out, linked list cells, small-map entry
+buffer, persistent-map nodes — is admitted before its storage is allocated. A
+numeric token pays its conversion storage before `strconv` is entered, on
+success and on failure, and an invalid-number diagnostic renders at most 128
+bytes of the offending source. The charge table and its terms are ADR 0011.
+
+The context-free entry points (`core.Read`, `core.ReadOne`, `Dialect.Read`,
+`Dialect.ReadWithMaxDepth`, `Dialect.ReadWithMaxDepthStats`) install no budget
+and behave exactly as before: depth ceiling only.
+
+The reader pools its scratch — token slice, node stack, parser state — across
+reads. Release clears only the reference-bearing slots the finished read wrote,
+in batches of at most 128 charged slots; a scratch whose retained capacity
+exceeds the current read's allocation ceiling is dropped instead of pooled, and
+a read that ends terminally drops its scratch rather than walking it.
+
 #### Evaluator
 
 1. **Bytecode VM** (`vm/`): compiled execution — the default path
@@ -398,8 +421,10 @@ Source Code
 Resource ceilings protect host availability against adversarial or accidental
 input. The reader bounds parser nesting (`MaxReaderDepth`) at parse time, so a
 deeply nested source returns a typed error instead of a fatal stack overflow.
-Reader output is also charged into the evaluation's allocation ledger before the
-first form executes. The evaluator bounds structural descent into
+On the runtime path the reader admits its own work and storage into the
+evaluation's allocation ledger *during* the read, before each allocation, and
+observes caller cancellation and the armed engine deadline at the same
+checkpoints; there is no separate post-parse charge. The evaluator bounds structural descent into
 `Vector`/`HashMap` literals and quasiquote (`MaxStructuralDepth`); this counter
 lives on the per-evaluation `evalState` carried in `context.Context`, so it is
 shared by BOTH the tree-walker and the bytecode VM and stays continuous across

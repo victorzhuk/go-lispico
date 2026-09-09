@@ -395,9 +395,20 @@ evaluators, and builtin logical work accrues locally via
 `core.NewBuiltinWorkBudget(ctx)` with `Step()` synchronizing every 128 units
 with the shared evaluation state (reductions + engine deadline + caller
 cancellation); max unobserved work is 127 units. Allocation charging uses
-the fixed deterministic size table in ADR 0011. Reader output is charged
-before the first form runs; VM/tree-walker work and `GoFunc` re-entry share
-one per-evaluation ledger. Builtin `GoFunc` results are charged at the
+the fixed deterministic size table in ADR 0011. Source read through the
+engine is charged while it is read, not after: scanned bytes count as work
+against `MaxReductions`, and the reader's token plan, parser workspace,
+output nodes and collection construction are admitted against
+`MaxAllocationBytes` before each allocation, so a source that does not fit
+the evaluation's allowance is refused during reading. Sources close to the
+ceiling that used to parse and fail later can now be refused by the reader
+itself. Numeric tokens are the one charge that does not correspond to
+retained output: each admits `2*len(token) + 256` bytes of temporary
+conversion storage before conversion, on success and on failure alike, with
+no refund, and a numeric token longer than `MaxReductions/3` is refused
+outright because the conversion itself is opaque to per-byte accounting. The reader also observes caller
+cancellation and the engine deadline while reading. VM/tree-walker work and
+`GoFunc` re-entry share one per-evaluation ledger. Builtin `GoFunc` results are charged at the
 centralized apply site unless the callee opted out via
 `ChargeGoFuncResultBytes` — zero bytes marks a wholly borrowed result (the
 apply site skips its fallback shallow charge), and mixed results charge only

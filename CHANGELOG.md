@@ -9,12 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `core.Dialect.ReadWithContextStats(ctx, src, maxDepth)`: a guarded reader
+  entry point that reads under the evaluation carried by `ctx`. It charges
+  every scanned byte as reader work, admits the reader's storage — token plan,
+  decoded string payloads, numeric-conversion storage, output nodes, parser
+  workspace and collection construction — before that storage is obtained, and
+  observes caller cancellation and the armed engine deadline at each 128-unit
+  checkpoint. The context-free entry points (`core.Read`, `core.ReadOne`,
+  `Dialect.Read`, `Dialect.ReadWithMaxDepth`, `Dialect.ReadWithMaxDepthStats`)
+  keep their depth-only contract and return the same forms, stats and errors as
+  before.
+
 - VM loop compilation parity and operand-stack bound regression tests:
   `TestVMLoopScopeParity` pins loop initializers resolving against the
   enclosing scope (tree-walker as control), and `TestVMLoopOperandBound`
   keeps live operand height constant across `recur` iterations.
 
 ### Changed
+
+- Source evaluated through the engine is now read under the evaluation's
+  allocation ledger and deadline instead of being charged once after parsing.
+  The net bytes a successful read charges are unchanged and `ReaderStats` still
+  describes output only, but the charge now lands incrementally during the
+  read and covers work and storage the post-parse charge never saw — scanned
+  bytes, the token plan, the parser workspace, numeric-conversion storage and
+  collection construction. Tightly budgeted sources that previously parsed and
+  failed later can now be refused while reading, with the same
+  `ResourceLimitError`; long-running reads are also interruptible by
+  cancellation and by the engine deadline. Charge terms and units are in
+  ADR 0011.
 
 - The compiled subset is narrower: the bytecode compiler now refuses a `def` or
   `defn` inside a lexical scope — a `fn` body, a `let`, `let*` or `loop` body,

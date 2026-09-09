@@ -43,6 +43,13 @@ Allocation charging is shallow and deterministic. It counts the produced value's
 | Bytecode instruction | 4 bytes |
 | Reader node | 32 bytes per parsed node |
 | Reader byte payload | `len(source bytes copied into values)` |
+| Reader token plan unit | 32 bytes per planned token, EOF token included |
+| Reader decoded string payload | `len(decoded)` per escaped string token |
+| Reader numeric-conversion storage | `2*len(token) + 256` bytes per numeric token |
+| Reader list cell | 32 bytes per linked cell, past `listFlatThreshold` only |
+| Reader workspace slot | 16 bytes per logical slot |
+| Reader small-map entry slot | 64 bytes per logical slot |
+| Reader persistent-map node | 24 bytes + 64 per entry + 8 per child |
 
 ### Why these values are conservative
 
@@ -51,6 +58,7 @@ Allocation charging is shallow and deterministic. It counts the produced value's
 - `64` bytes per hash-map pair intentionally over-counts both the small sorted form and the promoted Go-map form. The exact in-memory shape differs by path; the ledger must stay simple and fail closed.
 - `64 + 8*caps` for closures over-counts small closures a little, but it captures the closure object plus capture-array growth without consulting runtime layout.
 - `32` bytes per reader node intentionally prices parse-tree shape higher than the minimum object footprint. Reader metering must reject wide flat literals before evaluation starts, even though the exact token/value mix varies.
+- The reader's own units budget the buffers the read fills; they are not measurements of the Go structs behind them. `32` per planned token prices the token slice the second pass fills; `2*len(token) + 256` prices the two token copies a numeric conversion makes plus its bounded diagnostic; `16` per workspace slot and `64` per small-map entry slot reuse the table's slot and hash-map-pair prices for buffers that grow by doubling.
 
 ## Determinism requirement
 
@@ -60,13 +68,143 @@ The ledger MUST NOT depend on `unsafe.Sizeof`, allocator classes, pointer width,
 
 The fixed table is applied only at evaluator-owned construction boundaries:
 
-- reader output, charged immediately after `Read` and before the first form runs;
+- reader work and reader storage, admitted inside the guarded read before the storage they describe is obtained (see *Guarded reader admission*); the context-free reader entry points install no budget and charge nothing;
 - tree-walker collection literals and quasiquote construction;
 - VM `OpMakeList`, `OpMakeVector`, `OpMakeMap`, and `OpClosure`;
 - compiler-emitted bytecode and constant pools, charged before a compiled chunk is cached;
 - shallow `GoFunc` results at the centralized apply sites, unless the callee already charged the ledger for that same value.
 
 This keeps the meter complete without trying to instrument every composite literal or every Go allocation in the process.
+
+### Guarded reader admission
+
+`Dialect.ReadWithContextStats` is the guarded entry point. It installs a
+per-read budget on the reader's scratch and admits every storage term below
+*before* the storage it describes is obtained, so a source that cannot fit the
+evaluation's remaining allowance is refused during the read rather than after
+it. The context-free entry points — `core.Read`, `core.ReadOne`,
+`Dialect.Read`, `Dialect.ReadWithMaxDepth`, `Dialect.ReadWithMaxDepthStats` —
+install no budget: every guarded site is a no-op without one, and their forms,
+stats and errors are unchanged (`TestReadWithContextStats_LegacyParity`).
+
+Scan work is charged per byte across both passes — token counting and
+parsing — and settled at every 128-unit checkpoint, where the ledger, the armed
+engine deadline and caller cancellation are all observed
+(`TestGuardedRead_ChargesEveryScannedByte`,
+`TestGuardedRead_SynchronizesWithinBound`,
+`TestGuardedRead_CancellationAndDeadline`). A terminal state outranks a syntax
+error the same read would otherwise report
+(`TestGuardedRead_TerminalStateOutranksSyntaxError`).
+
+Six storage terms, each admitted at a fixed moment:
+
+| Term | Charge | Admitted |
+| --- | --- | --- |
+| T1 token plan | `32 * tokens`, EOF token included | after counting completes, before the token buffer obtains storage |
+| T2 decoded string payload | `len(decoded)` per escaped string token | in the same reservation as T1, before the second pass decodes anything |
+| T3 numeric-conversion storage | `2*len(token) + 256` per numeric token | before `strconv` is entered |
+| T4 output node | 32 plus that node's payload bytes | before the node value is constructed |
+| T5 parser workspace | 16 per logical slot | before each growth, for the whole new logical capacity |
+| T6 construction storage | four subterms, below | before the collection's storage is allocated |
+
+- **T1** is reserved once by `readerBudget.reservePlan`. Counting itself
+  obtains no storage: it refuses, it never charges. Scratch reuse from the pool
+  never waives the charge (`TestGuardedRead_TokenPlanAdmission`,
+  `TestGuardedRead_PoolReuseKeepsPayingThePlan`).
+- **T2** covers escaped strings only. A token that aliases the input reserves
+  nothing, and its node admits `32 + len(val)` under T4 as usual
+  (`TestGuardedRead_EscapedPayloadAdmission`).
+- **T3** uses checked arithmetic and is admitted on success and failure alike;
+  a failed conversion is never refunded
+  (`TestGuardedRead_NumericConversionStorage`,
+  `TestGuardedRead_FailedConversionKeepsItsNodeCharge`). The conversion is
+  opaque to per-byte work accounting, so it carries its own work bound: a
+  numeric token longer than `MaxReductions/3` is refused before conversion is
+  entered (`TestGuardedRead_NumericConversionAdmission`). The invalid-number
+  diagnostic renders at most 128 bytes of source, truncation marker included,
+  so an unbounded token cannot produce an unbounded error message
+  (`TestGuardedRead_InvalidNumberDiagnosticIsBounded`).
+- **T4** admits, then charges work, then updates stats. The payload term is
+  skipped at source when the node comes from a token whose payload was already
+  prepaid under T2. The admitted output total for a read equals
+  `ReaderAllocationBytes(stats)` exactly
+  (`TestGuardedRead_AdmitsOutputStorage`,
+  `TestGuardedRead_PrepaidPayloadKeepsOutputTotals`). Generated nodes are
+  included with no special case: a reader macro admits its two extra nodes and
+  its head symbol's payload bytes.
+- **T5** is a fresh-per-read doubling schedule — logical capacity 1, then
+  doubling — charging the whole new logical capacity before each growth,
+  because the old and new buffers coexist during the copy: 1→16, 2→48, 3→112,
+  4→112, 5→240, 40→2032. Two buffers ride it: the parser's shared
+  mark/truncate child scratch, one schedule for the whole read whose high-water
+  spans all nesting rather than resetting per collection, and the top-level
+  forms slice (`TestGuardedRead_WorkspaceHighWaterSpansNesting`). The schedule
+  is logical, not physical: retained capacity avoids the Go allocation, never
+  the charge.
+- **T6** has four subterms: the flat collection copy-out, `ValueSlotsBytes(n)`;
+  linked list cells, `32 * n`, past `listFlatThreshold` only, so a 32-child
+  list links none and a 33-child list admits `33*32`; the small-map entry
+  buffer at 64 bytes per logical slot on T5's doubling schedule, charged only
+  when inserting a new key grows the buffer; and, per persistent-map node, its
+  exact occupied size `MeterCollectionHeaderBytes + 64*entries + 8*children`,
+  admitted before that node is allocated (`TestGuardedRead_ExactCharges`,
+  `TestGuardedRead_ConstructionStorage`,
+  `TestGuardedRead_MapConstructionContracts`).
+
+One linked list cell has two unit prices, and both are correct. The reader
+admits `readerListCellBytes` (32) for a cell it links while building a fresh
+list from its own workspace; `List.Cons` charges `ListShallowBytes(1)` (40) for
+a cell it prepends to an existing list. Each owner charges the storage it
+actually obtains at its own site — the reader's cells come out of one planned
+construction whose header and slots are already admitted, `Cons` allocates a
+standalone shallow list — and neither price is derived from the other. They are
+not reconciled into a single unit, because doing so would make one of the two
+sites over- or under-charge for storage it does not obtain.
+
+Worked totals under the default limits, for orientation:
+
+| source | admitted |
+| --- | ---: |
+| `a` | 113 |
+| `'a` | 246 |
+| `(a b c)` | 499 |
+| `"ab"` (zero-copy) | 114 |
+| `"a\nb"` (escaped) | 115 |
+| `12345` | 378 |
+
+#### No duplicate charge
+
+`ReaderStats` values are unchanged: they still describe output only, never
+workspace, conversion, construction or scan work
+(`TestGuardedRead_StatsUnchanged`).
+
+Before this change the runtime charged the reader's output total once,
+post-parse, after `Read` returned. That same total is now admitted
+incrementally, before each allocation, inside the read, and the post-parse
+charge is gone. The net total across a read is unchanged; what changed is when
+it is admitted, and that direct callers of the guarded entry point are charged
+too.
+
+There is no credit path. A payload prepaid under T2 is not refunded when its
+node is built — the node simply omits the payload term. Totals are
+byte-for-byte identical either way, and the ledger keeps the invariant that
+`AllocationBytes` is monotonically non-decreasing for the lifetime of one
+evaluation (`TestGuardedRead_AdmittedBytesNeverDecrease`).
+
+#### Scratch release
+
+`readerScratch.release` clears the reference-bearing scratch slots that the
+read being released actually wrote, in batches of at most 128, charging one
+work unit per cleared slot. It does not clear the pooled buffer's full
+capacity: the pool preserves capacity across reads, so clearing to capacity
+billed a small read for slots a previous, larger read had grown — a
+cross-engine, unbounded charge. The invariant that makes the narrower clear
+safe is that slots above the previous read's high-water are already zero. A
+retained buffer larger than the current read's allocation ceiling is dropped
+rather than pooled, and on terminal failure the scratch is dropped rather than
+traversed (`TestGuardedRead_ScratchReleaseDropsOversizedCapacity`,
+`TestGuardedRead_FailedReadReleasesScratch`,
+`TestGuardedRead_RetainedASTSurvivesScratchReuse`).
 
 ### The apply-site fallback charge and its opt-out
 

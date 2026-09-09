@@ -8,7 +8,9 @@ Adversarial or accidental input can exhaust the host through paths that the exis
 
 ## Consequences
 
-- The reader takes its depth ceiling at construction (it has no `ctx` and runs before any eval guard); the evaluator's structural-depth counter lives in the per-call `evalState` threaded through `context`, consistent with ADR 0003 — never as a shared engine field.
+- The reader has two boundaries, not one. The guarded entry point (`Dialect.ReadWithContextStats`, the path every runtime source evaluation takes) is no longer depth-only: it takes the depth ceiling as before and additionally observes caller cancellation, the armed engine deadline and the evaluation's allocation ledger while it reads, admitting its work and storage under ADR 0011's table. The context-free entry points (`core.Read`, `core.ReadOne`, `Dialect.Read`, `Dialect.ReadWithMaxDepth`, `Dialect.ReadWithMaxDepthStats`) keep the depth-only contract: no `ctx`, no ledger, no deadline.
+- Acquiring the source is outside both boundaries. Reading a file from disk (`runtime/eval.go`, `runtime/watch.go`) happens before the reader is entered and is bounded by the filesystem and the host, not by `ResourceLimits`; the ceilings begin at the source text.
+- The evaluator's structural-depth counter lives in the per-call `evalState` threaded through `context`, consistent with ADR 0003 — never as a shared engine field.
 - `ResourceLimits` is immutable for the Engine's lifetime, like `Dialect` and `MaxDepth`; evaluated code cannot raise its own ceilings.
 - Distinct from `MaxDepth`: that bounds function-call and macro-expansion depth per evaluation; `ResourceLimits` bounds structural recursion, collection size, and cache growth. The two are not merged.
 - Fail-closed is mandatory: every ceiling returns a `ReadError`/eval error; none may panic or let the process reach a fatal stack overflow.
