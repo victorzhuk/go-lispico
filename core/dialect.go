@@ -425,7 +425,7 @@ func (d Dialect) ReadWithMaxDepthStats(src string, maxDepth int) ([]Value, Reade
 func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth int) ([]Value, ReaderStats, error) {
 	s := readerScratchPool.Get().(*readerScratch)
 	s.Reset()
-	s.budget = newReaderBudget(ctx)
+	s.budget = s.budgetStore.init(ctx)
 	ceiling := s.budget.allocHeadroom()
 	defer func() {
 		if s.release(ceiling) {

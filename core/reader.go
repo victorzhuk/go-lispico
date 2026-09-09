@@ -501,6 +501,12 @@ type readerScratch struct {
 	// budget is nil for a context-free read and holds the per-read work
 	// budget for a guarded one; the shared scanner and parser run either way.
 	budget *readerBudget
+	// budgetStore hosts the budget of a read that arms one on this scratch.
+	// The pointer above then addresses storage the pool already owns, so the
+	// budget never becomes an allocation of the read's own. A read that arms
+	// none leaves it zero and budget nil — the absent budget every guarded
+	// site no-ops on.
+	budgetStore readerBudget
 }
 
 // Reset clears everything a subsequent Read must not observe, retaining
@@ -525,6 +531,7 @@ func (s *readerScratch) Reset() {
 	s.parser.budget = nil
 	s.tokens = s.tokens[:0]
 	s.budget = nil
+	s.budgetStore = readerBudget{}
 }
 
 // retained models the storage the scratch's buffers hold on to between reads,
@@ -567,6 +574,7 @@ func (s *readerScratch) release(ceiling int64) bool {
 	s.reader.budget = nil
 	s.parser.budget = nil
 	s.budget = nil
+	s.budgetStore = readerBudget{}
 	return true
 }
 

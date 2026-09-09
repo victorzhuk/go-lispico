@@ -58,12 +58,22 @@ type readerBudget struct {
 	failed   error
 }
 
-func newReaderBudget(ctx context.Context) *readerBudget {
-	return &readerBudget{
+// init fills b in place with the per-read state ctx carries and returns it. A
+// budget hosted by storage the caller already owns — the pooled reader scratch
+// — costs no allocation of its own, so arming a guarded read is free.
+func (b *readerBudget) init(ctx context.Context) *readerBudget {
+	*b = readerBudget{
 		ctx:      ctx,
 		meter:    EvalMeterFrom(ctx),
 		deadline: EvalDeadlineFrom(ctx),
 	}
+	return b
+}
+
+// newReaderBudget returns a standalone budget, for a caller with no storage of
+// its own to host one.
+func newReaderBudget(ctx context.Context) *readerBudget {
+	return new(readerBudget).init(ctx)
 }
 
 // checkpoint settles the work accumulated since the previous checkpoint and
