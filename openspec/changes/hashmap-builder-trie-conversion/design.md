@@ -13,10 +13,33 @@ unexported. One `Assoc` against a retained receiver, receiver built by `Set`
 | 100 | 75 440 | 624 | 554 | 8 | 126 018 | 891 |
 | 1 000 | 1 085 048 | 1 600 | 6 480 | 10 | 1 794 146 | 2 325 |
 
-Benchmarks at `-benchtime=500x -benchmem`. Allocations and bytes are the verdict
-axis and are exact on this machine; the timing followed the same shape (354 ns
+Benchmarks at `-benchtime=500x -benchmem`. The timing followed the same shape (354 ns
 versus 4.2 µs at n=9, 681 ns versus 506 µs at n=1000) but a latency claim is not
 decidable here and is recorded as observation only.
+
+**Those digits are one run's, and they do not reproduce.** Re-measuring at the
+implementation base found the same order of magnitude and the same shape, but the
+builder arm's charge moved up to ~25% between runs of the identical benchmark —
+74 224 / 79 200 / 94 112 at n=100. The cause is in the function this change is
+about: `trieFromBuildMap` iterates `h.large.m`, a Go map, so insertion order into
+the trie is randomised per process. The finished trie is the same either way, but
+the path copies made along the way are not, and their bytes are what the charge
+sums. The trie arm is stable across repeats of one key but is path-dependent too:
+a different retained key selects a different branch depth, so a probe using an
+existing key rather than a new one gave 600 / 560 / 1448.
+
+Two consequences, both load-bearing:
+
+- **The exact digits are not the contract, the shape is.** Every assertion this
+  change adds compares the arms or bounds growth against n; none pins a charge to
+  an exact value, and the CHANGELOG quotes an order-of-magnitude effect rather
+  than a number that will not reproduce on the reader's machine.
+- **The conversion's charge is not deterministic today.** ADR 0011 describes the
+  metering terms as deterministic and the kernel invariants call evaluation
+  deterministic for the same input and environment; a charge that moves 25% on an
+  unchanged input does not meet that. It is pre-existing — the memo changes how
+  *often* the conversion is charged, not how much — and it is recorded here rather
+  than fixed here.
 
 The trie arm is flat — 7 to 10 allocations across two orders of magnitude, which
 is the bound the requirement states. The builder arm rises linearly with entry
