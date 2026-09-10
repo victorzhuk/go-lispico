@@ -342,6 +342,12 @@ func TestGuardedRead_PromotionRefusedBeforeStorage(t *testing.T) {
 
 	t.Run("refused-before-storage", func(t *testing.T) {
 		ceiling := admittedForSource(t, control)
+		controlCtx, _ := allocCeilingContext(ceiling)
+		if _, _, err := readContextStats(controlCtx, FullDialect(), control, 0); err != nil {
+			t.Fatalf("the control read failed under its own admitted total of %d bytes (%v), want it to fit: the ceiling isolates the promotion only while the non-promoting literal completes",
+				ceiling, err)
+		}
+
 		ctx, meter := allocCeilingContext(ceiling)
 		probe := &allocationProbe{Context: ctx, meter: meter}
 

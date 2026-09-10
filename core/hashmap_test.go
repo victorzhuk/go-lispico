@@ -456,6 +456,76 @@ func TestHashMap_HashCollisions(t *testing.T) {
 	}
 }
 
+// TestHamtNode_CollisionAssoc pins the two insert arms inside a collision
+// node. Reaching them through Assoc needs three keys sharing a full 32-bit
+// hash: a birthday scan finds a colliding pair cheaply, but a third key
+// matching one specific hash costs on the order of 2^32 trials, so the node is
+// built directly and assoc is driven at the level that owns the arm. The arm
+// scans hashKeys and never reads h, so the hash argument is immaterial.
+func TestHamtNode_CollisionAssoc(t *testing.T) {
+	t.Parallel()
+
+	mk := func(v int64) entry {
+		t.Helper()
+		hk, err := toHashKey(Int{V: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entry{hk: hk, k: Int{V: v}, v: Int{V: v * 10}}
+	}
+	a, b, c := mk(1), mk(2), mk(3)
+	node := &hamtNode{entries: []entry{a, b}}
+	if !node.isCollision() {
+		t.Fatal("fixture is not a collision node")
+	}
+
+	t.Run("rebind-replaces-in-place", func(t *testing.T) {
+		out, bytes, added := node.assoc(entry{hk: a.hk, k: a.k, v: Int{V: 99}}, 0, 0)
+		if added {
+			t.Fatal("added = true, want false — rebinding a key the node holds is not an insert")
+		}
+		if len(out.entries) != 2 {
+			t.Fatalf("len(entries) = %d, want 2 — a rebind must not grow the node", len(out.entries))
+		}
+		if got, ok := out.get(a.hk, 0, 0); !ok || !got.Equals(Int{V: 99}) {
+			t.Fatalf("get(rebound) = %v, %v; want 99", got, ok)
+		}
+		if got, ok := out.get(b.hk, 0, 0); !ok || !got.Equals(b.v) {
+			t.Fatalf("get(sibling) = %v, %v; want %v untouched", got, ok, b.v)
+		}
+		if want := hamtNodeBytes(out); bytes != want {
+			t.Fatalf("charged %d bytes, want %d — the charge is the node it returns", bytes, want)
+		}
+		if got, ok := node.get(a.hk, 0, 0); !ok || !got.Equals(a.v) {
+			t.Fatal("assoc mutated the receiver")
+		}
+	})
+
+	t.Run("third-key-appends", func(t *testing.T) {
+		out, bytes, added := node.assoc(c, 0, 0)
+		if !added {
+			t.Fatal("added = false, want true — a key the node does not hold is an insert")
+		}
+		if !out.isCollision() {
+			t.Fatal("the node left collision form, want a longer scanned list")
+		}
+		if len(out.entries) != 3 {
+			t.Fatalf("len(entries) = %d, want 3", len(out.entries))
+		}
+		for _, e := range []entry{a, b, c} {
+			if got, ok := out.get(e.hk, 0, 0); !ok || !got.Equals(e.v) {
+				t.Fatalf("get(%v) = %v, %v; want %v — every collided key stays reachable", e.k, got, ok, e.v)
+			}
+		}
+		if want := hamtNodeBytes(out); bytes != want {
+			t.Fatalf("charged %d bytes, want %d — the charge is the node it returns", bytes, want)
+		}
+		if len(node.entries) != 2 {
+			t.Fatalf("receiver grew to %d entries, want 2", len(node.entries))
+		}
+	})
+}
+
 // TestHashMap_LargeFormPrintsIndependentOfBuildOrder pins the determinism the
 // fixed-seed hash exists to protect: two large maps with the same pairs, built
 // in different orders, are indistinguishable.
