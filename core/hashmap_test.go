@@ -367,6 +367,152 @@ func TestHashMap_TrieMatchesOracle(t *testing.T) {
 	}
 }
 
+// setBuiltMap builds a map past hashMapSmallLimit through Set alone, leaving it
+// in builder form: staging map populated, trie root still nil. Assoc/Dissoc on
+// such a map runs the conversion, which is what these tests measure.
+func setBuiltMap(t *testing.T, n int) *HashMap {
+	t.Helper()
+	if n <= hashMapSmallLimit {
+		t.Fatalf("n = %d does not exceed hashMapSmallLimit (%d), builder form unreachable", n, hashMapSmallLimit)
+	}
+	m := NewHashMap()
+	for i := range int64(n) {
+		if err := m.Set(Int{V: i}, Int{V: i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertBuilderForm(t, m, n)
+	return m
+}
+
+func assertBuilderForm(t *testing.T, m *HashMap, n int) {
+	t.Helper()
+	if m.large == nil {
+		t.Fatalf("map is small form, want builder form")
+	}
+	if m.large.root != nil {
+		t.Fatalf("map is trie form, want builder form")
+	}
+	if len(m.large.m) != n {
+		t.Fatalf("builder holds %d entries, want %d", len(m.large.m), n)
+	}
+}
+
+// retainedTrieBytes sums the finished trie's nodes — the floor a conversion
+// charge must exceed, since every insert but the last discards its path copy.
+func retainedTrieBytes(n *hamtNode) int64 {
+	if n == nil {
+		return 0
+	}
+	total := hamtNodeBytes(n)
+	for _, c := range n.children {
+		total += retainedTrieBytes(c)
+	}
+	return total
+}
+
+// TestHashMap_ConversionChargeIsReproducible pins the contract that converting
+// one builder-form map charges one number: the ledger may not depend on the
+// staging map's iteration order.
+func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
+	t.Parallel()
+
+	const repeats = 8
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"n=9", 9},
+		{"n=100", 100},
+		{"n=1000", 1000},
+	}
+
+	requireIdentical := func(t *testing.T, charges []int64) {
+		t.Helper()
+		for i := 1; i < len(charges); i++ {
+			if charges[i] != charges[0] {
+				t.Fatalf("conversion charge on repeat %d = %d, want %d: repeated conversion of one map must charge one number", i, charges[i], charges[0])
+			}
+		}
+	}
+
+	for _, size := range sizes {
+		t.Run("assoc/"+size.name, func(t *testing.T) {
+			t.Parallel()
+			m := setBuiltMap(t, size.n)
+			charges := make([]int64, repeats)
+			for i := range charges {
+				_, bytes, err := m.Assoc(Int{V: -1}, Int{V: -1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				charges[i] = bytes
+			}
+			assertBuilderForm(t, m, size.n)
+			t.Logf("assoc %s charges: %v", size.name, charges)
+			requireIdentical(t, charges)
+		})
+
+		t.Run("dissoc/"+size.name, func(t *testing.T) {
+			t.Parallel()
+			m := setBuiltMap(t, size.n)
+			charges := make([]int64, repeats)
+			for i := range charges {
+				_, bytes, err := m.Dissoc(Int{V: 0})
+				if err != nil {
+					t.Fatal(err)
+				}
+				charges[i] = bytes
+			}
+			assertBuilderForm(t, m, size.n)
+			t.Logf("dissoc %s charges: %v", size.name, charges)
+			requireIdentical(t, charges)
+		})
+	}
+
+	t.Run("assoc/colliding keys", func(t *testing.T) {
+		t.Parallel()
+		a, b := findCollidingKeys(t)
+		m := NewHashMap()
+		for i := range int64(hashMapSmallLimit + 1) {
+			if err := m.Set(Int{V: -(i + 2)}, Int{V: i}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, k := range []int64{a, b} {
+			if err := m.Set(Int{V: k}, Int{V: k}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		n := hashMapSmallLimit + 3
+		assertBuilderForm(t, m, n)
+		charges := make([]int64, repeats)
+		for i := range charges {
+			_, bytes, err := m.Assoc(Int{V: -1}, Int{V: -1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			charges[i] = bytes
+		}
+		assertBuilderForm(t, m, n)
+		t.Logf("assoc colliding (keys %d, %d) charges: %v", a, b, charges)
+		requireIdentical(t, charges)
+	})
+
+	for _, size := range sizes[1:] {
+		t.Run("honesty/"+size.name, func(t *testing.T) {
+			t.Parallel()
+			m := setBuiltMap(t, size.n)
+			root, charge := m.trieFromBuildMap()
+			floor := retainedTrieBytes(root) + HashMapShallowBytes(size.n)
+			t.Logf("honesty %s: charge=%d floor=%d", size.name, charge, floor)
+			if charge <= floor {
+				t.Fatalf("conversion charge = %d, want > %d (retained trie plus entry buffer): the discarded path copies must stay billed", charge, floor)
+			}
+		})
+	}
+}
+
 // findCollidingKeys searches for two distinct Int keys whose hashes agree in
 // every bit, forcing the trie to bottom out into a collision node. The hash is
 // fixed-seed, so the pair this finds is the same on every run.
@@ -558,5 +704,53 @@ func TestHashMap_LargeFormPrintsIndependentOfBuildOrder(t *testing.T) {
 		if got := forward.String(); got != first {
 			t.Fatalf("String() nondeterministic across calls: %s != %s", got, first)
 		}
+	}
+}
+
+// TestHashMap_ConversionChargeIgnoresBuildOrder is the same determinism one
+// step further out: equal contents converted from differently ordered builders
+// must charge the same bytes.
+func TestHashMap_ConversionChargeIgnoresBuildOrder(t *testing.T) {
+	t.Parallel()
+
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"n=9", 9},
+		{"n=100", 100},
+		{"n=1000", 1000},
+	}
+
+	for _, size := range sizes {
+		t.Run(size.name, func(t *testing.T) {
+			t.Parallel()
+			ascending := NewHashMap()
+			descending := NewHashMap()
+			for i := range int64(size.n) {
+				if err := ascending.Set(Int{V: i}, Int{V: i * 2}); err != nil {
+					t.Fatal(err)
+				}
+				j := int64(size.n) - 1 - i
+				if err := descending.Set(Int{V: j}, Int{V: j * 2}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertBuilderForm(t, ascending, size.n)
+			assertBuilderForm(t, descending, size.n)
+
+			_, up, err := ascending.Assoc(Int{V: -1}, Int{V: -1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, down, err := descending.Assoc(Int{V: -1}, Int{V: -1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("build order %s charges: ascending=%d descending=%d", size.name, up, down)
+			if up != down {
+				t.Fatalf("ascending build charges %d, descending charges %d: equal contents must charge equally", up, down)
+			}
+		})
 	}
 }
