@@ -41,6 +41,7 @@ Allocation charging is shallow and deterministic. It counts the produced value's
 | Closure header | 64 bytes |
 | Closure capture slot | 8 bytes per capture |
 | Bytecode instruction | 4 bytes |
+| Fused operation descriptor | 40 bytes per `chunk.Fused` entry |
 | Reader node | 32 bytes per parsed node |
 | Reader byte payload | `len(source bytes copied into values)` |
 | Reader token plan unit | 32 bytes per planned token, EOF token included |
