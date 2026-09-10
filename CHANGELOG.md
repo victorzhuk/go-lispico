@@ -124,6 +124,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestDecodeApplyChargesResultOnce`, `TestDecodeApplyExactBudgetMatrix`,
   and the JSON result-metering regressions.
 
+- The hash-map builder's conversion to a persistent trie now charges the same
+  total for the same key set on every run. The conversion previously ranged
+  the builder's underlying Go map to merge entries into the trie, so the
+  merge order — and the node count the ledger charged for it — could vary
+  between runs of the same input; it now inserts through the builder's
+  existing sorted-entry order instead. The conversion buffer that order is
+  read from is now charged its own hash-map header and per-entry terms on top
+  of the unchanged path-copy sum, so the total the conversion charges moves
+  by a fixed, key-set-dependent amount rather than a randomized one. Charge
+  terms are in ADR 0011.
+
 - `min` and `max` return an exact integer whenever every argument is an
   integer. Both built-ins compared through a `float64` accumulator, so integer
   operands above 2^53 were rounded on the way in and the returned integer could

@@ -66,7 +66,7 @@ The promoted-map construction header is `MeterCollectionHeaderBytes` (24) for th
 
 ## Determinism requirement
 
-The ledger MUST NOT depend on `unsafe.Sizeof`, allocator classes, pointer width, map bucket layout, or any other runtime-specific measurement. Those values vary across architectures and Go releases; a metering ceiling tied to them would make the same source pass on one host and fail on another. The published table is therefore normative even when the real heap footprint is smaller.
+The ledger MUST NOT depend on `unsafe.Sizeof`, allocator classes, pointer width, map bucket layout, or any other runtime-specific measurement. Those values vary across architectures and Go releases; a metering ceiling tied to them would make the same source pass on one host and fail on another. The published table is therefore normative even when the real heap footprint is smaller. It also MUST NOT depend on Go map iteration order: a construction path that ranges a Go map internally has to insert or fold in a fixed order derived from the map's contents, not from the runtime's randomized iteration, so the same key set charges the same total on every run.
 
 ## Charge sites
 

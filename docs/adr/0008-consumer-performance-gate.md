@@ -63,6 +63,15 @@ reads both directly off the raw benchmark output — so this blind spot now
 applies to the latency axis only. This is a pre-existing gap in the gate's
 machinery, not something this ADR resolves.
 
+Note (bytes/allocation-count axes depend on charge reproducibility): because
+these two axes read their figures directly rather than through benchstat,
+they carry no statistical test standing between the gate and the number it
+compares. That reading is only decidable while every charge the ledger
+applies reproduces exactly for a given input, per ADR 0011's determinism
+requirement — a charge that could vary run to run for the same input would
+move a cell's bytes or allocation count with no code change behind it, and
+the gate would have no way to tell that apart from a real regression.
+
 Note (startup's absolute overhead reading, still open): "at most 1 ms and
 256 KiB absolute overhead" above is ambiguous between an absolute *New*
 value under the floor and an absolute *delta* (New − Old) under the floor.
