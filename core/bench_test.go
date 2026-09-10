@@ -566,6 +566,54 @@ func BenchmarkHashMap_GetLarge(b *testing.B) {
 	}
 }
 
+// BenchmarkHashMap_AssocConversionCharge measures one Assoc against a
+// retained receiver — the receiver is never reassigned, so every iteration
+// repeats the same operation rather than threading through the result. The
+// builder arm (Set-built) pays the builder-to-trie conversion on every call;
+// the trie arm (Assoc-built) never converts. charge/op is the int64 byte
+// count Assoc returns, captured once before timing starts since a retained
+// receiver charges the same number on every call.
+func BenchmarkHashMap_AssocConversionCharge(b *testing.B) {
+	for _, n := range []int{9, 100, 1000} {
+		b.Run(fmt.Sprintf("builder/n=%d", n), func(b *testing.B) {
+			m := NewHashMap()
+			for j := range n {
+				m.Set(Int{V: int64(j)}, Int{V: int64(j)})
+			}
+			key := Int{V: int64(n - 1)}
+			_, charge, err := m.Assoc(key, key)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for range b.N {
+				_, _, _ = m.Assoc(key, key)
+			}
+			b.ReportMetric(float64(charge), "charge/op")
+		})
+		b.Run(fmt.Sprintf("trie/n=%d", n), func(b *testing.B) {
+			m := NewHashMap()
+			for j := range n {
+				var err error
+				m, _, err = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			key := Int{V: int64(n - 1)}
+			_, charge, err := m.Assoc(key, key)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for range b.N {
+				_, _, _ = m.Assoc(key, key)
+			}
+			b.ReportMetric(float64(charge), "charge/op")
+		})
+	}
+}
+
 // BenchmarkListAt indexes a bulk-built list at sizes straddling
 // listFlatThreshold. NewList promotes past the threshold, so At goes from a
 // slice index to a chain walk; anything looping over At pays that per element.
