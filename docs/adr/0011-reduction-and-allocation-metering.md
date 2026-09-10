@@ -48,8 +48,11 @@ Allocation charging is shallow and deterministic. It counts the produced value's
 | Reader numeric-conversion storage | `2*len(token) + 256` bytes per numeric token |
 | Reader list cell | 32 bytes per linked cell, past `listFlatThreshold` only |
 | Reader workspace slot | 16 bytes per logical slot |
-| Reader small-map entry slot | 64 bytes per logical slot |
-| Reader persistent-map node | 24 bytes + 64 per entry + 8 per child |
+| Reader map entry slot | 64 bytes per logical slot, below and above `hashMapSmallLimit` alike |
+| Reader promoted-map construction header | 24 bytes, once per promoted map literal |
+| Evaluator persistent-map node | 24 bytes + 64 per entry + `MeterTrieChildBytes` (8) per child |
+
+The promoted-map construction header is `MeterCollectionHeaderBytes` (24) for the storage the reader's map builder obtains; it is not the `MeterHashMapHeaderBytes` (32) output term of `HashMapShallowBytes`, and the two are separate charges for separate storage rather than one charge counted twice. The persistent-map node row is an evaluator charge: `hamtNodeBytes`, applied through `hamtSizeBytes` on the `Assoc`/`Dissoc` path. No reader path builds a trie node, so no reader path charges it.
 
 ### Why these values are conservative
 
@@ -105,7 +108,7 @@ Six storage terms, each admitted at a fixed moment:
 | T3 numeric-conversion storage | `2*len(token) + 256` per numeric token | before `strconv` is entered |
 | T4 output node | 32 plus that node's payload bytes | before the node value is constructed |
 | T5 parser workspace | 16 per logical slot | before each growth, for the whole new logical capacity |
-| T6 construction storage | four subterms, below | before the collection's storage is allocated |
+| T6 construction storage | three subterms, below | before the collection's storage is allocated |
 
 - **T1** is reserved once by `readerBudget.reservePlan`. Counting itself
   obtains no storage: it refuses, it never charges. Scratch reuse from the pool
@@ -141,15 +144,19 @@ Six storage terms, each admitted at a fixed moment:
   forms slice (`TestGuardedRead_WorkspaceHighWaterSpansNesting`). The schedule
   is logical, not physical: retained capacity avoids the Go allocation, never
   the charge.
-- **T6** has four subterms: the flat collection copy-out, `ValueSlotsBytes(n)`;
+- **T6** has three subterms: the flat collection copy-out, `ValueSlotsBytes(n)`;
   linked list cells, `32 * n`, past `listFlatThreshold` only, so a 32-child
-  list links none and a 33-child list admits `33*32`; the small-map entry
-  buffer at 64 bytes per logical slot on T5's doubling schedule, charged only
-  when inserting a new key grows the buffer; and, per persistent-map node, its
-  exact occupied size `MeterCollectionHeaderBytes + 64*entries + 8*children`,
-  admitted before that node is allocated (`TestGuardedRead_ExactCharges`,
-  `TestGuardedRead_ConstructionStorage`,
-  `TestGuardedRead_MapConstructionContracts`).
+  list links none and a 33-child list admits `33*32`; and the map entry buffer
+  at 64 bytes per logical slot on T5's doubling schedule, charged only when
+  inserting a new key grows the buffer — a key the map already holds charges no
+  growth. The entry-buffer term runs on the same schedule below and above
+  `hashMapSmallLimit`: a literal that promotes keeps growing the one buffer and
+  adds `MeterCollectionHeaderBytes` (24) exactly once for the promotion. No
+  reader path builds a persistent-map node, so none charges one
+  (`TestGuardedRead_ExactCharges`, `TestGuardedRead_ConstructionStorage`,
+  `TestGuardedRead_MapConstructionContracts`, which now pins the builder form
+  `large.m != nil && large.root == nil` — the opposite of the trie shape it
+  pinned before).
 
 One linked list cell has two unit prices, and both are correct. The reader
 admits `readerListCellBytes` (32) for a cell it links while building a fresh

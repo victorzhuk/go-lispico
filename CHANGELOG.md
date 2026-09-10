@@ -104,6 +104,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as an immediate refusal of the write itself. Per-env capacity reservation is
   unchanged and still fails inline at the write.
 
+- A reader map literal past the small-map threshold now produces the same
+  builder form the public constructors produce instead of a HAMT trie, and its
+  construction storage is charged on the entry buffer's doubling schedule — 24
+  bytes once per promoted literal plus 64 bytes per logical slot — rather than
+  per trie node. Reading a 9-key map literal admits 3331 bytes in total where
+  it previously admitted 5403, of which the construction-storage term itself is
+  2008 bytes. Charge terms and units are in ADR 0011.
+
 ### Fixed
 
 - `json/decode` now charges its decoded result exactly once per call. Public
