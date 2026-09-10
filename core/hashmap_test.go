@@ -416,7 +416,9 @@ func retainedTrieBytes(n *hamtNode) int64 {
 
 // TestHashMap_ConversionChargeIsReproducible pins the contract that converting
 // one builder-form map charges one number: the ledger may not depend on the
-// staging map's iteration order.
+// staging map's iteration order. Conversion is a per-value cost, so only the
+// first update against a retained receiver pays it; later updates charge the
+// path they copied, and equal contents convert for equal bytes.
 func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
 	t.Parallel()
 
@@ -430,11 +432,14 @@ func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
 		{"n=1000", 1000},
 	}
 
-	requireIdentical := func(t *testing.T, charges []int64) {
+	requireConvertThenSteady := func(t *testing.T, charges []int64) {
 		t.Helper()
-		for i := 1; i < len(charges); i++ {
-			if charges[i] != charges[0] {
-				t.Fatalf("conversion charge on repeat %d = %d, want %d: repeated conversion of one map must charge one number", i, charges[i], charges[0])
+		if charges[1] >= charges[0] {
+			t.Fatalf("charge after the conversion = %d, want < %d: only the first update converts, every later one charges the path it copied", charges[1], charges[0])
+		}
+		for i := 2; i < len(charges); i++ {
+			if charges[i] != charges[1] {
+				t.Fatalf("post-conversion charge on repeat %d = %d, want %d: updates against a converted receiver must charge one number", i, charges[i], charges[1])
 			}
 		}
 	}
@@ -453,7 +458,7 @@ func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
 			}
 			assertBuilderForm(t, m, size.n)
 			t.Logf("assoc %s charges: %v", size.name, charges)
-			requireIdentical(t, charges)
+			requireConvertThenSteady(t, charges)
 		})
 
 		t.Run("dissoc/"+size.name, func(t *testing.T) {
@@ -469,7 +474,7 @@ func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
 			}
 			assertBuilderForm(t, m, size.n)
 			t.Logf("dissoc %s charges: %v", size.name, charges)
-			requireIdentical(t, charges)
+			requireConvertThenSteady(t, charges)
 		})
 	}
 
@@ -499,7 +504,25 @@ func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
 		}
 		assertBuilderForm(t, m, n)
 		t.Logf("assoc colliding (keys %d, %d) charges: %v", a, b, charges)
-		requireIdentical(t, charges)
+		requireConvertThenSteady(t, charges)
+	})
+
+	t.Run("assoc/cross-receiver", func(t *testing.T) {
+		t.Parallel()
+		const n = 100
+		first, second := setBuiltMap(t, n), setBuiltMap(t, n)
+		_, firstCharge, err := first.Assoc(Int{V: -1}, Int{V: -1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, secondCharge, err := second.Assoc(Int{V: -1}, Int{V: -1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("cross-receiver conversion charges: %d, %d", firstCharge, secondCharge)
+		if firstCharge != secondCharge {
+			t.Fatalf("conversion charges %d and %d differ: the charge follows the contents, not which value converted", firstCharge, secondCharge)
+		}
 	})
 
 	for _, size := range sizes[1:] {
