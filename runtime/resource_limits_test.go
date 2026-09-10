@@ -1050,3 +1050,38 @@ func TestGetIn_VMDeadlineExpiredBeforeLookup(t *testing.T) {
 		assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected context.DeadlineExceeded, got %v", err)
 	})
 }
+
+// TestMetering_MapConversionChargedToFirstToucher pins first-toucher-pays
+// across two evaluations that share one bulk-built map: whichever evaluation
+// updates it first bears the builder-to-trie conversion, and a later one does
+// not re-pay it. Bytecode only — the tree-walker rebuilds a map literal per
+// evaluation, so two evaluations there share no value to attribute.
+func TestMetering_MapConversionChargedToFirstToucher(t *testing.T) {
+	skipUntilMeteringFields(t)
+
+	const n = 1000
+	shared := core.NewHashMap()
+	for i := range int64(n) {
+		require.NoError(t, shared.Set(core.Int{V: i}, core.Int{V: i}))
+	}
+
+	const maxAlloc = 64 << 20
+	eng := newMeteringStdlibEngine(t, true, meteringLimits(t, 10_000_000, maxAlloc))
+	require.NoError(t, eng.Bind("shared-map", shared))
+
+	usage := func(source, src string) int64 {
+		t.Helper()
+		ctx := core.WithEvalResourceLimits(t.Context(), 10_000_000, maxAlloc)
+		_, err := eng.Eval(ctx, source, src)
+		require.NoError(t, err)
+		return core.EvalMeterFrom(ctx).Snapshot().AllocationBytes
+	}
+
+	first := usage("first-toucher", "(assoc shared-map :x 1)")
+	later := usage("later-toucher", "(assoc shared-map :y 2)")
+
+	assert.GreaterOrEqual(t, first, int64(500000),
+		"the evaluation that updates the shared map first must bear its conversion")
+	assert.LessOrEqual(t, later, int64(8192),
+		"a later evaluation must not re-pay the conversion of a map value it shares")
+}

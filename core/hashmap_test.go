@@ -1,7 +1,10 @@
 package core
 
 import (
+	"context"
 	"math"
+	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -752,5 +755,423 @@ func TestHashMap_ConversionChargeIgnoresBuildOrder(t *testing.T) {
 				t.Fatalf("ascending build charges %d, descending charges %d: equal contents must charge equally", up, down)
 			}
 		})
+	}
+}
+
+// fanOutSizes straddle hashMapSmallLimit and the sizes the conversion charge
+// was measured at.
+var fanOutSizes = []int{9, 100, 1000}
+
+// fanOutBaselineCharge is the charge one Assoc against a retained Set-built
+// receiver paid before the conversion was retained: the first update still
+// pays it, only the ones after it may not.
+var fanOutBaselineCharge = map[int]int64{9: 4304, 100: 101264, 1000: 1145784}
+
+const (
+	fanOutMaxChargeAfterFirst int64 = 4096
+	fanOutMaxAllocsAfterFirst       = 16.0
+	fanOutUpdates                   = 8
+	fanOutCeilingUpdates            = 64
+	fanOutCeilingTotal        int64 = 2 << 20
+	fanOutFirstLedgerFloor    int64 = 500000
+	fanOutLaterLedgerCeiling  int64 = 8192
+)
+
+func withinOneTenth(got, want int64) bool {
+	delta := got - want
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta*10 <= want
+}
+
+// TestHashMap_FanOutAssocStaysBounded drives k updates against one retained
+// builder-form receiver — the fan-out shape, where every call starts from the
+// same map. Repeated updates on a bulk-built map do not re-pay its conversion:
+// the first update bears it, the rest are bounded by the trie's depth.
+func TestHashMap_FanOutAssocStaysBounded(t *testing.T) {
+	second := map[int]int64{}
+	for _, n := range fanOutSizes {
+		t.Run("builder/n="+strconv.Itoa(n), func(t *testing.T) {
+			m := setBuiltMap(t, n)
+			probe := Int{V: -1}
+
+			_, first, err := m.Assoc(probe, probe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := fanOutBaselineCharge[n]; !withinOneTenth(first, want) {
+				t.Errorf("first Assoc charge = %d, want within 10%% of %d: the first toucher still pays the conversion", first, want)
+			}
+
+			for i := range fanOutUpdates {
+				key := Int{V: int64(-2 - i)}
+				_, charge, err := m.Assoc(key, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 {
+					second[n] = charge
+				}
+				if charge > fanOutMaxChargeAfterFirst {
+					t.Errorf("update %d charges %d bytes, want <= %d: a repeated update re-pays the conversion", i+2, charge, fanOutMaxChargeAfterFirst)
+				}
+			}
+
+			allocs := testing.AllocsPerRun(100, func() {
+				_, _, _ = m.Assoc(probe, probe)
+			})
+			if allocs > fanOutMaxAllocsAfterFirst {
+				t.Errorf("Assoc allocs after the conversion = %v, want <= %v", allocs, fanOutMaxAllocsAfterFirst)
+			}
+			assertBuilderForm(t, m, n)
+		})
+	}
+
+	// The trie arm is the control: it never converts, so it already meets the
+	// bounds the builder arm has to reach.
+	for _, n := range fanOutSizes {
+		t.Run("trie/n="+strconv.Itoa(n), func(t *testing.T) {
+			m := assocBuiltMap(t, n)
+			probe := Int{V: -1}
+			for i := range fanOutUpdates {
+				key := Int{V: int64(-2 - i)}
+				_, charge, err := m.Assoc(key, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if charge > fanOutMaxChargeAfterFirst {
+					t.Errorf("update %d charges %d bytes, want <= %d", i+1, charge, fanOutMaxChargeAfterFirst)
+				}
+			}
+			allocs := testing.AllocsPerRun(100, func() {
+				_, _, _ = m.Assoc(probe, probe)
+			})
+			if allocs > fanOutMaxAllocsAfterFirst {
+				t.Errorf("Assoc allocs = %v, want <= %v", allocs, fanOutMaxAllocsAfterFirst)
+			}
+		})
+	}
+
+	if len(second) != len(fanOutSizes) {
+		return
+	}
+	lo, hi := second[fanOutSizes[0]], second[fanOutSizes[0]]
+	for _, n := range fanOutSizes {
+		if second[n] < lo {
+			lo = second[n]
+		}
+		if second[n] > hi {
+			hi = second[n]
+		}
+	}
+	if lo <= 0 || hi > 4*lo {
+		t.Errorf("second-update charge spans %d..%d across n = %v, want a spread of at most 4x: the charge still scales with map size", lo, hi, fanOutSizes)
+	}
+
+}
+
+// assocBuiltMap builds a map past hashMapSmallLimit through Assoc alone,
+// leaving it in trie form: the arm that never converts.
+func assocBuiltMap(t *testing.T, n int) *HashMap {
+	t.Helper()
+	if n <= hashMapSmallLimit {
+		t.Fatalf("n = %d does not exceed hashMapSmallLimit (%d), trie form unreachable", n, hashMapSmallLimit)
+	}
+	m := NewHashMap()
+	for i := range int64(n) {
+		var err error
+		m, _, err = m.Assoc(Int{V: i}, Int{V: i})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m.large == nil || m.large.root == nil {
+		t.Fatalf("map is %s form, want trie", mapForm(m))
+	}
+	return m
+}
+
+// TestHashMap_FanOutDissocStaysBounded is the Assoc case at Dissoc's identical
+// conversion call site.
+func TestHashMap_FanOutDissocStaysBounded(t *testing.T) {
+	for _, n := range fanOutSizes {
+		t.Run("builder/n="+strconv.Itoa(n), func(t *testing.T) {
+			m := setBuiltMap(t, n)
+			victim := Int{V: 0}
+
+			_, first, err := m.Dissoc(victim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first <= 0 {
+				t.Errorf("first Dissoc charge = %d, want > 0: the conversion is still paid once", first)
+			}
+
+			for i := range fanOutUpdates {
+				_, charge, err := m.Dissoc(Int{V: int64(i)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if charge > fanOutMaxChargeAfterFirst {
+					t.Errorf("update %d charges %d bytes, want <= %d: a repeated update re-pays the conversion", i+2, charge, fanOutMaxChargeAfterFirst)
+				}
+			}
+
+			allocs := testing.AllocsPerRun(100, func() {
+				_, _, _ = m.Dissoc(victim)
+			})
+			if allocs > fanOutMaxAllocsAfterFirst {
+				t.Errorf("Dissoc allocs after the conversion = %v, want <= %v", allocs, fanOutMaxAllocsAfterFirst)
+			}
+			assertBuilderForm(t, m, n)
+		})
+	}
+
+	for _, n := range fanOutSizes {
+		t.Run("trie/n="+strconv.Itoa(n), func(t *testing.T) {
+			m := assocBuiltMap(t, n)
+			victim := Int{V: 0}
+			for i := range fanOutUpdates {
+				_, charge, err := m.Dissoc(Int{V: int64(i)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if charge > fanOutMaxChargeAfterFirst {
+					t.Errorf("update %d charges %d bytes, want <= %d", i+1, charge, fanOutMaxChargeAfterFirst)
+				}
+			}
+			allocs := testing.AllocsPerRun(100, func() {
+				_, _, _ = m.Dissoc(victim)
+			})
+			if allocs > fanOutMaxAllocsAfterFirst {
+				t.Errorf("Dissoc allocs = %v, want <= %v", allocs, fanOutMaxAllocsAfterFirst)
+			}
+		})
+	}
+}
+
+// TestHashMap_FanOutFromMapLiteralStaysBounded reaches builder form through
+// the reader instead of Set: a map literal past the small limit is promoted
+// into the same staging map, so it converts on its first update too.
+func TestHashMap_FanOutFromMapLiteralStaysBounded(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range fanOutSizes {
+		t.Run("n="+strconv.Itoa(n), func(t *testing.T) {
+			forms, err := Read(pairSource(n))
+			if err != nil {
+				t.Fatalf("reading a %d-pair map literal: %v", n, err)
+			}
+			if len(forms) != 1 {
+				t.Fatalf("read %d forms, want 1", len(forms))
+			}
+			m, ok := forms[0].(*HashMap)
+			if !ok {
+				t.Fatalf("map literal read as %T, want *HashMap", forms[0])
+			}
+			assertBuilderForm(t, m, n)
+
+			probe := Keyword{V: "probe"}
+			if _, _, err := m.Assoc(probe, Int{V: 1}); err != nil {
+				t.Fatal(err)
+			}
+			for i := range fanOutUpdates {
+				key := Keyword{V: "probe" + strconv.Itoa(i)}
+				_, charge, err := m.Assoc(key, Int{V: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if charge > fanOutMaxChargeAfterFirst {
+					t.Errorf("update %d charges %d bytes, want <= %d: a promoted literal re-pays its conversion", i+2, charge, fanOutMaxChargeAfterFirst)
+				}
+			}
+			assertBuilderForm(t, m, n)
+		})
+	}
+}
+
+// TestHashMap_FanOutUnderDefaultAllocationCeiling runs the fan-out through the
+// evaluation ledger at its default ceiling. Paying the conversion per update
+// exhausts the ceiling long before the loop ends.
+func TestHashMap_FanOutUnderDefaultAllocationCeiling(t *testing.T) {
+	t.Parallel()
+
+	m := setBuiltMap(t, 1000)
+	ctx := WithEvalResourceLimits(context.Background(), int(DefaultMaxReductions), int(DefaultMaxAllocationBytes))
+
+	var total int64
+	for i := range fanOutCeilingUpdates {
+		key := Int{V: int64(-1 - i)}
+		_, charge, err := m.Assoc(key, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += charge
+		if err := ChargeEvalAllocBytes(ctx, charge); err != nil {
+			t.Fatalf("update %d of %d exhausted the default allocation ceiling after %d bytes: %v", i+1, fanOutCeilingUpdates, total, err)
+		}
+	}
+	if total > fanOutCeilingTotal {
+		t.Errorf("%d updates against one receiver charge %d bytes, want <= %d", fanOutCeilingUpdates, total, fanOutCeilingTotal)
+	}
+}
+
+// TestHashMap_MemoHoldsConvertedTrie pins the retained conversion itself: one
+// update publishes it, it matches the staging map's contents, and no later
+// update replaces it.
+func TestHashMap_MemoHoldsConvertedTrie(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range fanOutSizes {
+		t.Run("n="+strconv.Itoa(n), func(t *testing.T) {
+			t.Parallel()
+			m := setBuiltMap(t, n)
+			if m.large.memo.Load() != nil {
+				t.Fatalf("a Set-built map already carries a converted trie before any update")
+			}
+
+			if _, _, err := m.Assoc(Int{V: -1}, Int{V: -1}); err != nil {
+				t.Fatal(err)
+			}
+			memo := m.large.memo.Load()
+			if memo == nil {
+				t.Fatalf("the first update published no converted trie: every later update re-pays the conversion")
+			}
+			if m.large.root != nil {
+				t.Fatalf("the receiver was promoted to trie form; the update must leave the receiver's storage alone")
+			}
+			if m.large.m == nil {
+				t.Fatalf("the receiver lost its staging map")
+			}
+			if form := mapForm(m); form != "builder" {
+				t.Errorf("mapForm = %s, want builder", form)
+			}
+
+			held := 0
+			memo.each(func(e entry) {
+				held++
+				if _, ok := m.large.m[e.hk]; !ok {
+					t.Errorf("converted trie holds key %v the staging map does not", e.k)
+				}
+			})
+			if held != len(m.large.m) {
+				t.Errorf("converted trie holds %d entries, want %d", held, len(m.large.m))
+			}
+
+			if _, _, err := m.Assoc(Int{V: -2}, Int{V: -2}); err != nil {
+				t.Fatal(err)
+			}
+			if again := m.large.memo.Load(); again != memo {
+				t.Errorf("a later update replaced the converted trie; it must be published exactly once per value")
+			}
+		})
+	}
+
+	t.Run("concurrent", func(t *testing.T) {
+		t.Parallel()
+		const goroutines, updates = 8, 32
+		const n = 1000
+		m := setBuiltMap(t, n)
+
+		var wg sync.WaitGroup
+		for g := range goroutines {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				for i := range updates {
+					key := Int{V: int64(-1 - (g*updates + i))}
+					if _, _, err := m.Assoc(key, key); err != nil {
+						t.Errorf("goroutine %d update %d: %v", g, i, err)
+						return
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+
+		memo := m.large.memo.Load()
+		if memo == nil {
+			t.Fatalf("%d concurrent updates published no converted trie", goroutines*updates)
+		}
+		held := 0
+		memo.each(func(entry) { held++ })
+		if held != n {
+			t.Errorf("converted trie holds %d entries, want %d", held, n)
+		}
+		assertBuilderForm(t, m, n)
+	})
+}
+
+// TestHashMap_MemoLeavesReadPathOnBuilderForm checks the retained conversion
+// stays invisible: every read still answers from the staging map, so a
+// memoised map is indistinguishable from a plain builder-form one.
+func TestHashMap_MemoLeavesReadPathOnBuilderForm(t *testing.T) {
+	const n = 100
+	memoised := setBuiltMap(t, n)
+	plain := setBuiltMap(t, n)
+
+	if _, _, err := memoised.Assoc(Int{V: -1}, Int{V: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if memoised.large.memo.Load() == nil {
+		t.Fatalf("the first update published no converted trie; the read path has nothing to stay off")
+	}
+
+	pairs := make([][2]Value, 0, n)
+	for i := range int64(n) {
+		pairs = append(pairs, [2]Value{Int{V: i}, Int{V: i}})
+	}
+	assertMapParity(t, memoised, plain, pairs, Int{V: -1})
+
+	memoisedAllocs := testing.AllocsPerRun(100, func() {
+		memoised.Each(func(k, v Value) {})
+	})
+	plainAllocs := testing.AllocsPerRun(100, func() {
+		plain.Each(func(k, v Value) {})
+	})
+	if memoisedAllocs != plainAllocs {
+		t.Errorf("Each allocs = %v on a memoised map, %v on a plain builder map: the read path must stay on the staging map", memoisedAllocs, plainAllocs)
+	}
+}
+
+// TestHashMap_ConversionChargedOncePerValue pins first-toucher-pays at the
+// ledger: two meters update one shared builder-form map and exactly one of
+// them sees the conversion.
+func TestHashMap_ConversionChargedOncePerValue(t *testing.T) {
+	t.Parallel()
+
+	const n = 1000
+	m := setBuiltMap(t, n)
+
+	firstCtx, firstMeter := allocCeilingContext(64 << 20)
+	laterCtx, laterMeter := allocCeilingContext(64 << 20)
+
+	charge := func(ctx context.Context, key int64) int64 {
+		t.Helper()
+		_, bytes, err := m.Assoc(Int{V: key}, Int{V: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ChargeEvalAllocBytes(ctx, bytes); err != nil {
+			t.Fatalf("charging %d bytes for key %d: %v", bytes, key, err)
+		}
+		return bytes
+	}
+
+	conversion := charge(firstCtx, -1)
+	total := conversion
+	for i := 1; i < fanOutUpdates; i++ {
+		total += charge(laterCtx, int64(-1-i))
+	}
+
+	if got := admittedBytes(firstMeter); got < fanOutFirstLedgerFloor {
+		t.Errorf("first toucher admitted %d bytes, want >= %d: it must bear the conversion", got, fanOutFirstLedgerFloor)
+	}
+	if got := admittedBytes(laterMeter); got > fanOutLaterLedgerCeiling {
+		t.Errorf("later updates admitted %d bytes, want <= %d: converting is a per-value cost, not a per-update one", got, fanOutLaterLedgerCeiling)
+	}
+	if want := conversion + fanOutUpdates*fanOutMaxChargeAfterFirst; total > want {
+		t.Errorf("%d updates against one receiver charge %d bytes total, want <= %d", fanOutUpdates, total, want)
 	}
 }

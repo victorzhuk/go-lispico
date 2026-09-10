@@ -775,3 +775,47 @@ func BenchmarkVectorRetentionBoxed(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkHashMapFanOutAssoc runs k updates against one retained receiver —
+// the fan-out shape, where every call starts from the same map rather than
+// from the previous result. The builder arm reaches Assoc's conversion call
+// site on every op unless the conversion is retained; the trie arm never
+// converts and is the bound the builder arm has to meet.
+// BenchmarkHashMap_AssocChain measures the threaded shape and says nothing
+// about this one.
+func BenchmarkHashMapFanOutAssoc(b *testing.B) {
+	const k = 8
+	arms := []struct {
+		name  string
+		build func(n int) *HashMap
+	}{
+		{"builder", func(n int) *HashMap {
+			m := NewHashMap()
+			for j := range n {
+				_ = m.Set(Int{V: int64(j)}, Int{V: int64(j)})
+			}
+			return m
+		}},
+		{"trie", func(n int) *HashMap {
+			m := NewHashMap()
+			for j := range n {
+				m, _, _ = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+			}
+			return m
+		}},
+	}
+
+	for _, arm := range arms {
+		for _, n := range []int{9, 100, 1000} {
+			b.Run(fmt.Sprintf("%s/n=%d", arm.name, n), func(b *testing.B) {
+				m := arm.build(n)
+				b.ReportAllocs()
+				for range b.N {
+					for i := range k {
+						_, _, _ = m.Assoc(Int{V: int64(-1 - i)}, Int{V: 1})
+					}
+				}
+			})
+		}
+	}
+}
