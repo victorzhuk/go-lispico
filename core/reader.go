@@ -947,9 +947,10 @@ func (p *Parser) parseHashMap() (Value, error) {
 
 // mapSet inserts one literal pair into a map the read still owns exclusively,
 // admitting the storage each insert claims before claiming it. Past
-// hashMapSmallLimit it builds straight into the trie: the Go-map branch of Set
-// hashes and rehashes a whole bucket table with no point at which the read can
-// be interrupted or refused.
+// hashMapSmallLimit it promotes into the same Go-map form HashMap.Set builds,
+// so one content has one representation however it was produced. The promotion
+// admits the whole map before filling it and then copies hashMapSmallLimit
+// entries without an interruption point, a span the charge already covers.
 func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 	hk, err := toHashKey(key)
 	if err != nil {
@@ -961,14 +962,12 @@ func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 	e := entry{hk: hk, k: key, v: val}
 
 	if m.large != nil {
-		root, added, err := m.large.root.assocGuarded(p.budget, e, hashOfKey(hk), 0)
-		if err != nil {
-			return err
+		if _, held := m.large.m[hk]; !held {
+			if err := p.budget.admitAlloc(MeterHashMapEntryBytes); err != nil {
+				return err
+			}
 		}
-		m.large.root = root
-		if added {
-			m.large.count++
-		}
+		m.large.m[hk] = e
 		return nil
 	}
 
@@ -981,11 +980,15 @@ func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 		return nil
 	}
 	if len(m.entries) >= hashMapSmallLimit {
-		root, err := newGuardedTrie(m.entries, e, p.budget)
-		if err != nil {
+		if err := p.budget.admitAlloc(HashMapShallowBytes(len(m.entries) + 1)); err != nil {
 			return err
 		}
-		m.large = &largeMap{root: root, count: len(m.entries) + 1}
+		large := make(map[hashKey]entry, len(m.entries)+1)
+		for _, existing := range m.entries {
+			large[existing.hk] = existing
+		}
+		large[hk] = e
+		m.large = &largeMap{m: large}
 		m.entries = nil
 		return nil
 	}
