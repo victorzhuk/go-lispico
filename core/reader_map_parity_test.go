@@ -2,16 +2,18 @@ package core
 
 import (
 	"context"
+	"math/bits"
 	"strconv"
 	"strings"
 	"testing"
 )
 
 // The reader builds collections through Parser.mapSet and Parser.buildList
-// instead of HashMap.Set and NewList, and the two promote into different
-// storage forms past their thresholds. Content is the part that must not
-// diverge: whatever shape a collection ends up in, the two builders have to
-// answer every observable identically.
+// instead of HashMap.Set and NewList. Content and storage form both have to
+// match: a map literal past hashMapSmallLimit read through core.Read lands in
+// large.root, while the same content through HashMap.Set lands in large.m, and
+// the two large forms are exclusive — getByHashKey tests root first and would
+// never consult m.
 
 // readerEntry is one public source-to-forms path. Both run the same Parser, so
 // both must agree with the constructor-built collection.
@@ -52,6 +54,9 @@ type mapFixture struct {
 	src    string
 	pairs  [][2]Value
 	absent Value
+	// collision marks the fixture whose keys reach the trie's collision node,
+	// checked separately because no read builds a trie to reach it in.
+	collision bool
 }
 
 // intMapFixture builds n pairs with Int keys 0..n-1, as source and as the same
@@ -99,10 +104,11 @@ func collisionMapFixture() mapFixture {
 	add(collisionKeys[1], 2)
 	src.WriteByte('}')
 	return mapFixture{
-		name:   "hash-collision",
-		src:    src.String(),
-		pairs:  pairs,
-		absent: Int{V: -1},
+		name:      "hash-collision",
+		src:       src.String(),
+		pairs:     pairs,
+		absent:    Int{V: -1},
+		collision: true,
 	}
 }
 
@@ -171,13 +177,54 @@ func TestReaderBuiltMapMatchesSetBuilt(t *testing.T) {
 					t.Fatalf("read %T, want *HashMap", form)
 				}
 				assertMapParity(t, got, want, f.pairs, f.absent)
+				if f.collision {
+					assertCollisionArm(t, "reader-built", got)
+					assertCollisionArm(t, "constructor-built", want)
+				}
 			})
 		}
 	}
 }
 
+// mapForm names the storage form a map is in. Exactly one is active.
+func mapForm(h *HashMap) string {
+	switch {
+	case h.large == nil:
+		return "entries"
+	case h.large.root != nil:
+		return "trie"
+	case h.large.m != nil:
+		return "builder"
+	}
+	return "large-empty"
+}
+
+func assertMapFormInvariants(t *testing.T, label string, h *HashMap) {
+	t.Helper()
+
+	if h.large == nil {
+		return
+	}
+	if h.large.root != nil && h.large.m != nil {
+		t.Fatalf("%s map holds both large forms at once", label)
+	}
+	if h.entries != nil {
+		t.Fatalf("%s map holds %d small entries alongside its %s form",
+			label, len(h.entries), mapForm(h))
+	}
+}
+
 func assertMapParity(t *testing.T, got, want *HashMap, pairs [][2]Value, absent Value) {
 	t.Helper()
+
+	assertMapFormInvariants(t, "reader-built", got)
+	assertMapFormInvariants(t, "constructor-built", want)
+	if gf, wf := mapForm(got), mapForm(want); gf != wf {
+		t.Fatalf("storage form = %s, constructor-built = %s", gf, wf)
+	}
+	if got.large != nil && got.large.root != nil && got.large.count != len(pairs) {
+		t.Fatalf("large.count = %d, fixture has %d pairs", got.large.count, len(pairs))
+	}
 
 	if got.Len() != want.Len() {
 		t.Fatalf("Len() = %d, constructor-built Len() = %d", got.Len(), want.Len())
@@ -240,6 +287,60 @@ func assertMapParity(t *testing.T, got, want *HashMap, pairs [][2]Value, absent 
 	}
 }
 
+// assertCollisionArm drives a map into trie form through Assoc — the one
+// builder that still reaches the collision node once neither the reader nor Set
+// reads into a trie — and checks both colliding keys land in that node.
+func assertCollisionArm(t *testing.T, label string, h *HashMap) {
+	t.Helper()
+
+	probe, _, err := h.Assoc(Int{V: -2}, Int{V: 0})
+	if err != nil {
+		t.Fatalf("%s Assoc: %v", label, err)
+	}
+	if probe.large == nil || probe.large.root == nil {
+		t.Fatalf("%s Assoc produced %s form, want trie", label, mapForm(probe))
+	}
+	if probe.large.count != h.Len()+1 {
+		t.Fatalf("%s Assoc large.count = %d, want %d", label, probe.large.count, h.Len()+1)
+	}
+	for _, key := range collisionKeys {
+		hk, err := toHashKey(Int{V: key})
+		if err != nil {
+			t.Fatalf("toHashKey(%d): %v", key, err)
+		}
+		n := nodeHolding(probe.large.root, hk, hashOfKey(hk), 0)
+		if n == nil {
+			t.Fatalf("%s trie holds no node for colliding key %d", label, key)
+		}
+		if !n.isCollision() {
+			t.Fatalf("%s node holding colliding key %d is not a collision node", label, key)
+		}
+	}
+}
+
+// nodeHolding walks the same slot arithmetic hamtNode.get walks, returning the
+// node that stores hk rather than its value.
+func nodeHolding(n *hamtNode, hk hashKey, h uint32, shift uint) *hamtNode {
+	if n.isCollision() {
+		for i := range n.entries {
+			if n.entries[i].hk == hk {
+				return n
+			}
+		}
+		return nil
+	}
+	bit := uint32(1) << ((h >> shift) & (vecBranch - 1))
+	switch {
+	case n.dataMap&bit != 0:
+		if n.entries[bits.OnesCount32(n.dataMap&(bit-1))].hk == hk {
+			return n
+		}
+	case n.nodeMap&bit != 0:
+		return nodeHolding(n.children[bits.OnesCount32(n.nodeMap&(bit-1))], hk, h, shift+vecBits)
+	}
+	return nil
+}
+
 func eachPairs(h *HashMap) [][2]Value {
 	pairs := make([][2]Value, 0, h.Len())
 	h.Each(func(k, v Value) {
@@ -283,8 +384,26 @@ func TestReaderBuiltListMatchesNewList(t *testing.T) {
 	}
 }
 
+// listForm names the storage form a list is in. Exactly one is active.
+func listForm(l List) string {
+	if l.shared != nil {
+		return "shared-tail"
+	}
+	return "flat"
+}
+
 func assertListParity(t *testing.T, got, want List, items []Value) {
 	t.Helper()
+
+	if got.flat != nil && got.shared != nil {
+		t.Fatalf("reader-built list holds both storage forms at once")
+	}
+	if gf, wf := listForm(got), listForm(want); gf != wf {
+		t.Fatalf("storage form = %s, constructor-built = %s", gf, wf)
+	}
+	if got.shared != nil && got.shared.count != len(items) {
+		t.Fatalf("shared-tail head count = %d, fixture has %d items", got.shared.count, len(items))
+	}
 
 	if got.Len() != want.Len() {
 		t.Fatalf("Len() = %d, constructor-built Len() = %d", got.Len(), want.Len())
