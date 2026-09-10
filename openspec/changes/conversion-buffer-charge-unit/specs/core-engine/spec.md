@@ -11,19 +11,23 @@ violates the requirement if the table does not say what that combination prices:
 constants are then owned and the term is not. It is stated separately from the determinism
 requirement because a charge can be perfectly reproducible and still unattributable.
 
-Where two paths obtain storage of the same shape for the same role, they SHALL charge the
-same unit for it. Charging two different units for one shape is permitted only where the
-table states the distinction that makes them different storage, so that the difference is a
-recorded decision rather than an accident of which helper was in reach.
+Where two paths obtain storage in the same role and with the same lifetime, they SHALL
+charge the same header unit for it, whatever the underlying Go type. Role and lifetime are
+what the ledger prices — storage a call obtains to build something and discards before
+returning is one class whether it is a slice or a map — so a difference in Go type is not by
+itself a reason to charge differently. Charging two different units across one role is
+permitted only where the published table states the distinction that makes them different
+storage, so that the difference is a recorded decision rather than an accident of which
+helper was in reach.
 
 #### Scenario: A construction buffer's unit is derivable from the table
 
 - **WHEN** a path obtains scratch storage to construct a value, charges the allocation ledger for it, and a reader consults the published fixed size table
 - **THEN** the table SHALL name the unit that charge is composed from and the storage it prices
 
-#### Scenario: Two construction buffers of one shape charge one unit
+#### Scenario: Two construction buffers of one role charge one unit
 
-- **WHEN** the reader's promoted-map builder and the evaluator's builder-to-trie conversion each obtain construction storage for the same number of key/value pairs
+- **WHEN** one call obtains storage to build a value and discards it before returning, and another call in the same evaluator obtains storage in that same role
 - **THEN** both SHALL charge the same header term, unless the published table states the distinction that makes the two pieces of storage different
 
 #### Scenario: The ceiling does not loosen
