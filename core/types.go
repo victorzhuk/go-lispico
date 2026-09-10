@@ -1231,6 +1231,9 @@ func (h *HashMap) Set(key, val Value) error {
 	}
 	e := entry{hk: hk, k: key, v: val}
 	if h.large != nil {
+		// A memo built before this write no longer matches large.m, and the
+		// next Assoc would derive its result from that stale trie.
+		h.large.memo.Store(nil)
 		if h.large.root != nil {
 			root, _, added := h.large.root.assoc(e, hashOfKey(hk), 0)
 			h.large.root = root
