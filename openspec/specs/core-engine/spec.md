@@ -167,6 +167,19 @@ the structure rather than by its entry count, and extending a map n times costs
 O(n log n) in total rather than O(n²). The receiver SHALL be unaffected by an
 update derived from it.
 
+That bound SHALL hold whichever builder produced the receiver. A map above the
+threshold may be held in either large representation, and converting one to the
+other is a per-value cost, not a per-update one: repeated updates against one
+retained receiver SHALL NOT each pay a cost proportional to its entry count.
+
+The bound is per value per converter, not per value outright. An implementation
+MAY convert a receiver more than once when concurrent updates reach it before
+any conversion is published, and each such update SHALL be charged the
+conversion it performed, because it allocated that storage. What is forbidden is
+paying the conversion once per update: the number of conversions a value can be
+charged for SHALL be bounded by the number of updates that raced to convert it,
+never by the number of updates it receives.
+
 The hash backing that structure SHALL be derived from fixed constants rather than
 a per-process random seed. A randomized seed would make the structure's shape, and
 anything derived from it, differ across restarts for identical input, which
@@ -196,6 +209,11 @@ contradicts the determinism this requirement states.
 
 - **WHEN** a map above the small-map threshold is extended by `Assoc` at sizes spanning two orders of magnitude
 - **THEN** the bytes and allocations a single call charges SHALL stay bounded as the map grows rather than rising in proportion to its entry count, and the receiver SHALL remain unchanged and independently readable
+
+#### Scenario: Repeated updates on a bulk-built map do not re-pay its conversion
+
+- **WHEN** a map above the small-map threshold is produced by bulk construction — through `Set` or by reading a map literal — and is then updated repeatedly by `Assoc` or `Dissoc`, each update taken against that same retained map rather than against the previous result
+- **THEN** the bytes and allocations charged SHALL stay bounded per update as the map grows, so that k updates against one receiver do not each charge in proportion to its entry count, and the receiver SHALL remain unchanged and independently readable
 
 #### Scenario: Colliding keys stay retrievable
 
@@ -1127,10 +1145,20 @@ This is the property ADR 0008's consumer gate compares releases on and ADR 0011'
 tables describe. It is stated here because a metered path violated it undetected: the
 builder-to-trie conversion charged a ~25% spread on unchanged input.
 
+Converting a builder-form map to trie form is work a value undergoes once. Reproducibility
+therefore binds the conversion wherever it is performed, not every update that could have
+performed it: an update that finds the conversion already done has done less work, and
+charges less for exactly that reason.
+
 #### Scenario: One value converted repeatedly charges one number
 
-- **WHEN** a map above the small-map threshold in builder form is updated by `Assoc` or `Dissoc` repeatedly, each update taken against that same retained receiver so that each one performs the conversion afresh
-- **THEN** every one of those updates SHALL charge the identical number of bytes for the conversion, and repeating the whole sequence in a new process SHALL charge that same number again
+- **WHEN** a map above the small-map threshold in builder form is updated by `Assoc` or `Dissoc` repeatedly, each update taken against that same retained receiver
+- **THEN** the update that performs the conversion SHALL charge one number for it, every later update SHALL charge only the path it copied, and repeating the whole sequence in a new process SHALL charge those same numbers again
+
+#### Scenario: Two equal values convert for one number
+
+- **WHEN** two maps above the small-map threshold in builder form hold equal contents and each is updated so that each performs its own conversion
+- **THEN** both conversions SHALL charge the identical number of bytes, because the charge follows the contents and not which value was converted
 
 #### Scenario: Equal contents charge equally regardless of build order
 

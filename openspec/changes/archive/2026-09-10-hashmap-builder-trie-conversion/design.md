@@ -41,6 +41,16 @@ Two consequences, both load-bearing:
   *often* the conversion is charged, not how much — and it is recorded here rather
   than fixed here.
 
+  **Superseded before implementation.** The non-determinism this section records was
+  fixed by `trie-conversion-charge-determinism`, archived on 2026-09-10, which made
+  `trieFromBuildMap` insert through `sortedEntries()` in `hashKey.less` order instead
+  of ranging the Go map. This change was implemented on top of that fix, so the
+  ~25% run-to-run spread described above no longer occurs: task 0.1 re-measured the
+  builder arm at this change's own base and two runs agreed exactly on charge and
+  allocations at every size. The reasoning above is kept because it is why the design
+  refuses to pin exact digits, and that conclusion still holds — the figures depend on
+  the key set. Only the instability is gone.
+
 The trie arm is flat — 7 to 10 allocations across two orders of magnitude, which
 is the bound the requirement states. The builder arm rises linearly with entry
 count: at n=1000 a single update allocates 6 480 objects and charges 1.06 MB.
@@ -353,8 +363,8 @@ If this plan is executed by an agent that does not load the run kernel, these ar
 {
   "v": 2,
   "change": "hashmap-builder-trie-conversion",
-  "baseSha": "d40567e659498634dbbdceec665af37a3dd65db7",
-  "generatedAt": "2026-09-10T11:47:22Z",
+  "baseSha": "990fa5554173f4ba6750cece6c59ecb425054695",
+  "generatedAt": "2026-09-10T16:50:57.000Z",
   "tier": "heavy",
   "mode": "existing-service-strict",
   "lenses": [
@@ -406,7 +416,7 @@ If this plan is executed by an agent that does not load the run kernel, these ar
             "input": "one Assoc against a retained receiver, receiver built by Set, n in {9,100,1000}",
             "state": "builder-arm",
             "effect": "forced",
-            "evidence": "design.md:10-14 records charge 3792/75440/1085048, allocs 37/554/6480, B/op 8183/126018/1794146"
+            "evidence": "design.md:10-14 records charge 3792/75440/1085048, allocs 37/554/6480, B/op 8183/126018/1794146 — a pre-trie-conversion-charge-determinism reading, superseded at this baseSha: task 0.1 re-records all three and those figures are what every later budget compares against"
           },
           {
             "input": "one Assoc against a retained receiver, receiver built by repeated Assoc, n in {9,100,1000}",
@@ -776,7 +786,7 @@ If this plan is executed by an agent that does not load the run kernel, these ar
           "perUpdateChargeAfterTheFirst": "<= 4096 bytes at every n in {9,100,1000} (measured trie arm max 1600)",
           "perUpdateAllocsAfterTheFirst": "testing.AllocsPerRun(100, ...) <= 16 at every n (measured trie arm max 10)",
           "shape": "max/min of the 2nd-update charge across n in {9,100,1000} <= 4 (measured trie arm ratio 1600/624 = 2.56)",
-          "firstUpdateCharge": "within +/-10% of the S0 figure for that n (3792 / 75440 / 1085048): this change must not move the first payment",
+          "firstUpdateCharge": "within +/-10% of the first-update charge task 0.1 records at this plan's baseSha for that n: this change must not move the first payment. No literal is pinned here — trie-conversion-charge-determinism, archived 2026-09-10, moved the conversion charge after the earlier reading of 3792 / 75440 / 1085048 was taken, so 0.1's re-recording at this base is the only valid comparand.",
           "fanOutTotal": "64 successive Assoc calls against one n=1000 builder receiver sum to <= 2 MiB of returned bytes; at base the same loop sums to ~69.4 MB and exceeds DefaultMaxAllocationBytes (64 MiB) at update 62 (design.md:24-28)",
           "k": "k = 64 for the ceiling case, k = 8 for the per-update cases",
           "separation": "at n=1000 the first ledger's delta >= 500000 bytes and the second ledger's delta <= 8192 bytes — a 60x gap, far outside any measurement noise since both are exact ledger arithmetic, not sampling",
@@ -1334,7 +1344,7 @@ If this plan is executed by an agent that does not load the run kernel, these ar
             "input": "one Assoc against a retained receiver, receiver built by Set, n in {9,100,1000}",
             "state": "builder-arm",
             "effect": "forced",
-            "evidence": "design.md:10-14 records charge 3792/75440/1085048, allocs 37/554/6480, B/op 8183/126018/1794146"
+            "evidence": "design.md:10-14 records charge 3792/75440/1085048, allocs 37/554/6480, B/op 8183/126018/1794146 — a pre-trie-conversion-charge-determinism reading, superseded at this baseSha: task 0.1 re-records all three and those figures are what every later budget compares against"
           },
           {
             "input": "one Assoc against a retained receiver, receiver built by repeated Assoc, n in {9,100,1000}",
@@ -1804,7 +1814,7 @@ If this plan is executed by an agent that does not load the run kernel, these ar
           "perUpdateChargeAfterTheFirst": "<= 4096 bytes at every n in {9,100,1000} (measured trie arm max 1600)",
           "perUpdateAllocsAfterTheFirst": "testing.AllocsPerRun(100, ...) <= 16 at every n (measured trie arm max 10)",
           "shape": "max/min of the 2nd-update charge across n in {9,100,1000} <= 4 (measured trie arm ratio 1600/624 = 2.56)",
-          "firstUpdateCharge": "within +/-10% of the S0 figure for that n (3792 / 75440 / 1085048): this change must not move the first payment",
+          "firstUpdateCharge": "within +/-10% of the first-update charge task 0.1 records at this plan's baseSha for that n: this change must not move the first payment. No literal is pinned here — trie-conversion-charge-determinism, archived 2026-09-10, moved the conversion charge after the earlier reading of 3792 / 75440 / 1085048 was taken, so 0.1's re-recording at this base is the only valid comparand.",
           "fanOutTotal": "64 successive Assoc calls against one n=1000 builder receiver sum to <= 2 MiB of returned bytes; at base the same loop sums to ~69.4 MB and exceeds DefaultMaxAllocationBytes (64 MiB) at update 62 (design.md:24-28)",
           "k": "k = 64 for the ceiling case, k = 8 for the per-update cases",
           "separation": "at n=1000 the first ledger's delta >= 500000 bytes and the second ledger's delta <= 8192 bytes — a 60x gap, far outside any measurement noise since both are exact ledger arithmetic, not sampling",
