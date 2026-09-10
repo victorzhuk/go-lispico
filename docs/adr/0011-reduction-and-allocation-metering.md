@@ -53,7 +53,7 @@ Allocation charging is shallow and deterministic. It counts the produced value's
 | Reader promoted-map construction header | 24 bytes, once per promoted map literal |
 | Evaluator persistent-map node | 24 bytes + 64 per entry + `MeterTrieChildBytes` (8) per child |
 
-The promoted-map construction header is `MeterCollectionHeaderBytes` (24) for the storage the reader's map builder obtains; it is not the `MeterHashMapHeaderBytes` (32) output term of `HashMapShallowBytes`, and the two are separate charges for separate storage rather than one charge counted twice. The persistent-map node row is an evaluator charge: `hamtNodeBytes`, applied through `hamtSizeBytes` on the `Assoc`/`Dissoc` path. No reader path builds a trie node, so no reader path charges it.
+The promoted-map construction header is `MeterCollectionHeaderBytes` (24) for the storage the reader's map builder obtains; it is not the `MeterHashMapHeaderBytes` (32) output term of `HashMapShallowBytes`, and the two are separate charges for separate storage rather than one charge counted twice. The persistent-map node row is an evaluator charge: `hamtNodeBytes`, applied through `hamtSizeBytes` on the `Assoc`/`Dissoc` path. No reader path builds a trie node, so no reader path charges it. The same row prices the builder-to-trie conversion, which is a per-value charge settled by the first update on that value: the first `Assoc`/`Dissoc` against a builder-form map converts its storage and is charged the nodes it publishes, and every later update on the same value finds the conversion already published and charges only its own path. The published trie is the memo; its storage is charged to the evaluation that built it and is not re-charged as retained capacity when a host keeps the value past that evaluation. The conversion publishes no unit of its own: it obtains persistent-map nodes, priced by this row at their construction site, and the table gains no row for it.
 
 ### Why these values are conservative
 
@@ -68,6 +68,8 @@ The promoted-map construction header is `MeterCollectionHeaderBytes` (24) for th
 
 The ledger MUST NOT depend on `unsafe.Sizeof`, allocator classes, pointer width, map bucket layout, or any other runtime-specific measurement. Those values vary across architectures and Go releases; a metering ceiling tied to them would make the same source pass on one host and fail on another. The published table is therefore normative even when the real heap footprint is smaller. It also MUST NOT depend on Go map iteration order: a construction path that ranges a Go map internally has to insert or fold in a fixed order derived from the map's contents, not from the runtime's randomized iteration, so the same key set charges the same total on every run.
 
+The requirement binds a source to a total; it does not bind a shared receiver to one. A map value two evaluations both update is converted by whichever of them updates it first, and that evaluation bears the conversion while the other bears only its own path — so the two are charged differently for the same call. That difference is not ledger drift: it is evidence that the two evaluations did different work, one converting storage and one finding it converted. This is the reading the requirement already takes elsewhere — it binds one build's charges across hosts and Go versions, not one form's charges across every history the value reaching it may have.
+
 ## Charge sites
 
 The fixed table is applied only at evaluator-owned construction boundaries:
@@ -79,6 +81,8 @@ The fixed table is applied only at evaluator-owned construction boundaries:
 - shallow `GoFunc` results at the centralized apply sites, unless the callee already charged the ledger for that same value.
 
 This keeps the meter complete without trying to instrument every composite literal or every Go allocation in the process.
+
+The builder-to-trie conversion is charged per value, not per update. The first update on a builder-form map is billed the whole trie that update converts; a later update on the same value is billed only the path it copies, because the conversion it would otherwise repeat is already published. That charge is settled inside the update, before the update's own result is admitted, so an evaluation whose update the allocation ceiling then refuses has still been billed the conversion it published: the ceiling is settled after the update returns, and the value it converted keeps the trie either way.
 
 ### Guarded reader admission
 
