@@ -566,54 +566,6 @@ func BenchmarkHashMap_GetLarge(b *testing.B) {
 	}
 }
 
-// BenchmarkHashMap_AssocConversionCharge measures one Assoc against a
-// retained receiver — the receiver is never reassigned, so every iteration
-// repeats the same operation rather than threading through the result. The
-// builder arm (Set-built) pays the builder-to-trie conversion on every call;
-// the trie arm (Assoc-built) never converts. charge/op is the int64 byte
-// count Assoc returns, captured once before timing starts since a retained
-// receiver charges the same number on every call.
-func BenchmarkHashMap_AssocConversionCharge(b *testing.B) {
-	for _, n := range []int{9, 100, 1000} {
-		b.Run(fmt.Sprintf("builder/n=%d", n), func(b *testing.B) {
-			m := NewHashMap()
-			for j := range n {
-				m.Set(Int{V: int64(j)}, Int{V: int64(j)})
-			}
-			key := Int{V: int64(n - 1)}
-			_, charge, err := m.Assoc(key, key)
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			for range b.N {
-				_, _, _ = m.Assoc(key, key)
-			}
-			b.ReportMetric(float64(charge), "charge/op")
-		})
-		b.Run(fmt.Sprintf("trie/n=%d", n), func(b *testing.B) {
-			m := NewHashMap()
-			for j := range n {
-				var err error
-				m, _, err = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
-				if err != nil {
-					b.Fatal(err)
-				}
-			}
-			key := Int{V: int64(n - 1)}
-			_, charge, err := m.Assoc(key, key)
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			for range b.N {
-				_, _, _ = m.Assoc(key, key)
-			}
-			b.ReportMetric(float64(charge), "charge/op")
-		})
-	}
-}
-
 // BenchmarkListAt indexes a bulk-built list at sizes straddling
 // listFlatThreshold. NewList promotes past the threshold, so At goes from a
 // slice index to a chain walk; anything looping over At pays that per element.
@@ -776,30 +728,40 @@ func BenchmarkVectorRetentionBoxed(b *testing.B) {
 	}
 }
 
-// BenchmarkHashMapFanOutAssoc runs k updates against one retained receiver —
-// the fan-out shape, where every call starts from the same map rather than
-// from the previous result. The builder arm reaches Assoc's conversion call
-// site on every op unless the conversion is retained; the trie arm never
-// converts and is the bound the builder arm has to meet.
+// BenchmarkHashMapFanOutAssoc measures the fan-out shape — every update starts
+// from the same retained receiver rather than from the previous result — in the
+// two states that cost different amounts. The first sub-arm updates a fresh
+// receiver each iteration, so the builder arm pays the builder-to-trie
+// conversion every timed op; the steady sub-arm updates a receiver whose
+// conversion is already retained, so it pays only its own path copy. The trie
+// arm never converts and is the bound the builder arm has to meet.
+// charge/op is the mean of the int64 byte counts the timed Assoc calls
+// returned, so every reported charge was paid inside the timed region.
 // BenchmarkHashMap_AssocChain measures the threaded shape and says nothing
 // about this one.
 func BenchmarkHashMapFanOutAssoc(b *testing.B) {
 	const k = 8
 	arms := []struct {
 		name  string
-		build func(n int) *HashMap
+		build func(b *testing.B, n int) *HashMap
 	}{
-		{"builder", func(n int) *HashMap {
+		{"builder", func(b *testing.B, n int) *HashMap {
 			m := NewHashMap()
 			for j := range n {
-				_ = m.Set(Int{V: int64(j)}, Int{V: int64(j)})
+				if err := m.Set(Int{V: int64(j)}, Int{V: int64(j)}); err != nil {
+					b.Fatal(err)
+				}
 			}
 			return m
 		}},
-		{"trie", func(n int) *HashMap {
+		{"trie", func(b *testing.B, n int) *HashMap {
 			m := NewHashMap()
 			for j := range n {
-				m, _, _ = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+				var err error
+				m, _, err = m.Assoc(Int{V: int64(j)}, Int{V: int64(j)})
+				if err != nil {
+					b.Fatal(err)
+				}
 			}
 			return m
 		}},
@@ -807,14 +769,39 @@ func BenchmarkHashMapFanOutAssoc(b *testing.B) {
 
 	for _, arm := range arms {
 		for _, n := range []int{9, 100, 1000} {
-			b.Run(fmt.Sprintf("%s/n=%d", arm.name, n), func(b *testing.B) {
-				m := arm.build(n)
+			b.Run(fmt.Sprintf("%s/first/n=%d", arm.name, n), func(b *testing.B) {
 				b.ReportAllocs()
+				var charge int64
+				for range b.N {
+					b.StopTimer()
+					m := arm.build(b, n)
+					b.StartTimer()
+					_, c, err := m.Assoc(Int{V: -1}, Int{V: 1})
+					if err != nil {
+						b.Fatal(err)
+					}
+					charge += c
+				}
+				b.ReportMetric(float64(charge)/float64(b.N), "charge/op")
+			})
+			b.Run(fmt.Sprintf("%s/steady/n=%d", arm.name, n), func(b *testing.B) {
+				m := arm.build(b, n)
+				if _, _, err := m.Assoc(Int{V: -1}, Int{V: 1}); err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				var charge int64
 				for range b.N {
 					for i := range k {
-						_, _, _ = m.Assoc(Int{V: int64(-1 - i)}, Int{V: 1})
+						_, c, err := m.Assoc(Int{V: int64(-1 - i)}, Int{V: 1})
+						if err != nil {
+							b.Fatal(err)
+						}
+						charge += c
 					}
 				}
+				b.ReportMetric(float64(charge)/float64(b.N*k), "charge/op")
 			})
 		}
 	}
