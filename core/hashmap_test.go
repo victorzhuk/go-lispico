@@ -797,7 +797,15 @@ const (
 	fanOutCeilingUpdates            = 64
 	fanOutCeilingTotal        int64 = 2 << 20
 	fanOutFirstLedgerFloor    int64 = 500000
-	fanOutLaterLedgerCeiling  int64 = 8192
+	// fanOutLaterLedgerCeiling bounds the ledger delta over the
+	// fanOutUpdates-1 = 7 updates that follow the converting one on an n=1000
+	// receiver. Seven path copies of a 1000-entry trie intrinsically cost about
+	// 10.2 KB: a trie-form n=1000 map with no conversion in play charges 1448
+	// bytes for one update, so seven charge 10136 — the measured delta here is
+	// 10216. The ceiling keeps the separation the shape is meant to show, 1145936
+	// bytes for the first update against 10216 for the rest, and leaves headroom
+	// over the measured value rather than tracking it.
+	fanOutLaterLedgerCeiling int64 = 16384
 )
 
 func withinOneTenth(got, want int64) bool {
