@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the conversion once and each later update pays only for the path it copies.
   Against a `Set`-built map of 1000 entries the first update still charges
   about 1.1 MB, while a later update against that same retained map falls from
-  about 1.1 MB to about 1.4 KB — roughly three orders of magnitude for repeated
+  about 1.1 MB to about 1.4 KB — nearly three orders of magnitude for repeated
   updates at that size. The figure depends on the key set, not just its size.
   Charge terms and units are in ADR 0011.
 

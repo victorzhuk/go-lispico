@@ -970,6 +970,9 @@ func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 				return err
 			}
 		}
+		// This write may skip Set's memo invalidation: a map still under
+		// construction by the reader is unshared, so no Assoc can have
+		// published a memo against it yet.
 		m.large.m[hk] = e
 		return nil
 	}
