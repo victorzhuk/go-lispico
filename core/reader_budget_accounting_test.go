@@ -325,9 +325,10 @@ func TestGuardedRead_AllowanceBoundary(t *testing.T) {
 // TestGuardedRead_PromotionRefusedBeforeStorage pins what promoting a map
 // literal past the small-map limit costs and when that cost is settled: the
 // ninth key admits the header plus the doubling step its entry buffer takes,
-// and under an allowance a byte short of what the same literal needs without
-// promoting, the read is refused with no map and a ledger that never rises
-// above the allowance — the promoted storage is refused before it exists.
+// and under an allowance of exactly what the same literal needs without
+// promoting — one the control read just fits — the read is refused with no map
+// and a ledger that never rises above the allowance, so the promotion alone is
+// what refuses and the promoted storage never exists.
 func TestGuardedRead_PromotionRefusedBeforeStorage(t *testing.T) {
 	promoting, control := pairSource(9), promotionControlSource()
 
@@ -340,7 +341,7 @@ func TestGuardedRead_PromotionRefusedBeforeStorage(t *testing.T) {
 	})
 
 	t.Run("refused-before-storage", func(t *testing.T) {
-		ceiling := admittedForSource(t, control) - 1
+		ceiling := admittedForSource(t, control)
 		ctx, meter := allocCeilingContext(ceiling)
 		probe := &allocationProbe{Context: ctx, meter: meter}
 

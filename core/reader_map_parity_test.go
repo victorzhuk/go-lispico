@@ -9,11 +9,11 @@ import (
 )
 
 // The reader builds collections through Parser.mapSet and Parser.buildList
-// instead of HashMap.Set and NewList. Content and storage form both have to
-// match: a map literal past hashMapSmallLimit read through core.Read lands in
-// large.root, while the same content through HashMap.Set lands in large.m, and
-// the two large forms are exclusive — getByHashKey tests root first and would
-// never consult m.
+// instead of HashMap.Set and NewList, so content and storage form both have to
+// match: a map literal past hashMapSmallLimit lands in large.m with large.root
+// nil whichever of the two built it. The large forms stay exclusive —
+// getByHashKey tests root first and would never consult m, so a map that fell
+// back to a trie would answer from the wrong storage.
 
 // readerEntry is one public source-to-forms path. Both run the same Parser, so
 // both must agree with the constructor-built collection.
@@ -221,9 +221,6 @@ func assertMapParity(t *testing.T, got, want *HashMap, pairs [][2]Value, absent 
 	assertMapFormInvariants(t, "constructor-built", want)
 	if gf, wf := mapForm(got), mapForm(want); gf != wf {
 		t.Fatalf("storage form = %s, constructor-built = %s", gf, wf)
-	}
-	if got.large != nil && got.large.root != nil && got.large.count != len(pairs) {
-		t.Fatalf("large.count = %d, fixture has %d pairs", got.large.count, len(pairs))
 	}
 
 	if got.Len() != want.Len() {
