@@ -1018,7 +1018,8 @@ reader node and payload model. Numeric conversion SHALL additionally reserve
 invalid-number diagnostics SHALL render at most 128 source bytes plus a truncation
 marker while retaining error kind and source position. Linked-list construction
 SHALL add 32 bytes per cell. Map construction SHALL add the existing collection
-header, map entry, and trie child-slot units for its allocated node/buffer storage.
+header and map entry units for its allocated entry storage, on the same
+deterministic growth schedule below and above the small-map threshold.
 Workspace and construction-buffer growth SHALL use a deterministic
 allocation schedule, charged on the same logical schedule for cold and pooled
 reads. Reader output SHALL retain its existing node and payload charges; a
@@ -1056,6 +1057,16 @@ SHALL NOT increase the storage admitted before that rejection.
 - **WHEN** the same in-budget source is parsed through legacy and metered readers
 - **THEN** their values and `ReaderStats` SHALL be equal even though only the metered read charges workspace and scan work to its evaluation
 
+#### Scenario: A promoted map literal is charged on the entry-buffer schedule
+
+- **WHEN** a map literal with more keys than the small-map threshold is read under a sufficient allocation allowance
+- **THEN** the admitted construction storage SHALL be the collection header plus the map entry units for the buffer the promotion allocates, on the deterministic growth schedule, and SHALL NOT include per-trie-node units
+
+#### Scenario: Promotion is refused before its storage exists
+
+- **WHEN** a map literal whose promoted entry storage exceeds the remaining allocation allowance is read
+- **THEN** reading SHALL fail with terminal `ResourceLimitError` before that storage is allocated
+
 ### Requirement: Reader reuse cannot bypass current resource policy
 
 Every pooled read SHALL use only its own context, limits, deadline, charges, and
@@ -1076,3 +1087,26 @@ previously returned value trees and SHALL NOT reset evaluation charges.
 
 - **WHEN** failed reads and successful reads with different dialects and limits share the reader pool concurrently
 - **THEN** each SHALL observe its own policy, previously returned values SHALL remain unchanged, and race checks SHALL report no shared-state race
+
+### Requirement: Collection representation does not depend on its builder
+
+A collection produced by reading source SHALL use the same internal
+representation as the same collection produced through the public constructors,
+at every size. Reading SHALL NOT select a promotion form, a promotion threshold,
+or a growth policy that the corresponding constructor would not select for the
+same contents.
+
+Reading SHALL continue to admit the storage it allocates before allocating it;
+where a constructor allocates storage the reader must account for, the reader
+SHALL charge that storage rather than build a different structure to make it
+accountable.
+
+#### Scenario: A read map and a constructed map agree on representation
+
+- **WHEN** the same key-value contents are produced once by reading a map literal and once through `HashMap.Set`, at sizes below, at, and above the small-map threshold
+- **THEN** both SHALL hold their entries in the same storage form, and every observable — lookup, length, iteration order, printed form, and equality — SHALL agree
+
+#### Scenario: A read list and a constructed list agree on representation
+
+- **WHEN** the same elements are produced once by reading a list literal and once through `NewList`, at sizes below, at, and above the flat-list threshold
+- **THEN** both SHALL hold their elements in the same storage form, and every observable SHALL agree
