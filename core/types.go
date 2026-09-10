@@ -965,10 +965,10 @@ func (n *hamtNode) each(fn func(e entry)) {
 // entries — at or below hashMapSmallLimit distinct keys: sorted by hashKey,
 // Get is a linear scan, cheap at this size and already in iteration order.
 //
-// large.m — a plain Go map, reached only by growing past the limit through the
-// mutable Set escape hatch. Set is the bulk-construction path (map literals,
-// hash-map, merge, OpMakeMap, json/decode), where an in-place map assignment
-// is O(1) and nothing is shared yet.
+// large.m — a plain Go map, the builder form. Two bulk-construction paths grow
+// past the limit into it: Set (hash-map, merge, OpMakeMap, json/decode) and the
+// reader's mapSet (map literals). Both own their map exclusively while they
+// build, so an in-place map assignment is O(1) and nothing is shared yet.
 //
 // large.root — a persistent trie, produced by Assoc and Dissoc. Copying one
 // root-to-leaf path and sharing the rest is what keeps a chained assoc linear
