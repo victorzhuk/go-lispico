@@ -34,6 +34,23 @@ func sameKeySource(pairs int) string {
 	return "{" + strings.Repeat(":dup v ", pairs) + "}"
 }
 
+// promotionControlSource is pairSource(9) with its ninth key repeating the
+// first: same token count, same key and value payloads, same output nodes, and
+// one entry short of the small-map limit. Differencing the two isolates what
+// promoting the ninth key admits from everything else the read pays.
+func promotionControlSource() string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i := 0; i < hashMapSmallLimit; i++ {
+		b.WriteString(":k")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(" v ")
+	}
+	b.WriteString(":k0 v ")
+	b.WriteByte('}')
+	return b.String()
+}
+
 // entryBufferBytes is the storage a small map's entry buffer charges to hold
 // the given number of entries: the doubling schedule the reader work buffers
 // follow, in entry units rather than value slots.
@@ -157,6 +174,11 @@ func TestGuardedRead_AdmitsOutputStorage(t *testing.T) {
 			planBytes(11) + workBufferBytes(1) + entryBufferBytes(4) + outputBytes(t, pairSource(4)),
 			"11 tokens, the form buffer, the doubled 4-entry buffer, and 9 output nodes",
 		},
+		{
+			"promoted-map", pairSource(9),
+			planBytes(21) + workBufferBytes(1) + MeterCollectionHeaderBytes + entryBufferBytes(9) + outputBytes(t, pairSource(9)),
+			"21 tokens, the form buffer, the promoted map's header, the doubled 9-entry buffer, and 19 output nodes",
+		},
 	}
 
 	for _, tc := range cases {
@@ -237,8 +259,8 @@ func TestGuardedRead_ConstructionStorage(t *testing.T) {
 		{"small-map-at-the-limit", pairSource(8), 19, 8 * MeterHashMapEntryBytes, "8 sorted small-map entries"},
 		{
 			"promoted-map", pairSource(9), 21,
-			MeterCollectionHeaderBytes + 9*MeterHashMapEntryBytes,
-			"the trie nodes holding 9 entries",
+			MeterCollectionHeaderBytes + entryBufferBytes(9),
+			"the promoted map's header and the entry buffer holding 9 entries",
 		},
 		{
 			"duplicate-keys", sameKeySource(12), 27,
@@ -300,6 +322,52 @@ func TestGuardedRead_AllowanceBoundary(t *testing.T) {
 	}
 }
 
+// TestGuardedRead_PromotionRefusedBeforeStorage pins what promoting a map
+// literal past the small-map limit costs and when that cost is settled: the
+// ninth key admits the header plus the doubling step its entry buffer takes,
+// and under an allowance a byte short of what the same literal needs without
+// promoting, the read is refused with no map and a ledger that never rises
+// above the allowance — the promoted storage is refused before it exists.
+func TestGuardedRead_PromotionRefusedBeforeStorage(t *testing.T) {
+	promoting, control := pairSource(9), promotionControlSource()
+
+	t.Run("promotion-charge", func(t *testing.T) {
+		want := MeterCollectionHeaderBytes + entryBufferBytes(9) - entryBufferBytes(hashMapSmallLimit)
+		if got := admittedForSource(t, promoting) - admittedForSource(t, control); got != want {
+			t.Fatalf("promoting the ninth key admitted %d bytes over the same literal rewriting a key it already holds, want %d: the header plus the doubling step the entry buffer takes to hold 9 entries",
+				got, want)
+		}
+	})
+
+	t.Run("refused-before-storage", func(t *testing.T) {
+		ceiling := admittedForSource(t, control) - 1
+		ctx, meter := allocCeilingContext(ceiling)
+		probe := &allocationProbe{Context: ctx, meter: meter}
+
+		forms, _, err := readContextStats(probe, FullDialect(), promoting, 0)
+		if code := readErrorCode(err); code != CodeResourceLimit {
+			t.Fatalf("a promoting read under an allowance of %d bytes returned %v (code %q), want a %s: the promotion cannot fit and must be refused",
+				ceiling, err, code, CodeResourceLimit)
+		}
+		if len(forms) != 0 {
+			t.Fatalf("the refused read returned %d forms, want none: no map may exist once its storage is refused", len(forms))
+		}
+		if len(probe.seen) == 0 {
+			t.Fatalf("the refused read never checked its terminal state, want the ledger observable while it builds")
+		}
+		for i, seen := range probe.seen {
+			if seen > ceiling {
+				t.Fatalf("the ledger stood at %d bytes at check %d of %d, above the %d-byte allowance, want every check the read survives taken under it",
+					seen, i, len(probe.seen), ceiling)
+			}
+		}
+		if got, full := admittedBytes(meter), admittedForSource(t, promoting); got >= full {
+			t.Fatalf("the refused read admitted %d bytes, want less than the %d the same read pays under an ample allowance: the refusal is terminal at the promotion, so no storage past it is claimed",
+				got, full)
+		}
+	})
+}
+
 // TestGuardedRead_PoolReuseChargesTheSameConstruction drives a scratch the
 // test owns, so the second and third reads run against retained capacity
 // rather than whichever entry sync.Pool would hand back.
@@ -336,14 +404,14 @@ func TestGuardedRead_PoolReuseChargesTheSameConstruction(t *testing.T) {
 
 // TestGuardedRead_MapConstructionContracts pins the storage form the guarded
 // builder produces on both sides of the small-map limit. Past the limit it
-// must build the trie directly: the Go-map branch of Set cannot expose a
-// checkpoint while it hashes and grows.
+// must promote into the same Go-map form HashMap.Set builds, so one content
+// has one representation however it was produced.
 func TestGuardedRead_MapConstructionContracts(t *testing.T) {
 	cases := []struct {
-		name    string
-		src     string
-		wantLen int
-		trie    bool
+		name     string
+		src      string
+		wantLen  int
+		promoted bool
 	}{
 		{"small-form-at-the-limit", pairSource(8), 8, false},
 		{"promoted-past-the-limit", pairSource(9), 9, true},
@@ -367,7 +435,7 @@ func TestGuardedRead_MapConstructionContracts(t *testing.T) {
 			if m.Len() != tc.wantLen {
 				t.Fatalf("map holds %d entries, want %d", m.Len(), tc.wantLen)
 			}
-			if !tc.trie {
+			if !tc.promoted {
 				if m.large != nil {
 					t.Fatalf("a %d-entry map is in large form, want the sorted small form", m.Len())
 				}
@@ -376,8 +444,8 @@ func TestGuardedRead_MapConstructionContracts(t *testing.T) {
 			if m.large == nil {
 				t.Fatalf("a %d-entry map is still in small form, want it promoted", m.Len())
 			}
-			if m.large.root == nil || m.large.m != nil {
-				t.Fatalf("a promoted map built through the Go-map branch of Set, want it built directly into the trie")
+			if m.large.m == nil || m.large.root != nil {
+				t.Fatalf("a promoted map built into the trie, want the Go-map form HashMap.Set builds")
 			}
 		})
 	}
