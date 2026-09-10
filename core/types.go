@@ -1105,12 +1105,22 @@ func (h *HashMap) trieFromBuildMap() (*hamtNode, int64) {
 }
 
 // trieRoot returns the trie form of a large map, converting builder storage on
-// demand. The conversion bytes are zero when the map is already trie-form.
+// demand. The conversion bytes are zero when the map is already trie-form, and
+// zero on a memo hit: a builder-form map keeps its converted trie so a fan-out
+// of updates off one receiver pays for the conversion once rather than once per
+// update. large.m stays authoritative — the memo is never read by the read
+// path, and large.root/large.count stay untouched, so the map keeps reporting
+// builder form. A racing converter that loses the swap still returns its own
+// root and is still charged: it allocated that trie regardless.
 func (h *HashMap) trieRoot() (*hamtNode, int, int64) {
 	if root := h.large.root; root != nil {
 		return root, h.large.count, 0
 	}
+	if memo := h.large.memo.Load(); memo != nil {
+		return memo, len(h.large.m), 0
+	}
 	root, bytes := h.trieFromBuildMap()
+	h.large.memo.CompareAndSwap(nil, root)
 	return root, len(h.large.m), bytes
 }
 
