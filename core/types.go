@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"sort"
 	"strconv"
+	"sync/atomic"
 )
 
 // Value is the universal Lisp value interface.
@@ -993,6 +994,7 @@ type largeMap struct {
 	m     map[hashKey]entry
 	root  *hamtNode
 	count int
+	memo  atomic.Pointer[hamtNode]
 }
 
 func NewHashMap() *HashMap {
@@ -1102,6 +1104,16 @@ func (h *HashMap) trieFromBuildMap() (*hamtNode, int64) {
 	return root, bytes
 }
 
+// trieRoot returns the trie form of a large map, converting builder storage on
+// demand. The conversion bytes are zero when the map is already trie-form.
+func (h *HashMap) trieRoot() (*hamtNode, int, int64) {
+	if root := h.large.root; root != nil {
+		return root, h.large.count, 0
+	}
+	root, bytes := h.trieFromBuildMap()
+	return root, len(h.large.m), bytes
+}
+
 // newTrie wraps trie storage as a large-form map.
 func newTrie(root *hamtNode, count int) *HashMap {
 	return &HashMap{large: &largeMap{root: root, count: count}}
@@ -1119,12 +1131,7 @@ func (h *HashMap) Assoc(key, val Value) (*HashMap, int64, error) {
 	}
 	e := entry{hk: hk, k: key, v: val}
 	if h.large != nil {
-		root, bytes := h.large.root, int64(0)
-		count := h.large.count
-		if root == nil {
-			root, bytes = h.trieFromBuildMap()
-			count = len(h.large.m)
-		}
+		root, count, bytes := h.trieRoot()
 		next, b, added := root.assoc(e, hashOfKey(hk), 0)
 		if added {
 			count++
@@ -1156,12 +1163,7 @@ func (h *HashMap) Dissoc(key Value) (*HashMap, int64, error) {
 		return nil, 0, err
 	}
 	if h.large != nil {
-		root, bytes := h.large.root, int64(0)
-		count := h.large.count
-		if root == nil {
-			root, bytes = h.trieFromBuildMap()
-			count = len(h.large.m)
-		}
+		root, count, bytes := h.trieRoot()
 		next, b, removed := root.dissoc(hk, hashOfKey(hk), 0)
 		if removed {
 			count--
