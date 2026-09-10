@@ -948,9 +948,12 @@ func (p *Parser) parseHashMap() (Value, error) {
 // mapSet inserts one literal pair into a map the read still owns exclusively,
 // admitting the storage each insert claims before claiming it. Past
 // hashMapSmallLimit it promotes into the same Go-map form HashMap.Set builds,
-// so one content has one representation however it was produced. The promotion
-// admits the whole map before filling it and then copies hashMapSmallLimit
-// entries without an interruption point, a span the charge already covers.
+// so one content has one representation however it was produced. Entry storage
+// rides one growth schedule across the promotion — the collection header once,
+// then the same doubling the small form pays — so a literal charges the same
+// whichever side of the limit it lands on. The copy of hashMapSmallLimit
+// entries into the Go map runs without an interruption point, a bounded span
+// the charge already covers.
 func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 	hk, err := toHashKey(key)
 	if err != nil {
@@ -963,7 +966,7 @@ func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 
 	if m.large != nil {
 		if _, held := m.large.m[hk]; !held {
-			if err := p.budget.admitAlloc(MeterHashMapEntryBytes); err != nil {
+			if err := plan.admit(p.budget, int64(len(m.large.m)+1)); err != nil {
 				return err
 			}
 		}
@@ -980,7 +983,10 @@ func (p *Parser) mapSet(m *HashMap, plan *growthPlan, key, val Value) error {
 		return nil
 	}
 	if len(m.entries) >= hashMapSmallLimit {
-		if err := p.budget.admitAlloc(HashMapShallowBytes(len(m.entries) + 1)); err != nil {
+		if err := p.budget.admitAlloc(MeterCollectionHeaderBytes); err != nil {
+			return err
+		}
+		if err := plan.admit(p.budget, int64(len(m.entries)+1)); err != nil {
 			return err
 		}
 		large := make(map[hashKey]entry, len(m.entries)+1)
