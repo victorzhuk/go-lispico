@@ -154,9 +154,8 @@ Six storage terms, each admitted at a fixed moment:
   adds `MeterCollectionHeaderBytes` (24) exactly once for the promotion. No
   reader path builds a persistent-map node, so none charges one
   (`TestGuardedRead_ExactCharges`, `TestGuardedRead_ConstructionStorage`,
-  `TestGuardedRead_MapConstructionContracts`, which now pins the builder form
-  `large.m != nil && large.root == nil` — the opposite of the trie shape it
-  pinned before).
+  `TestGuardedRead_MapConstructionContracts`, which pins the builder form
+  `large.m != nil && large.root == nil`).
 
 One linked list cell has two unit prices, and both are correct. The reader
 admits `readerListCellBytes` (32) for a cell it links while building a fresh
