@@ -1087,11 +1087,15 @@ func newTrieFromEntries(entries []entry, extra entry) (*hamtNode, int64) {
 // once, on the first Assoc or Dissoc after bulk construction: the builder path
 // stays O(1) per Set, and the persistent path gets structural sharing from
 // there on. The receiver is left untouched, so no map is mutated behind a
-// caller's back and concurrent readers of h are unaffected.
+// caller's back and concurrent readers of h are unaffected. Insertion follows
+// sortedEntries' deterministic order rather than Go map iteration order, so
+// two maps of equal contents are charged the same bytes; the entry buffer that
+// ordering obtains is charged alongside the path copies.
 func (h *HashMap) trieFromBuildMap() (*hamtNode, int64) {
+	entries := h.sortedEntries()
 	root := &hamtNode{}
-	var bytes int64
-	for _, e := range h.large.m {
+	bytes := HashMapShallowBytes(len(entries))
+	for _, e := range entries {
 		next, b, _ := root.assoc(e, hashOfKey(e.hk), 0)
 		root, bytes = next, bytes+b
 	}
