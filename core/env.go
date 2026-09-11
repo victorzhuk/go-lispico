@@ -530,7 +530,7 @@ func (e *Env) GetCanonical(name string) (Value, bool, bool) {
 	if v != nil {
 		return v, true, canon
 	}
-	if layer := e.lazy(); layer != nil && !e.rootHas(name, false) {
+	if layer := e.lazy(); layer != nil && (e.reg.Load() == nil || !e.rootHas(name, false)) {
 		if v, ok, canon := layer.LookupAndMaterialize(e, name, false); ok {
 			return v, true, canon
 		}
@@ -707,7 +707,7 @@ func (e *Env) Get(name string) (Value, bool) {
 	if v != nil {
 		return v, true
 	}
-	if layer := e.lazy(); layer != nil && !e.rootHas(name, false) {
+	if layer := e.lazy(); layer != nil && (e.reg.Load() == nil || !e.rootHas(name, false)) {
 		if val, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			return val, true
 		}
@@ -792,7 +792,7 @@ func (e *Env) GetFunc(name string) (Value, bool) {
 	if v != nil {
 		return v, true
 	}
-	if layer := e.lazy(); layer != nil && !e.rootHas(name, true) {
+	if layer := e.lazy(); layer != nil && (e.reg.Load() == nil || !e.rootHas(name, true)) {
 		if val, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true
 		}
@@ -817,7 +817,7 @@ func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 	if v != nil {
 		return v, true, canon
 	}
-	if layer := e.lazy(); layer != nil && !e.rootHas(name, true) {
+	if layer := e.lazy(); layer != nil && (e.reg.Load() == nil || !e.rootHas(name, true)) {
 		if val, ok, canon := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true, canon
 		}
