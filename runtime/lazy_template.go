@@ -110,13 +110,17 @@ type stdlibLazyEngineState struct {
 // lazyOp attributes the lazy-state changes made through one plugin
 // operation's registration view, so a failed operation undoes exactly those
 // and keeps every change made through the root meanwhile. Guarded by the
-// owning state's mu.
+// owning state's mu, except inflight.
 type lazyOp struct {
-	view    *core.Env
-	closed  bool
-	name    string
-	version string
-	eager   bool
+	view *core.Env
+	// closed stops the view from admitting new materializations; inflight
+	// counts the admitted ones still running. Add happens only under the
+	// state's mu while !closed, so it never races fence's Wait.
+	closed   bool
+	inflight sync.WaitGroup
+	name     string
+	version  string
+	eager    bool
 	// entries holds the before-image of each name the operation touched.
 	entries  map[string]*lazyOpEntry
 	installs int64
@@ -373,8 +377,26 @@ func (m *stdlibLazyMaterializer) endOp(commit bool) {
 	s.materialized -= op.installs
 }
 
-// opFor returns the open operation when env is its view, or nil. Caller
-// holds state.mu.
+// fence closes the open operation to new view materializations and waits
+// for the admitted ones, so their writes land while the registration is
+// still active. It holds no lock while waiting and is idempotent.
+func (m *stdlibLazyMaterializer) fence() {
+	if m == nil {
+		return
+	}
+	m.state.mu.Lock()
+	op := m.state.op
+	if op != nil {
+		op.closed = true
+	}
+	m.state.mu.Unlock()
+	if op != nil {
+		op.inflight.Wait()
+	}
+}
+
+// opFor returns the open operation when env is its view and the operation
+// still admits work, or nil. Caller holds state.mu.
 func (m *stdlibLazyMaterializer) opFor(env *core.Env) *lazyOp {
 	if op := m.state.op; op != nil && !op.closed && env == op.view {
 		return op
@@ -390,17 +412,20 @@ func (m *stdlibLazyMaterializer) opEager() bool {
 }
 
 // noteLocked attributes a change to name made through env: the open operation
-// owns it when env is its view; otherwise an entry the operation holds for
-// name turns foreign. Caller holds state.mu.
+// owns it when env is its view, closed or not, since a materialization
+// admitted before fence still writes through the view; otherwise an entry the
+// operation holds for name turns foreign. Caller holds state.mu.
 func (m *stdlibLazyMaterializer) noteLocked(env *core.Env, name string) *lazyOp {
-	if op := m.opFor(env); op != nil {
+	op := m.state.op
+	if op == nil {
+		return nil
+	}
+	if env == op.view {
 		op.own(m.state, name)
 		return op
 	}
-	if op := m.state.op; op != nil {
-		if ent, ok := op.entries[name]; ok {
-			ent.foreign = true
-		}
+	if ent, ok := op.entries[name]; ok {
+		ent.foreign = true
 	}
 	return nil
 }
@@ -462,14 +487,21 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 	nameMu.Lock()
 	defer nameMu.Unlock()
 
-	// Only the open operation's view materializes through itself; the root and
-	// any other view install straight into the root, unattributed.
+	// Only the open operation's view materializes through itself, and only
+	// until fence closes it; the root, any other view, and a late view lookup
+	// install straight into the root, unattributed.
 	m.state.mu.Lock()
 	_, live := m.state.installed[entry.name]
-	if m.opFor(env) == nil {
+	op := m.opFor(env)
+	if op == nil {
 		env = m.engine.rootEnv
+	} else {
+		op.inflight.Add(1)
 	}
 	m.state.mu.Unlock()
+	if op != nil {
+		defer op.inflight.Done()
+	}
 	if live {
 		if funcNS {
 			if v, ok, canon := env.GetMaterializedFuncCanonical(entry.name); ok {

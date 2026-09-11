@@ -194,6 +194,7 @@ func (e *engineImpl) loadPlugin(p core.Plugin, env *core.Env, name, version stri
 			added, err = nil, finishErr
 		}
 	}()
+	defer e.lazyMaterializer.fence()
 
 	if initErr := e.initPlugin(p, env, name, version); initErr != nil {
 		return nil, fmt.Errorf("init plugin %s: %w", name, initErr)
