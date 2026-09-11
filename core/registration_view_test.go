@@ -40,6 +40,8 @@ func TestRegistration_ViewForwardsReadsAndKeepsRootIdentity(t *testing.T) {
 		t.Fatalf("seed f: %v", err)
 	}
 	root.BumpMacroEpoch()
+	layer := &aliasLazyLayer{id: 1}
+	root.SetLazyLayer(layer)
 
 	reg := beginViewRegistration(t, root)
 	view := reg.Env()
@@ -83,6 +85,48 @@ func TestRegistration_ViewForwardsReadsAndKeepsRootIdentity(t *testing.T) {
 	wantBytes, wantSlots := root.RetainedUsage()
 	if gotBytes != wantBytes || gotSlots != wantSlots {
 		t.Errorf("view.RetainedUsage() = %d, %d; want the root's %d, %d", gotBytes, gotSlots, wantBytes, wantSlots)
+	}
+
+	other := depthLimitEvaluator{limit: 9}
+	root.SetEvaluator(other)
+	if got := view.Evaluator(); got != Evaluator(other) {
+		t.Errorf("after root.SetEvaluator, view.Evaluator() = %v; want the root's new evaluator %v", got, other)
+	}
+
+	gotV, gotLive, gotCanon := view.ReadCell(rootCell)
+	wantV, wantLive, wantCanon := root.ReadCell(rootCell)
+	if gotV != wantV || gotLive != wantLive || gotCanon != wantCanon {
+		t.Errorf("view.ReadCell(x) = %v, %v, %v; want the root's %v, %v, %v",
+			gotV, gotLive, gotCanon, wantV, wantLive, wantCanon)
+	}
+	gotV, gotLive, gotCanon, gotVer := view.ReadCellSnapshot(rootCell)
+	wantV, wantLive, wantCanon, wantVer := root.ReadCellSnapshot(rootCell)
+	if gotV != wantV || gotLive != wantLive || gotCanon != wantCanon || gotVer != wantVer {
+		t.Errorf("view.ReadCellSnapshot(x) = %v, %v, %v, %d; want the root's %v, %v, %v, %d",
+			gotV, gotLive, gotCanon, gotVer, wantV, wantLive, wantCanon, wantVer)
+	}
+	if cell, ok := view.CellLocal("x"); !ok || cell != rootCell {
+		t.Errorf("view.CellLocal(x) = %p, %v; want the root's cell %p", cell, ok, rootCell)
+	}
+	rootFunc, ok := root.FuncCellLocal("f")
+	if !ok {
+		t.Fatalf("root.FuncCellLocal(f) missed after SetFunc")
+	}
+	if cell, ok := view.FuncCellLocal("f"); !ok || cell != rootFunc {
+		t.Errorf("view.FuncCellLocal(f) = %p, %v; want the root's cell %p", cell, ok, rootFunc)
+	}
+	if !view.HasLiveFunc("f") {
+		t.Errorf("view.HasLiveFunc(f) = false; want true as on the root")
+	}
+	wantVars := root.VarNames()
+	slices.Sort(wantVars)
+	gotVars := view.VarNames()
+	slices.Sort(gotVars)
+	if !slices.Equal(gotVars, wantVars) {
+		t.Errorf("view.VarNames() = %v; want the root's %v", gotVars, wantVars)
+	}
+	if got, want := view.LazyLayer(), root.LazyLayer(); got != want || got != LazyLayer(layer) {
+		t.Errorf("view.LazyLayer() = %v; want the root's installed layer %v", got, want)
 	}
 
 	if err := root.Set("x", Int{V: 10}); err != nil {
