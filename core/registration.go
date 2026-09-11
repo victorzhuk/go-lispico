@@ -85,6 +85,7 @@ func (r *Registration) Abort() {
 	if root.reg.Load() != r {
 		return
 	}
+	restored := false
 	for key, ent := range r.entries {
 		cells := root.vars
 		if key.fn {
@@ -94,6 +95,7 @@ func (r *Registration) Abort() {
 		if last == nil || cells[key.name] != last || last.Version() != ent.lastVer {
 			continue
 		}
+		restored = true
 		switch ent.prior {
 		case nil:
 			last.v, last.canonical = nil, false
@@ -111,12 +113,21 @@ func (r *Registration) Abort() {
 	}
 	if r.eval.owned() {
 		root.eval = r.eval.prior
+		restored = true
 	}
 	if r.meter.owned() {
 		root.retainedMeter = r.meter.prior
+		restored = true
 	}
 	if r.lazy.owned() {
 		root.lazyLayer.Store(r.lazy.prior)
+		restored = true
+	}
+	if restored {
+		// Cached resolutions and compiled chunks keyed on these counters may
+		// hold a reverted binding; the counters only ever move forward.
+		root.newNameGen.Add(1)
+		root.macroEpoch++
 	}
 	root.reg.Store(nil)
 	r.entries = nil
@@ -179,6 +190,17 @@ func (r *Registration) afterWrite(key registrationKey, cell *Cell) {
 	ent := r.entries[key]
 	ent.last = cell
 	ent.lastVer = cell.Version()
+}
+
+// pins reports whether cell is the op's last write to key. Rebuild keeps such
+// a tombstone so abort restores it in place and holders of it see the restore.
+// Caller holds root.mu.
+func (r *Registration) pins(key registrationKey, cell *Cell) bool {
+	if r == nil {
+		return false
+	}
+	ent, ok := r.entries[key]
+	return ok && ent.last == cell
 }
 
 // owner is the canonical root a registration view forwards to, or e itself.

@@ -971,12 +971,19 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 	}
 	e.mu.Lock()
 
+	r := e.reg.Load()
 	var releases []retainedRelease
 	vars := make(map[string]*Cell, len(e.vars))
 	funcs := make(map[string]*Cell, len(e.funcs))
 	var bytes, slots int64
 
 	for name, cell := range e.vars {
+		if cell.v == nil && r.pins(registrationKey{name: name}, cell) {
+			vars[name] = cell
+			bytes += cell.retainedBytes
+			slots++
+			continue
+		}
 		if cell.v == nil {
 			cell.rebuilt = true
 			if cell.retainedMeter != nil {
@@ -995,6 +1002,12 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 		slots++
 	}
 	for name, cell := range e.funcs {
+		if cell.v == nil && r.pins(registrationKey{name: name, fn: true}, cell) {
+			funcs[name] = cell
+			bytes += cell.retainedBytes
+			slots++
+			continue
+		}
 		if cell.v == nil {
 			cell.rebuilt = true
 			if cell.retainedMeter != nil {
