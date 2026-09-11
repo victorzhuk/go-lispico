@@ -223,7 +223,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	name := p.Name()
 	version := p.Metadata().Version
 	gen := e.registry.Generation(name)
-	_, hadOld := e.registry.Get(name)
+	hadOld := gen != 0
 	reg, err := e.rootEnv.BeginRegistration()
 	if err != nil {
 		return fmt.Errorf("register plugin %s: %w", name, err)
