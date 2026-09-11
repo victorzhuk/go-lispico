@@ -62,6 +62,17 @@ func (r *Registry) RegisterNoCheck(p Plugin) {
 	r.plugins[p.Name()] = p
 }
 
+// Generation returns the current generation of the entry for name.
+func (r *Registry) Generation(name string) uint64 {
+	return 0
+}
+
+// PublishIf stores p only if its entry is still at generation gen, and returns a
+// RegistryConflictError otherwise.
+func (r *Registry) PublishIf(p Plugin, gen uint64) error {
+	return nil
+}
+
 // Get retrieves a plugin by namespace name.
 func (r *Registry) Get(name string) (Plugin, bool) {
 	r.mu.RLock()

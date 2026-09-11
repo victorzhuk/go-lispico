@@ -141,6 +141,16 @@ func NewRegistrationActiveError() *LispicoError {
 	return &LispicoError{Code: CodeRegistrationActive, Message: "environment already has an active registration"}
 }
 
+// CodeRegistryConflict classifies a *LispicoError reporting that a plugin's
+// registry entry changed while its registration was in progress.
+const CodeRegistryConflict = "RegistryConflictError"
+
+// NewRegistryConflictError builds a LispicoError reporting that the registry
+// entry for plugin name changed during registration.
+func NewRegistryConflictError(name string) *LispicoError {
+	return &LispicoError{Code: CodeRegistryConflict, Message: fmt.Sprintf("plugin %q registry entry changed during registration", name)}
+}
+
 // CodePanic classifies a *LispicoError reporting that a user-supplied GoFunc
 // panicked inside a runtime entry point. The panic is recovered, boundary state
 // is reset, and the panic value is wrapped so the caller observes a typed error
