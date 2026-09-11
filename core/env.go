@@ -90,10 +90,7 @@ func (e *Env) SetLazyLayer(layer LazyLayer) {
 
 // LazyLayer returns the installed miss-path fallback, or nil.
 func (e *Env) LazyLayer() LazyLayer {
-	if p := e.lazyLayer.Load(); p != nil {
-		return *p
-	}
-	return nil
+	return e.owner().lazy()
 }
 
 // SetRetainedMeter binds the meter that owns this scope's retained capacity.
@@ -105,9 +102,10 @@ func (e *Env) SetRetainedMeter(m any) {
 
 // RetainedMeter returns the retained-capacity meter bound to this scope.
 func (e *Env) RetainedMeter() any {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.retainedMeter
+	o := e.owner()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.retainedMeter
 }
 
 // RegisterValue binds name through the lazy layer when one is installed,
@@ -141,19 +139,21 @@ func (e *Env) RegisterSource(name, source string) bool {
 // HasLive reports whether name has a live (non-tombstoned) binding in this
 // scope's value cell, without consulting the lazy layer or parent scopes.
 func (e *Env) HasLive(name string) bool {
-	e.mu.RLock()
-	cell, ok := e.vars[name]
+	o := e.owner()
+	o.mu.RLock()
+	cell, ok := o.vars[name]
 	live := ok && cell.v != nil
-	e.mu.RUnlock()
+	o.mu.RUnlock()
 	return live
 }
 
 // HasLiveFunc is HasLive for the function cell (Lisp-2 only).
 func (e *Env) HasLiveFunc(name string) bool {
-	e.mu.RLock()
-	cell, ok := e.funcs[name]
+	o := e.owner()
+	o.mu.RLock()
+	cell, ok := o.funcs[name]
 	live := ok && cell.v != nil
-	e.mu.RUnlock()
+	o.mu.RUnlock()
 	return live
 }
 
@@ -489,7 +489,7 @@ func (e *Env) GetCanonical(name string) (Value, bool, bool) {
 	if v != nil {
 		return v, true, canon
 	}
-	if layer := e.LazyLayer(); layer != nil {
+	if layer := e.lazy(); layer != nil {
 		if v, ok, canon := layer.LookupAndMaterialize(e, name, false); ok {
 			return v, true, canon
 		}
@@ -546,17 +546,19 @@ func (e *Env) GetMaterializedFuncCanonical(name string) (Value, bool, bool) {
 // by this env — the VM caches only depth-0 (locally owned) resolutions, so the
 // site's env is the cell's owner.
 func (e *Env) ReadCell(c *Cell) (Value, bool, bool) {
-	e.mu.RLock()
+	o := e.owner()
+	o.mu.RLock()
 	v, canon := c.v, c.canonical
-	e.mu.RUnlock()
+	o.mu.RUnlock()
 	return v, v != nil, canon
 }
 
 // ReadCellSnapshot returns a coherent cell snapshot and its mutation version.
 func (e *Env) ReadCellSnapshot(c *Cell) (Value, bool, bool, uint64) {
-	e.mu.RLock()
+	o := e.owner()
+	o.mu.RLock()
 	v, canon, ver := c.v, c.canonical, c.version.Load()
-	e.mu.RUnlock()
+	o.mu.RUnlock()
 	return v, v != nil, canon, ver
 }
 
@@ -591,16 +593,17 @@ func (e *Env) FuncCell(name string) (*Cell, bool) {
 // locally-owned cell is safe to cache by env identity, since a cell owned by
 // an ancestor could later be shadowed by a new local binding of the same name.
 func (e *Env) CellLocal(name string) (*Cell, bool) {
-	e.mu.RLock()
-	cell, ok := e.vars[name]
+	o := e.owner()
+	o.mu.RLock()
+	cell, ok := o.vars[name]
 	live := ok && cell.v != nil
-	e.mu.RUnlock()
+	o.mu.RUnlock()
 	if live {
 		return cell, true
 	}
-	if layer := e.LazyLayer(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
-			if cell, hit := e.CellLocal(name); hit {
+	if layer := o.lazy(); layer != nil {
+		if _, ok, _ := layer.LookupAndMaterialize(o, name, false); ok {
+			if cell, hit := o.CellLocal(name); hit {
 				return cell, true
 			}
 		}
@@ -610,16 +613,17 @@ func (e *Env) CellLocal(name string) (*Cell, bool) {
 
 // FuncCellLocal is CellLocal for the function cell (Lisp-2 only).
 func (e *Env) FuncCellLocal(name string) (*Cell, bool) {
-	e.mu.RLock()
-	cell, ok := e.funcs[name]
+	o := e.owner()
+	o.mu.RLock()
+	cell, ok := o.funcs[name]
 	live := ok && cell.v != nil
-	e.mu.RUnlock()
+	o.mu.RUnlock()
 	if live {
 		return cell, true
 	}
-	if layer := e.LazyLayer(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
-			if cell, hit := e.FuncCellLocal(name); hit {
+	if layer := o.lazy(); layer != nil {
+		if _, ok, _ := layer.LookupAndMaterialize(o, name, true); ok {
+			if cell, hit := o.FuncCellLocal(name); hit {
 				return cell, true
 			}
 		}
@@ -631,7 +635,7 @@ func (e *Env) FuncCellLocal(name string) (*Cell, bool) {
 // time a name is newly bound (or revived from a tombstone) in vars. The VM
 // compares it against a cached value to detect a shadowing bind that
 // invalidates a cached cell resolution.
-func (e *Env) NameGen() uint64 { return e.newNameGen.Load() }
+func (e *Env) NameGen() uint64 { return e.owner().newNameGen.Load() }
 
 // BumpMacroEpoch increments the macro epoch counter for this scope.
 // Called after defmacro to invalidate bytecode caches that depend on
@@ -644,9 +648,10 @@ func (e *Env) BumpMacroEpoch() {
 
 // MacroEpoch returns the current macro epoch counter for this scope.
 func (e *Env) MacroEpoch() int {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.macroEpoch
+	o := e.owner()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.macroEpoch
 }
 
 // Get walks the scope chain from innermost to outermost.
@@ -660,7 +665,7 @@ func (e *Env) Get(name string) (Value, bool) {
 	if v != nil {
 		return v, true
 	}
-	if layer := e.LazyLayer(); layer != nil {
+	if layer := e.lazy(); layer != nil {
 		if val, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			return val, true
 		}
@@ -750,7 +755,7 @@ func (e *Env) GetFunc(name string) (Value, bool) {
 	if v != nil {
 		return v, true
 	}
-	if layer := e.LazyLayer(); layer != nil {
+	if layer := e.lazy(); layer != nil {
 		if val, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true
 		}
@@ -775,7 +780,7 @@ func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 	if v != nil {
 		return v, true, canon
 	}
-	if layer := e.LazyLayer(); layer != nil {
+	if layer := e.lazy(); layer != nil {
 		if val, ok, canon := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true, canon
 		}
@@ -795,7 +800,7 @@ func (e *Env) Find(name string) (*Env, bool) {
 	if live {
 		return e, true
 	}
-	if layer := e.LazyLayer(); layer != nil {
+	if layer := e.lazy(); layer != nil {
 		if _, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			if e.HasLive(name) {
 				return e, true
@@ -845,7 +850,7 @@ func (e *Env) ChildVariadic(params []Symbol, args []Value, variadic Symbol) (*En
 
 // Evaluator returns the engine bound to this scope (used by plugins for recursive eval).
 func (e *Env) Evaluator() Evaluator {
-	return e.eval
+	return e.owner().eval
 }
 
 // SetEvaluator binds the evaluator to this scope (called by the runtime after NewEvaluator).
@@ -881,9 +886,10 @@ func (e *Env) Delete(name string) {
 
 // RetainedUsage returns this env's retained backing usage.
 func (e *Env) RetainedUsage() (bytes, slots int64) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.retainedBytes, e.retainedSlots
+	o := e.owner()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.retainedBytes, o.retainedSlots
 }
 
 // Rebuild compacts this scope's local binding maps, dropping tombstoned cells
@@ -949,21 +955,23 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 // function cell (Lisp-2 only). The order is unspecified. Parent bindings
 // are not included. Like VarNames it forces deferred bindings first.
 func (e *Env) FuncNames() []string {
-	if layer := e.LazyLayer(); layer != nil {
-		layer.ForceAll(e)
+	o := e.owner()
+	if layer := o.lazy(); layer != nil {
+		layer.ForceAll(o)
 	}
-	return e.LocalFuncNames()
+	return o.LocalFuncNames()
 }
 
 // LocalFuncNames is FuncNames without consulting the lazy layer.
 func (e *Env) LocalFuncNames() []string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if e.funcs == nil {
+	o := e.owner()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if o.funcs == nil {
 		return nil
 	}
-	names := make([]string, 0, len(e.funcs))
-	for name, cell := range e.funcs {
+	names := make([]string, 0, len(o.funcs))
+	for name, cell := range o.funcs {
 		if cell.v != nil {
 			names = append(names, name)
 		}
@@ -977,20 +985,22 @@ func (e *Env) LocalFuncNames() []string {
 // materialization of every deferred binding so callers observe the full
 // plugin surface (one-time cost, comparable to eager load).
 func (e *Env) VarNames() []string {
-	if layer := e.LazyLayer(); layer != nil {
-		layer.ForceAll(e)
+	o := e.owner()
+	if layer := o.lazy(); layer != nil {
+		layer.ForceAll(o)
 	}
-	return e.LocalNames()
+	return o.LocalNames()
 }
 
 // LocalNames is VarNames without consulting the lazy layer: internal
 // bookkeeping (plugin binding diffs at Use/Unload) must not force
 // materialization or deferred loading would be pointless.
 func (e *Env) LocalNames() []string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	names := make([]string, 0, len(e.vars))
-	for name, cell := range e.vars {
+	o := e.owner()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	names := make([]string, 0, len(o.vars))
+	for name, cell := range o.vars {
 		if cell.v != nil {
 			names = append(names, name)
 		}
