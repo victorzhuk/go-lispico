@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it restores anything. A root runs one registration at a time: a second
   `BeginRegistration` returns a `*LispicoError` with `CodeRegistrationActive`.
 
+- `Registry.Generation` and `Registry.PublishIf`. `Use`/`ReloadPlugin` read
+  the registry's generation before registering a plugin through a
+  registration view, then publish through `PublishIf`, which succeeds only
+  if the registry's generation is unchanged since that read. A host edit of
+  the registry entry during the operation makes `PublishIf` fail with a
+  `*core.LispicoError` of code `CodeRegistryConflict`
+  (`NewRegistryConflictError`); the host's registry entry is kept and the
+  plugin operation aborts.
+
 ### Changed
 
 - The builder-to-trie conversion a large hash map performs on its first update
@@ -142,6 +151,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MergeInto` and `MergeIntoCanonical` return an `EvalError` when the source
   and target resolve to the same environment, such as a registration view and
   its root, instead of blocking on that environment's lock.
+
+- `Plugin.Init` now receives a registration view (`Env.BeginRegistration`'s
+  `Registration.Env()`) instead of the root environment. The view's pointer
+  identity no longer equals `RootEnv()`, but it forwards to the same root, so
+  writes are visible immediately and closures and retained references keep
+  seeing root updates after `Use`/`ReloadPlugin` succeeds. `Init(env *core.Env)
+  error` keeps its signature; only which `*Env` it is given changes.
+
+- A failed `Use` or `ReloadPlugin` now restores the bindings and root
+  configuration the operation owns instead of leaving a partial plugin
+  installed. On an `Init`, vocabulary, or settlement error the operation's
+  journal aborts through `Registration.Abort`, reverting only the
+  value/function cells, canonical status, and per-engine lazy
+  installed/tombstone state the operation itself wrote; a host write racing
+  the operation — a write to the same name between two plugin writes, a
+  delete, `ReplaceCell`, `Rebuild`, or an unrelated first-touch
+  materialization — wins over the rollback. The registry entry, ownership
+  bookkeeping, lazy activation, and `Stats().ActivePlugins` now publish only
+  once the whole operation succeeds; a successful `UnloadPlugin` keeps its
+  existing last-writer ownership semantics.
+
+- A host edit of the registry entry racing a `Use`/`ReloadPlugin` operation
+  is now a reported conflict instead of a silent overwrite: `Registry.PublishIf`
+  fails with `*core.LispicoError` code `CodeRegistryConflict`
+  (`NewRegistryConflictError`), the host's entry is kept, and the plugin
+  operation aborts.
+
+- A host `RegisterValue` call made outside an active plugin registration
+  operation now binds to the root immediately, the same as any other direct
+  write. It is journaled — and therefore revertible by `Registration.Abort`
+  — only while a `Use`/`ReloadPlugin` operation is actually running on that
+  root.
 
 ### Fixed
 
@@ -305,6 +346,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestPanicBoundary_SettlementPanicIsContained`,
   `TestEngine_OnEvalCallbackPanicIsContained`, and
   `TestEngine_OnEvalCallbackPanicDoesNotStarveLaterObservers`.
+
+- `Stats().ActivePlugins` no longer counts a plugin that a fresh
+  `ReloadPlugin` — one with no existing plugin previously registered under
+  that name — never actually installed. Publication of the registry entry,
+  ownership bookkeeping, and `ActivePlugins` is now conditioned on the whole
+  registration operation succeeding, so a fresh reload whose settlement fails
+  and aborts leaves the count untouched instead of leaving it incremented.
+
+- A host `RegisterValue` call is no longer deferred when no plugin
+  registration operation is active on the target root. It now writes
+  directly instead of being treated as if a registration were in progress.
+
+- `Env.Evaluator` reads under the owner's lock instead of racing a
+  concurrent write. A goroutine reading the evaluator field while a plugin
+  `Init` (or any other root-configuration write) changed it concurrently was
+  a data race; reads now take the same lock as writes, closing the race a
+  plugin swapping the evaluator through the registration view could trigger.
+  `NewEnv`'s unlocked copy of the parent's evaluator into a fresh child is a
+  known residual gap, recorded in `docs/adr/0003-concurrency-model.md`.
 
 ## [0.13.0] - 2026-09-06
 

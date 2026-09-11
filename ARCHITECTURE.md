@@ -457,18 +457,79 @@ by `try`/`catch`.
 ### Plugin Loading Flow
 
 ```
-runtime.New()
+Engine.Use(plugin) / ReloadPlugin(plugin)
     │
     ▼
-For each plugin:
+read Registry.Generation
     │
-    ├─► plugin.Init(env)
-    │       │
-    │       └─► Register functions in env
+    ▼
+Env.BeginRegistration() → registration view
+    │
+    ▼
+plugin.Init(view)        # reload also deletes the old plugin's names first
+    │
+    ├─► vocabulary application (through the view)
+    │
+    ▼
+fence in-flight lazy materialization started through the view
+    │
+    ├─ error ──────────────► Registration.Abort()
+    │
+    ▼
+settle
+    │
+    ├─ error ──────────────► Registration.Abort()
+    │
+    ▼
+Registry.PublishIf(generation)
+    │
+    ├─ conflict (CodeRegistryConflict) ──► Registration.Abort(), host entry kept
+    │
+    ▼
+Registration.Complete() → registry entry, ownership, lazy activation,
+                           Stats().ActivePlugins all publish here
     │
     ▼
 Engine ready
 ```
+
+`Init` receives the registration view returned by `Env.BeginRegistration`
+(`Registration.Env()`), not the root environment directly — its pointer
+identity no longer equals `RootEnv()`. The view forwards every read and
+write to the same root immediately, so a reader resolving through the root
+sees plugin definitions as `Init` writes them, with no isolation between an
+in-progress registration and ordinary evaluation; closures and retained
+references keep seeing root updates after `Use`/`ReloadPlugin` succeeds. No
+`Plugin` method or signature changes.
+
+On an `Init`, vocabulary, or settlement error, or a `Registry.PublishIf`
+conflict, the operation's journal runs `Registration.Abort()`: it reverts
+only the writes the operation owns — value/function cells, canonical
+status, per-engine lazy installed/tombstone state. A host write racing the
+operation always wins over the rollback: a write to the same name between
+two plugin writes, a delete, `ReplaceCell`, `Rebuild`, or an unrelated
+first-touch materialization are all kept as the host left them. A registry
+conflict — a host edit of the registry entry during the operation — fails
+`PublishIf` with a `*core.LispicoError` of code `CodeRegistryConflict`
+(`NewRegistryConflictError`); the host's registry entry stands and the
+operation aborts.
+
+The registry entry, ownership bookkeeping, lazy activation, and
+`Stats().ActivePlugins` publish only once the whole operation succeeds
+(`Registration.Complete()`); the root environment identity never changes,
+and existing `Fn`/`PinnedFn` handles keep working across a reload. A
+successful `UnloadPlugin` keeps its own last-writer ownership semantics —
+it is not a registration abort.
+
+The guarantee is post-return, not during: readers may observe intermediate
+plugin definitions while `Init` is still running (no read isolation), and a
+host lookup racing the abort itself can briefly miss a name the operation
+is in the middle of deleting.
+
+Out of rollback scope: plugin Go objects, external effects, writes through
+unrelated retained environment references, and ordinary `Eval` effects.
+Retained-meter charges for cells an abort removes still leak until the
+follow-up change `plugin-retained-rollback` lands.
 
 ## Key Design Decisions
 

@@ -109,7 +109,7 @@ The public embedding handle in `runtime` that owns an environment, loads plugins
 _Avoid_: interpreter, VM, context
 
 **Plugin**:
-A bundle of builtins registered into the environment under a namespace; the namespace is chosen independently of the plugin's `Name()`.
+A bundle of builtins registered into the environment under a namespace; the namespace is chosen independently of the plugin's `Name()`. `Init` registers through the **Registration view**, not the root directly.
 _Avoid_: module, extension, package
 
 **Namespace**:
@@ -163,7 +163,7 @@ Bytes + slots an env's backing actually holds, charged on new-slot writes by the
 _Avoid_: env size, binding count
 
 **Registration view**:
-The `*Env` a `Registration` writes through: nil maps, parent the root. Reads and writes forward to the root; while the operation is active each write is journaled. `Abort` restores in place the keys the operation still owns — its last written cell is still the map cell, at that write's version — and tombstones the names it added, released by the next `Rebuild`. One registration per root.
+The `*Env` a `Registration` writes through: nil maps, parent the root. Reads and writes forward to the root; while the operation is active each write is journaled. `Abort` restores in place the keys the operation still owns — its last written cell is still the map cell, at that write's version — and tombstones the names it added, released by the next `Rebuild`. One registration per root. `Plugin.Init` writes through this view during `Use`/`ReloadPlugin` — its pointer identity differs from `RootEnv()`, but forwarding makes writes visible on the root immediately.
 
 **Load scope**:
 The retained child env returned by `Engine.LoadScope`, captured by the handler closures a load defines; the embedder owns its lifecycle (usage probe, rebuild, release).
