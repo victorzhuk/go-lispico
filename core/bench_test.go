@@ -845,17 +845,35 @@ func BenchmarkEqualsBounded_MapMismatch(b *testing.B) {
 		}
 		return Int{V: i}
 	})
+	// assertBuilderForm takes a *testing.T, so the invariant it owns is restated
+	// here: nothing on the comparison path promotes a builder map, so one check
+	// after construction holds for every timed call.
+	if a.large == nil || a.large.root != nil {
+		b.Fatal("receiver is not in builder form, so the timed walk is not the one this benchmark names")
+	}
 
 	for _, tt := range []struct {
 		name  string
 		other *HashMap
+		want  bool
 	}{
-		{"mismatch", mismatch},
-		{"equalControl", build(ident)},
+		{"mismatch", mismatch, false},
+		{"equalControl", build(ident), true},
 	} {
 		b.Run(tt.name, func(b *testing.B) {
 			budget := NewBuiltinWorkBudget(budgetCtx(context.Background(), 1<<40))
+			// Set mutates its receiver: if the arms ever shared one, both would
+			// time the same comparison and the arm names would lie. The answer
+			// is checked once, outside the timed region.
+			got, err := EqualsBounded(a, tt.other, budget)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if got != tt.want {
+				b.Fatalf("EqualsBounded = %v, want %v", got, tt.want)
+			}
 			b.ReportAllocs()
+			b.ResetTimer()
 			for range b.N {
 				if _, err := EqualsBounded(a, tt.other, budget); err != nil {
 					b.Fatal(err)
