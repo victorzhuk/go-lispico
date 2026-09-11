@@ -157,7 +157,8 @@ func (e *engineImpl) Use(p core.Plugin) error {
 
 	name := p.Name()
 	version := p.Metadata().Version
-	if _, ok := e.registry.Get(name); ok {
+	gen := e.registry.Generation(name)
+	if gen != 0 {
 		return fmt.Errorf("register plugin %s: plugin %q already registered", name, name)
 	}
 	reg, err := e.rootEnv.BeginRegistration()
@@ -166,12 +167,14 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	}
 
 	added, err := e.loadPlugin(p, reg.Env(), name, version)
+	if err == nil {
+		err = e.publishPlugin(p, gen)
+	}
 	if err != nil {
 		reg.Abort()
 		return err
 	}
 
-	e.registry.RegisterNoCheck(p)
 	reg.Complete()
 	e.publishBindings(name, version, added)
 	e.stats.incPlugins()
@@ -203,6 +206,15 @@ func (e *engineImpl) loadPlugin(p core.Plugin, env *core.Env, name, version stri
 		return nil, fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
 	}
 	return diff(e.snapshotBindings(), before), nil
+}
+
+// publishPlugin stores p in the registry unless the host edited its entry
+// since the operation observed generation gen.
+func (e *engineImpl) publishPlugin(p core.Plugin, gen uint64) error {
+	if err := e.registry.PublishIf(p, gen); err != nil {
+		return fmt.Errorf("publish plugin %s: %w", p.Name(), err)
+	}
+	return nil
 }
 
 func (e *engineImpl) publishBindings(name, version string, added map[string]struct{}) {
@@ -246,6 +258,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 
 	name := p.Name()
 	version := p.Metadata().Version
+	gen := e.registry.Generation(name)
 	_, hadOld := e.registry.Get(name)
 	oldRoot := e.snapshotRootEnv()
 	reg, err := e.rootEnv.BeginRegistration()
@@ -258,6 +271,9 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	}
 
 	added, err := e.loadPlugin(p, view, name, version)
+	if err == nil {
+		err = e.publishPlugin(p, gen)
+	}
 	if err != nil {
 		reg.Abort()
 		if hadOld {
@@ -266,7 +282,6 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		return err
 	}
 
-	e.registry.RegisterNoCheck(p)
 	reg.Complete()
 	e.publishBindings(name, version, added)
 	if !hadOld {

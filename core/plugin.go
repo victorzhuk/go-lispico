@@ -34,11 +34,21 @@ type PluginMeta struct {
 // Registry is a thread-safe store of registered plugins.
 type Registry struct {
 	mu      sync.RWMutex
-	plugins map[string]Plugin
+	plugins map[string]registryEntry
+	seq     uint64
+}
+
+// registryEntry pairs a plugin with the generation it was stored at.
+// Generations are registry-wide and never reused, so a changed generation
+// is the only reliable sign of an intervening edit: Plugin values may have
+// non-comparable dynamic types.
+type registryEntry struct {
+	p   Plugin
+	gen uint64
 }
 
 func NewRegistry() *Registry {
-	return &Registry{plugins: make(map[string]Plugin)}
+	return &Registry{plugins: make(map[string]registryEntry)}
 }
 
 // Register adds plugin p. Returns an error if a plugin with the same name is already registered.
@@ -51,7 +61,7 @@ func (r *Registry) Register(p Plugin) error {
 		return fmt.Errorf("plugin %q already registered", name)
 	}
 
-	r.plugins[name] = p
+	r.store(p)
 	return nil
 }
 
@@ -59,26 +69,43 @@ func (r *Registry) Register(p Plugin) error {
 func (r *Registry) RegisterNoCheck(p Plugin) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.plugins[p.Name()] = p
+	r.store(p)
 }
 
-// Generation returns the current generation of the entry for name.
+// Generation returns the current generation of the entry for name, or 0 when
+// name is not registered.
 func (r *Registry) Generation(name string) uint64 {
-	return 0
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.plugins[name].gen
 }
 
 // PublishIf stores p only if its entry is still at generation gen, and returns a
 // RegistryConflictError otherwise.
 func (r *Registry) PublishIf(p Plugin, gen uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	name := p.Name()
+	if r.plugins[name].gen != gen {
+		return NewRegistryConflictError(name)
+	}
+	r.store(p)
 	return nil
+}
+
+// store requires r.mu held for writing.
+func (r *Registry) store(p Plugin) {
+	r.seq++
+	r.plugins[p.Name()] = registryEntry{p: p, gen: r.seq}
 }
 
 // Get retrieves a plugin by namespace name.
 func (r *Registry) Get(name string) (Plugin, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.plugins[name]
-	return p, ok
+	e, ok := r.plugins[name]
+	return e.p, ok
 }
 
 // Namespaces returns all registered plugin names in sorted order.
