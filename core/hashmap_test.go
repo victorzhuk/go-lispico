@@ -569,7 +569,7 @@ func TestHashMap_ConversionChargeIsReproducible(t *testing.T) {
 			t.Parallel()
 			m := setBuiltMap(t, size.n)
 			root, charge := m.trieFromBuildMap()
-			floor := retainedTrieBytes(root) + HashMapShallowBytes(size.n)
+			floor := retainedTrieBytes(root) + MeterCollectionHeaderBytes + int64(size.n)*MeterHashMapEntryBytes
 			t.Logf("honesty %s: charge=%d floor=%d", size.name, charge, floor)
 			if charge <= floor {
 				t.Fatalf("conversion charge = %d, want > %d (retained trie plus entry buffer): the discarded path copies must stay billed", charge, floor)
@@ -841,7 +841,7 @@ const (
 	// receiver. Seven path copies of a 1000-entry trie intrinsically cost about
 	// 10.2 KB: a trie-form n=1000 map with no conversion in play charges 1448
 	// bytes for one update, so seven charge 10136 — the measured delta here is
-	// 10216. The ceiling keeps the separation the shape is meant to show, 1145936
+	// 10216. The ceiling keeps the separation the shape is meant to show, 1145928
 	// bytes for the first update against 10216 for the rest, and leaves headroom
 	// over the measured value rather than tracking it.
 	fanOutLaterLedgerCeiling int64 = 16384

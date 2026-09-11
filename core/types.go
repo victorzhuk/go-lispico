@@ -1096,7 +1096,7 @@ func newTrieFromEntries(entries []entry, extra entry) (*hamtNode, int64) {
 func (h *HashMap) trieFromBuildMap() (*hamtNode, int64) {
 	entries := h.sortedEntries()
 	root := &hamtNode{}
-	bytes := HashMapShallowBytes(len(entries))
+	bytes := MeterCollectionHeaderBytes + int64(len(entries))*MeterHashMapEntryBytes
 	for _, e := range entries {
 		next, b, _ := root.assoc(e, hashOfKey(e.hk), 0)
 		root, bytes = next, bytes+b
