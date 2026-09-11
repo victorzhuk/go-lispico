@@ -329,3 +329,108 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 		}
 	})
 }
+
+// TestEqualsBounded_MapArmBudgetAndDepth pins the budget and depth contracts
+// through the map arm. Two 1000-entry builder-form maps with disjoint keys cost
+// 1001 units, so a 100-reduction ceiling must stop the walk mid-flight with the
+// budget's own terminal error rather than a boolean. The depth cap refuses the
+// node past DefaultMaxStructuralDepth before stepping it, so a pair one layer
+// past the cap costs exactly what a pair at the cap does.
+//
+// Green on arrival: depthCapRefusedNodeIsFree and depthCapThroughMapArm. The
+// guard already runs before the step; these hold that order still now that the
+// map arm walks every receiver entry.
+func TestEqualsBounded_MapArmBudgetAndDepth(t *testing.T) {
+	t.Parallel()
+	const n = 1000
+
+	ident := func(i int64) Value { return Int{V: i} }
+	disjointPair := func(t *testing.T) (*HashMap, *HashMap) {
+		t.Helper()
+		return builderMapOf(t, n, ident, ident),
+			builderMapOf(t, n, func(i int64) Value { return Int{V: int64(n) + i} }, ident)
+	}
+
+	t.Run("terminalUnderCeiling", func(t *testing.T) {
+		t.Parallel()
+		a, b := disjointPair(t)
+		budget := NewBuiltinWorkBudget(budgetCtx(context.Background(), 100))
+		eq, err := EqualsBounded(a, b, budget)
+		if !IsTerminalEvalError(err) || errCode(t, err) != CodeResourceLimit {
+			t.Fatalf("EqualsBounded over two disjoint %d-entry builder-form maps under a 100-reduction ceiling: want terminal %s, got (%v, %v): the map arm charges one unit per absent key, %d in all", n, CodeResourceLimit, eq, err, n+1)
+		}
+	})
+
+	t.Run("budgetErrorByIdentity", func(t *testing.T) {
+		t.Parallel()
+		a, b := disjointPair(t)
+		budget := NewBuiltinWorkBudget(budgetCtx(context.Background(), 100))
+		_, first := EqualsBounded(a, b, budget)
+		if first == nil {
+			t.Fatalf("EqualsBounded over two disjoint %d-entry builder-form maps under a 100-reduction ceiling: want the budget's terminal error, got nil", n)
+		}
+		if first != budget.latched {
+			t.Fatalf("returned error %v is not the budget's latched value %v: the map arm must return it unchanged, by identity", first, budget.latched)
+		}
+		_, second := EqualsBounded(a, b, budget)
+		if second != first {
+			t.Fatalf("second EqualsBounded after the latch returned %v, want the identical value %v", second, first)
+		}
+	})
+
+	chargeOf := func(t *testing.T, a, b Value) (bool, int64) {
+		t.Helper()
+		ctx := budgetCtx(context.Background(), DefaultMaxReductions)
+		budget := NewBuiltinWorkBudget(ctx)
+		eq, err := EqualsBounded(a, b, budget)
+		if err != nil {
+			t.Fatalf("EqualsBounded: unexpected error %v", err)
+		}
+		if err := budget.Flush(); err != nil {
+			t.Fatalf("Flush after a completed comparison: %v", err)
+		}
+		return eq, EvalMeterFrom(ctx).Snapshot().Reductions
+	}
+	want := int64(DefaultMaxStructuralDepth + 1)
+	atCap, pastCap := DefaultMaxStructuralDepth, DefaultMaxStructuralDepth+1
+
+	t.Run("depthCapRefusedNodeIsFree", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []struct {
+			depth     int
+			wantEqual bool
+		}{
+			{atCap, true},
+			{pastCap, false},
+		} {
+			eq, got := chargeOf(t, nestedList(tt.depth), nestedList(tt.depth))
+			if eq != tt.wantEqual {
+				t.Fatalf("EqualsBounded over nestedList(%d) pair = %v, want %v", tt.depth, eq, tt.wantEqual)
+			}
+			if got != want {
+				t.Fatalf("reductions charged comparing nestedList(%d) pair = %d, want %d: one unit per node at depths 0..%d, none for a node the depth cap refused", tt.depth, got, want, DefaultMaxStructuralDepth)
+			}
+		}
+	})
+
+	t.Run("depthCapThroughMapArm", func(t *testing.T) {
+		t.Parallel()
+		mapOf := func(t *testing.T, v Value) *HashMap {
+			t.Helper()
+			m := NewHashMap()
+			if err := m.Set(Int{V: 0}, v); err != nil {
+				t.Fatal(err)
+			}
+			return m
+		}
+		for _, depth := range []int{atCap, pastCap} {
+			eq, got := chargeOf(t, mapOf(t, nestedList(depth)), mapOf(t, nestedList(depth)))
+			if eq {
+				t.Fatalf("EqualsBounded over one-entry maps holding nestedList(%d) = true, want false: the innermost node sits past the depth cap", depth)
+			}
+			if got != want {
+				t.Fatalf("reductions charged comparing one-entry maps holding nestedList(%d) = %d, want %d: 1 for the map node, one per layer at depths 1..%d, none for the refused node", depth, got, want, DefaultMaxStructuralDepth)
+			}
+		}
+	})
+}
