@@ -434,9 +434,9 @@ func TestHashMap_ConversionBufferUnit(t *testing.T) {
 			t.Parallel()
 
 			m := setBuiltMap(t, size.n)
-			assertBuilderForm(t, m, size.n)
 
 			_, charge := m.trieFromBuildMap()
+			assertBuilderForm(t, m, size.n)
 
 			root := &hamtNode{}
 			var pathCopies int64
