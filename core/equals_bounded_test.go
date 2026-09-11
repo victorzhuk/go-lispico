@@ -287,8 +287,9 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 			t.Run("trieReceiver", func(t *testing.T) {
 				chargesFor(t, "trieReceiver", trieMapOf(t, n, ident, ident), bMismatch, false)
 			})
-			// Green on arrival for the equal pair, which already charged n+1: Scenario B,
-			// same contents inserted ascending and descending, in both storage forms.
+			// Green on arrival for the equal pair, which already charged n+1. Pins "equal
+			// contents charge equally regardless of build order" on the walked side: the
+			// receiver is built descending against an ascending argument, in both forms.
 			t.Run("insertionOrder", func(t *testing.T) {
 				desc := func(i int64) Value { return Int{V: int64(n) - 1 - i} }
 				descMismatch := func(i int64) Value {
@@ -302,8 +303,8 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 					of   func(*testing.T, int, func(int64) Value, func(int64) Value) *HashMap
 				}{{"builder", builderMapOf}, {"trie", trieMapOf}} {
 					asc := form.of(t, n, ident, ident)
-					chargesFor(t, form.name+"/equal", asc, form.of(t, n, desc, desc), true)
-					chargesFor(t, form.name+"/unequal", asc, form.of(t, n, desc, descMismatch), false)
+					chargesFor(t, form.name+"/equal", form.of(t, n, desc, desc), asc, true)
+					chargesFor(t, form.name+"/unequal", form.of(t, n, desc, descMismatch), asc, false)
 				}
 			})
 		})
