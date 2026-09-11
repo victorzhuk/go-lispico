@@ -220,15 +220,20 @@ func TestRegistration_AbortRestoresReplacedCell(t *testing.T) {
 
 	reg := abortBegin(t, root)
 	abortTry(t, "view.ReplaceCell(x)", func() error { return reg.Env().ReplaceCell("x", Int{V: 2}) })
-	if root.vars["x"] == prior {
+	opCell := root.vars["x"]
+	if opCell == prior {
 		t.Fatalf("view.ReplaceCell(x) kept the prior cell in the root map; want a fresh cell before abort")
 	}
+	opVer := opCell.Version()
 	reg.Abort()
 
 	if cur := root.vars["x"]; cur != prior {
 		t.Errorf("after abort the root cell for x is %p; want the prior cell %p reinstalled", cur, prior)
 	}
 	abortWantValue(t, root, "x", Int{V: 1}, "replaced x after abort")
+	if v, live, _, ver := root.ReadCellSnapshot(opCell); live || ver <= opVer {
+		t.Errorf("after abort the op's replacement cell for x holds %v (live %v, version %d); want a tombstone past version %d", v, live, ver, opVer)
+	}
 }
 
 func TestRegistration_HostEqualValueRebindSurvivesAbort(t *testing.T) {
