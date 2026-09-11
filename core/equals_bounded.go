@@ -66,12 +66,19 @@ func equalsBounded(a, b Value, budget *BuiltinWorkBudget, depth int) (bool, erro
 		}
 		equal := true
 		var walkErr error
+		// The total charged is a sum over every receiver entry, which is why it
+		// cannot depend on the order eachRaw yields them in. Only a budget error
+		// stops the walk; a found mismatch does not.
 		av.eachRaw(func(e entry) {
-			if !equal || walkErr != nil {
+			if walkErr != nil {
 				return
 			}
 			other, found := bv.getByHashKey(e.hk)
 			if !found {
+				if err := budget.Step(); err != nil {
+					walkErr = err
+					return
+				}
 				equal = false
 				return
 			}
@@ -80,7 +87,9 @@ func equalsBounded(a, b Value, budget *BuiltinWorkBudget, depth int) (bool, erro
 				walkErr = err
 				return
 			}
-			equal = eq
+			if !eq {
+				equal = false
+			}
 		})
 		if walkErr != nil {
 			return false, walkErr

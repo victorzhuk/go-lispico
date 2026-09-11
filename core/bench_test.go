@@ -820,3 +820,47 @@ func BenchmarkHashMapFanOutAssoc(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkEqualsBounded_MapMismatch compares a builder-form pair differing at
+// one entry against an equal-pair control. The mismatch arm is the one that
+// moves: an exhaustive walk scans every entry instead of stopping where the
+// mismatch fell, so its cost converges on the control's. B/op is the
+// load-bearing number — the comparison path must not start allocating.
+func BenchmarkEqualsBounded_MapMismatch(b *testing.B) {
+	const n = 1000
+	ident := func(i int64) Value { return Int{V: i} }
+	build := func(val func(i int64) Value) *HashMap {
+		m := NewHashMap()
+		for i := range int64(n) {
+			if err := m.Set(Int{V: i}, val(i)); err != nil {
+				b.Fatal(err)
+			}
+		}
+		return m
+	}
+	a := build(ident)
+	mismatch := build(func(i int64) Value {
+		if i == 0 {
+			return Int{V: -1}
+		}
+		return Int{V: i}
+	})
+
+	for _, tt := range []struct {
+		name  string
+		other *HashMap
+	}{
+		{"mismatch", mismatch},
+		{"equalControl", build(ident)},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			budget := NewBuiltinWorkBudget(budgetCtx(context.Background(), 1<<40))
+			b.ReportAllocs()
+			for range b.N {
+				if _, err := EqualsBounded(a, tt.other, budget); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
