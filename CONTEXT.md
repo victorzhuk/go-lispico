@@ -162,6 +162,9 @@ _Avoid_: reservation, quota
 Bytes + slots an env's backing actually holds, charged on new-slot writes by the Size table; logical length is irrelevant. Deletion tombstones without release; `Rebuild` is the only release path.
 _Avoid_: env size, binding count
 
+**Registration view**:
+The `*Env` a `Registration` writes through: nil maps, parent the root. Reads and writes forward to the root; while the operation is active each write is journaled. `Abort` restores in place the keys the operation still owns — its last written cell is still the map cell, at that write's version — and tombstones the names it added, released by the next `Rebuild`. One registration per root.
+
 **Load scope**:
 The retained child env returned by `Engine.LoadScope`, captured by the handler closures a load defines; the embedder owns its lifecycle (usage probe, rebuild, release).
 _Avoid_: routine env (the embedder-side name for the same thing)

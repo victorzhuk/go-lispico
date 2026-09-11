@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enclosing scope (tree-walker as control), and `TestVMLoopOperandBound`
   keeps live operand height constant across `recur` iterations.
 
+- `Env.BeginRegistration` opens a registration operation on the root an env
+  resolves to. `Registration.Env` returns the view registrations write
+  through: it forwards reads and writes to the root and journals each write
+  while the operation is active. `Registration.Complete` keeps the writes;
+  `Registration.Abort` restores in place the bindings and root configuration
+  the operation still owns, tombstones the names it added — released by the
+  next `Rebuild` — and bumps the name-generation and macro-epoch counters once
+  when it restores anything. A root runs one registration at a time: a second
+  `BeginRegistration` returns a `*LispicoError` with `CodeRegistrationActive`.
+
 ### Changed
 
 - The builder-to-trie conversion a large hash map performs on its first update
@@ -128,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per trie node. Reading a 9-key map literal admits 3331 bytes in total where
   it previously admitted 5403, of which the construction-storage term itself is
   2008 bytes. Charge terms and units are in ADR 0011.
+
+- `MergeInto` and `MergeIntoCanonical` return an `EvalError` when the source
+  and target resolve to the same environment, such as a registration view and
+  its root, instead of blocking on that environment's lock.
 
 ### Fixed
 

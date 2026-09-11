@@ -54,6 +54,11 @@ only live bindings, reusing existing live `*Cell` pointers (closures and VM
 site caches stay correct), dropping tombstoned cells, recomputing the
 capacity counters, and bumping the name-generation counter. Non-recursive —
 child envs are untouched. This is the only path that releases dead backing.
+While a registration is active, `Rebuild` keeps every tombstoned cell that is
+the last write of one of its journal entries — not released, still counted —
+so an abort restores that cell in place and its holders see the restore.
+Names an aborted registration added stay tombstoned and are released by the
+next `Rebuild`.
 
 **`LoadScope` for embedder scope ownership.** `Engine.LoadScope(ctx,
 source, bindings) (Value, *Env, error)` has `EvalWithBindings` semantics

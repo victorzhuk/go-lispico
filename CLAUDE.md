@@ -38,6 +38,7 @@ golangci-lint run
 core/           # Core interpreter (zero deps)
 ├── types.go    # Value interface + 13 concrete types
 ├── env.go      # Environment chain (lexical scope)
+├── registration.go # Registration view + write journal (abort)
 ├── reader.go   # Tokenizer + S-expression parser
 ├── eval.go     # Tree-walking evaluator with TCO
 ├── plugin.go   # Plugin interface + registry
