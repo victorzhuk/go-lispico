@@ -218,7 +218,9 @@ func trieMapOf(t *testing.T, n int, key, val func(i int64) Value) *HashMap {
 
 // chargeRepeats compares each pair this many times. The builder form ranges a Go
 // map, so a run where every repeat happens to visit the mismatching entry last
-// has probability (1/n)^8 — 4.6e-8 at the smallest size tested.
+// has probability about (1/n)^8, 2.3e-8 at the smallest size tested: an estimate,
+// since Go does not promise each entry lands last with probability 1/n. Nothing rests
+// on it — disjointKeys and terminalUnderCeiling catch the old early return every run.
 const chargeRepeats = 8
 
 // TestEqualsBounded_ReductionChargeIgnoresIterationOrder pins the charged total
@@ -238,7 +240,7 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 	for _, n := range []int{9, 100, 1000} {
 		t.Run("n="+strconv.Itoa(n), func(t *testing.T) {
 			want := int64(n + 1)
-			chargesFor := func(t *testing.T, name string, a, b *HashMap, wantEqual bool) int64 {
+			chargesFor := func(t *testing.T, name string, a, b *HashMap, wantEqual bool) {
 				t.Helper()
 				charges := make([]int64, 0, chargeRepeats)
 				for range chargeRepeats {
@@ -258,11 +260,10 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 				}
 				t.Logf("%s n=%d: reductions per repeat = %v", name, n, charges)
 				for _, c := range charges {
-					if c != want || c != charges[0] {
+					if c != want {
 						t.Fatalf("%s n=%d: reductions per repeat = %v, want every repeat to charge exactly %d: the total is a sum over the receiver's entries, so it cannot vary with the order eachRaw visits them in", name, n, charges, want)
 					}
 				}
-				return charges[0]
 			}
 
 			a := builderMapOf(t, n, ident, ident)
@@ -273,9 +274,8 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 				return Int{V: i}
 			})
 
-			var valueMismatch, trieReceiver int64
-			mismatchOK := t.Run("valueMismatch", func(t *testing.T) {
-				valueMismatch = chargesFor(t, "valueMismatch", a, bMismatch, false)
+			t.Run("valueMismatch", func(t *testing.T) {
+				chargesFor(t, "valueMismatch", a, bMismatch, false)
 			})
 			t.Run("disjointKeys", func(t *testing.T) {
 				b := builderMapOf(t, n, func(i int64) Value { return Int{V: int64(n) + i} }, ident)
@@ -284,12 +284,28 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 			t.Run("equalMaps", func(t *testing.T) {
 				chargesFor(t, "equalMaps", a, builderMapOf(t, n, ident, ident), true)
 			})
-			trieOK := t.Run("trieReceiver", func(t *testing.T) {
-				trieReceiver = chargesFor(t, "trieReceiver", trieMapOf(t, n, ident, ident), bMismatch, false)
+			t.Run("trieReceiver", func(t *testing.T) {
+				chargesFor(t, "trieReceiver", trieMapOf(t, n, ident, ident), bMismatch, false)
 			})
-			if mismatchOK && trieOK && trieReceiver != valueMismatch {
-				t.Fatalf("n=%d: a trie receiver charged %d and a builder receiver charged %d for the same contents, want the same total: the charge must not read the storage form", n, trieReceiver, valueMismatch)
-			}
+			// Green on arrival for the equal pair, which already charged n+1: Scenario B,
+			// same contents inserted ascending and descending, in both storage forms.
+			t.Run("insertionOrder", func(t *testing.T) {
+				desc := func(i int64) Value { return Int{V: int64(n) - 1 - i} }
+				descMismatch := func(i int64) Value {
+					if k := int64(n) - 1 - i; k != 0 {
+						return Int{V: k}
+					}
+					return Int{V: -1}
+				}
+				for _, form := range []struct {
+					name string
+					of   func(*testing.T, int, func(int64) Value, func(int64) Value) *HashMap
+				}{{"builder", builderMapOf}, {"trie", trieMapOf}} {
+					asc := form.of(t, n, ident, ident)
+					chargesFor(t, form.name+"/equal", asc, form.of(t, n, desc, desc), true)
+					chargesFor(t, form.name+"/unequal", asc, form.of(t, n, desc, descMismatch), false)
+				}
+			})
 		})
 	}
 
