@@ -47,8 +47,44 @@ func (r *Registration) Env() *Env { return r.view }
 // Complete keeps the operation's writes and ends the registration.
 func (r *Registration) Complete() { r.finish() }
 
-// Abort rolls back the operation's writes and ends the registration.
-func (r *Registration) Abort() { r.finish() }
+// Abort rolls back the operation's writes and ends the registration. A key is
+// restored only while the operation still owns it: its map cell is the op's
+// last written cell at the version that write left. A key a foreign write
+// touched afterwards keeps that write.
+func (r *Registration) Abort() {
+	root := r.root
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	if root.reg.Load() != r {
+		return
+	}
+	for key, ent := range r.entries {
+		cells := root.vars
+		if key.fn {
+			cells = root.funcs
+		}
+		last := ent.last
+		if last == nil || cells[key.name] != last || last.Version() != ent.lastVer {
+			continue
+		}
+		switch ent.prior {
+		case nil:
+			last.v, last.canonical = nil, false
+		case last:
+			last.v, last.canonical = ent.v, ent.canonical
+		default:
+			// The op replaced the cell: reinstall the prior one and tombstone the
+			// op's cell so holders of it re-resolve.
+			cells[key.name] = ent.prior
+			ent.prior.v, ent.prior.canonical = ent.v, ent.canonical
+			ent.prior.version.Add(1)
+			last.v, last.canonical = nil, false
+		}
+		last.version.Add(1)
+	}
+	root.reg.Store(nil)
+	r.entries = nil
+}
 
 // finish is a no-op once r has ended, so a stale handle never touches a later
 // registration on the same root.
@@ -71,24 +107,31 @@ func (e *Env) active(r *Registration) *Registration {
 	return nil
 }
 
-// beforeWrite records the before-image of key on the first view write to it;
-// later writes keep it. cur is the map cell before the write, nil when absent.
-// Caller holds root.mu.
+// beforeWrite records the before-image of key on the first view write to it.
+// Later writes keep it unless a foreign write moved the key since the op's
+// last write; the before-image then advances to that foreign state, so abort
+// restores what the host left rather than what preceded the operation.
+// cur is the map cell before the write, nil when absent. Caller holds root.mu.
 func (r *Registration) beforeWrite(key registrationKey, cur *Cell) {
 	if r == nil {
 		return
 	}
-	if _, ok := r.entries[key]; ok {
-		return
+	ent, ok := r.entries[key]
+	if ok {
+		if cur == ent.last && cur != nil && cur.Version() == ent.lastVer {
+			return
+		}
+	} else {
+		ent = &registrationEntry{}
+		if r.entries == nil {
+			r.entries = make(map[registrationKey]*registrationEntry)
+		}
+		r.entries[key] = ent
 	}
-	ent := &registrationEntry{prior: cur}
+	ent.prior, ent.v, ent.canonical = cur, nil, false
 	if cur != nil {
 		ent.v, ent.canonical = cur.v, cur.canonical
 	}
-	if r.entries == nil {
-		r.entries = make(map[registrationKey]*registrationEntry)
-	}
-	r.entries[key] = ent
 }
 
 // afterWrite marks cell, now in the map for key, as the operation's last
