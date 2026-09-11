@@ -414,6 +414,45 @@ func retainedTrieBytes(n *hamtNode) int64 {
 	return total
 }
 
+// TestHashMap_ConversionBufferUnit isolates the conversion's entry-buffer term
+// from the path copies it is charged alongside: replaying production's own
+// insertion loop reproduces the path-copy sum alone, so the difference is the
+// buffer and nothing else. Storage in this role is priced with the shared
+// collection header, so a divergence fails here instead of passing quietly.
+func TestHashMap_ConversionBufferUnit(t *testing.T) {
+	t.Parallel()
+
+	for _, size := range []struct {
+		name string
+		n    int
+	}{
+		{"n=9", 9},
+		{"n=100", 100},
+		{"n=1000", 1000},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := setBuiltMap(t, size.n)
+			assertBuilderForm(t, m, size.n)
+
+			_, charge := m.trieFromBuildMap()
+
+			root := &hamtNode{}
+			var pathCopies int64
+			for _, e := range m.sortedEntries() {
+				next, b, _ := root.assoc(e, hashOfKey(e.hk), 0)
+				root, pathCopies = next, pathCopies+b
+			}
+
+			want := MeterCollectionHeaderBytes + int64(size.n)*MeterHashMapEntryBytes
+			if got := charge - pathCopies; got != want {
+				t.Fatalf("conversion buffer term = %d, want %d: the entry buffer is priced with MeterCollectionHeaderBytes plus MeterHashMapEntryBytes per pair", got, want)
+			}
+		})
+	}
+}
+
 // TestHashMap_ConversionChargeIsReproducible pins the contract that converting
 // one builder-form map charges one number: the ledger may not depend on the
 // staging map's iteration order. Conversion is a per-value cost, so only the
