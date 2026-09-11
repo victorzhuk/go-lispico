@@ -83,8 +83,8 @@ func (c *callCache) store(name string, entry *callCacheEntry) {
 }
 
 // drop removes name from the cache. Hygiene only, called from
-// removePluginBindings: a stale entry is already harmless under the
-// generation guard, this just bounds cache waste sooner.
+// removePluginBindings and abortPlugin: a stale entry is already harmless
+// under the generation guard, this just bounds cache waste sooner.
 func (c *callCache) drop(name string) {
 	for {
 		old := c.entries.Load()

@@ -102,46 +102,14 @@ func (e *engineImpl) removePluginBindings(env *core.Env, name string) {
 	env.BumpMacroEpoch()
 }
 
-type rootEnvSnapshot struct {
-	vars  map[string]core.Value
-	funcs map[string]core.Value
-}
-
-func (e *engineImpl) snapshotRootEnv() rootEnvSnapshot {
-	vars := make(map[string]core.Value)
-	for _, name := range e.rootEnv.LocalNames() {
-		if v, ok := e.rootEnv.Get(name); ok {
-			vars[name] = v
-		}
+// abortPlugin rolls back a failed plugin operation. It leaves the registry,
+// e.bindings, lazy activation and plugin stats as the operation found them.
+func (e *engineImpl) abortPlugin(reg *core.Registration, name string) {
+	e.lazyMaterializer.endOp(false)
+	reg.Abort()
+	for n := range e.bindings[name] {
+		e.callCache.drop(n)
 	}
-	funcs := make(map[string]core.Value)
-	for _, name := range e.rootEnv.LocalFuncNames() {
-		if v, ok := e.rootEnv.GetFunc(name); ok {
-			funcs[name] = v
-		}
-	}
-	return rootEnvSnapshot{vars: vars, funcs: funcs}
-}
-
-func (e *engineImpl) restoreRootEnv(s rootEnvSnapshot) {
-	for _, name := range e.rootEnv.LocalNames() {
-		if _, ok := s.vars[name]; !ok {
-			e.rootEnv.Delete(name)
-		}
-	}
-	for _, name := range e.rootEnv.LocalFuncNames() {
-		if _, ok := s.funcs[name]; !ok {
-			e.rootEnv.Delete(name)
-		}
-	}
-	for name, v := range s.vars {
-		_ = e.rootEnv.Set(name, v)
-	}
-	for name, v := range s.funcs {
-		_ = e.rootEnv.SetFunc(name, v)
-	}
-	e.rootEnv.Rebuild()
-	e.rootEnv.BumpMacroEpoch()
 }
 
 func (e *engineImpl) Use(p core.Plugin) error {
@@ -165,8 +133,7 @@ func (e *engineImpl) Use(p core.Plugin) error {
 		err = e.publishPlugin(p, gen)
 	}
 	if err != nil {
-		e.lazyMaterializer.endOp(false)
-		reg.Abort()
+		e.abortPlugin(reg, name)
 		return err
 	}
 
@@ -257,7 +224,6 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	version := p.Metadata().Version
 	gen := e.registry.Generation(name)
 	_, hadOld := e.registry.Get(name)
-	oldRoot := e.snapshotRootEnv()
 	reg, err := e.rootEnv.BeginRegistration()
 	if err != nil {
 		return fmt.Errorf("register plugin %s: %w", name, err)
@@ -273,11 +239,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		err = e.publishPlugin(p, gen)
 	}
 	if err != nil {
-		e.lazyMaterializer.endOp(false)
-		reg.Abort()
-		if hadOld {
-			e.restoreRootEnv(oldRoot)
-		}
+		e.abortPlugin(reg, name)
 		return err
 	}
 
