@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"strconv"
 	"testing"
 )
 
@@ -175,4 +176,156 @@ func TestEqualsBounded_ReturnsBudgetErrorUnchanged(t *testing.T) {
 	if second != first {
 		t.Fatalf("second EqualsBounded after the latch returned %v, want the identical value %v", second, first)
 	}
+}
+
+// builderMapOf builds an n-entry map in builder form — staging map populated,
+// trie root still nil — from independent key and value functions, so two
+// fixtures can differ at a chosen key without one Set corrupting the other's
+// receiver.
+func builderMapOf(t *testing.T, n int, key, val func(i int64) Value) *HashMap {
+	t.Helper()
+	if n <= hashMapSmallLimit {
+		t.Fatalf("n = %d does not exceed hashMapSmallLimit (%d), builder form unreachable", n, hashMapSmallLimit)
+	}
+	m := NewHashMap()
+	for i := range int64(n) {
+		if err := m.Set(key(i), val(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertBuilderForm(t, m, n)
+	return m
+}
+
+// trieMapOf is builderMapOf's trie-form twin: Assoc alone never converts, so the
+// receiver walks hamt nodes instead of a Go map.
+func trieMapOf(t *testing.T, n int, key, val func(i int64) Value) *HashMap {
+	t.Helper()
+	if n <= hashMapSmallLimit {
+		t.Fatalf("n = %d does not exceed hashMapSmallLimit (%d), trie form unreachable", n, hashMapSmallLimit)
+	}
+	m := NewHashMap()
+	for i := range int64(n) {
+		var err error
+		m, _, err = m.Assoc(key(i), val(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertTrieForm(t, m)
+	return m
+}
+
+// chargeRepeats compares each pair this many times. The builder form ranges a Go
+// map, so a run where every repeat happens to visit the mismatching entry last
+// has probability (1/n)^8 — 4.6e-8 at the smallest size tested.
+const chargeRepeats = 8
+
+// TestEqualsBounded_ReductionChargeIgnoresIterationOrder pins the charged total
+// to the compared pair alone. The builder form ranges a Go map, whose iteration
+// order is randomised per range, so a walk that returns at the first mismatch
+// bills the position that mismatch happened to fall at: the same pair costs a
+// different amount on every comparison, and a wholly absent key costs nothing.
+// A caller cannot budget against that. The total must be a sum over the
+// receiver's entries — one unit for an absent key, units(value) for a present
+// one — which is exactly n+1 for a flat n-entry pair of scalar-valued maps, in
+// every storage form and whatever order the entries are visited in.
+func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
+	t.Parallel()
+
+	ident := func(i int64) Value { return Int{V: i} }
+
+	for _, n := range []int{9, 100, 1000} {
+		t.Run("n="+strconv.Itoa(n), func(t *testing.T) {
+			want := int64(n + 1)
+			chargesFor := func(t *testing.T, name string, a, b *HashMap, wantEqual bool) int64 {
+				t.Helper()
+				charges := make([]int64, 0, chargeRepeats)
+				for range chargeRepeats {
+					ctx := budgetCtx(context.Background(), DefaultMaxReductions)
+					budget := NewBuiltinWorkBudget(ctx)
+					got, err := EqualsBounded(a, b, budget)
+					if err != nil {
+						t.Fatalf("%s n=%d: EqualsBounded returned unexpected error %v", name, n, err)
+					}
+					if got != wantEqual {
+						t.Fatalf("%s n=%d: EqualsBounded = %v, want %v", name, n, got, wantEqual)
+					}
+					if err := budget.Flush(); err != nil {
+						t.Fatalf("%s n=%d: Flush after a completed comparison: %v", name, n, err)
+					}
+					charges = append(charges, EvalMeterFrom(ctx).Snapshot().Reductions)
+				}
+				t.Logf("%s n=%d: reductions per repeat = %v", name, n, charges)
+				for _, c := range charges {
+					if c != want || c != charges[0] {
+						t.Fatalf("%s n=%d: reductions per repeat = %v, want every repeat to charge exactly %d: the total is a sum over the receiver's entries, so it cannot vary with the order eachRaw visits them in", name, n, charges, want)
+					}
+				}
+				return charges[0]
+			}
+
+			a := builderMapOf(t, n, ident, ident)
+			bMismatch := builderMapOf(t, n, ident, func(i int64) Value {
+				if i == 0 {
+					return Int{V: -1}
+				}
+				return Int{V: i}
+			})
+
+			var valueMismatch, trieReceiver int64
+			mismatchOK := t.Run("valueMismatch", func(t *testing.T) {
+				valueMismatch = chargesFor(t, "valueMismatch", a, bMismatch, false)
+			})
+			t.Run("disjointKeys", func(t *testing.T) {
+				b := builderMapOf(t, n, func(i int64) Value { return Int{V: int64(n) + i} }, ident)
+				chargesFor(t, "disjointKeys", a, b, false)
+			})
+			t.Run("equalMaps", func(t *testing.T) {
+				chargesFor(t, "equalMaps", a, builderMapOf(t, n, ident, ident), true)
+			})
+			trieOK := t.Run("trieReceiver", func(t *testing.T) {
+				trieReceiver = chargesFor(t, "trieReceiver", trieMapOf(t, n, ident, ident), bMismatch, false)
+			})
+			if mismatchOK && trieOK && trieReceiver != valueMismatch {
+				t.Fatalf("n=%d: a trie receiver charged %d and a builder receiver charged %d for the same contents, want the same total: the charge must not read the storage form", n, trieReceiver, valueMismatch)
+			}
+		})
+	}
+
+	// Green on arrival: the early return already stops at the first mismatch, so
+	// this answers false today. It guards the rewrite that removes it — with the
+	// walk exhaustive, a surviving bare `equal = eq` would let the four matching
+	// entries overwrite the mismatch and resurrect true. Small-form entries are
+	// held sorted by hashKey, so the differing key is visited first on every run,
+	// which makes the guard deterministic rather than the ~4.6e-8 the size loop
+	// leaves. This pair's own charge is 6, not n+1, so it asserts no total.
+	t.Run("smallFormMismatchFirst", func(t *testing.T) {
+		const keys = 5
+		a, b := NewHashMap(), NewHashMap()
+		for i := range int64(keys) {
+			if err := a.Set(Int{V: i}, Int{V: i}); err != nil {
+				t.Fatal(err)
+			}
+			v := Int{V: i}
+			if i == 0 {
+				v = Int{V: -1}
+			}
+			if err := b.Set(Int{V: i}, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if a.large != nil || b.large != nil {
+			t.Fatalf("%d-key fixtures are %s and %s form, want small form so the mismatch is visited first", keys, mapForm(a), mapForm(b))
+		}
+
+		budget := NewBuiltinWorkBudget(budgetCtx(context.Background(), DefaultMaxReductions))
+		got, err := EqualsBounded(a, b, budget)
+		if err != nil {
+			t.Fatalf("EqualsBounded over a %d-key small-form pair: unexpected error %v", keys, err)
+		}
+		if got {
+			t.Fatalf("EqualsBounded over a %d-key small-form pair differing at the first-visited key = true, want false: a later matching entry must never overwrite a mismatch already found", keys)
+		}
+	})
 }

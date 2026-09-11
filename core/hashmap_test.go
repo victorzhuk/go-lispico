@@ -401,6 +401,13 @@ func assertBuilderForm(t *testing.T, m *HashMap, n int) {
 	}
 }
 
+func assertTrieForm(t *testing.T, m *HashMap) {
+	t.Helper()
+	if m.large == nil || m.large.root == nil {
+		t.Fatalf("map is %s form, want trie", mapForm(m))
+	}
+}
+
 // retainedTrieBytes sums the finished trie's nodes — the floor a conversion
 // charge must exceed, since every insert but the last discards its path copy.
 func retainedTrieBytes(n *hamtNode) int64 {
@@ -956,9 +963,7 @@ func assocBuiltMap(t *testing.T, n int) *HashMap {
 			t.Fatal(err)
 		}
 	}
-	if m.large == nil || m.large.root == nil {
-		t.Fatalf("map is %s form, want trie", mapForm(m))
-	}
+	assertTrieForm(t, m)
 	return m
 }
 
