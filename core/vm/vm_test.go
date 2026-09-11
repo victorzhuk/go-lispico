@@ -1761,6 +1761,60 @@ func TestVM_SiteReResolvesAfterGenerationBump(t *testing.T) {
 	}
 }
 
+func TestRegistration_VMSiteDropsRevertedDefinition(t *testing.T) {
+	t.Parallel()
+
+	root := core.NewEnv(nil)
+	require.NoError(t, root.Set("x", core.Int{V: 1}))
+
+	chunk := &Chunk{Name: "test", Code: []Instruction{
+		Encode(OpGetGlobal, 0),
+		Encode(OpReturn, 0),
+	}}
+	chunk.Constants = []core.Value{core.Symbol{V: "x"}}
+	chunk.EnsureSites()
+
+	vm := New(root)
+	result, err := vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	require.Equal(t, core.Int{V: 1}, result)
+	entry := chunk.site(0).entry.Load()
+	if entry == nil {
+		t.Fatal("site for x is empty after the first run; want it populated with the root cell")
+	}
+
+	reg, err := root.BeginRegistration()
+	require.NoError(t, err)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("view.Set(x) panicked (%T) instead of forwarding the write to the root", p)
+			}
+		}()
+		require.NoError(t, reg.Env().Set("x", core.Int{V: 2}))
+	}()
+
+	vm.Reset()
+	result, err = vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	if !result.Equals(core.Int{V: 2}) {
+		t.Fatalf("site served %v during the operation; want the op's definition 2", result)
+	}
+	opVer := entry.cell.Version()
+
+	reg.Abort()
+
+	if v := entry.cell.Version(); v <= opVer {
+		t.Errorf("cached cell version after abort is %d; want it past the op write's version %d", v, opVer)
+	}
+	vm.Reset()
+	result, err = vm.Run(context.Background(), chunk)
+	require.NoError(t, err)
+	if !result.Equals(core.Int{V: 1}) {
+		t.Errorf("site served %v after abort; want the restored prior definition 1", result)
+	}
+}
+
 func TestVM_SiteSnapshotHitZeroAllocs(t *testing.T) {
 	env := core.NewEnv(nil)
 	env.Set("x", core.Int{V: 1})
