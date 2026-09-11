@@ -172,18 +172,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once the whole operation succeeds; a successful `UnloadPlugin` keeps its
   existing last-writer ownership semantics.
 
-- A host edit of the registry entry racing a `Use`/`ReloadPlugin` operation
-  is now a reported conflict instead of a silent overwrite: `Registry.PublishIf`
-  fails with `*core.LispicoError` code `CodeRegistryConflict`
-  (`NewRegistryConflictError`), the host's entry is kept, and the plugin
-  operation aborts.
-
-- A host `RegisterValue` call made outside an active plugin registration
-  operation now binds to the root immediately, the same as any other direct
-  write. It is journaled — and therefore revertible by `Registration.Abort`
-  — only while a `Use`/`ReloadPlugin` operation is actually running on that
-  root.
-
 ### Fixed
 
 - `json/decode` now charges its decoded result exactly once per call. Public
