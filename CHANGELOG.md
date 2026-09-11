@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updates at that size. The figure depends on the key set, not just its size.
   Charge terms and units are in ADR 0011.
 
+- The entry buffer that same conversion obtains is now priced as the
+  construction buffer it is: the 24-byte construction header the reader's map
+  builder and the trie nodes already charge, instead of the 32-byte hash-map
+  header. The buffer's per-pair term is unchanged, so every conversion charges
+  8 bytes less whatever its size. The unit has a row of its own in ADR 0011's
+  fixed size table.
+
 - Source evaluated through the engine is now read under the evaluation's
   allocation ledger and deadline instead of being charged once after parsing.
   The net bytes a successful read charges are unchanged and `ReaderStats` still
