@@ -92,7 +92,7 @@ func (r *Registration) Abort() {
 			cells = root.funcs
 		}
 		last := ent.last
-		if last == nil || cells[key.name] != last || last.Version() != ent.lastVer {
+		if cells[key.name] != last || last.Version() != ent.lastVer {
 			continue
 		}
 		restored = true
@@ -129,8 +129,7 @@ func (r *Registration) Abort() {
 		root.newNameGen.Add(1)
 		root.macroEpoch++
 	}
-	root.reg.Store(nil)
-	r.entries = nil
+	r.endLocked()
 }
 
 // finish is a no-op once r has ended, so a stale handle never touches a later
@@ -141,6 +140,11 @@ func (r *Registration) finish() {
 	if r.root.reg.Load() != r {
 		return
 	}
+	r.endLocked()
+}
+
+// endLocked ends r. Caller holds root.mu.
+func (r *Registration) endLocked() {
 	r.root.reg.Store(nil)
 	r.entries = nil
 }
@@ -154,15 +158,19 @@ func (e *Env) active(r *Registration) *Registration {
 	return nil
 }
 
-// beforeWrite records the before-image of key on the first view write to it.
+// beforeWrite stays inlinable so a write with no active registration pays only the nil check.
+func (r *Registration) beforeWrite(key registrationKey, cur *Cell) {
+	if r != nil {
+		r.record(key, cur)
+	}
+}
+
+// record records the before-image of key on the first view write to it.
 // Later writes keep it unless a foreign write moved the key since the op's
 // last write; the before-image then advances to that foreign state, so abort
 // restores what the host left rather than what preceded the operation.
 // cur is the map cell before the write, nil when absent. Caller holds root.mu.
-func (r *Registration) beforeWrite(key registrationKey, cur *Cell) {
-	if r == nil {
-		return
-	}
+func (r *Registration) record(key registrationKey, cur *Cell) {
 	ent, ok := r.entries[key]
 	if ok {
 		if cur == ent.last && cur != nil && cur.Version() == ent.lastVer {
@@ -192,15 +200,15 @@ func (r *Registration) afterWrite(key registrationKey, cell *Cell) {
 	ent.lastVer = cell.Version()
 }
 
-// pins reports whether cell is the op's last write to key. Rebuild keeps such
-// a tombstone so abort restores it in place and holders of it see the restore.
-// Caller holds root.mu.
+// pins reports whether cell is the op's last write to key, still at that
+// write's version. Rebuild keeps such a tombstone so abort restores it in
+// place and holders of it see the restore. Caller holds root.mu.
 func (r *Registration) pins(key registrationKey, cell *Cell) bool {
 	if r == nil {
 		return false
 	}
 	ent, ok := r.entries[key]
-	return ok && ent.last == cell
+	return ok && ent.last == cell && cell.Version() == ent.lastVer
 }
 
 // owner is the canonical root a registration view forwards to, or e itself.
