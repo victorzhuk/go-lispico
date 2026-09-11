@@ -103,6 +103,52 @@ type stdlibLazyEngineState struct {
 	// for the lookup/insert below, never across the per-name critical
 	// section itself.
 	nameLocks map[string]*sync.Mutex
+	// op is the plugin operation running on this engine, nil outside one.
+	op *lazyOp
+}
+
+// lazyOp attributes the lazy-state changes made through one plugin
+// operation's registration view, so a failed operation undoes exactly those
+// and keeps every change made through the root meanwhile. Guarded by the
+// owning state's mu.
+type lazyOp struct {
+	view    *core.Env
+	closed  bool
+	name    string
+	version string
+	eager   bool
+	// entries holds the before-image of each name the operation touched.
+	entries  map[string]*lazyOpEntry
+	installs int64
+}
+
+// lazyOpEntry is one name's tombstoned/installed membership before the
+// operation first touched it. A foreign entry saw an unattributed change
+// since, which undo keeps.
+type lazyOpEntry struct {
+	tomb      bool
+	installed bool
+	foreign   bool
+}
+
+// own records name's membership as the before-image on the operation's first
+// touch, and again after a foreign change so undo restores what the host
+// left. Caller holds s.mu.
+func (op *lazyOp) own(s *stdlibLazyEngineState, name string) {
+	ent, ok := op.entries[name]
+	if ok && !ent.foreign {
+		return
+	}
+	if !ok {
+		ent = &lazyOpEntry{}
+		if op.entries == nil {
+			op.entries = make(map[string]*lazyOpEntry)
+		}
+		op.entries[name] = ent
+	}
+	_, ent.tomb = s.tombstoned[name]
+	_, ent.installed = s.installed[name]
+	ent.foreign = false
 }
 
 func newStdlibLazyEngineState() *stdlibLazyEngineState {
@@ -143,8 +189,8 @@ func (r *stdlibTemplateRegistry) layerFor(key stdlibTemplateKey) (*stdlibTemplat
 
 // entryFor is the miss-path lookup; it must stay a single-entry read under
 // RLock (no layer copy) so undefined-name lookups stay cheap. Like layerFor
-// it ignores the disabled flag; the per-engine eager latch on
-// stdlibLazyMaterializer gates the miss path instead.
+// it ignores the disabled flag; the open operation's eager latch gates the
+// miss path instead.
 func (r *stdlibTemplateRegistry) entryFor(key stdlibTemplateKey, name string) (*stdlibTemplateEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -173,7 +219,7 @@ func (l *stdlibTemplateLayer) publishedEntries() map[string]*stdlibTemplateEntry
 // under this same lock and is never undone, so a write reaching here after
 // that would mutate the exact map publishedEntries hands to every attached
 // engine. Only lazy-latched builds reach here at all (RegisterValue/
-// RegisterSource consult the per-engine eager latch), so the write is
+// RegisterSource consult the operation's eager latch), so the write is
 // unconditional below the publish guard: a concurrent flip of the global
 // disabled flag can no longer silently drop half of one build's entries,
 // which is how a partial layer used to get published.
@@ -201,9 +247,9 @@ func (r *stdlibTemplateRegistry) layerState(key stdlibTemplateKey) bool {
 	return ok && l.complete
 }
 
-// snapshotDisabled reads the process-global disable flag once. initPlugin
-// latches its value onto the engine's materializer for the whole plugin
-// load, so a test toggling the flag mid-build cannot split one build's
+// snapshotDisabled reads the process-global disable flag once. beginOp
+// latches its value onto the engine's plugin operation for the whole load,
+// so a test toggling the flag mid-build cannot split one build's
 // registrations between eager env binds and deferred template entries.
 func (r *stdlibTemplateRegistry) snapshotDisabled() bool {
 	r.mu.RLock()
@@ -230,7 +276,7 @@ func (r *stdlibTemplateRegistry) markComplete(key stdlibTemplateKey) {
 // ensureLayer builds key's layer at most once per process: concurrent first
 // lazy calls single-flight onto one build, and any call once the layer is
 // complete returns immediately without calling build. eager is the
-// per-engine latch read by initPlugin before the build starts: an eager
+// operation's latch, read before the build starts: an eager
 // build never touches the registry, so it runs directly, one call per
 // engine, exactly as an unshared plugin would — and never in a window that
 // races the flight builder for the same key. build must never run with
@@ -267,18 +313,6 @@ type stdlibLazyMaterializer struct {
 	engine    *engineImpl
 	state     *stdlibLazyEngineState
 	dialectFP string
-	// loadingVersion mirrors engine.loadingPlugin: the Metadata().Version of
-	// the plugin whose Init is running inside Use/ReloadPlugin, set only for
-	// that call's duration. RegisterValue/RegisterSource read it to build the
-	// template key: name+version identifies the layer (task 2.3).
-	loadingVersion string
-	// eager latches the registry's process-global disable flag for the
-	// duration of one plugin load (initPlugin sets and clears it around
-	// ensureLayer). Every routing decision inside a build — dispatch,
-	// RegisterValue, RegisterSource — reads this latch instead of the live
-	// flag, so a parallel test toggling SetStdlibLazyDisabledForTesting
-	// mid-build cannot split the build or corrupt the shared layer.
-	eager bool
 }
 
 func newStdlibLazyMaterializer(engine *engineImpl) *stdlibLazyMaterializer {
@@ -297,6 +331,80 @@ func newStdlibLazyMaterializer(engine *engineImpl) *stdlibLazyMaterializer {
 	}
 }
 
+// beginOp opens the plugin operation writing through view. eager latches the
+// registry's disable flag for the whole load: every routing decision inside
+// the build reads it instead of the live flag, so a parallel test toggling
+// SetStdlibLazyDisabledForTesting mid-build cannot split the build.
+func (m *stdlibLazyMaterializer) beginOp(view *core.Env, name, version string, eager bool) {
+	if m == nil {
+		return
+	}
+	m.state.mu.Lock()
+	m.state.op = &lazyOp{view: view, name: name, version: version, eager: eager}
+	m.state.mu.Unlock()
+}
+
+// endOp closes the open operation. On failure it restores the membership of
+// every name the operation still owns and takes back its installs; the
+// caller aborts the registration afterwards.
+func (m *stdlibLazyMaterializer) endOp(commit bool) {
+	if m == nil {
+		return
+	}
+	s := m.state
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op := s.op
+	if op == nil {
+		return
+	}
+	op.closed = true
+	s.op = nil
+	if commit {
+		return
+	}
+	for name, ent := range op.entries {
+		if ent.foreign {
+			continue
+		}
+		s.tombstoned = setMember(s.tombstoned, name, ent.tomb)
+		s.installed = setMember(s.installed, name, ent.installed)
+	}
+	s.materialized -= op.installs
+}
+
+// opFor returns the open operation when env is its view, or nil. Caller
+// holds state.mu.
+func (m *stdlibLazyMaterializer) opFor(env *core.Env) *lazyOp {
+	if op := m.state.op; op != nil && !op.closed && env == op.view {
+		return op
+	}
+	return nil
+}
+
+// opEager reports whether the open operation latched eager registration.
+func (m *stdlibLazyMaterializer) opEager() bool {
+	m.state.mu.Lock()
+	defer m.state.mu.Unlock()
+	return m.state.op != nil && m.state.op.eager
+}
+
+// noteLocked attributes a change to name made through env: the open operation
+// owns it when env is its view; otherwise an entry the operation holds for
+// name turns foreign. Caller holds state.mu.
+func (m *stdlibLazyMaterializer) noteLocked(env *core.Env, name string) *lazyOp {
+	if op := m.opFor(env); op != nil {
+		op.own(m.state, name)
+		return op
+	}
+	if op := m.state.op; op != nil {
+		if ent, ok := op.entries[name]; ok {
+			ent.foreign = true
+		}
+	}
+	return nil
+}
+
 // activeKeys reads the atomic snapshot so the miss path never allocates or
 // takes state.mu; each key already carries the plugin's version.
 func (m *stdlibLazyMaterializer) activeKeys() []stdlibTemplateKey {
@@ -308,10 +416,14 @@ func (m *stdlibLazyMaterializer) activeKeys() []stdlibTemplateKey {
 // (found, canonical). A name the user explicitly deleted stays deleted:
 // the tombstone check runs before any template consultation.
 func (m *stdlibLazyMaterializer) LookupAndMaterialize(env *core.Env, name string, funcNS bool) (core.Value, bool, bool) {
-	if m == nil || m.engine == nil || m.eager {
+	if m == nil || m.engine == nil {
 		return nil, false, false
 	}
 	m.state.mu.Lock()
+	if op := m.state.op; op != nil && op.eager {
+		m.state.mu.Unlock()
+		return nil, false, false
+	}
 	if _, dead := m.state.tombstoned[name]; dead {
 		m.state.mu.Unlock()
 		return nil, false, false
@@ -350,8 +462,13 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 	nameMu.Lock()
 	defer nameMu.Unlock()
 
+	// Only the open operation's view materializes through itself; the root and
+	// any other view install straight into the root, unattributed.
 	m.state.mu.Lock()
 	_, live := m.state.installed[entry.name]
+	if m.opFor(env) == nil {
+		env = m.engine.rootEnv
+	}
 	m.state.mu.Unlock()
 	if live {
 		if funcNS {
@@ -409,7 +526,7 @@ func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, 
 				return err
 			}
 		}
-		m.recordInstall(pluginName, entry.name)
+		m.recordInstall(env, pluginName, entry.name)
 		return nil
 	}
 
@@ -437,15 +554,18 @@ func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, 
 		}
 	}
 
-	m.recordInstall(pluginName, entry.name)
+	m.recordInstall(env, pluginName, entry.name)
 	return nil
 }
 
-func (m *stdlibLazyMaterializer) recordInstall(pluginName, name string) {
+func (m *stdlibLazyMaterializer) recordInstall(env *core.Env, pluginName, name string) {
 	m.state.mu.Lock()
 	defer m.state.mu.Unlock()
 	if _, ok := m.state.installed[name]; ok {
 		return
+	}
+	if op := m.noteLocked(env, name); op != nil {
+		op.installs++
 	}
 	if m.state.installed == nil {
 		m.state.installed = make(map[string]struct{})
@@ -509,7 +629,7 @@ func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, nam
 			return nil, false, false
 		}
 	}
-	m.recordInstall(pluginName, name)
+	m.recordInstall(env, pluginName, name)
 	if funcNS {
 		if v, ok, canon := env.GetMaterializedFuncCanonical(name); ok {
 			return v, true, canon
@@ -524,12 +644,14 @@ func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, nam
 
 // TombstoneForDelete records an explicit env.Delete so a later miss does not
 // resurrect the name from the template. Tombstones persist until the plugin
-// is re-Used (activation clears them).
+// is re-Used (activation clears them); one made through the open operation's
+// view is undone when the operation fails.
 func (m *stdlibLazyMaterializer) TombstoneForDelete(env *core.Env, name string) {
 	if m == nil {
 		return
 	}
 	m.state.mu.Lock()
+	m.noteLocked(env, name)
 	if m.state.tombstoned == nil {
 		m.state.tombstoned = make(map[string]struct{})
 	}
@@ -538,18 +660,31 @@ func (m *stdlibLazyMaterializer) TombstoneForDelete(env *core.Env, name string) 
 	m.state.mu.Unlock()
 }
 
-// RegisterValue defers a Go builtin binding into the loading plugin's
-// template layer. Only the stdlib plugin (name "") defers: its values are
+// deferKey returns the template key a registration through env defers into.
+// Only the open stdlib (name "") operation's view defers: stdlib values are
 // audited stateless (no registration-time capture of engine state), which a
-// process-shared template requires; every other plugin binds immediately,
-// exactly as before. With the layer disabled (tests) it likewise falls back
-// to an immediate value-cell bind; applyVocabulary's bridge then mirrors
-// the function cell exactly as on an engine without the layer.
+// process-shared template requires. Any other env, plugin, or an eager
+// operation binds immediately.
+func (m *stdlibLazyMaterializer) deferKey(env *core.Env) (stdlibTemplateKey, bool) {
+	m.state.mu.Lock()
+	defer m.state.mu.Unlock()
+	op := m.opFor(env)
+	if op == nil || op.eager || op.name != "" {
+		return stdlibTemplateKey{}, false
+	}
+	return stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: op.name, pluginVersion: op.version}, true
+}
+
+// RegisterValue defers a Go builtin binding into the loading stdlib's
+// template layer (see deferKey); otherwise it binds the value cell
+// immediately, and applyVocabulary's bridge mirrors the function cell
+// exactly as on an engine without the layer.
 func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val core.Value, canonical bool) error {
 	if m == nil {
 		return nil
 	}
-	if m.eager || m.engine.loadingPlugin != "" {
+	key, deferred := m.deferKey(env)
+	if !deferred {
 		if canonical {
 			return env.SetCanonical(name, val)
 		}
@@ -558,7 +693,6 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 
 	dialect := m.engine.config.dialect
 	vocab := dialect.Vocab()
-	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}
 
 	// Vocabulary renames bind the visible name to the canonical GoFunc. The
 	// alias is a plain (non-canonical) binding, matching the eager Set in
@@ -592,16 +726,16 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 }
 
 // RegisterSource defers a pure-Lisp bootstrap definition (defmacro/defn).
-// Same stdlib-only restriction as RegisterValue; it reports false for other
-// plugins and when the layer is disabled so the caller evaluates eagerly.
+// Same restriction as RegisterValue; it reports false whenever deferKey does
+// so the caller evaluates eagerly.
 func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source string) bool {
 	if m == nil {
 		return false
 	}
-	if m.eager || m.engine.loadingPlugin != "" {
+	key, deferred := m.deferKey(env)
+	if !deferred {
 		return false
 	}
-	key := stdlibTemplateKey{dialectFP: m.dialectFP, pluginName: m.engine.loadingPlugin, pluginVersion: m.loadingVersion}
 	if err := stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
 		name:   name,
 		kind:   stdlibTemplateBootstrap,
@@ -611,6 +745,18 @@ func (m *stdlibLazyMaterializer) RegisterSource(env *core.Env, name, source stri
 		return false
 	}
 	return true
+}
+
+func setMember(set map[string]struct{}, name string, in bool) map[string]struct{} {
+	if !in {
+		delete(set, name)
+		return set
+	}
+	if set == nil {
+		set = make(map[string]struct{})
+	}
+	set[name] = struct{}{}
+	return set
 }
 
 // rebuildActiveList refreshes the atomic snapshot; caller holds state.mu.

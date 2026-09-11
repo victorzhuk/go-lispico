@@ -72,28 +72,21 @@ func (e *engineImpl) populateTemplateBindings(pluginName, pluginVersion string) 
 // silently skip one engine's own env writes, which is only safe when Init's
 // only observable effect is the shared, env-independent template entry.
 func (e *engineImpl) initPlugin(p core.Plugin, env *core.Env, name, version string) error {
-	e.loadingPlugin = name
-	eager := false
-	if e.lazyMaterializer != nil {
-		eager = stdlibLazyTemplateRegistry.snapshotDisabled()
-		e.lazyMaterializer.eager = eager
-		e.lazyMaterializer.loadingVersion = version
-	}
-	defer func() {
-		e.loadingPlugin = ""
-		if e.lazyMaterializer != nil {
-			e.lazyMaterializer.eager = false
-			e.lazyMaterializer.loadingVersion = ""
-		}
-	}()
-
 	if name != "" || e.lazyMaterializer == nil {
 		return p.Init(env)
 	}
 	key := stdlibTemplateKey{dialectFP: e.lazyMaterializer.dialectFP, pluginName: name, pluginVersion: version}
-	return stdlibLazyTemplateRegistry.ensureLayer(key, eager, func() error {
+	return stdlibLazyTemplateRegistry.ensureLayer(key, e.lazyMaterializer.opEager(), func() error {
 		return p.Init(env)
 	})
+}
+
+// beginLazyOp attributes the lazy-state changes made through view to the
+// plugin operation it belongs to, so a failed operation can undo them.
+func (e *engineImpl) beginLazyOp(view *core.Env, name, version string) {
+	if e.lazyMaterializer != nil {
+		e.lazyMaterializer.beginOp(view, name, version, stdlibLazyTemplateRegistry.snapshotDisabled())
+	}
 }
 
 // removePluginBindings deletes the names name owns through env. The caller
@@ -165,17 +158,20 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	if err != nil {
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
+	e.beginLazyOp(reg.Env(), name, version)
 
 	added, err := e.loadPlugin(p, reg.Env(), name, version)
 	if err == nil {
 		err = e.publishPlugin(p, gen)
 	}
 	if err != nil {
+		e.lazyMaterializer.endOp(false)
 		reg.Abort()
 		return err
 	}
 
 	reg.Complete()
+	e.lazyMaterializer.endOp(true)
 	e.publishBindings(name, version, added)
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", name, "version", version)
@@ -266,6 +262,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
 	view := reg.Env()
+	e.beginLazyOp(view, name, version)
 	if hadOld {
 		e.removePluginBindings(view, name)
 	}
@@ -275,6 +272,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		err = e.publishPlugin(p, gen)
 	}
 	if err != nil {
+		e.lazyMaterializer.endOp(false)
 		reg.Abort()
 		if hadOld {
 			e.restoreRootEnv(oldRoot)
@@ -283,6 +281,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	}
 
 	reg.Complete()
+	e.lazyMaterializer.endOp(true)
 	e.publishBindings(name, version, added)
 	if !hadOld {
 		e.stats.incPlugins()

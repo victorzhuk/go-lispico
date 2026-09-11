@@ -91,14 +91,15 @@ func (e *Env) SetLazyLayer(layer LazyLayer) {
 func (e *Env) setLazyLayer(r *Registration, layer LazyLayer) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var p *LazyLayer
+	if layer != nil {
+		p = &layer
+	}
 	if cur := e.reg.Load(); cur != nil {
 		cur.lazy.write(cur == r, e.lazyLayer.Load())
+		cur.view.lazyLayer.Store(p)
 	}
-	if layer == nil {
-		e.lazyLayer.Store(nil)
-		return
-	}
-	e.lazyLayer.Store(&layer)
+	e.lazyLayer.Store(p)
 }
 
 // LazyLayer returns the installed miss-path fallback, or nil.
@@ -529,7 +530,7 @@ func (e *Env) GetCanonical(name string) (Value, bool, bool) {
 	if v != nil {
 		return v, true, canon
 	}
-	if layer := e.lazy(); layer != nil {
+	if layer := e.lazy(); layer != nil && !e.rootHas(name, false) {
 		if v, ok, canon := layer.LookupAndMaterialize(e, name, false); ok {
 			return v, true, canon
 		}
@@ -642,7 +643,7 @@ func (e *Env) CellLocal(name string) (*Cell, bool) {
 		return cell, true
 	}
 	if layer := o.lazy(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(o, name, false); ok {
+		if _, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			if cell, hit := o.CellLocal(name); hit {
 				return cell, true
 			}
@@ -662,7 +663,7 @@ func (e *Env) FuncCellLocal(name string) (*Cell, bool) {
 		return cell, true
 	}
 	if layer := o.lazy(); layer != nil {
-		if _, ok, _ := layer.LookupAndMaterialize(o, name, true); ok {
+		if _, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
 			if cell, hit := o.FuncCellLocal(name); hit {
 				return cell, true
 			}
@@ -706,7 +707,7 @@ func (e *Env) Get(name string) (Value, bool) {
 	if v != nil {
 		return v, true
 	}
-	if layer := e.lazy(); layer != nil {
+	if layer := e.lazy(); layer != nil && !e.rootHas(name, false) {
 		if val, ok, _ := layer.LookupAndMaterialize(e, name, false); ok {
 			return val, true
 		}
@@ -791,7 +792,7 @@ func (e *Env) GetFunc(name string) (Value, bool) {
 	if v != nil {
 		return v, true
 	}
-	if layer := e.lazy(); layer != nil {
+	if layer := e.lazy(); layer != nil && !e.rootHas(name, true) {
 		if val, ok, _ := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true
 		}
@@ -816,7 +817,7 @@ func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 	if v != nil {
 		return v, true, canon
 	}
-	if layer := e.lazy(); layer != nil {
+	if layer := e.lazy(); layer != nil && !e.rootHas(name, true) {
 		if val, ok, canon := layer.LookupAndMaterialize(e, name, true); ok {
 			return val, true, canon
 		}
@@ -832,6 +833,11 @@ func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 // attributed to the registration.
 func (e *Env) Find(name string) (*Env, bool) {
 	if r := e.viewReg(); r != nil {
+		if layer := e.lazy(); layer != nil && !r.root.HasLive(name) {
+			if _, ok, _ := layer.LookupAndMaterialize(e, name, false); ok && r.root.HasLive(name) {
+				return e, true
+			}
+		}
 		owner, ok := r.root.Find(name)
 		if owner == r.root {
 			return e, true
@@ -927,9 +933,12 @@ func (e *Env) setEvaluator(r *Registration, eval Evaluator) {
 func (e *Env) Delete(name string) {
 	if r := e.viewReg(); r != nil {
 		r.root.deleteName(r, name)
-		return
+	} else {
+		e.deleteName(nil, name)
 	}
-	e.deleteName(nil, name)
+	if layer := e.LazyLayer(); layer != nil {
+		layer.TombstoneForDelete(e, name)
+	}
 }
 
 func (e *Env) deleteName(r *Registration, name string) {
@@ -952,10 +961,6 @@ func (e *Env) deleteName(r *Registration, name string) {
 		j.afterWrite(key, cell)
 	}
 	e.mu.Unlock()
-
-	if layer := e.LazyLayer(); layer != nil {
-		layer.TombstoneForDelete(e, name)
-	}
 }
 
 // RetainedUsage returns this env's retained backing usage.
@@ -1045,11 +1050,10 @@ func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
 // function cell (Lisp-2 only). The order is unspecified. Parent bindings
 // are not included. Like VarNames it forces deferred bindings first.
 func (e *Env) FuncNames() []string {
-	o := e.owner()
-	if layer := o.lazy(); layer != nil {
-		layer.ForceAll(o)
+	if layer := e.LazyLayer(); layer != nil {
+		layer.ForceAll(e)
 	}
-	return o.LocalFuncNames()
+	return e.LocalFuncNames()
 }
 
 // LocalFuncNames is FuncNames without consulting the lazy layer.
@@ -1075,11 +1079,10 @@ func (e *Env) LocalFuncNames() []string {
 // materialization of every deferred binding so callers observe the full
 // plugin surface (one-time cost, comparable to eager load).
 func (e *Env) VarNames() []string {
-	o := e.owner()
-	if layer := o.lazy(); layer != nil {
-		layer.ForceAll(o)
+	if layer := e.LazyLayer(); layer != nil {
+		layer.ForceAll(e)
 	}
-	return o.LocalNames()
+	return e.LocalNames()
 }
 
 // LocalNames is VarNames without consulting the lazy layer: internal

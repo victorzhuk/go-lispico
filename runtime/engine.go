@@ -100,7 +100,6 @@ type engineImpl struct {
 	vmSlot           *vm.VM
 	vmSlotInUse      atomic.Bool
 	lazyMaterializer *stdlibLazyMaterializer
-	loadingPlugin    string // plugin whose Init is running inside Use/ReloadPlugin; template registrations are attributed to it
 }
 
 type engineConfig struct {

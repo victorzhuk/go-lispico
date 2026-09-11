@@ -62,6 +62,7 @@ func (e *Env) BeginRegistration() (*Registration, error) {
 		maxRetainedBytes: root.maxRetainedBytes,
 		maxRetainedSlots: root.maxRetainedSlots,
 	}
+	view.lazyLayer.Store(root.lazyLayer.Load())
 	r := &Registration{root: root, view: view}
 	view.reg.Store(r)
 	root.reg.Store(r)
@@ -121,6 +122,7 @@ func (r *Registration) Abort() {
 	}
 	if r.lazy.owned() {
 		root.lazyLayer.Store(r.lazy.prior)
+		r.view.lazyLayer.Store(r.lazy.prior)
 		restored = true
 	}
 	if restored {
@@ -219,6 +221,20 @@ func (e *Env) owner() *Env {
 	return e
 }
 
+// rootHas reports whether e is a registration view whose root holds a live
+// binding for name. Such a name resolves from the root and never reaches the
+// view's lazy layer.
+func (e *Env) rootHas(name string, fn bool) bool {
+	r := e.viewReg()
+	if r == nil {
+		return false
+	}
+	if fn {
+		return r.root.HasLiveFunc(name)
+	}
+	return r.root.HasLive(name)
+}
+
 // viewReg returns the registration whose view e is, or nil.
 func (e *Env) viewReg() *Registration {
 	if r := e.reg.Load(); r != nil && r.view == e {
@@ -227,8 +243,8 @@ func (e *Env) viewReg() *Registration {
 	return nil
 }
 
-// lazy reads e's own lazy layer; a view has none, so its lookups fall through
-// to the root, which consults its layer with itself as the env.
+// lazy reads e's own lazy layer. A view carries its root's layer, so a view
+// lookup hands the layer the view and materializes through it.
 func (e *Env) lazy() LazyLayer {
 	if p := e.lazyLayer.Load(); p != nil {
 		return *p
