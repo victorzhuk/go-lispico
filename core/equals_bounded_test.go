@@ -314,7 +314,7 @@ func TestEqualsBounded_ReductionChargeIgnoresIterationOrder(t *testing.T) {
 	// walk exhaustive, a surviving bare `equal = eq` would let the four matching
 	// entries overwrite the mismatch and resurrect true. Small-form entries are
 	// held sorted by hashKey, so the differing key is visited first on every run,
-	// which makes the guard deterministic rather than the ~4.6e-8 the size loop
+	// which makes the guard deterministic rather than the ~2.3e-8 the size loop
 	// leaves. This pair's own charge is 6, not n+1, so it asserts no total.
 	t.Run("smallFormMismatchFirst", func(t *testing.T) {
 		const keys = 5
