@@ -20,12 +20,6 @@ type registrationEntry struct {
 	lastVer   uint64
 }
 
-var (
-	_ = registrationKey{name: "", fn: false}
-	_ = registrationEntry{prior: nil, v: nil, canonical: false, last: nil, lastVer: 0}
-	_ = (*Env).viewReg
-)
-
 // BeginRegistration opens a registration operation on the root e resolves to.
 // A root runs at most one registration at a time.
 func (e *Env) BeginRegistration() (*Registration, error) {
@@ -66,6 +60,46 @@ func (r *Registration) finish() {
 	}
 	r.root.reg.Store(nil)
 	r.entries = nil
+}
+
+// active returns r while it is e's running registration, or nil, so a write
+// forwarded by a finished view stays unattributed. Caller holds e.mu.
+func (e *Env) active(r *Registration) *Registration {
+	if r != nil && e.reg.Load() == r {
+		return r
+	}
+	return nil
+}
+
+// beforeWrite records the before-image of key on the first view write to it;
+// later writes keep it. cur is the map cell before the write, nil when absent.
+// Caller holds root.mu.
+func (r *Registration) beforeWrite(key registrationKey, cur *Cell) {
+	if r == nil {
+		return
+	}
+	if _, ok := r.entries[key]; ok {
+		return
+	}
+	ent := &registrationEntry{prior: cur}
+	if cur != nil {
+		ent.v, ent.canonical = cur.v, cur.canonical
+	}
+	if r.entries == nil {
+		r.entries = make(map[registrationKey]*registrationEntry)
+	}
+	r.entries[key] = ent
+}
+
+// afterWrite marks cell, now in the map for key, as the operation's last
+// write. Caller holds root.mu.
+func (r *Registration) afterWrite(key registrationKey, cell *Cell) {
+	if r == nil {
+		return
+	}
+	ent := r.entries[key]
+	ent.last = cell
+	ent.lastVer = cell.Version()
 }
 
 // owner is the canonical root a registration view forwards to, or e itself.

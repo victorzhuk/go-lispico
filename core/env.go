@@ -269,17 +269,24 @@ func (e *Env) SetBothCanonical(name string, val Value) error {
 
 // SetBothWithContext binds name in both value and function cells.
 func (e *Env) SetBothWithContext(ctx context.Context, name string, val Value) error {
-	return e.setBoth(ctx, name, val, false)
+	if r := e.viewReg(); r != nil {
+		return r.root.setBoth(ctx, r, name, val, false)
+	}
+	return e.setBoth(ctx, nil, name, val, false)
 }
 
 // SetBothCanonicalWithContext binds name in both value and function cells as canonical.
 func (e *Env) SetBothCanonicalWithContext(ctx context.Context, name string, val Value) error {
-	return e.setBoth(ctx, name, val, true)
+	if r := e.viewReg(); r != nil {
+		return r.root.setBoth(ctx, r, name, val, true)
+	}
+	return e.setBoth(ctx, nil, name, val, true)
 }
 
-func (e *Env) setBoth(ctx context.Context, name string, val Value, canonical bool) error {
+func (e *Env) setBoth(ctx context.Context, r *Registration, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	j := e.active(r)
 
 	varCell, varCellExists := e.vars[name]
 	funcCell, funcCellExists := e.funcs[name]
@@ -296,6 +303,10 @@ func (e *Env) setBoth(ctx context.Context, name string, val Value, canonical boo
 		return err
 	}
 
+	varKey := registrationKey{name: name}
+	funcKey := registrationKey{name: name, fn: true}
+	j.beforeWrite(varKey, varCell)
+	j.beforeWrite(funcKey, funcCell)
 	if !varCellExists {
 		varCell = e.localCell(name)
 	}
@@ -319,6 +330,8 @@ func (e *Env) setBoth(ctx context.Context, name string, val Value, canonical boo
 	if !funcCellExists {
 		recordFreshRetained(st, pending, e, funcCell, meter, b)
 	}
+	j.afterWrite(varKey, varCell)
+	j.afterWrite(funcKey, funcCell)
 
 	return nil
 }
@@ -364,8 +377,17 @@ func (e *Env) Set(name string, val Value) error {
 }
 
 func (e *Env) SetWithContext(ctx context.Context, name string, val Value) error {
+	if r := e.viewReg(); r != nil {
+		return r.root.setVar(ctx, r, name, val, false)
+	}
+	return e.setVar(ctx, nil, name, val, false)
+}
+
+func (e *Env) setVar(ctx context.Context, r *Registration, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	j := e.active(r)
+	key := registrationKey{name: name}
 	cell, ok := e.vars[name]
 	b := retainedBindingBytes(name, val)
 	var meter sessionMeter
@@ -377,17 +399,21 @@ func (e *Env) SetWithContext(ctx context.Context, name string, val Value) error 
 		if err != nil {
 			return err
 		}
+		j.beforeWrite(key, nil)
 		cell = e.localCell(name)
+	} else {
+		j.beforeWrite(key, cell)
 	}
 	if cell.v == nil {
 		e.newNameGen.Add(1)
 	}
 	cell.v = val
-	cell.canonical = false
+	cell.canonical = canonical
 	cell.version.Add(1)
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
+	j.afterWrite(key, cell)
 	return nil
 }
 
@@ -398,8 +424,17 @@ func (e *Env) ReplaceCell(name string, val Value) error {
 
 // ReplaceCellWithContext installs a fresh local value cell for name.
 func (e *Env) ReplaceCellWithContext(ctx context.Context, name string, val Value) error {
+	if r := e.viewReg(); r != nil {
+		return r.root.replaceCell(ctx, r, name, val)
+	}
+	return e.replaceCell(ctx, nil, name, val)
+}
+
+func (e *Env) replaceCell(ctx context.Context, r *Registration, name string, val Value) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	j := e.active(r)
+	key := registrationKey{name: name}
 	old, ok := e.vars[name]
 	b := retainedBindingBytes(name, val)
 	var meter sessionMeter
@@ -412,6 +447,7 @@ func (e *Env) ReplaceCellWithContext(ctx context.Context, name string, val Value
 			return err
 		}
 	}
+	j.beforeWrite(key, old)
 	cell := &Cell{v: val}
 	cell.version.Add(1)
 	e.vars[name] = cell
@@ -421,6 +457,7 @@ func (e *Env) ReplaceCellWithContext(ctx context.Context, name string, val Value
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
+	j.afterWrite(key, cell)
 	return nil
 }
 
@@ -449,31 +486,10 @@ func (e *Env) SetCanonical(name string, val Value) error {
 }
 
 func (e *Env) SetCanonicalWithContext(ctx context.Context, name string, val Value) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	cell, ok := e.vars[name]
-	b := retainedBindingBytes(name, val)
-	var meter sessionMeter
-	var st *evalState
-	var pending bool
-	if !ok {
-		var err error
-		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
-		if err != nil {
-			return err
-		}
-		cell = e.localCell(name)
+	if r := e.viewReg(); r != nil {
+		return r.root.setVar(ctx, r, name, val, true)
 	}
-	if cell.v == nil {
-		e.newNameGen.Add(1)
-	}
-	cell.v = val
-	cell.canonical = true
-	cell.version.Add(1)
-	if !ok {
-		recordFreshRetained(st, pending, e, cell, meter, b)
-	}
-	return nil
+	return e.setVar(ctx, nil, name, val, true)
 }
 
 // GetCanonical resolves name like Get but also returns whether it is a canonical
@@ -685,8 +701,17 @@ func (e *Env) SetFunc(name string, val Value) error {
 }
 
 func (e *Env) SetFuncWithContext(ctx context.Context, name string, val Value) error {
+	if r := e.viewReg(); r != nil {
+		return r.root.setFuncCell(ctx, r, name, val, false)
+	}
+	return e.setFuncCell(ctx, nil, name, val, false)
+}
+
+func (e *Env) setFuncCell(ctx context.Context, r *Registration, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	j := e.active(r)
+	key := registrationKey{name: name, fn: true}
 	cell, ok := e.funcs[name]
 	b := retainedBindingBytes(name, val)
 	var meter sessionMeter
@@ -698,14 +723,18 @@ func (e *Env) SetFuncWithContext(ctx context.Context, name string, val Value) er
 		if err != nil {
 			return err
 		}
+		j.beforeWrite(key, nil)
 		cell = e.localFuncCell(name)
+	} else {
+		j.beforeWrite(key, cell)
 	}
 	cell.v = val
-	cell.canonical = false
+	cell.canonical = canonical
 	cell.version.Add(1)
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
+	j.afterWrite(key, cell)
 	return nil
 }
 
@@ -720,28 +749,10 @@ func (e *Env) SetFuncCanonical(name string, val Value) error {
 }
 
 func (e *Env) SetFuncCanonicalWithContext(ctx context.Context, name string, val Value) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	cell, ok := e.funcs[name]
-	b := retainedBindingBytes(name, val)
-	var meter sessionMeter
-	var st *evalState
-	var pending bool
-	if !ok {
-		var err error
-		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
-		if err != nil {
-			return err
-		}
-		cell = e.localFuncCell(name)
+	if r := e.viewReg(); r != nil {
+		return r.root.setFuncCell(ctx, r, name, val, true)
 	}
-	cell.v = val
-	cell.canonical = true
-	cell.version.Add(1)
-	if !ok {
-		recordFreshRetained(st, pending, e, cell, meter, b)
-	}
-	return nil
+	return e.setFuncCell(ctx, nil, name, val, true)
 }
 
 // GetFunc walks the scope chain reading the function cell (Lisp-2 only).
@@ -866,16 +877,31 @@ func (e *Env) SetEvaluator(eval Evaluator) {
 // (e.g. the VM's site cache) must observe the binding disappear, not keep
 // serving a stale value.
 func (e *Env) Delete(name string) {
+	if r := e.viewReg(); r != nil {
+		r.root.deleteName(r, name)
+		return
+	}
+	e.deleteName(nil, name)
+}
+
+func (e *Env) deleteName(r *Registration, name string) {
 	e.mu.Lock()
+	j := e.active(r)
 	if cell, ok := e.vars[name]; ok && (cell.v != nil || cell.canonical) {
+		key := registrationKey{name: name}
+		j.beforeWrite(key, cell)
 		cell.v = nil
 		cell.canonical = false
 		cell.version.Add(1)
+		j.afterWrite(key, cell)
 	}
 	if cell, ok := e.funcs[name]; ok && (cell.v != nil || cell.canonical) {
+		key := registrationKey{name: name, fn: true}
+		j.beforeWrite(key, cell)
 		cell.v = nil
 		cell.canonical = false
 		cell.version.Add(1)
+		j.afterWrite(key, cell)
 	}
 	e.mu.Unlock()
 
