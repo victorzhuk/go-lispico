@@ -440,10 +440,11 @@ func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
 	}
 }
 
-// applyVocabulary reconciles the root environment with the configured Dialect's
-// vocabulary map. It is invoked after each plugin's Init so plugin-registered
-// GoFuncs are then renamed, exposed under adapter wrappers, or stripped
-// according to the Dialect's base and vocab.
+// applyVocabulary reconciles env, the environment a plugin's Init wrote
+// through, with the configured Dialect's vocabulary map. It is invoked after
+// each plugin's Init so plugin-registered GoFuncs are then renamed, exposed
+// under adapter wrappers, or stripped according to the Dialect's base and
+// vocab.
 //
 // On a FullDialect with a vocab, the operation is purely additive: every
 // registered GoFunc remains, and the vocab entries either rename a canonical
@@ -455,15 +456,15 @@ func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
 // bootstrap macros survive the allowlist pass. A snapshot of every GoFunc is
 // taken before the strip so the apply phase can resolve renames whose
 // canonical name is absent from the allowlist and would otherwise be deleted.
-func (e *engineImpl) applyVocabulary() error {
+func (e *engineImpl) applyVocabulary(env *core.Env) error {
 	vocab := e.config.dialect.Vocab()
 	if vocab == nil {
 		return nil
 	}
 
 	goFuncs := make(map[string]core.Value)
-	for _, name := range e.rootEnv.LocalNames() {
-		v, ok := e.rootEnv.Get(name)
+	for _, name := range env.LocalNames() {
+		v, ok := env.Get(name)
 		if !ok {
 			continue
 		}
@@ -475,20 +476,20 @@ func (e *engineImpl) applyVocabulary() error {
 	if e.config.dialect.IsBaseEmpty() {
 		for name := range goFuncs {
 			if _, allowed := vocab[name]; !allowed {
-				e.rootEnv.Delete(name)
+				env.Delete(name)
 			}
 		}
 	}
 
 	for visibleName, entry := range vocab {
 		if entry.Adapter != nil {
-			if err := e.rootEnv.Set(visibleName, entry.Adapter); err != nil {
+			if err := env.Set(visibleName, entry.Adapter); err != nil {
 				return err
 			}
 			continue
 		}
 		if val, ok := goFuncs[entry.Canonical]; ok {
-			if err := e.rootEnv.Set(visibleName, val); err != nil {
+			if err := env.Set(visibleName, val); err != nil {
 				return err
 			}
 		}
@@ -504,21 +505,21 @@ func (e *engineImpl) applyVocabulary() error {
 	// Iterate LocalNames() so all visible and helper bindings are bridged; this is
 	// intentionally wider than just the dialect vocabulary map.
 	if e.config.dialect.IsLisp2() {
-		for _, name := range e.rootEnv.LocalNames() {
-			v, ok, canon := e.rootEnv.GetCanonical(name)
+		for _, name := range env.LocalNames() {
+			v, ok, canon := env.GetCanonical(name)
 			if !ok {
 				continue
 			}
 			if _, isGoFunc := v.(core.GoFunc); isGoFunc {
-				if existing, hasFunc := e.rootEnv.GetFunc(name); hasFunc && !existing.Equals(v) {
+				if existing, hasFunc := env.GetFunc(name); hasFunc && !existing.Equals(v) {
 					continue
 				}
 				if canon {
-					if err := e.rootEnv.SetFuncCanonical(name, v); err != nil {
+					if err := env.SetFuncCanonical(name, v); err != nil {
 						return err
 					}
 				} else {
-					if err := e.rootEnv.SetFunc(name, v); err != nil {
+					if err := env.SetFunc(name, v); err != nil {
 						return err
 					}
 				}

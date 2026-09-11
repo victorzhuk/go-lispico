@@ -71,7 +71,7 @@ func (e *engineImpl) populateTemplateBindings(pluginName, pluginVersion string) 
 // single-flighting a non-template plugin's Init across two engines would
 // silently skip one engine's own env writes, which is only safe when Init's
 // only observable effect is the shared, env-independent template entry.
-func (e *engineImpl) initPlugin(p core.Plugin, name, version string) error {
+func (e *engineImpl) initPlugin(p core.Plugin, env *core.Env, name, version string) error {
 	e.loadingPlugin = name
 	eager := false
 	if e.lazyMaterializer != nil {
@@ -88,25 +88,25 @@ func (e *engineImpl) initPlugin(p core.Plugin, name, version string) error {
 	}()
 
 	if name != "" || e.lazyMaterializer == nil {
-		return p.Init(e.rootEnv)
+		return p.Init(env)
 	}
 	key := stdlibTemplateKey{dialectFP: e.lazyMaterializer.dialectFP, pluginName: name, pluginVersion: version}
 	return stdlibLazyTemplateRegistry.ensureLayer(key, eager, func() error {
-		return p.Init(e.rootEnv)
+		return p.Init(env)
 	})
 }
 
-func (e *engineImpl) removePluginBindings(name string) {
+// removePluginBindings deletes the names name owns through env. The caller
+// settles e.bindings: unload drops the entry, reload replaces it on success.
+func (e *engineImpl) removePluginBindings(env *core.Env, name string) {
 	if len(e.bindings[name]) == 0 {
-		delete(e.bindings, name)
 		return
 	}
 	for n := range e.bindings[name] {
-		e.rootEnv.Delete(n)
+		env.Delete(n)
 		e.callCache.drop(n)
 	}
-	delete(e.bindings, name)
-	e.rootEnv.BumpMacroEpoch()
+	env.BumpMacroEpoch()
 }
 
 type rootEnvSnapshot struct {
@@ -151,80 +151,70 @@ func (e *engineImpl) restoreRootEnv(s rootEnvSnapshot) {
 	e.rootEnv.BumpMacroEpoch()
 }
 
-func (e *engineImpl) Use(p core.Plugin) (err error) {
+func (e *engineImpl) Use(p core.Plugin) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	name := p.Name()
 	version := p.Metadata().Version
-	if err := e.registry.Register(p); err != nil {
+	if _, ok := e.registry.Get(name); ok {
+		return fmt.Errorf("register plugin %s: plugin %q already registered", name, name)
+	}
+	reg, err := e.rootEnv.BeginRegistration()
+	if err != nil {
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
 
-	before := e.snapshotBindings()
-	ctx := e.evalResourceContext(context.Background())
-	top, startErr := core.StartEval(ctx)
-	if startErr != nil {
-		e.registry.Unregister(name)
-		return startErr
-	}
-	finished := false
-	defer func() {
-		if !finished {
-			if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
-				err = finishErr
-			}
-		}
-		if err != nil {
-			e.rollbackPluginUse(name, before)
-		}
-	}()
-
-	if initErr := e.initPlugin(p, name, version); initErr != nil {
-		return fmt.Errorf("init plugin %s: %w", name, initErr)
+	added, err := e.loadPlugin(p, reg.Env(), name, version)
+	if err != nil {
+		reg.Abort()
+		return err
 	}
 
-	if vocabErr := e.applyVocabulary(); vocabErr != nil {
-		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
-	}
-
-	after := e.snapshotBindings()
-	added := diff(after, before)
-	if len(added) > 0 {
-		if e.bindings == nil {
-			e.bindings = make(map[string]map[string]struct{})
-		}
-		e.bindings[name] = added
-	}
-	e.populateTemplateBindings(name, version)
-
-	finished = true
-	if finishErr := core.FinishEval(ctx, top); finishErr != nil {
-		return finishErr
-	}
-
+	e.registry.RegisterNoCheck(p)
+	reg.Complete()
+	e.publishBindings(name, version, added)
 	e.stats.incPlugins()
 	e.logger.Info("plugin loaded", "name", name, "version", version)
 
 	return nil
 }
 
-func (e *engineImpl) rollbackPluginUse(name string, before []string) {
-	e.loadingPlugin = ""
-	e.registry.Unregister(name)
-	after := e.snapshotBindings()
-	added := diff(after, before)
-	for n := range added {
-		e.rootEnv.Delete(n)
+// loadPlugin runs p.Init and the vocabulary pass through env inside one
+// accounted evaluation and returns the root names they added. It publishes
+// nothing: the caller settles the registration and the engine state.
+func (e *engineImpl) loadPlugin(p core.Plugin, env *core.Env, name, version string) (added map[string]struct{}, err error) {
+	before := e.snapshotBindings()
+	ctx := e.evalResourceContext(context.Background())
+	top, err := core.StartEval(ctx)
+	if err != nil {
+		return nil, err
 	}
+	defer func() {
+		if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
+			added, err = nil, finishErr
+		}
+	}()
+
+	if initErr := e.initPlugin(p, env, name, version); initErr != nil {
+		return nil, fmt.Errorf("init plugin %s: %w", name, initErr)
+	}
+	if vocabErr := e.applyVocabulary(env); vocabErr != nil {
+		return nil, fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
+	}
+	return diff(e.snapshotBindings(), before), nil
+}
+
+func (e *engineImpl) publishBindings(name, version string, added map[string]struct{}) {
 	if len(added) > 0 {
-		e.rootEnv.Rebuild()
-		e.rootEnv.BumpMacroEpoch()
+		if e.bindings == nil {
+			e.bindings = make(map[string]map[string]struct{})
+		}
+		e.bindings[name] = added
+	} else {
+		delete(e.bindings, name)
 	}
-	delete(e.bindings, name)
-	if e.lazyMaterializer != nil {
-		e.lazyMaterializer.deactivate(name)
-	}
+	e.populateTemplateBindings(name, version)
 }
 
 func (e *engineImpl) UnloadPlugin(name string) error {
@@ -238,7 +228,8 @@ func (e *engineImpl) UnloadPlugin(name string) error {
 
 	e.registry.Unregister(name)
 
-	e.removePluginBindings(name)
+	e.removePluginBindings(e.rootEnv, name)
+	delete(e.bindings, name)
 	if e.lazyMaterializer != nil {
 		e.lazyMaterializer.deactivate(name)
 	}
@@ -249,95 +240,37 @@ func (e *engineImpl) UnloadPlugin(name string) error {
 	return nil
 }
 
-func (e *engineImpl) ReloadPlugin(p core.Plugin) (err error) {
+func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	name := p.Name()
 	version := p.Metadata().Version
-	oldPlugin, hadOld := e.registry.Get(name)
+	_, hadOld := e.registry.Get(name)
 	oldRoot := e.snapshotRootEnv()
-	var oldBindings map[string]struct{}
-	if hadOld {
-		oldBindings = e.bindings[name]
-	}
-
-	if hadOld {
-		e.removePluginBindings(name)
-		e.registry.Unregister(name)
-	}
-
-	if err := e.registry.Register(p); err != nil {
-		if hadOld {
-			e.registry.RegisterNoCheck(oldPlugin)
-			if oldBindings != nil {
-				e.bindings[name] = oldBindings
-			}
-			e.restoreRootEnv(oldRoot)
-		}
+	reg, err := e.rootEnv.BeginRegistration()
+	if err != nil {
 		return fmt.Errorf("register plugin %s: %w", name, err)
 	}
+	view := reg.Env()
+	if hadOld {
+		e.removePluginBindings(view, name)
+	}
 
-	before := e.snapshotBindings()
-
-	ctx := e.evalResourceContext(context.Background())
-	top, startErr := core.StartEval(ctx)
-	if startErr != nil {
-		e.rollbackPluginUse(name, before)
+	added, err := e.loadPlugin(p, view, name, version)
+	if err != nil {
+		reg.Abort()
 		if hadOld {
-			e.registry.RegisterNoCheck(oldPlugin)
-			if oldBindings != nil {
-				e.bindings[name] = oldBindings
-			}
 			e.restoreRootEnv(oldRoot)
 		}
-		return startErr
+		return err
 	}
 
-	finished := false
-	defer func() {
-		if !finished {
-			if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
-				err = finishErr
-			}
-		}
-		if err != nil {
-			e.rollbackPluginUse(name, before)
-			if hadOld {
-				e.registry.RegisterNoCheck(oldPlugin)
-				if oldBindings != nil {
-					e.bindings[name] = oldBindings
-				}
-				e.restoreRootEnv(oldRoot)
-			}
-		}
-	}()
-
-	if initErr := e.initPlugin(p, name, version); initErr != nil {
-		return fmt.Errorf("init plugin %s: %w", name, initErr)
-	}
-
-	if err := e.applyVocabulary(); err != nil {
-		return fmt.Errorf("apply vocabulary for plugin %s: %w", name, err)
-	}
-
-	after := e.snapshotBindings()
-	added := diff(after, before)
-	if len(added) > 0 {
-		if e.bindings == nil {
-			e.bindings = make(map[string]map[string]struct{})
-		}
-		e.bindings[name] = added
-	}
-	e.populateTemplateBindings(name, version)
-
+	e.registry.RegisterNoCheck(p)
+	reg.Complete()
+	e.publishBindings(name, version, added)
 	if !hadOld {
 		e.stats.incPlugins()
-	}
-
-	finished = true
-	if finishErr := core.FinishEval(ctx, top); finishErr != nil {
-		return finishErr
 	}
 
 	e.logger.Info("plugin reloaded", "name", name, "version", version)

@@ -44,7 +44,7 @@ type stdlibTemplateLayer struct {
 	entries map[string]*stdlibTemplateEntry
 	// complete marks a layer whose owning plugin's first Init finished
 	// without error. Only ensureLayer's build callback ever sets this to
-	// true; UnloadPlugin/ReloadPlugin/rollbackPluginUse never touch it — the
+	// true; UnloadPlugin/ReloadPlugin never touch it — the
 	// layer is process-scoped and outlives any single engine's attachment.
 	complete bool
 	// published holds the same entries built above, stored once by

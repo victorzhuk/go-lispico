@@ -895,7 +895,10 @@ func (e *Env) ChildVariadic(params []Symbol, args []Value, variadic Symbol) (*En
 
 // Evaluator returns the engine bound to this scope (used by plugins for recursive eval).
 func (e *Env) Evaluator() Evaluator {
-	return e.owner().eval
+	o := e.owner()
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.eval
 }
 
 // SetEvaluator binds the evaluator to this scope (called by the runtime after NewEvaluator).
