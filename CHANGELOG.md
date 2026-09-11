@@ -170,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   materialization — wins over the rollback. The registry entry, ownership
   bookkeeping, lazy activation, and `Stats().ActivePlugins` now publish only
   once the whole operation succeeds; a successful `UnloadPlugin` keeps its
-  existing last-writer ownership semantics.
+  existing last-writer ownership semantics. Retained-meter charges for cells
+  an abort removes are not yet released; that follows in a later change.
 
 ### Fixed
 

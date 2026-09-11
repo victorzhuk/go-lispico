@@ -481,12 +481,12 @@ settle
     ├─ error ──────────────► Registration.Abort()
     │
     ▼
-Registry.PublishIf(generation)
+Registry.PublishIf(generation) → registry entry
     │
     ├─ conflict (CodeRegistryConflict) ──► Registration.Abort(), host entry kept
     │
     ▼
-Registration.Complete() → registry entry, ownership, lazy activation,
+Registration.Complete() → ownership, lazy activation,
                            Stats().ActivePlugins all publish here
     │
     ▼
@@ -514,11 +514,11 @@ conflict — a host edit of the registry entry during the operation — fails
 (`NewRegistryConflictError`); the host's registry entry stands and the
 operation aborts.
 
-The registry entry, ownership bookkeeping, lazy activation, and
-`Stats().ActivePlugins` publish only once the whole operation succeeds
-(`Registration.Complete()`); the root environment identity never changes,
-and existing `Fn`/`PinnedFn` handles keep working across a reload. A
-successful `UnloadPlugin` keeps its own last-writer ownership semantics —
+The registry entry (`Registry.PublishIf`), then ownership bookkeeping, lazy
+activation, and `Stats().ActivePlugins` (`Registration.Complete()`) publish
+only once the whole operation succeeds; the root environment identity never
+changes, and existing `Fn`/`PinnedFn` handles keep working across a reload.
+A successful `UnloadPlugin` keeps its own last-writer ownership semantics —
 it is not a registration abort.
 
 The guarantee is post-return, not during: readers may observe intermediate
