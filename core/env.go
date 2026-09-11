@@ -81,6 +81,19 @@ type Env struct {
 
 // SetLazyLayer installs (or clears, on nil) the env's miss-path fallback.
 func (e *Env) SetLazyLayer(layer LazyLayer) {
+	if r := e.viewReg(); r != nil {
+		r.root.setLazyLayer(r, layer)
+		return
+	}
+	e.setLazyLayer(nil, layer)
+}
+
+func (e *Env) setLazyLayer(r *Registration, layer LazyLayer) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if cur := e.reg.Load(); cur != nil {
+		cur.lazy.write(cur == r, e.lazyLayer.Load())
+	}
 	if layer == nil {
 		e.lazyLayer.Store(nil)
 		return
@@ -95,8 +108,19 @@ func (e *Env) LazyLayer() LazyLayer {
 
 // SetRetainedMeter binds the meter that owns this scope's retained capacity.
 func (e *Env) SetRetainedMeter(m any) {
+	if r := e.viewReg(); r != nil {
+		r.root.setRetainedMeter(r, m)
+		return
+	}
+	e.setRetainedMeter(nil, m)
+}
+
+func (e *Env) setRetainedMeter(r *Registration, m any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if cur := e.reg.Load(); cur != nil {
+		cur.meter.write(cur == r, e.retainedMeter)
+	}
 	e.retainedMeter, _ = m.(sessionMeter)
 }
 
@@ -657,9 +681,10 @@ func (e *Env) NameGen() uint64 { return e.owner().newNameGen.Load() }
 // Called after defmacro to invalidate bytecode caches that depend on
 // macros defined in this scope. Safe for concurrent use.
 func (e *Env) BumpMacroEpoch() {
-	e.mu.Lock()
-	e.macroEpoch++
-	e.mu.Unlock()
+	o := e.owner()
+	o.mu.Lock()
+	o.macroEpoch++
+	o.mu.Unlock()
 }
 
 // MacroEpoch returns the current macro epoch counter for this scope.
@@ -802,8 +827,17 @@ func (e *Env) GetFuncCanonical(name string) (Value, bool, bool) {
 	return nil, false, false
 }
 
-// Find returns the scope that owns name (for set!).
+// Find returns the scope that owns name (for set!). On a registration view a
+// name the root owns resolves to the view, so writes through the result stay
+// attributed to the registration.
 func (e *Env) Find(name string) (*Env, bool) {
+	if r := e.viewReg(); r != nil {
+		owner, ok := r.root.Find(name)
+		if owner == r.root {
+			return e, true
+		}
+		return owner, ok
+	}
 	e.mu.RLock()
 	cell, ok := e.vars[name]
 	live := ok && cell.v != nil
@@ -866,8 +900,19 @@ func (e *Env) Evaluator() Evaluator {
 
 // SetEvaluator binds the evaluator to this scope (called by the runtime after NewEvaluator).
 func (e *Env) SetEvaluator(eval Evaluator) {
+	if r := e.viewReg(); r != nil {
+		r.root.setEvaluator(r, eval)
+		return
+	}
+	e.setEvaluator(nil, eval)
+}
+
+func (e *Env) setEvaluator(r *Registration, eval Evaluator) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if cur := e.reg.Load(); cur != nil {
+		cur.eval.write(cur == r, e.eval)
+	}
 	e.eval = eval
 }
 
@@ -921,6 +966,9 @@ func (e *Env) RetainedUsage() (bytes, slots int64) {
 // Rebuild compacts this scope's local binding maps, dropping tombstoned cells
 // and recomputing retained backing usage from the remaining live bindings.
 func (e *Env) Rebuild() (freedBytes, freedSlots int64) {
+	if o := e.owner(); o != e {
+		return o.Rebuild()
+	}
 	e.mu.Lock()
 
 	var releases []retainedRelease
@@ -1096,9 +1144,12 @@ func (p *mergePlan) add(target *Env, name string, src *Cell, canonical, funcCell
 	return nil
 }
 
-// applyMergePlan lands a staged plan. Caller holds the write lock.
-func (e *Env) applyMergePlan(p *mergePlan) {
+// applyMergePlan lands a staged plan, journaling each commit on j. Caller
+// holds the write lock.
+func (e *Env) applyMergePlan(p *mergePlan, j *Registration) {
 	for _, c := range p.commits {
+		key := registrationKey{name: c.name, fn: c.funcCell}
+		j.beforeWrite(key, c.cell)
 		cell := c.cell
 		if cell == nil {
 			if c.funcCell {
@@ -1114,6 +1165,7 @@ func (e *Env) applyMergePlan(p *mergePlan) {
 		cell.retainedBytes = c.src.retainedBytes
 		cell.rebuilt = c.src.rebuilt
 		cell.version.Add(1)
+		j.afterWrite(key, cell)
 	}
 	e.retainedBytes += p.bytes
 	e.retainedSlots += p.slots
@@ -1133,32 +1185,38 @@ func (e *Env) MergeIntoCanonical(target *Env) error {
 }
 
 func (e *Env) mergeInto(target *Env, canonical bool) error {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	src, dst := e.owner(), target.owner()
+	// One env on both sides would take its read lock and then its write lock.
+	if src == dst {
+		return evalErrorf("merge source and target are the same environment")
+	}
+	r := target.viewReg()
+	src.mu.RLock()
+	defer src.mu.RUnlock()
 
-	target.mu.Lock()
+	dst.mu.Lock()
 	var plan mergePlan
-	for name, cell := range e.vars {
+	for name, cell := range src.vars {
 		if cell.v == nil {
 			continue
 		}
-		if err := plan.add(target, name, cell, canonical, false); err != nil {
-			target.mu.Unlock()
+		if err := plan.add(dst, name, cell, canonical, false); err != nil {
+			dst.mu.Unlock()
 			return err
 		}
 	}
-	for name, cell := range e.funcs {
+	for name, cell := range src.funcs {
 		if cell.v == nil {
 			continue
 		}
-		if err := plan.add(target, name, cell, canonical, true); err != nil {
-			target.mu.Unlock()
+		if err := plan.add(dst, name, cell, canonical, true); err != nil {
+			dst.mu.Unlock()
 			return err
 		}
 	}
-	target.applyMergePlan(&plan)
+	dst.applyMergePlan(&plan, dst.active(r))
 	// Unlock before releasing: meters may re-enter the env during ReleaseRetained.
-	target.mu.Unlock()
+	dst.mu.Unlock()
 
 	for _, release := range plan.releases {
 		release.meter.ReleaseRetained(release.bytes, release.slots)

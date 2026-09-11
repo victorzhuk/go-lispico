@@ -5,7 +5,34 @@ type Registration struct {
 	root    *Env
 	view    *Env
 	entries map[registrationKey]*registrationEntry
+	eval    configBefore[Evaluator]
+	meter   configBefore[sessionMeter]
+	lazy    configBefore[*LazyLayer]
 }
+
+// configBefore is the before-image of one root configuration field. Guarded
+// by root.mu.
+type configBefore[T any] struct {
+	prior    T
+	recorded bool
+	foreign  bool
+}
+
+// write notes a write to the field holding cur. An op write records cur as
+// the prior on the first write, or after a foreign write so abort keeps what
+// the host set; a foreign write disowns the field.
+func (c *configBefore[T]) write(op bool, cur T) {
+	if !op {
+		c.foreign = true
+		return
+	}
+	if !c.recorded || c.foreign {
+		c.prior, c.recorded, c.foreign = cur, true, false
+	}
+}
+
+// owned reports whether abort restores the field.
+func (c *configBefore[T]) owned() bool { return c.recorded && !c.foreign }
 
 type registrationKey struct {
 	name string
@@ -81,6 +108,15 @@ func (r *Registration) Abort() {
 			last.v, last.canonical = nil, false
 		}
 		last.version.Add(1)
+	}
+	if r.eval.owned() {
+		root.eval = r.eval.prior
+	}
+	if r.meter.owned() {
+		root.retainedMeter = r.meter.prior
+	}
+	if r.lazy.owned() {
+		root.lazyLayer.Store(r.lazy.prior)
 	}
 	root.reg.Store(nil)
 	r.entries = nil
