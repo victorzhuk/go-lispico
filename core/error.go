@@ -131,6 +131,16 @@ func NewConcurrentUseError(name string) *LispicoError {
 	return &LispicoError{Code: CodeConcurrentUse, Message: fmt.Sprintf("concurrent use of handle %q: each handle is owned by exactly one goroutine and must not be re-entered from its own execution", name)}
 }
 
+// CodeRegistrationActive classifies a *LispicoError reporting that a
+// registration was begun on an environment that already has one active.
+const CodeRegistrationActive = "RegistrationActiveError"
+
+// NewRegistrationActiveError builds a LispicoError reporting that the
+// environment already has an active registration.
+func NewRegistrationActiveError() *LispicoError {
+	return &LispicoError{Code: CodeRegistrationActive, Message: "environment already has an active registration"}
+}
+
 // CodePanic classifies a *LispicoError reporting that a user-supplied GoFunc
 // panicked inside a runtime entry point. The panic is recovered, boundary state
 // is reset, and the panic value is wrapped so the caller observes a typed error

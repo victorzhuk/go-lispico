@@ -65,13 +65,13 @@ type Env struct {
 	mu               sync.RWMutex
 	parent           *Env
 	vars             map[string]*Cell
-	cell0            Cell // first binding's cell, inline to save a heap alloc per scope
-	cell0Used        bool
+	cell0            Cell             // first binding's cell, inline to save a heap alloc per scope
 	funcs            map[string]*Cell // function cell; nil until first SetFunc (Lisp-2 only)
 	eval             Evaluator
 	retainedMeter    sessionMeter
 	macroEpoch       int           // bumped on each defmacro in this scope; used in bytecode cache key
 	newNameGen       atomic.Uint64 // bumped whenever a name is newly bound (or revived from tombstone) in vars
+	reg              atomic.Pointer[Registration]
 	lazyLayer        atomic.Pointer[LazyLayer]
 	retainedBytes    int64
 	retainedSlots    int64
@@ -331,11 +331,13 @@ func (e *Env) localCell(name string) *Cell {
 	if cell, ok := e.vars[name]; ok {
 		return cell
 	}
+	// Every caller bumps the returned cell's version before the next localCell
+	// under the same lock, so a zero cell0 version means cell0 is still free.
 	var cell *Cell
-	if e.cell0Used {
+	if e.cell0.version.Load() != 0 {
 		cell = &Cell{}
 	} else {
-		cell, e.cell0Used = &e.cell0, true
+		cell = &e.cell0
 	}
 	e.vars[name] = cell
 	return cell
