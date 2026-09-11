@@ -152,6 +152,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by a fixed, key-set-dependent amount rather than a randomized one. Charge
   terms are in ADR 0011.
 
+- `core.EqualsBounded` now charges the same reduction count for the same
+  pair of hash maps on every run. Comparing two unequal maps whose receiver
+  sat in builder form charged as few as 1 unit and as many as `n-1`, because
+  the walk stopped at the first mismatch found in the Go map's randomized
+  range order. It now charges `1 + n` units — one unit per receiver entry (a
+  missing key costs its probe, a present key costs the comparison of its
+  value) plus a fixed base unit — so a flat `n`-entry pair costs `n+1` units
+  whether it matches, differs, or shares no keys with the argument. Charge
+  terms are in ADR 0011.
+
 - `min` and `max` return an exact integer whenever every argument is an
   integer. Both built-ins compared through a `float64` accumulator, so integer
   operands above 2^53 were rounded on the way in and the returned integer could
