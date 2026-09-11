@@ -2,7 +2,7 @@
 
 ### Requirement: Failed plugin operations restore owned binding state
 
-When `Use` or `ReloadPlugin` returns an initialization, vocabulary, or settlement error, it SHALL remove the failed operation's engine-owned changes while preserving concurrent host writes. Without a competing host write, prior value and function bindings, canonical status, live handles, plugin registry/ownership, active-plugin count, deferred attachments, deletion state, and retained ownership SHALL remain as before the operation. Previously unmaterialized names SHALL remain resolvable after failed reload without forcing eager materialization.
+When `Use` or `ReloadPlugin` returns an initialization, vocabulary, or settlement error, it SHALL remove the failed operation's engine-owned changes while preserving concurrent host writes. Without a competing host write, prior value and function bindings, canonical status, live handles, plugin registry/ownership, active-plugin count, deferred attachments, and deletion state SHALL remain as before the operation. Previously unmaterialized names SHALL remain resolvable after failed reload without forcing eager materialization.
 
 A competing host write SHALL win over rollback, including a write to the same name between two writes by the failing plugin. Rollback SHALL preserve unrelated host materialization and deletion. Cache invalidation SHALL prevent stale failed definitions without reversing generations observed by concurrent users. The root environment's identity SHALL remain stable.
 
@@ -33,10 +33,10 @@ The environment supplied to `Plugin.Init` SHALL retain normal binding, lookup, e
 - **WHEN** a host first-resolves an unrelated deferred name while another plugin operation later fails
 - **THEN** that materialized binding and its per-engine lazy state SHALL remain available without being mistaken for failed plugin output
 
-#### Scenario: Vocabulary or retained rejection rolls back once
+#### Scenario: Vocabulary rejection rolls back once
 
-- **WHEN** initialization succeeds but vocabulary application or retained settlement rejects the operation
-- **THEN** only the failed operation's owned changes SHALL be reverted, the error SHALL be returned, active-plugin counts SHALL remain correct, and retained credits SHALL neither leak nor be released twice
+- **WHEN** initialization succeeds but vocabulary application rejects the operation
+- **THEN** only the failed operation's owned changes SHALL be reverted, the error SHALL be returned, and active-plugin counts SHALL remain correct
 
 #### Scenario: Registration aliases retain ownership
 
