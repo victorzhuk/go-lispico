@@ -157,11 +157,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sat in builder form charged anywhere from 1 unit to `n+1`, varying by up
   to `n-1` units across runs on unchanged input, because the walk stopped
   at the first mismatch found in the Go map's randomized range order. It
-  now charges `1 + n` units — one unit per receiver entry (a missing key
-  costs its probe, a present key costs the comparison of its value) plus a
-  fixed base unit — so a flat `n`-entry pair costs `n+1` units whether it
-  matches, differs, or shares no keys with the argument. Charge terms are
-  in ADR 0011.
+  now charges a base unit plus, for every receiver entry, one unit if the
+  key is missing from the argument or the cost of comparing the two values
+  if it is present — so a flat `n`-entry pair of scalar values costs `n+1`
+  units whether it matches, differs, or shares no keys with the argument,
+  and a nested value adds what comparing it costs. Charge terms are in
+  ADR 0011.
 
 - `min` and `max` return an exact integer whenever every argument is an
   integer. Both built-ins compared through a `float64` accumulator, so integer

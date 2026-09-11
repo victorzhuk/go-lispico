@@ -71,9 +71,12 @@ The ledger MUST NOT depend on `unsafe.Sizeof`, allocator classes, pointer width,
 
 The reduction ledger carries the same property. The units a charged walk bills for
 visiting a collection are a function of the pair it compares, never of the order the
-collection was visited in; a walk that stops early on a mismatch therefore bills the
-whole collection rather than the prefix it happened to reach, so the same pair charges
-the same total on every run regardless of receiver form or iteration order.
+collection was visited in. For an ordered collection — a list or a vector — the order is
+fixed by the data, so a walk may stop at the first mismatch and still bill the same
+prefix on every run. For an unordered collection — a hash map, whose storage can yield
+its entries in any order — a walk that stopped at the first mismatch would bill a prefix
+decided by that order, so it visits every entry instead, and the same pair charges the
+same total on every run regardless of receiver form or iteration order.
 
 The requirement binds a source to a total; it does not bind a shared receiver to one. A map value two evaluations both update is converted by whichever of them gets there first: an update that finds the conversion already published bears only its own path, while two updates that race to convert are each charged the conversion each of them performed — so the two are charged differently for the same call. That difference is not ledger drift: it is evidence that the two evaluations did different work, one converting storage and one finding it converted, or each converting storage of its own. This is the reading the requirement already takes elsewhere — it binds one build's charges across hosts and Go versions, not one form's charges across every history the value reaching it may have.
 
