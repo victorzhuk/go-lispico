@@ -20,6 +20,11 @@ The stdlib `=` is the only production caller. The VM's canonical `=` answers thr
 `nativeEq` → `Value.Equals` → `boundedEquals` (core/vm/vm.go:1923, core/depth.go:190) and
 charges no per-node units at all, so no VM total moves either way.
 
+Below, Scenario A, B and C name the delta spec's three scenarios in the order it lists
+them: A is "two unequal maps compared repeatedly charge one reduction count", B is
+"equal contents charge equally regardless of build order", and C is "the comparison's
+answer is unchanged".
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -381,7 +386,7 @@ confirmed the repairs and left five warnings, all folded in.
           "Charged units at base for the disjoint-key case: exactly 1 (deterministic) -- this sub-assertion is the deterministic red.",
           "Charged units at base for the one-value-differs case: 1 + k, k in [1, n] the position the mismatch fell at; spread is the defect.",
           "Test sizes: n = 9 (first size above hashMapSmallLimit = 8), 100, 1000.",
-          "Repeats per size: 8. With the literal n+1 asserted, a base run passes only if every repeat put the mismatch last: probability (1/n)^8, at worst 4.6e-8 at n = 9. After the change the count is exact, so the committed test has no flake in the green direction.",
+          "Repeats per size: 8. With the literal n+1 asserted, a base run passes only if every repeat put the mismatch last: probability (1/n)^8, at worst 2.3e-8 at n = 9. After the change the count is exact, so the committed test has no flake in the green direction.",
           "Batch interval: 128 units (core/eval.go:303) -- a walk shorter than that only reaches the meter at Flush."
         ]
       },
@@ -393,7 +398,7 @@ confirmed the repairs and left five warnings, all folded in.
         "Assert form independence in one place: the 'trieReceiver' charge equals the 'valueMismatch' charge for the same n -- Scenario B.",
         "Task 0.1 evidence: run the test at the base commit with -v at all three sizes and record the per-repeat charges for 'valueMismatch' (spread, within one process), 'disjointKeys' (constant 1), 'equalMaps' (constant n+1, already stable), 'trieReceiver' (constant within a process, already stable). That covers 0.1's spread, single-process and control clauses without a throwaway harness.",
         "Add sub-test 'smallFormMismatchFirst' — Green on arrival: it passes at base, because the early return there already stops at the first mismatch and answers false. It is a preservation guard for the 'equal = eq' -> 'if !eq { equal = false }' rewrite, not a red assertion, so it is NOT listed in redTests. Mark it with the repo's 'Green on arrival:' wording (core/equals_bounded_test.go:40,118,159). Shape: a 5-key small-form pair (at most hashMapSmallLimit = 8 keys, so large == nil) with keys Int{V:0}..Int{V:4}, differing only at Int{V:0}. Small-form entries are held sorted by hashKey (core/types.go:1008-1018 find breaks on hk.less; core/types.go:1052-1054 'the small form is already sorted'), so the mismatch is visited FIRST and a surviving bare 'equal = eq' is overwritten by the four matching entries and returns true. Require got == false. Do NOT assert n+1 here: this pair's own charge is 6 (1 map node + 5 entries), and the sub-test sits outside the n in {9,100,1000} loop.",
-        "Add sub-test 'smallFormMismatchFirst', the deterministic guard for the 'equal = eq' rewrite: a 5-key small-form pair (at most hashMapSmallLimit = 8 keys, so large == nil) built with keys Int{V:0}..Int{V:4}, differing only at Int{V:0}. Small-form entries are held sorted by hashKey, so the mismatch is visited FIRST and a surviving bare 'equal = eq' returns true on every run. Require got == false. Without this the rewrite is covered only probabilistically (~4.6e-8 at n=9 that a bare assignment survives 8 repeats)."
+        "Add sub-test 'smallFormMismatchFirst', the deterministic guard for the 'equal = eq' rewrite: a 5-key small-form pair (at most hashMapSmallLimit = 8 keys, so large == nil) built with keys Int{V:0}..Int{V:4}, differing only at Int{V:0}. Small-form entries are held sorted by hashKey, so the mismatch is visited FIRST and a surviving bare 'equal = eq' returns true on every run. Require got == false. Without this the rewrite is covered only probabilistically (~2.3e-8 at n=9 that a bare assignment survives 8 repeats)."
       ],
       "codeTasks": [
         "core/equals_bounded.go, the *HashMap arm only: delete the 'if !equal || walkErr != nil { return }' guard and replace it with 'if walkErr != nil { return }'.",
@@ -774,7 +779,7 @@ confirmed the repairs and left five warnings, all folded in.
           "Charged units at base for the disjoint-key case: exactly 1 (deterministic) -- this sub-assertion is the deterministic red.",
           "Charged units at base for the one-value-differs case: 1 + k, k in [1, n] the position the mismatch fell at; spread is the defect.",
           "Test sizes: n = 9 (first size above hashMapSmallLimit = 8), 100, 1000.",
-          "Repeats per size: 8. With the literal n+1 asserted, a base run passes only if every repeat put the mismatch last: probability (1/n)^8, at worst 4.6e-8 at n = 9. After the change the count is exact, so the committed test has no flake in the green direction.",
+          "Repeats per size: 8. With the literal n+1 asserted, a base run passes only if every repeat put the mismatch last: probability (1/n)^8, at worst 2.3e-8 at n = 9. After the change the count is exact, so the committed test has no flake in the green direction.",
           "Batch interval: 128 units (core/eval.go:303) -- a walk shorter than that only reaches the meter at Flush."
         ]
       }
