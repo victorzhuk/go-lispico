@@ -159,7 +159,7 @@ One compute-credit draw from the Meter, at most 1,024 reductions / 64 KiB; one a
 _Avoid_: reservation, quota
 
 **Owned capacity**:
-Bytes + slots an env's backing actually holds, charged on new-slot writes by the Size table; logical length is irrelevant. Deletion tombstones without release; `Rebuild` is the only release path.
+Bytes + slots an env's backing actually holds, charged on new-slot writes by the Size table; logical length is irrelevant. Deletion tombstones without release; `Rebuild` is the release path, and a registration `Abort` a second, narrow one for the operation-owned cells a failed operation removes. A host write that adopts an operation-created cell settles normally — the charge stays, bounded by the per-env caps.
 _Avoid_: env size, binding count
 
 **Registration view**:

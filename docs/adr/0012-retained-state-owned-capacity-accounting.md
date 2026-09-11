@@ -53,12 +53,26 @@ scope's local binding maps under the write lock: fresh backing maps holding
 only live bindings, reusing existing live `*Cell` pointers (closures and VM
 site caches stay correct), dropping tombstoned cells, recomputing the
 capacity counters, and bumping the name-generation counter. Non-recursive —
-child envs are untouched. This is the only path that releases dead backing.
+child envs are untouched. This is the only broad release path;
+`Registration.Abort` is a second, narrow one (below).
 While a registration is active, `Rebuild` keeps every tombstoned cell that is
 the last write of one of its journal entries — not released, still counted —
 so an abort restores that cell in place and its holders see the restore.
 Names an aborted registration added stay tombstoned and are released by the
 next `Rebuild`.
+**`Registration.Abort` is the second, narrow release path.** A failed
+plugin operation releases the operation-owned capacity of the cells it
+removes: the env's byte and slot counters are refunded, and a removed cell
+that had already settled releases its meter charge exactly once, with
+meter calls executed outside the env and lazy-state locks. The path is
+narrow: only cells the operation itself wrote and the abort deletes.
+Capacity backing a binding the abort restores stays charged, and a host
+write that adopts an operation-created cell settles that cell normally —
+the charge stays, bounded by the per-env caps (32 MiB / 100,000 slots).
+Settlement is ordered against the abort: the operation decides which
+pending allocations still back a live binding before any meter is
+charged, so a failed operation never charges the meter for cells it then
+removes.
 
 **`LoadScope` for embedder scope ownership.** `Engine.LoadScope(ctx,
 source, bindings) (Value, *Env, error)` has `EvalWithBindings` semantics

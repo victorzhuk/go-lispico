@@ -170,10 +170,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   materialization — wins over the rollback. The registry entry, ownership
   bookkeeping, lazy activation, and `Stats().ActivePlugins` now publish only
   once the whole operation succeeds; a successful `UnloadPlugin` keeps its
-  existing last-writer ownership semantics. Retained-meter charges for cells
-  an abort removes are not yet released; that follows in a later change.
+  existing last-writer ownership semantics.
 
 ### Fixed
+
+- A failed `Use` or `ReloadPlugin` no longer leaves retained-meter charges
+  behind for the binding cells its rollback removes. The registration
+  journal tracks the operation-owned capacity of the cells a plugin
+  operation creates, and an abort refunds the env's byte and slot counters
+  for the cells it deletes and releases each removed cell's settled meter
+  charge exactly once, with meter calls kept outside the env and lazy-state
+  locks. Charges backing bindings that survive the rollback stay charged, a
+  host write that adopts an operation-created cell settles normally and
+  keeps its charge, bounded by the per-env capacity caps, and settlement is
+  ordered so a failed operation never charges the meter for cells it then
+  removes. The release path — registration abort as a second, narrow path
+  beside `Rebuild` — is recorded in ADR 0012 and the `CONTEXT.md`
+  **Owned capacity** entry.
 
 - `json/decode` now charges its decoded result exactly once per call. Public
   dispatch billed the result's root allocation twice — the plugin's deep
