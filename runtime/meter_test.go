@@ -722,6 +722,415 @@ func TestMeter_UseRollsBackPluginOnRetainedChargeError(t *testing.T) {
 	}
 }
 
+// ---- Plugin retained-settlement rollback (failed Use / ReloadPlugin) ----
+//
+// A failed plugin operation must never leave a meter charge behind for a cell
+// the journal abort removed, must keep charges for cells that survive it
+// (host-created or adopted), must release settled op-owned charges exactly
+// once when the operation fails after settlement, and must return its unused
+// compute lease exactly once with the operation's own error taking
+// precedence over any settlement error.
+
+func TestUseFailedInitLeavesNoRetainedCharge(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	initErr := errors.New("fli: deliberate init failure")
+	err = eng.Use(&rpPlugin{name: "fli", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("fli/state", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return initErr
+	}})
+	if !errors.Is(err, initErr) {
+		t.Fatalf("Use error = %v, want init failure", err)
+	}
+	if _, ok := eng.RootEnv().Get("fli/state"); ok {
+		t.Fatal("fli/state remained after failed Use")
+	}
+	if _, ok := eng.Registry().Get("fli"); ok {
+		t.Fatal("plugin remained registered after failed Use")
+	}
+	snap := m.snapshot()
+	if netBytes, netSlots := snap.chargedBytes-snap.releasedBytes, snap.chargedSlots-snap.releasedSlots; netBytes != 0 || netSlots != 0 {
+		t.Fatalf("net retained charge after failed Use = (%d, %d), want (0, 0)", netBytes, netSlots)
+	}
+}
+
+func TestUseFailedInitNetRetainedUsageEqualsPreOp(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	if _, err := eng.Eval(t.Context(), "seed", "(def keep/seed [1 2 3])"); err != nil {
+		t.Fatalf("Eval seed: %v", err)
+	}
+	pre := m.snapshot()
+
+	initErr := errors.New("nru: deliberate init failure")
+	err = eng.Use(&rpPlugin{name: "nru", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("nru/state", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return initErr
+	}})
+	if !errors.Is(err, initErr) {
+		t.Fatalf("Use error = %v, want init failure", err)
+	}
+	if _, ok := eng.RootEnv().Get("keep/seed"); !ok {
+		t.Fatal("pre-op seed binding lost by failed Use")
+	}
+	post := m.snapshot()
+	if got, want := post.chargedBytes-post.releasedBytes, pre.chargedBytes-pre.releasedBytes; got != want {
+		t.Fatalf("net retained bytes after failed Use = %d, want pre-op %d", got, want)
+	}
+	if got, want := post.chargedSlots-post.releasedSlots, pre.chargedSlots-pre.releasedSlots; got != want {
+		t.Fatalf("net retained slots after failed Use = %d, want pre-op %d", got, want)
+	}
+}
+
+func TestUseCapacityRejectionMidInitLeavesNoCharge(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m),
+		WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	err = eng.Use(&rpPlugin{name: "cap", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("cap/one", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return env.Set("cap/two", core.Int{V: 2})
+	}})
+	if err == nil {
+		t.Fatal("Use succeeded, want per-env capacity rejection")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Use error = %v, want %s", err, core.CodeResourceLimit)
+	}
+	if _, ok := eng.RootEnv().Get("cap/one"); ok {
+		t.Fatal("cap/one remained after capacity-rejected Use")
+	}
+	if _, ok := eng.Registry().Get("cap"); ok {
+		t.Fatal("plugin remained registered after capacity-rejected Use")
+	}
+	snap := m.snapshot()
+	if netBytes, netSlots := snap.chargedBytes-snap.releasedBytes, snap.chargedSlots-snap.releasedSlots; netBytes != 0 || netSlots != 0 {
+		t.Fatalf("net retained charge after mid-init capacity rejection = (%d, %d), want (0, 0)", netBytes, netSlots)
+	}
+}
+
+func TestUseConcurrentHostBindingKeepsCharge(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+	m.reset()
+
+	b := newRPBarrier()
+	hostErr := make(chan error, 1)
+	initErr := errors.New("hgt: deliberate init failure")
+	p := &rpPlugin{name: "hgt", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("hgt/op-one", core.Int{V: 1}); err != nil {
+			return err
+		}
+		if err := b.pause(); err != nil {
+			return err
+		}
+		if err := env.Set("hgt/op-two", core.Int{V: 2}); err != nil {
+			return err
+		}
+		return initErr
+	}}
+	done := rpGo(func() error { return eng.Use(p) })
+
+	rpWait(t, b.entered, "Init entry")
+	hostErr <- root.Set("host/keep", core.Int{V: 7})
+	if err := <-hostErr; err != nil {
+		t.Fatalf("host Set: %v", err)
+	}
+	close(b.release)
+
+	if err := rpResult(t, done, "Use"); !errors.Is(err, initErr) {
+		t.Fatalf("Use error = %v, want init failure", err)
+	}
+	rpWantInt(t, root, "host/keep", 7)
+	rpWantAbsent(t, root, "hgt/op-one")
+	rpWantAbsent(t, root, "hgt/op-two")
+	snap := m.snapshot()
+	wantBytes := core.RetainedBindingBytes("host/keep", core.Int{V: 7})
+	if netBytes, netSlots := snap.chargedBytes-snap.releasedBytes, snap.chargedSlots-snap.releasedSlots; netBytes != wantBytes || netSlots != 1 {
+		t.Fatalf("net retained charge after failed Use = (%d, %d), want surviving host binding only (%d, 1)", netBytes, netSlots, wantBytes)
+	}
+	if snap.releaseCalls != 0 {
+		t.Fatalf("ReleaseRetained calls = %d, want 0: the surviving host binding keeps its charge", snap.releaseCalls)
+	}
+}
+
+func TestUsePublishConflictReleasesSettledCharges(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+	m.reset()
+
+	b := newRPBarrier()
+	p := &rpPlugin{name: "pc", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("pc/state", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return b.pause()
+	}}
+	done := rpGo(func() error { return eng.Use(p) })
+
+	rpWait(t, b.entered, "Init entry")
+	eng.Registry().RegisterNoCheck(&rpHost{name: "pc"})
+	close(b.release)
+
+	rpWantCode(t, rpResult(t, done, "Use"), core.CodeRegistryConflict)
+	if _, ok := eng.Registry().Get("pc"); !ok {
+		t.Fatal("host registry entry lost after publish conflict")
+	}
+	rpWantAbsent(t, root, "pc/state")
+	snap := m.snapshot()
+	if snap.chargeCalls != 1 {
+		t.Fatalf("ChargeRetained calls = %d, want 1 settled charge", snap.chargeCalls)
+	}
+	if snap.releasedBytes != snap.chargedBytes || snap.releasedSlots != snap.chargedSlots {
+		t.Fatalf("ReleaseRetained after publish conflict = (%d, %d), want settled charges (%d, %d) released exactly once",
+			snap.releasedBytes, snap.releasedSlots, snap.chargedBytes, snap.chargedSlots)
+	}
+}
+
+func TestReloadPluginFailedInitSettlesRetainedOnce(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+	m.reset()
+
+	if err := eng.Use(&rpPlugin{name: "rl", version: "1.0.0", init: func(env *core.Env) error {
+		return env.Set("rl/old", core.Int{V: 1})
+	}}); err != nil {
+		t.Fatalf("Use v1: %v", err)
+	}
+	m.reset()
+
+	reloadErr := errors.New("rl: deliberate reload failure")
+	err = eng.ReloadPlugin(&rpPlugin{name: "rl", version: "2.0.0", init: func(env *core.Env) error {
+		if err := env.Set("rl/new", core.Int{V: 2}); err != nil {
+			return err
+		}
+		return reloadErr
+	}})
+	if !errors.Is(err, reloadErr) {
+		t.Fatalf("ReloadPlugin error = %v, want init failure", err)
+	}
+	rpWantInt(t, root, "rl/old", 1)
+	rpWantAbsent(t, root, "rl/new")
+	snap := m.snapshot()
+	if netBytes, netSlots := snap.chargedBytes-snap.releasedBytes, snap.chargedSlots-snap.releasedSlots; netBytes != 0 || netSlots != 0 {
+		t.Fatalf("net retained charge after failed reload = (%d, %d), want (0, 0)", netBytes, netSlots)
+	}
+	if snap.releaseCalls != 0 {
+		t.Fatalf("ReleaseRetained calls = %d, want 0: the restored old binding keeps its charge", snap.releaseCalls)
+	}
+}
+
+// ---- Keep-green pins: behavior that already holds and must stay ----
+
+func TestUseSettlementDenialReleasesExactlyOnce(t *testing.T) {
+	meterB := &recordingMeter{chargeErr: errors.New("retained denied")}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	err = eng.Use(evaluatorSetupPlugin{ctx: WithMeter(t.Context(), meterB)})
+	if err == nil {
+		t.Fatal("Use succeeded, want retained charge denial")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Use error = %v, want %s", err, core.CodeResourceLimit)
+	}
+	if _, ok := eng.RootEnv().Get("setup/evaluator-value"); ok {
+		t.Fatal("denied binding remained after failed Use")
+	}
+	if _, ok := eng.Registry().Get("setup-evaluator"); ok {
+		t.Fatal("plugin remained registered after settlement denial")
+	}
+	snap := meterB.snapshot()
+	if snap.chargeCalls != 1 {
+		t.Fatalf("ChargeRetained calls = %d, want 1", snap.chargeCalls)
+	}
+	if snap.releaseCalls != 0 {
+		t.Fatalf("ReleaseRetained calls = %d, want 0: denial with no earlier successful charge releases nothing", snap.releaseCalls)
+	}
+
+	meterB.chargeErr = nil
+	meterB.reset()
+	if err := eng.Use(setupPlugin{}); err != nil {
+		t.Fatalf("Use after denial cleared: %v", err)
+	}
+}
+
+func TestUseHostMeterDenialReleasesExactlyOnce(t *testing.T) {
+	m := &recordingMeter{chargeErr: errors.New("retained denied")}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	err = eng.Use(evaluatorSetupPlugin{ctx: t.Context()})
+	if err == nil {
+		t.Fatal("Use succeeded, want retained charge denial")
+	}
+	var lerr *core.LispicoError
+	if !errors.As(err, &lerr) || lerr.Code != core.CodeResourceLimit {
+		t.Fatalf("Use error = %v, want %s", err, core.CodeResourceLimit)
+	}
+	if _, ok := eng.RootEnv().Get("setup/evaluator-value"); ok {
+		t.Fatal("denied binding remained after failed Use")
+	}
+	if _, ok := eng.Registry().Get("setup-evaluator"); ok {
+		t.Fatal("plugin remained registered after settlement denial")
+	}
+	snap := m.snapshot()
+	if snap.chargeCalls != 1 {
+		t.Fatalf("ChargeRetained calls = %d, want 1", snap.chargeCalls)
+	}
+	if snap.releaseCalls != 0 {
+		t.Fatalf("ReleaseRetained calls = %d, want 0: denial with no earlier successful charge releases nothing", snap.releaseCalls)
+	}
+
+	m.chargeErr = nil
+	m.reset()
+	if err := eng.Use(setupPlugin{}); err != nil {
+		t.Fatalf("Use after denial cleared: %v", err)
+	}
+}
+
+func TestUseAdoptedPendingCellSettlesNormally(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+	m.reset()
+
+	b := newRPBarrier()
+	p := &rpPlugin{name: "adopt", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("adopt/cell", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return b.pause()
+	}}
+	done := rpGo(func() error { return eng.Use(p) })
+
+	rpWait(t, b.entered, "Init entry")
+	if err := root.Set("adopt/cell", core.Int{V: 2}); err != nil {
+		t.Fatalf("host rebind: %v", err)
+	}
+	close(b.release)
+
+	if err := rpResult(t, done, "Use"); err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+	rpWantInt(t, root, "adopt/cell", 2)
+	snap := m.snapshot()
+	wantBytes := core.RetainedBindingBytes("adopt/cell", core.Int{V: 1})
+	if snap.chargedBytes != wantBytes || snap.chargedSlots != 1 {
+		t.Fatalf("ChargeRetained = (%d, %d), want adopted cell creation charge (%d, 1)",
+			snap.chargedBytes, snap.chargedSlots, wantBytes)
+	}
+	if snap.releaseCalls != 0 {
+		t.Fatalf("ReleaseRetained calls = %d, want 0: an adopted cell settles normally and keeps its charge", snap.releaseCalls)
+	}
+}
+
+func TestUseFailedOpReturnsLeaseExactlyOnce(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	initErr := errors.New("lease-once: deliberate init failure")
+	err = eng.Use(&rpPlugin{name: "lease-once", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("lease-once/state", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return initErr
+	}})
+	if !errors.Is(err, initErr) {
+		t.Fatalf("Use error = %v, want init failure", err)
+	}
+	snap := m.snapshot()
+	if snap.leaseCalls != 1 || snap.returnCalls != 1 {
+		t.Fatalf("lease calls/returns = %d/%d, want 1/1: the unused compute lease is returned exactly once", snap.leaseCalls, snap.returnCalls)
+	}
+	if snap.returnedRed != 1024 || snap.returnedAlloc != 64<<10 {
+		t.Fatalf("returned lease = (%d, %d), want granted (1024, %d)", snap.returnedRed, snap.returnedAlloc, 64<<10)
+	}
+}
+
+func TestUseFailedOpKeepsErrorPrecedence(t *testing.T) {
+	m := &recordingMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	m.reset()
+
+	initErr := errors.New("prec: deliberate init failure")
+	err = eng.Use(&rpPlugin{name: "prec", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("prec/state", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return initErr
+	}})
+	if !errors.Is(err, initErr) {
+		t.Fatalf("Use error = %v, want the init error to take precedence over any settlement error", err)
+	}
+	if _, ok := eng.RootEnv().Get("prec/state"); ok {
+		t.Fatal("prec/state remained after failed Use")
+	}
+	if _, ok := eng.Registry().Get("prec"); ok {
+		t.Fatal("plugin remained registered after failed Use")
+	}
+}
+
 type evaluatorSetupPlugin struct {
 	ctx context.Context
 }
