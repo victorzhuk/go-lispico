@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 type chargeFailingMeter struct {
@@ -448,5 +449,236 @@ func TestSettleRetained_PanicMidRebuiltReleaseReleasesLaterCells(t *testing.T) {
 	}
 	if cellFirst.retainedMeter != nil || cellPanic.retainedMeter != nil || cellLast.retainedMeter != nil {
 		t.Fatal("settleRetained finalized rebuilt cells; their charge is owed back, not recorded on the cell")
+	}
+}
+
+// TestAbortRefundsOwnedRetainedCapacity pins the counter side of an aborted
+// registration: every op-owned entry Abort removes refunds the bytes and slot
+// its binding reserved, entry by entry, so capacity the operation does not
+// own, such as host bindings made before or during the op, keeps its
+// reservation.
+func TestAbortRefundsOwnedRetainedCapacity(t *testing.T) {
+	root := NewEnvWithRetainedLimits(nil, 0, 0)
+	root.SetRetainedMeter(&chargeFailingMeter{})
+	hostVal := Int{V: 7}
+	if err := root.Set("host", hostVal); err != nil {
+		t.Fatalf("set host: %v", err)
+	}
+
+	reg, err := root.BeginRegistration()
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	opX, opY := Int{V: 1}, Int{V: 2}
+	if err := reg.Env().Set("x", opX); err != nil {
+		t.Fatalf("set x: %v", err)
+	}
+	if err := reg.Env().Set("y", opY); err != nil {
+		t.Fatalf("set y: %v", err)
+	}
+	// A host binding made while the operation runs is not the operation's;
+	// its reservation must survive the rollback untouched, which is what
+	// separates a per-entry refund from restoring saved totals.
+	hostLate := Int{V: 9}
+	if err := root.Set("late", hostLate); err != nil {
+		t.Fatalf("set late: %v", err)
+	}
+
+	wantBytes := retainedBindingBytes("host", hostVal) + retainedBindingBytes("late", hostLate)
+	wantOpBytes := retainedBindingBytes("x", opX) + retainedBindingBytes("y", opY)
+	if gotBytes, gotSlots := root.RetainedUsage(); gotBytes != wantBytes+wantOpBytes || gotSlots != 4 {
+		t.Fatalf("RetainedUsage before Abort = (%d,%d), want (%d,4)", gotBytes, gotSlots, wantBytes+wantOpBytes)
+	}
+
+	reg.Abort()
+
+	if gotBytes, gotSlots := root.RetainedUsage(); gotBytes != wantBytes || gotSlots != 2 {
+		t.Fatalf("TestAbortRefundsOwnedRetainedCapacity: RetainedUsage after Abort = (%d,%d), want (%d,2); each removed op-owned binding must refund its reserved bytes and slot without touching host capacity",
+			gotBytes, gotSlots, wantBytes)
+	}
+	if _, ok := root.Get("x"); ok {
+		t.Fatal("TestAbortRefundsOwnedRetainedCapacity: binding x survived Abort")
+	}
+	if _, ok := root.Get("y"); ok {
+		t.Fatal("TestAbortRefundsOwnedRetainedCapacity: binding y survived Abort")
+	}
+	if _, ok := root.Get("late"); !ok {
+		t.Fatal("TestAbortRefundsOwnedRetainedCapacity: host binding late was dropped by Abort")
+	}
+}
+
+// TestAbortReleasesSettledChargeOnce pins the meter side of an aborted
+// registration: a removed op-owned cell whose charge was settled
+// (cell.retainedMeter set) is released exactly once, with its exact charged
+// amounts, and the charge backing a surviving host binding is never
+// released.
+func TestAbortReleasesSettledChargeOnce(t *testing.T) {
+	root := NewEnvWithRetainedLimits(nil, 0, 0)
+	meter := &chargeFailingMeter{}
+	root.SetRetainedMeter(meter)
+	hostVal := Int{V: 7}
+	if err := root.Set("host", hostVal); err != nil {
+		t.Fatalf("set host: %v", err)
+	}
+
+	reg, err := root.BeginRegistration()
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	opX, opY := Int{V: 1}, Int{V: 2}
+	if err := reg.Env().Set("x", opX); err != nil {
+		t.Fatalf("set x: %v", err)
+	}
+	if err := reg.Env().Set("y", opY); err != nil {
+		t.Fatalf("set y: %v", err)
+	}
+
+	bytesHost := retainedBindingBytes("host", hostVal)
+	bytesX := retainedBindingBytes("x", opX)
+	bytesY := retainedBindingBytes("y", opY)
+	before := meter.snapshot()
+	if before.charges != 3 || before.releases != 0 || before.chargedBytes != bytesHost+bytesX+bytesY || before.chargedSlots != 3 {
+		t.Fatalf("meter before Abort: %d charges, %d releases (%d,%d), want 3 charges, 0 releases (%d,3)",
+			before.charges, before.releases, before.chargedBytes, before.chargedSlots, bytesHost+bytesX+bytesY)
+	}
+
+	reg.Abort()
+
+	snap := meter.snapshot()
+	if snap.charges != before.charges {
+		t.Fatalf("TestAbortReleasesSettledChargeOnce: charges went from %d to %d across Abort; rollback must not charge the meter",
+			before.charges, snap.charges)
+	}
+	if snap.releases != 2 {
+		t.Fatalf("TestAbortReleasesSettledChargeOnce: ReleaseRetained calls = %d, want 2, exactly one per removed op-owned settled cell",
+			snap.releases)
+	}
+	if snap.releasedBytes != bytesX+bytesY || snap.releasedSlots != 2 {
+		t.Fatalf("TestAbortReleasesSettledChargeOnce: ReleaseRetained amounts = (%d,%d), want (%d,2), the exact charged amounts and nothing of the surviving host charge",
+			snap.releasedBytes, snap.releasedSlots, bytesX+bytesY)
+	}
+}
+
+// TestAbortKeepsAdoptedCellCharge pins the adoption decision: a key a host
+// write took over from the operation keeps that write and its charge. Abort
+// neither refunds the binding's reserved capacity nor releases the meter
+// charge backing the surviving host binding.
+func TestAbortKeepsAdoptedCellCharge(t *testing.T) {
+	root := NewEnvWithRetainedLimits(nil, 0, 0)
+	meter := &chargeFailingMeter{}
+	root.SetRetainedMeter(meter)
+
+	reg, err := root.BeginRegistration()
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	if err := reg.Env().Set("x", Int{V: 1}); err != nil {
+		t.Fatalf("set x: %v", err)
+	}
+	adopted := Int{V: 2}
+	if err := root.Set("x", adopted); err != nil {
+		t.Fatalf("host set x: %v", err)
+	}
+
+	usageBytes, usageSlots := root.RetainedUsage()
+
+	reg.Abort()
+
+	if got, ok := root.Get("x"); !ok || got != adopted {
+		t.Fatalf("TestAbortKeepsAdoptedCellCharge: x after Abort = (%v,%v), want the host write (%v,true)",
+			got, ok, adopted)
+	}
+	if gotBytes, gotSlots := root.RetainedUsage(); gotBytes != usageBytes || gotSlots != usageSlots {
+		t.Fatalf("TestAbortKeepsAdoptedCellCharge: RetainedUsage changed across Abort: (%d,%d) -> (%d,%d); an adopted entry must not be refunded",
+			usageBytes, usageSlots, gotBytes, gotSlots)
+	}
+	if snap := meter.snapshot(); snap.releases != 0 {
+		t.Fatalf("TestAbortKeepsAdoptedCellCharge: ReleaseRetained calls = %d, want 0; an adopted entry's charge must not be released",
+			snap.releases)
+	}
+}
+
+// TestAbortRestoredBindingKeepsCharge pins that a binding Abort restores
+// rather than removes keeps its charge: the meter charge backing the
+// surviving prior binding is never released and its reserved capacity is
+// never refunded.
+func TestAbortRestoredBindingKeepsCharge(t *testing.T) {
+	root := NewEnvWithRetainedLimits(nil, 0, 0)
+	meter := &chargeFailingMeter{}
+	root.SetRetainedMeter(meter)
+	prior := Int{V: 7}
+	if err := root.Set("x", prior); err != nil {
+		t.Fatalf("set x: %v", err)
+	}
+
+	reg, err := root.BeginRegistration()
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	if err := reg.Env().Set("x", Int{V: 1}); err != nil {
+		t.Fatalf("op set x: %v", err)
+	}
+
+	usageBytes, usageSlots := root.RetainedUsage()
+
+	reg.Abort()
+
+	if got, ok := root.Get("x"); !ok || got != prior {
+		t.Fatalf("TestAbortRestoredBindingKeepsCharge: x after Abort = (%v,%v), want the prior binding (%v,true)",
+			got, ok, prior)
+	}
+	if gotBytes, gotSlots := root.RetainedUsage(); gotBytes != usageBytes || gotSlots != usageSlots {
+		t.Fatalf("TestAbortRestoredBindingKeepsCharge: RetainedUsage changed across Abort: (%d,%d) -> (%d,%d); a restored entry must not be refunded",
+			usageBytes, usageSlots, gotBytes, gotSlots)
+	}
+	if snap := meter.snapshot(); snap.charges != 1 || snap.releases != 0 {
+		t.Fatalf("TestAbortRestoredBindingKeepsCharge: meter = %d charges, %d releases, want 1 charge (the prior binding's) and 0 releases; a restored binding keeps its charge",
+			snap.charges, snap.releases)
+	}
+}
+
+// reentrantReleaseMeter is a host meter that re-enters the environment from
+// ReleaseRetained, the way an embedder callback does. A rollback that runs
+// the release while the env lock is held deadlocks in here.
+type reentrantReleaseMeter struct {
+	chargeFailingMeter
+	env *Env
+}
+
+func (m *reentrantReleaseMeter) ReleaseRetained(bytes, slots int64) {
+	m.chargeFailingMeter.ReleaseRetained(bytes, slots)
+	_, _ = m.env.Get("x")
+	_ = m.env.Set("after-release", Int{V: 1})
+}
+
+// TestAbortNoMeterCallUnderEnvLock pins that Abort never reaches the meter
+// while the env lock is held: a release whose meter re-enters the env must
+// be able to take the lock, so Abort has to collect releases under the lock
+// and run them after releasing it.
+func TestAbortNoMeterCallUnderEnvLock(t *testing.T) {
+	root := NewEnvWithRetainedLimits(nil, 0, 0)
+	meter := &reentrantReleaseMeter{env: root}
+	root.SetRetainedMeter(meter)
+
+	reg, err := root.BeginRegistration()
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	if err := reg.Env().Set("x", Int{V: 1}); err != nil {
+		t.Fatalf("set x: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reg.Abort()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("TestAbortNoMeterCallUnderEnvLock: Abort blocked for the 2s guard; ReleaseRetained ran while the env lock was held")
+	}
+	if _, ok := root.Get("x"); ok {
+		t.Fatal("TestAbortNoMeterCallUnderEnvLock: binding x survived Abort")
 	}
 }
