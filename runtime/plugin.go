@@ -128,7 +128,7 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	}
 	e.beginLazyOp(reg.Env(), name, version)
 
-	added, err := e.loadPlugin(p, reg.Env(), name, version)
+	added, err := e.loadPlugin(p, reg, name, version)
 	if err == nil {
 		err = e.publishPlugin(p, gen)
 	}
@@ -146,19 +146,30 @@ func (e *engineImpl) Use(p core.Plugin) error {
 	return nil
 }
 
-// loadPlugin runs p.Init and the vocabulary pass through env inside one
-// accounted evaluation and returns the root names they added. It publishes
-// nothing: the caller settles the registration and the engine state.
-func (e *engineImpl) loadPlugin(p core.Plugin, env *core.Env, name, version string) (added map[string]struct{}, err error) {
+// loadPlugin runs p.Init and the vocabulary pass through the registration's
+// view inside one accounted evaluation and returns the root names they added.
+// It publishes nothing: the caller settles the registration and the engine
+// state. On failure the abort's removals are decided before settlement, so a
+// failed operation never charges the meter for cells the rollback removes;
+// the caller's abortPlugin still unwinds the journal after FinishEval.
+func (e *engineImpl) loadPlugin(p core.Plugin, reg *core.Registration, name, version string) (added map[string]struct{}, err error) {
 	before := e.snapshotBindings()
+	env := reg.Env()
 	ctx := e.evalResourceContext(context.Background())
 	top, err := core.StartEval(ctx)
 	if err != nil {
 		return nil, err
 	}
+	reg.BindPendingEval(ctx)
 	defer func() {
 		if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
 			added, err = nil, finishErr
+		}
+	}()
+	defer func() {
+		// LIFO places this between the fence and the settlement above.
+		if err != nil {
+			reg.DropPendingCharges()
 		}
 	}()
 	defer e.lazyMaterializer.fence()
@@ -234,7 +245,7 @@ func (e *engineImpl) ReloadPlugin(p core.Plugin) error {
 		e.removePluginBindings(view, name)
 	}
 
-	added, err := e.loadPlugin(p, view, name, version)
+	added, err := e.loadPlugin(p, reg, name, version)
 	if err == nil {
 		err = e.publishPlugin(p, gen)
 	}

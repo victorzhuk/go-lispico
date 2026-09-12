@@ -1,5 +1,7 @@
 package core
 
+import "context"
+
 // Registration is the handle for one registration operation on a root Env.
 type Registration struct {
 	root    *Env
@@ -8,6 +10,13 @@ type Registration struct {
 	eval    configBefore[Evaluator]
 	meter   configBefore[sessionMeter]
 	lazy    configBefore[*LazyLayer]
+	// retainedEval is the evaluation whose settlement charges this
+	// operation's pending retained allocations. A fresh binding written
+	// through the view without an evaluation context of its own — the plain
+	// Env.Set inside a plugin's Init — records its charge there instead of
+	// charging the meter as it writes, so a failed operation can decide
+	// which removals stand before any meter runs. Guarded by root.mu.
+	retainedEval *evalState
 }
 
 // configBefore is the before-image of one root configuration field. Guarded
@@ -174,6 +183,50 @@ func (r *Registration) Abort() {
 	// Releases run with the root lock released: a host meter may re-enter the
 	// environment, and it must be able to take the lock Abort just held.
 	releaseAll(releases)
+}
+
+// BindPendingEval attributes writes through the view that carry no
+// evaluation state of their own to the settlement of ctx's evaluation. The
+// runtime calls it once, inside that evaluation, before the operation
+// writes.
+func (r *Registration) BindPendingEval(ctx context.Context) {
+	root := r.root
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	if root.reg.Load() == r {
+		r.retainedEval = evalStateFrom(ctx)
+	}
+}
+
+// DropPendingCharges applies the abort's removal decision to settlement
+// before any meter is charged: a cell the operation owns and an Abort would
+// remove is marked dropped while its charge is still pending, so settlement
+// never charges a meter for a binding that is about to be deleted. Bindings
+// that survive the abort — restored in place, or left by a foreign write —
+// keep their pending charges and settle normally. Nothing is rebound, no
+// counter moves and no meter is called here, and the registration stays
+// open: the Abort that follows refunds capacity and releases any charge a
+// settlement already applied.
+func (r *Registration) DropPendingCharges() {
+	root := r.root
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	if root.reg.Load() != r {
+		return
+	}
+	for key, ent := range r.entries {
+		cells := root.vars
+		if key.fn {
+			cells = root.funcs
+		}
+		last := ent.last
+		if cells[key.name] != last || last.Version() != ent.lastVer {
+			continue
+		}
+		if ent.prior != last && last.retainedMeter == nil {
+			last.dropped = true
+		}
+	}
 }
 
 // finish is a no-op once r has ended, so a stale handle never touches a later

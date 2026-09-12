@@ -245,7 +245,7 @@ func (e *Env) activeRetainedMeter(ctx context.Context) sessionMeter {
 	return e.retainedMeter
 }
 
-func (e *Env) prepareFreshRetained(ctx context.Context, bytes, slots int64) (sessionMeter, *evalState, bool, error) {
+func (e *Env) prepareFreshRetained(ctx context.Context, reg *Registration, bytes, slots int64) (sessionMeter, *evalState, bool, error) {
 	if bytes == 0 && slots == 0 {
 		return nil, nil, false, nil
 	}
@@ -254,6 +254,9 @@ func (e *Env) prepareFreshRetained(ctx context.Context, bytes, slots int64) (ses
 	}
 	meter := e.activeRetainedMeter(ctx)
 	st, hasState := ctx.Value(evalStateKey{}).(*evalState)
+	if !hasState && reg != nil {
+		st, hasState = reg.retainedEval, reg.retainedEval != nil
+	}
 	pending := hasState && meter != nil
 	if !pending {
 		if err := e.chargeRetainedMeter(meter, bytes, slots); err != nil {
@@ -327,7 +330,7 @@ func (e *Env) setBoth(ctx context.Context, r *Registration, name string, val Val
 		newSlots++
 	}
 	b := retainedBindingBytes(name, val)
-	meter, st, pending, err := e.prepareFreshRetained(ctx, b*newSlots, newSlots)
+	meter, st, pending, err := e.prepareFreshRetained(ctx, j, b*newSlots, newSlots)
 	if err != nil {
 		return err
 	}
@@ -432,7 +435,7 @@ func (e *Env) setVar(ctx context.Context, r *Registration, name string, val Valu
 	var pending bool
 	if !ok {
 		var err error
-		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		meter, st, pending, err = e.prepareFreshRetained(ctx, j, b, 1)
 		if err != nil {
 			return err
 		}
@@ -483,7 +486,7 @@ func (e *Env) replaceCell(ctx context.Context, r *Registration, name string, val
 	var pending bool
 	if !ok {
 		var err error
-		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		meter, st, pending, err = e.prepareFreshRetained(ctx, j, b, 1)
 		if err != nil {
 			return err
 		}
@@ -765,7 +768,7 @@ func (e *Env) setFuncCell(ctx context.Context, r *Registration, name string, val
 	var pending bool
 	if !ok {
 		var err error
-		meter, st, pending, err = e.prepareFreshRetained(ctx, b, 1)
+		meter, st, pending, err = e.prepareFreshRetained(ctx, j, b, 1)
 		if err != nil {
 			return err
 		}
