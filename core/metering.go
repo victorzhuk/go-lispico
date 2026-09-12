@@ -369,6 +369,9 @@ func (st *evalState) settleRetained() error {
 	defer st.resetRetained()
 
 	for _, pending := range st.pendingCellAllocs {
+		if pending.cell.dropped {
+			continue
+		}
 		if pending.env.RetainedMeter() == nil && pending.meter != nil {
 			pending.env.SetRetainedMeter(pending.meter)
 		}
@@ -376,6 +379,9 @@ func (st *evalState) settleRetained() error {
 	charges := make(map[sessionMeter]*retainedCharge, len(st.pendingCellAllocs))
 	var chargeOrder []*retainedCharge
 	for _, pending := range st.pendingCellAllocs {
+		if pending.cell.dropped {
+			continue
+		}
 		if pending.meter == nil || (pending.bytes == 0 && pending.slots == 0) {
 			continue
 		}
@@ -409,6 +415,9 @@ func (st *evalState) settleRetained() error {
 
 	var releases []retainedRelease
 	for _, pending := range st.pendingCellAllocs {
+		if pending.cell.dropped {
+			continue
+		}
 		pending.env.mu.Lock()
 		if pending.cell.rebuilt {
 			if pending.meter != nil && (pending.bytes > 0 || pending.slots > 0) {

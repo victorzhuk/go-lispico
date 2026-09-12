@@ -21,6 +21,10 @@ type Cell struct {
 	retainedMeter sessionMeter
 	retainedBytes int64
 	rebuilt       bool
+	// dropped marks a cell an aborted registration removed while a
+	// pendingCellAlloc for it was still open: settlement drops that pending
+	// without charging the meter. Guarded by the owning Env's lock.
+	dropped bool
 }
 
 // Version returns the cell mutation version.
@@ -355,8 +359,16 @@ func (e *Env) setBoth(ctx context.Context, r *Registration, name string, val Val
 	if !funcCellExists {
 		recordFreshRetained(st, pending, e, funcCell, meter, b)
 	}
-	j.afterWrite(varKey, varCell)
-	j.afterWrite(funcKey, funcCell)
+	varReservedBytes, varReservedSlots := int64(0), int64(0)
+	if !varCellExists {
+		varReservedBytes, varReservedSlots = b, 1
+	}
+	funcReservedBytes, funcReservedSlots := int64(0), int64(0)
+	if !funcCellExists {
+		funcReservedBytes, funcReservedSlots = b, 1
+	}
+	j.afterWrite(varKey, varCell, varReservedBytes, varReservedSlots)
+	j.afterWrite(funcKey, funcCell, funcReservedBytes, funcReservedSlots)
 
 	return nil
 }
@@ -438,7 +450,11 @@ func (e *Env) setVar(ctx context.Context, r *Registration, name string, val Valu
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
-	j.afterWrite(key, cell)
+	reservedBytes, reservedSlots := int64(0), int64(0)
+	if !ok {
+		reservedBytes, reservedSlots = b, 1
+	}
+	j.afterWrite(key, cell, reservedBytes, reservedSlots)
 	return nil
 }
 
@@ -482,7 +498,11 @@ func (e *Env) replaceCell(ctx context.Context, r *Registration, name string, val
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
-	j.afterWrite(key, cell)
+	reservedBytes, reservedSlots := int64(0), int64(0)
+	if !ok {
+		reservedBytes, reservedSlots = b, 1
+	}
+	j.afterWrite(key, cell, reservedBytes, reservedSlots)
 	return nil
 }
 
@@ -760,7 +780,11 @@ func (e *Env) setFuncCell(ctx context.Context, r *Registration, name string, val
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
-	j.afterWrite(key, cell)
+	reservedBytes, reservedSlots := int64(0), int64(0)
+	if !ok {
+		reservedBytes, reservedSlots = b, 1
+	}
+	j.afterWrite(key, cell, reservedBytes, reservedSlots)
 	return nil
 }
 
@@ -950,7 +974,7 @@ func (e *Env) deleteName(r *Registration, name string) {
 		cell.v = nil
 		cell.canonical = false
 		cell.version.Add(1)
-		j.afterWrite(key, cell)
+		j.afterWrite(key, cell, 0, 0)
 	}
 	if cell, ok := e.funcs[name]; ok && (cell.v != nil || cell.canonical) {
 		key := registrationKey{name: name, fn: true}
@@ -958,7 +982,7 @@ func (e *Env) deleteName(r *Registration, name string) {
 		cell.v = nil
 		cell.canonical = false
 		cell.version.Add(1)
-		j.afterWrite(key, cell)
+		j.afterWrite(key, cell, 0, 0)
 	}
 	e.mu.Unlock()
 }
@@ -1169,6 +1193,7 @@ func (e *Env) applyMergePlan(p *mergePlan, j *Registration) {
 	for _, c := range p.commits {
 		key := registrationKey{name: c.name, fn: c.funcCell}
 		j.beforeWrite(key, c.cell)
+		reservedBytes, reservedSlots := int64(0), int64(0)
 		cell := c.cell
 		if cell == nil {
 			if c.funcCell {
@@ -1177,6 +1202,7 @@ func (e *Env) applyMergePlan(p *mergePlan, j *Registration) {
 				cell = e.localCell(c.name)
 			}
 			e.newNameGen.Add(1)
+			reservedBytes, reservedSlots = c.src.retainedBytes, 1
 		}
 		cell.v = c.src.v
 		cell.canonical = c.canonical
@@ -1184,7 +1210,7 @@ func (e *Env) applyMergePlan(p *mergePlan, j *Registration) {
 		cell.retainedBytes = c.src.retainedBytes
 		cell.rebuilt = c.src.rebuilt
 		cell.version.Add(1)
-		j.afterWrite(key, cell)
+		j.afterWrite(key, cell, reservedBytes, reservedSlots)
 	}
 	e.retainedBytes += p.bytes
 	e.retainedSlots += p.slots

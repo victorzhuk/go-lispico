@@ -45,6 +45,11 @@ type registrationEntry struct {
 	canonical bool
 	last      *Cell
 	lastVer   uint64
+	// bytes and slots are the retained capacity the operation reserved for
+	// this binding when it created the cell; zero for a write that reused an
+	// existing cell. Abort refunds them when it removes the entry.
+	bytes int64
+	slots int64
 }
 
 // BeginRegistration opens a registration operation on the root e resolves to.
@@ -78,15 +83,20 @@ func (r *Registration) Complete() { r.finish() }
 // Abort rolls back the operation's writes and ends the registration. A key is
 // restored only while the operation still owns it: its map cell is the op's
 // last written cell at the version that write left. A key a foreign write
-// touched afterwards keeps that write.
+// touched afterwards keeps that write. Removed op-owned bindings refund the
+// retained capacity their writes reserved and release the meter charge a
+// settlement recorded on their cell, each exactly once; a charge still pending
+// settlement is dropped there instead. Restored or adopted bindings keep both
+// their reservation and their charge.
 func (r *Registration) Abort() {
 	root := r.root
 	root.mu.Lock()
-	defer root.mu.Unlock()
 	if root.reg.Load() != r {
+		root.mu.Unlock()
 		return
 	}
 	restored := false
+	var releases []retainedRelease
 	for key, ent := range r.entries {
 		cells := root.vars
 		if key.fn {
@@ -99,6 +109,22 @@ func (r *Registration) Abort() {
 		restored = true
 		switch ent.prior {
 		case nil:
+			// The op created this binding: Abort removes it. The reserved
+			// capacity goes back and the settled charge is released once; a
+			// pendingCellAlloc for this cell is dropped at settlement, before
+			// any meter charge, via last.dropped.
+			root.retainedBytes -= ent.bytes
+			root.retainedSlots -= ent.slots
+			if last.retainedMeter != nil {
+				releases = append(releases, retainedRelease{
+					meter: last.retainedMeter,
+					bytes: last.retainedBytes,
+					slots: 1,
+				})
+				last.retainedMeter = nil
+				last.retainedBytes = 0
+			}
+			last.dropped = true
 			last.v, last.canonical = nil, false
 		case last:
 			last.v, last.canonical = ent.v, ent.canonical
@@ -108,6 +134,18 @@ func (r *Registration) Abort() {
 			cells[key.name] = ent.prior
 			ent.prior.v, ent.prior.canonical = ent.v, ent.canonical
 			ent.prior.version.Add(1)
+			root.retainedBytes -= ent.bytes
+			root.retainedSlots -= ent.slots
+			if last.retainedMeter != nil {
+				releases = append(releases, retainedRelease{
+					meter: last.retainedMeter,
+					bytes: last.retainedBytes,
+					slots: 1,
+				})
+				last.retainedMeter = nil
+				last.retainedBytes = 0
+			}
+			last.dropped = true
 			last.v, last.canonical = nil, false
 		}
 		last.version.Add(1)
@@ -132,6 +170,10 @@ func (r *Registration) Abort() {
 		root.macroEpoch++
 	}
 	r.endLocked()
+	root.mu.Unlock()
+	// Releases run with the root lock released: a host meter may re-enter the
+	// environment, and it must be able to take the lock Abort just held.
+	releaseAll(releases)
 }
 
 // finish is a no-op once r has ended, so a stale handle never touches a later
@@ -192,14 +234,20 @@ func (r *Registration) record(key registrationKey, cur *Cell) {
 }
 
 // afterWrite marks cell, now in the map for key, as the operation's last
-// write. Caller holds root.mu.
-func (r *Registration) afterWrite(key registrationKey, cell *Cell) {
+// write, and records the retained capacity the write reserved; a write that
+// reused an existing cell passes zero and keeps the recorded capacity.
+// Caller holds root.mu.
+func (r *Registration) afterWrite(key registrationKey, cell *Cell, reservedBytes, reservedSlots int64) {
 	if r == nil {
 		return
 	}
 	ent := r.entries[key]
 	ent.last = cell
 	ent.lastVer = cell.Version()
+	if reservedBytes != 0 || reservedSlots != 0 {
+		ent.bytes = reservedBytes
+		ent.slots = reservedSlots
+	}
 }
 
 // pins reports whether cell is the op's last write to key, still at that
