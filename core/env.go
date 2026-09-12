@@ -494,6 +494,9 @@ func (e *Env) replaceCell(ctx context.Context, r *Registration, name string, val
 	j.beforeWrite(key, old)
 	cell := &Cell{v: val}
 	cell.version.Add(1)
+	if ok && j != nil && j.pins(key, old) {
+		e.adoptRetainedCharge(ctx, j, old, cell)
+	}
 	e.vars[name] = cell
 	if !ok || old.v == nil {
 		e.newNameGen.Add(1)
@@ -507,6 +510,32 @@ func (e *Env) replaceCell(ctx context.Context, r *Registration, name string, val
 	}
 	j.afterWrite(key, cell, reservedBytes, reservedSlots)
 	return nil
+}
+
+// adoptRetainedCharge carries the retained charge of the cell ReplaceCell
+// retires onto the replacement: a settled meter anchor moves cell to cell,
+// and a charge still pending on the operation's settlement ledger is
+// repointed, so no later removal path can anchor or release a charge on the
+// retired cell. Caller holds e.mu and has pinned old as the operation's last
+// write to its key.
+func (e *Env) adoptRetainedCharge(ctx context.Context, j *Registration, old, cell *Cell) {
+	if old.retainedMeter != nil {
+		cell.retainedMeter, old.retainedMeter = old.retainedMeter, nil
+		cell.retainedBytes, old.retainedBytes = old.retainedBytes, 0
+		return
+	}
+	st, ok := ctx.Value(evalStateKey{}).(*evalState)
+	if !ok {
+		st = j.retainedEval
+	}
+	if st == nil {
+		return
+	}
+	for i := range st.pendingCellAllocs {
+		if p := &st.pendingCellAllocs[i]; p.cell == old && p.env == e {
+			p.cell = cell
+		}
+	}
 }
 
 func (e *Env) forkCells(parent *Env, names []Symbol) *Env {
