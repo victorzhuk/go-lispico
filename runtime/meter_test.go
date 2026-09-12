@@ -1109,27 +1109,50 @@ func TestUseFailedOpReturnsLeaseExactlyOnce(t *testing.T) {
 }
 
 func TestUseFailedOpKeepsErrorPrecedence(t *testing.T) {
-	m := &recordingMeter{}
+	m := &recordingMeter{chargeErr: errors.New("retained denied")}
 	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
 	m.reset()
 
 	initErr := errors.New("prec: deliberate init failure")
-	err = eng.Use(&rpPlugin{name: "prec", version: "1.0.0", init: func(env *core.Env) error {
+	b := newRPBarrier()
+	p := &rpPlugin{name: "prec", version: "1.0.0", init: func(env *core.Env) error {
 		if err := env.Set("prec/state", core.Int{V: 1}); err != nil {
 			return err
 		}
+		if err := b.pause(); err != nil {
+			return err
+		}
 		return initErr
-	}})
+	}}
+	done := rpGo(func() error { return eng.Use(p) })
+
+	rpWait(t, b.entered, "Init entry")
+	if err := root.Set("prec/state", core.Int{V: 2}); err != nil {
+		t.Fatalf("host adopt rebind: %v", err)
+	}
+	close(b.release)
+
+	err = rpResult(t, done, "Use")
 	if !errors.Is(err, initErr) {
-		t.Fatalf("Use error = %v, want the init error to take precedence over any settlement error", err)
+		t.Fatalf("Use error = %v, want the init error to take precedence over the settlement denial", err)
 	}
-	if _, ok := eng.RootEnv().Get("prec/state"); ok {
-		t.Fatal("prec/state remained after failed Use")
+	var lerr *core.LispicoError
+	if errors.As(err, &lerr) {
+		t.Fatalf("Use error = %v, want no *core.LispicoError: the settlement denial must be swallowed while the operation error stands", err)
 	}
+	snap := m.snapshot()
+	if snap.chargeCalls != 1 {
+		t.Fatalf("ChargeRetained calls = %d, want 1: the adopted cell must reach settlement and be denied", snap.chargeCalls)
+	}
+	if snap.releaseCalls != 0 {
+		t.Fatalf("ReleaseRetained calls = %d, want 0: a denial with no earlier successful charge releases nothing", snap.releaseCalls)
+	}
+	rpWantInt(t, root, "prec/state", 2)
 	if _, ok := eng.Registry().Get("prec"); ok {
 		t.Fatal("plugin remained registered after failed Use")
 	}
