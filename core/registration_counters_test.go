@@ -224,3 +224,70 @@ func TestRegistration_RebuildDuringOperationKeepsOwnedTombstone(t *testing.T) {
 		t.Errorf("Rebuild after the op ended left root cell %p for x; want the live restored cell %p", cur, xc)
 	}
 }
+
+// TestAbortRemovesAddedNamesFromRootMaps pins that an Abort whose entry had no
+// registration prior deletes the op-added map entry outright. The abort
+// already refunds the binding's capacity and drops its value, so an entry left
+// in root.vars is a resurrectable tombstone: a later Set of the same name sees
+// the cell present and revives it with no reservation or charge.
+func TestAbortRemovesAddedNamesFromRootMaps(t *testing.T) {
+	t.Parallel()
+	root := NewEnv(nil)
+	counterSeed(t, "seed x", root.Set("x", Int{V: 1}))
+	baseVars := len(root.vars)
+	baseBytes, baseSlots := root.RetainedUsage()
+
+	names := []string{"a", "b", "c"}
+	for _, name := range names {
+		reg := counterBegin(t, root)
+		view := reg.Env()
+		counterTry(t, "view.Set("+name+")", func() error { return view.Set(name, Int{V: 2}) })
+		held, ok := root.Cell(name)
+		if !ok {
+			t.Fatalf("TestAbortRemovesAddedNamesFromRootMaps/%s: root.Cell(%q) found nothing after the op write; want the op-added cell", name, name)
+		}
+		reg.Abort()
+
+		if _, live, _ := root.ReadCell(held); live {
+			t.Errorf("TestAbortRemovesAddedNamesFromRootMaps/%s: the aborted op-added cell %p for %q is live via ReadCell after Abort; want it dropped", name, held, name)
+		}
+		if cur, present := root.vars[name]; present {
+			t.Errorf("TestAbortRemovesAddedNamesFromRootMaps/%s: root.vars keeps the aborted op-added entry %p after Abort; want it deleted from the map so a later Set of %q charges as fresh", name, cur, name)
+		}
+	}
+
+	if got := len(root.vars); got != baseVars {
+		t.Errorf("TestAbortRemovesAddedNamesFromRootMaps: len(root.vars) = %d after %d aborted additions; want the baseline %d", got, len(names), baseVars)
+	}
+	if gotBytes, gotSlots := root.RetainedUsage(); gotBytes != baseBytes || gotSlots != baseSlots {
+		t.Errorf("TestAbortRemovesAddedNamesFromRootMaps: RetainedUsage = (%d,%d) after the aborted additions; want the baseline (%d,%d)", gotBytes, gotSlots, baseBytes, baseSlots)
+	}
+}
+
+// TestRebindAfterAbortChargesAsFresh pins the forbidden combination the
+// tombstoned aborted entry allowed: a direct Set of a name whose binding the
+// aborted operation created must pay the fresh-binding capacity charge,
+// retainedBindingBytes plus one slot, never revive the dead cell for free.
+func TestRebindAfterAbortChargesAsFresh(t *testing.T) {
+	t.Parallel()
+	seed := Int{V: 1}
+	rebind := Int{V: 2}
+	charge := retainedBindingBytes("n", rebind)
+	// The budget admits one live host binding plus one fresh binding, so the
+	// aborted addition's refund must land before the rebind is admitted; the
+	// assertion below pins that the rebind moved the retained ledger by the
+	// full fresh charge rather than slipping past the cap unreserved.
+	root := NewEnvWithRetainedLimits(nil, retainedBindingBytes("x", seed)+charge, 2)
+	counterSeed(t, "seed x", root.Set("x", seed))
+	baseBytes, baseSlots := root.RetainedUsage()
+
+	reg := counterBegin(t, root)
+	counterTry(t, "view.Set(n)", func() error { return reg.Env().Set("n", seed) })
+	reg.Abort()
+
+	counterTry(t, "root.Set(n) after the abort", func() error { return root.Set("n", rebind) })
+	wantBytes, wantSlots := baseBytes+charge, baseSlots+1
+	if gotBytes, gotSlots := root.RetainedUsage(); gotBytes != wantBytes || gotSlots != wantSlots {
+		t.Errorf("TestRebindAfterAbortChargesAsFresh: RetainedUsage after rebinding the aborted addition = (%d,%d); want (%d,%d), the fresh-binding charge %d bytes and 1 slot past the pre-rebind ledger (%d,%d)", gotBytes, gotSlots, wantBytes, wantSlots, charge, baseBytes, baseSlots)
+	}
+}
