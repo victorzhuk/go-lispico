@@ -92,11 +92,12 @@ func (r *Registration) Complete() { r.finish() }
 // Abort rolls back the operation's writes and ends the registration. A key is
 // restored only while the operation still owns it: its map cell is the op's
 // last written cell at the version that write left. A key a foreign write
-// touched afterwards keeps that write. Removed op-owned bindings refund the
-// retained capacity their writes reserved and release the meter charge a
-// settlement recorded on their cell, each exactly once; a charge still pending
-// settlement is dropped there instead. Restored or adopted bindings keep both
-// their reservation and their charge.
+// touched afterwards keeps that write. Removed op-added bindings are deleted
+// from the map, so a later binding of the same name reserves as fresh; they
+// refund the retained capacity their writes reserved and release the meter
+// charge a settlement recorded on their cell, each exactly once; a charge
+// still pending settlement is dropped there instead. Restored or adopted
+// bindings keep both their reservation and their charge.
 func (r *Registration) Abort() {
 	root := r.root
 	root.mu.Lock()
@@ -118,10 +119,11 @@ func (r *Registration) Abort() {
 		restored = true
 		switch ent.prior {
 		case nil:
-			// The op created this binding: Abort removes it. The reserved
-			// capacity goes back and the settled charge is released once; a
-			// pendingCellAlloc for this cell is dropped at settlement, before
-			// any meter charge, via last.dropped.
+			// The op created this binding: Abort deletes the map entry so a
+			// later write cannot revive the cell past the capacity check. The
+			// reserved capacity goes back and the settled charge is released
+			// once; a pendingCellAlloc for this cell is dropped at
+			// settlement, before any meter charge, via last.dropped.
 			root.retainedBytes -= ent.bytes
 			root.retainedSlots -= ent.slots
 			if last.retainedMeter != nil {
@@ -135,6 +137,7 @@ func (r *Registration) Abort() {
 			}
 			last.dropped = true
 			last.v, last.canonical = nil, false
+			delete(cells, key.name)
 		case last:
 			last.v, last.canonical = ent.v, ent.canonical
 		default:

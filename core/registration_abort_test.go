@@ -147,13 +147,11 @@ func TestRegistration_AbortRemovesAddedNames(t *testing.T) {
 		if k.fn && root.HasLiveFunc(k.name) || !k.fn && root.HasLive(k.name) {
 			t.Errorf("after abort the op-added %s binding %s is still live; want it absent", ns, k.name)
 		}
-		cur := abortMapCell(root, k.name, k.fn)
-		if cur != cell {
-			t.Errorf("after abort the root %s cell for %s is %p; want the op's cell %p left in place as a tombstone", ns, k.name, cur, cell)
-			continue
+		if cur := abortMapCell(root, k.name, k.fn); cur != nil {
+			t.Errorf("after abort the root %s map holds %p for the op-added %s; want the op's cell %p deleted from the map so a later binding charges as fresh", ns, cur, k.name, cell)
 		}
-		if cur.v != nil || cur.canonical {
-			t.Errorf("after abort the root %s cell for %s holds %v (canonical %v); want a tombstone", ns, k.name, cur.v, cur.canonical)
+		if cell.v != nil || cell.canonical {
+			t.Errorf("after abort the op's %s cell for %s holds %v (canonical %v); want it dropped", ns, k.name, cell.v, cell.canonical)
 		}
 	}
 	abortWantAbsent(t, root, "x", "op-added x after abort")
