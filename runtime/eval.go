@@ -29,7 +29,7 @@ var nowFunc = time.Now
 var vmSlotLeaseProbe func(claimed bool)
 
 type macroExpander interface {
-	MacroExpand(ctx context.Context, form core.Value, env *core.Env) (core.Value, error)
+	MacroExpandDeep(ctx context.Context, form core.Value, env *core.Env) (core.Value, error)
 }
 
 type sourceHash [sha256.Size]byte
@@ -399,7 +399,7 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
 	}
-	expanded, err := be.macro.MacroExpand(ctx, form, env)
+	expanded, err := be.macro.MacroExpandDeep(ctx, form, env)
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
 	}
@@ -517,7 +517,7 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		// expansion, so re-expanding to reach it is work whose result is
 		// thrown away — and an expander with side effects would re-run
 		// them. Expansion is compile-time, not per-evaluation.
-		expanded, err := be.macro.MacroExpand(ctx, form, env)
+		expanded, err := be.macro.MacroExpandDeep(ctx, form, env)
 		if err != nil {
 			return nil, fmt.Errorf("macro expand: %w", err)
 		}
@@ -1085,7 +1085,12 @@ func (e *engineImpl) evalWithBindingScope(ctx context.Context, source string, bi
 	start := time.Now()
 	metered := core.HasEvalMeter(ctx) || e.config.engineMeter != nil
 	ctx = e.evalResourceContext(ctx)
-	ctx = core.WithEvalDeadline(ctx, e.evalDeadline(ctx, start))
+	// Arm only an absent bound, as Engine.Eval does: overwriting an
+	// inherited deadline would extend or clear the outer run's budget
+	// through the shared eval state.
+	if d := e.evalDeadline(ctx, start); !d.IsZero() && core.EvalDeadlineFrom(ctx).IsZero() {
+		ctx = core.WithEvalDeadline(ctx, d)
+	}
 
 	// Single settlement point, as in Eval: every return, including a panic
 	// unwind and a lease refused before the evaluation starts, reaches the

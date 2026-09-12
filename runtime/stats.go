@@ -24,7 +24,8 @@ type Stats struct {
 	totalEvalNs    atomic.Int64
 	activePlugins  atomic.Int64
 	startTime      time.Time
-	pluginCallCnts sync.Map // string -> *atomic.Int64
+	pluginCallCnts sync.Map // string -> *atomic.Int64; flushed at maxCallCacheEntries, see counterFor
+	callCntSize    atomic.Int64
 }
 
 func newStats() *Stats {
@@ -83,11 +84,24 @@ func (s *Stats) recordEval(dur time.Duration, err error) {
 	}
 }
 
+// counterFor resolves a name's call counter, flushing every counter when a
+// new name would take the map past maxCallCacheEntries. Names are
+// caller-supplied (every Engine.Call on an undefined name creates one), so
+// the same flush-on-overflow bound the call cache uses keeps a spammer from
+// growing Stats without limit; a flush resets counts, a reporting event, not
+// a correctness one.
 func (s *Stats) counterFor(name string) *atomic.Int64 {
 	if v, ok := s.pluginCallCnts.Load(name); ok {
 		return v.(*atomic.Int64)
 	}
-	actual, _ := s.pluginCallCnts.LoadOrStore(name, new(atomic.Int64))
+	actual, loaded := s.pluginCallCnts.LoadOrStore(name, new(atomic.Int64))
+	if !loaded && s.callCntSize.Add(1) > maxCallCacheEntries {
+		s.pluginCallCnts.Range(func(k, _ any) bool {
+			s.pluginCallCnts.Delete(k)
+			return true
+		})
+		s.callCntSize.Store(0)
+	}
 	return actual.(*atomic.Int64)
 }
 

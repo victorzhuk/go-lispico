@@ -435,8 +435,20 @@ func (e *engineImpl) firePluginCallbacks(event PluginCallEvent) {
 	e.mu.RUnlock()
 
 	for _, cb := range callbacks {
-		cb(event)
+		e.deliverPluginCallEvent(cb, event)
 	}
+}
+
+// deliverPluginCallEvent contains a panicking observer at the publication
+// point, mirroring deliverEvalEvent: one failing observer must neither reach
+// the caller nor starve the callbacks registered after it.
+func (e *engineImpl) deliverPluginCallEvent(cb func(PluginCallEvent), event PluginCallEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Warn("plugin-call observer panic", "function", event.Function, "panic", r)
+		}
+	}()
+	cb(event)
 }
 
 // applyVocabulary reconciles env, the environment a plugin's Init wrote

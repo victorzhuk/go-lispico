@@ -143,6 +143,13 @@ func (w *fileWatcher) reloadFile(path string) {
 		w.engine.logger.Error("merge file env", "path", path, "error", err)
 		return
 	}
+	// MergeInto copies cells but not scope counters: the child's epoch bump
+	// from a reloaded defmacro stays on the child. Chunk-cache keys carry the
+	// root's epoch, so without an explicit bump here, cached expansions of
+	// the reloaded macro keep returning the stale chunk.
+	if definesMacro(childEnv) {
+		w.engine.rootEnv.BumpMacroEpoch()
+	}
 
 	w.engine.logger.Info(
 		"reloaded file",
@@ -181,4 +188,29 @@ func (e *engineImpl) Watch(ctx context.Context, dir string) error {
 func (e *engineImpl) Stop() error {
 	e.stopWatcher()
 	return nil
+}
+
+// definesMacro reports whether env's local bindings include a macro, under
+// either cell a dialect's defmacro may own (Lisp-2 binds the function cell,
+// Lisp-1 the value cell).
+func definesMacro(env *core.Env) bool {
+	for _, name := range env.LocalNames() {
+		if cell, ok := env.CellLocal(name); ok {
+			if v, _, _ := env.ReadCell(cell); v != nil {
+				if _, isMacro := v.(core.Macro); isMacro {
+					return true
+				}
+			}
+		}
+	}
+	for _, name := range env.LocalFuncNames() {
+		if cell, ok := env.FuncCellLocal(name); ok {
+			if v, _, _ := env.ReadCell(cell); v != nil {
+				if _, isMacro := v.(core.Macro); isMacro {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

@@ -174,6 +174,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing last-writer ownership semantics.
 
 ### Fixed
+- A macro call nested inside a larger form — `(progn (m))`, a macro head
+  inside a `fn` body, a macro whose expansion calls another macro — now
+  compiles and evaluates on the bytecode path instead of failing at the call
+  with `expected callable, got core.Macro`. The compiler's pre-pass expands
+  nested macro heads structurally before bytecode generation: special forms
+  dispatch through the active dialect, `quote` data and macro arguments are
+  untouched, quasiquote templates walk only their unquote segments, and
+  `fn`/`defn`/`let`/`let*`/`loop`/`catch` parameters shadow a same-named
+  global macro for the extent of their scope. Expansion happens once at
+  compile time — a macro expander with side effects in a branch the program
+  never takes now runs that side effect on the compiled path, matching
+  compiled-Lisp semantics rather than the tree-walker's expand-on-evaluate.
+  Pinned by `TestVMMacroExpansionNested`,
+  `TestVMMacroExpansionNestedShadowedLocal`, and the reload nested-use leg of
+  `TestReloadMacroInvalidatesChunkCache`.
+
+- Hot-reloading a file that defines or redefines a macro now advances the
+  root macro epoch. The reload merge previously copied macro cells without
+  touching the epoch, so the bytecode chunk cache — keyed on the epoch —
+  kept serving the old expansion for an unchanged source string while the
+  macro binding itself was already new. Plugin load/unload paths already
+  bumped the epoch; the file watcher now does too. Pinned by
+  `TestReloadMacroInvalidatesChunkCache`.
+
+- `EvalWithBindings` and `LoadScope` no longer overwrite an inherited engine
+  evaluation deadline. Both entries armed their own deadline unconditionally:
+  an inner call with a 30s timeout silently extended an enclosing evaluation's
+  remaining budget, and an inner call with a zero timeout cleared it
+  entirely — the shared evaluation state carried the mutation back to the
+  outer run. Both entries now apply the same guard `Engine.Eval` uses: an
+  inherited engine deadline is authoritative, and a caller deadline is armed
+  only when none is present. Pinned by `TestInheritedDeadlinePreserved`.
+
+- A panicking `OnPluginCall` observer is now contained like an `OnEval`
+  observer: it neither escapes `Engine.Call` to the host nor replaces a
+  successful call's result with a panic error. The plugin-call event
+  dispatch previously had no recover, so an observer panic on an undefined
+  name, on a successful tree-walker call, or on the bytecode pool path
+  reached the caller. Pinned by `TestOnPluginCallPanicIsContained`.
+
+- The bytecode compiler evaluates a `set!` target's existence before the
+  right-hand side. `(set! missing (def side 1))` now fails without running
+  the right-hand side, matching the tree-walker, instead of publishing
+  `side` and then rejecting the assignment. A new `OpCheckLexical` opcode
+  performs the check ahead of the compiled value form on the lexical path;
+  locally resolved targets skip it. Pinned by `TestVMSetLexicalRHSPurity`.
+
+- `recur` jumping out of a `try` no longer strands the `try`'s catch
+  handler on the bytecode stack. `(loop [i false] (if i (throw "boom")
+  (try (recur true) (catch e 99))))` now propagates the next iteration's
+  throw like the tree-walker instead of catching it with the stale handler
+  and returning 99: the compiler records the try depth at loop entry and
+  emits handler pops for the levels `recur` leaves behind. Pinned by
+  `TestVMRecurThroughTryPropagates`.
+
+- A `def` inside a CL `defun` body or inside a `let`/`let*` binding
+  initializer now refuses bytecode compilation and tree-walks the enclosing
+  form, like every other definition in a lexical scope, instead of compiling
+  to a global store that published the name to the root environment.
+  Pinned by `TestCompilerDefunScopedDefinitionFallback` and
+  `TestCompilerLetInitializerScopedDefFallback`.
+
+- The bytecode compiler now rejects `(if a b c d)` and `(when cond)` with
+  the evaluator's errors instead of silently dropping excess `if` arguments
+  or accepting a bodyless `when`, keeping compile-time and tree-walker
+  malformed-form parity. Pinned by `TestCompilerIfArityParity` and
+  `TestCompilerWhenArityParity`.
+
+- `Stats` plugin-call counters are flushed at the call-cache bound
+  (1024 names) instead of growing without limit on a long-lived engine that
+  calls distinct undefined names. Pinned by `TestPluginCallStatsBounded`.
+
 
 - A registration operation that retires one of its own binding cells with
   `ReplaceCell` now carries that binding's retained charge to the replacement
