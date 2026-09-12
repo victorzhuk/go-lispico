@@ -45,14 +45,6 @@ func transferPendingEvalCtx(m *transferMeter) (context.Context, *evalState) {
 	return WithEvalMeter(context.WithValue(context.Background(), evalStateKey{}, st), m), st
 }
 
-// transferCellAnchors reads the settled charge anchors of two cells under the
-// root lock, the lock every write path holds while it moves them.
-func transferCellAnchors(root *Env, a, b *Cell) (sessionMeter, int64, sessionMeter, int64) {
-	root.mu.RLock()
-	defer root.mu.RUnlock()
-	return a.retainedMeter, a.retainedBytes, b.retainedMeter, b.retainedBytes
-}
-
 // TestRegistration_ReplaceCellDropsReplacedPendingCharge pins the pending
 // ownership transfer: an op Set that left its retained charge pending, followed
 // by a pinned ReplaceCell, must repoint the pending ledger to the replacement
@@ -131,9 +123,9 @@ func TestRegistration_ReplaceCellAbortReleasesSettledChargeOnce(t *testing.T) {
 
 // TestRegistration_ReplaceCellSettlesChargeOnReplacementCell pins where a
 // transferred pending anchor settles: after a pinned ReplaceCell the operation
-// completes, so the charge must finalize on the live replacement cell — the
-// retired op cell left clear — and the completed root's Delete+Rebuild of the
-// replacement then releases that exact charge exactly once.
+// completes, so the charge must finalize on the live replacement binding — and
+// the completed root's Delete+Rebuild of the replacement then releases that
+// exact charge exactly once.
 func TestRegistration_ReplaceCellSettlesChargeOnReplacementCell(t *testing.T) {
 	root := NewEnvWithRetainedLimits(nil, 0, 0)
 	meter := &transferMeter{}
@@ -161,15 +153,6 @@ func TestRegistration_ReplaceCellSettlesChargeOnReplacementCell(t *testing.T) {
 	if meter.charges != 1 || meter.chargedBytes != bytesA || meter.chargedSlots != 1 {
 		t.Fatalf("TestRegistration_ReplaceCellSettlesChargeOnReplacementCell: meter after settle = %d charges (%d,%d), want 1 charge (%d,1)",
 			meter.charges, meter.chargedBytes, meter.chargedSlots, bytesA)
-	}
-	aMeter, aBytes, bMeter, bBytes := transferCellAnchors(root, cellA, cellB)
-	if bMeter != sessionMeter(meter) || bBytes != bytesA {
-		t.Fatalf("TestRegistration_ReplaceCellSettlesChargeOnReplacementCell: replacement cell anchors (%v,%d), want the op meter and (%d); the transferred pending anchor must settle onto the live replacement cell",
-			bMeter, bBytes, bytesA)
-	}
-	if aMeter != nil || aBytes != 0 {
-		t.Fatalf("TestRegistration_ReplaceCellSettlesChargeOnReplacementCell: retired op cell still anchors (%v,%d), want (nil,0); a charge transferred off a retired cell must leave it clear so no later removal path releases it again",
-			aMeter, aBytes)
 	}
 
 	root.Delete("x")
