@@ -925,6 +925,82 @@ func TestUsePublishConflictReleasesSettledCharges(t *testing.T) {
 	}
 }
 
+// panicReleaseMeter records a retained release through the embedded meter and
+// then panics, modelling a host meter whose ReleaseRetained aborts the
+// publish-conflict compensation uncontained.
+type panicReleaseMeter struct {
+	recordingMeter
+}
+
+func (m *panicReleaseMeter) ReleaseRetained(bytes, slots int64) {
+	m.recordingMeter.ReleaseRetained(bytes, slots)
+	panic("retained release failure")
+}
+
+// TestUsePublishConflictPanickingReleaseKeepsOperationError asserts that a
+// ReleaseRetained panic on the publish-conflict abort path must not replace
+// the operation's own error: the CodeRegistryConflict must travel back to the
+// caller, the host's registry entry stays, the rolled-back binding is absent,
+// the single settled charge is released exactly once, and a retry after the
+// host clears the namespace binds normally.
+func TestUsePublishConflictPanickingReleaseKeepsOperationError(t *testing.T) {
+	m := &panicReleaseMeter{}
+	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+	m.reset()
+
+	b := newRPBarrier()
+	p := &rpPlugin{name: "pc-panic", version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("pc-panic/state", core.Int{V: 1}); err != nil {
+			return err
+		}
+		return b.pause()
+	}}
+	done := rpGo(func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("Use panicked: %v", r)
+			}
+		}()
+		return eng.Use(p)
+	})
+
+	rpWait(t, b.entered, "Init entry")
+	eng.Registry().RegisterNoCheck(&rpHost{name: "pc-panic"})
+	close(b.release)
+
+	result := rpResult(t, done, "Use")
+	rpWantCode(t, result, core.CodeRegistryConflict)
+	if _, ok := eng.Registry().Get("pc-panic"); !ok {
+		t.Fatal("host registry entry lost after publish conflict with panicking release")
+	}
+	rpWantAbsent(t, root, "pc-panic/state")
+	snap := m.snapshot()
+	if snap.chargeCalls != 1 {
+		t.Fatalf("ChargeRetained calls = %d, want 1 settled charge", snap.chargeCalls)
+	}
+	if snap.releaseCalls != 1 {
+		t.Fatalf("ReleaseRetained calls = %d, want 1 release of the settled charge", snap.releaseCalls)
+	}
+	if snap.releasedBytes != snap.chargedBytes || snap.releasedSlots != snap.chargedSlots {
+		t.Fatalf("ReleaseRetained after panicking release = (%d, %d), want settled charges (%d, %d) released exactly once",
+			snap.releasedBytes, snap.releasedSlots, snap.chargedBytes, snap.chargedSlots)
+	}
+
+	eng.Registry().Unregister("pc-panic")
+	retry := &rpPlugin{name: "pc-panic", version: "2.0.0", init: func(env *core.Env) error {
+		return env.Set("pc-panic/after", core.Int{V: 1})
+	}}
+	if err := eng.Use(retry); err != nil {
+		t.Fatalf("retry Use after conflict: %v", err)
+	}
+	rpWantInt(t, root, "pc-panic/after", 1)
+}
+
 func TestReloadPluginFailedInitSettlesRetainedOnce(t *testing.T) {
 	m := &recordingMeter{}
 	eng, err := New(nil, WithDialect(clojure.Dialect()), WithTreeWalker(), WithEngineMeter(m))
