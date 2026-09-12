@@ -53,11 +53,17 @@ type Compiler struct {
 	// body, let/let*/loop body, catch handler): a def/defn compiled there
 	// cannot become a global store and must fall back to the tree-walker.
 	inScopeDef bool
+	// tryDepth counts the try scopes lexically enclosing the emission point;
+	// loopFrame records it at loop entry so recur can pop exactly the handlers
+	// installed after that point — stale ones that a jump-back would strand —
+	// without touching enclosing handlers still in force.
+	tryDepth int
 }
 
 type loopFrame struct {
-	start int
-	slots []int
+	start    int
+	slots    []int
+	tryDepth int
 }
 
 type local struct {
@@ -335,8 +341,8 @@ func (c *Compiler) compileIf(args []core.Value) error {
 	if c.err != nil {
 		return c.err
 	}
-	if len(args) < 2 {
-		return compileErrf("if: expected condition and then branch, got %d args", len(args))
+	if len(args) < 2 || len(args) > 3 {
+		return compileErrf("if requires 2 or 3 arguments")
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
@@ -463,6 +469,10 @@ func (c *Compiler) compileLet(args []core.Value) error {
 	}
 	c.depth++
 	base := len(c.locals)
+	// Bindings evaluate inside the let scope too: a def in an initializer
+	// binds the enclosing scope under the tree-walker, not the root.
+	c.inScopeDef = true
+	defer func() { c.inScopeDef = false }()
 	for _, binding := range bindings {
 		if err := c.Compile(binding.Value); err != nil {
 			return err
@@ -471,9 +481,7 @@ func (c *Compiler) compileLet(args []core.Value) error {
 		c.emitBind(len(c.locals) - 1)
 		c.emit(vm.OpPop, 0)
 	}
-	c.inScopeDef = true
 	err = c.compileDo(args[1:])
-	c.inScopeDef = false
 	if err != nil {
 		return err
 	}
@@ -495,6 +503,10 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 	}
 	c.depth++
 	base := len(c.locals)
+	// Bindings evaluate inside the let* scope too: a def in an initializer
+	// binds the enclosing scope under the tree-walker, not the root.
+	c.inScopeDef = true
+	defer func() { c.inScopeDef = false }()
 	for _, binding := range bindings {
 		if err := c.Compile(binding.Value); err != nil {
 			return err
@@ -503,9 +515,7 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 		c.emitBind(len(c.locals) - 1)
 		c.emit(vm.OpPop, 0)
 	}
-	c.inScopeDef = true
 	err = c.compileDo(args[1:])
-	c.inScopeDef = false
 	if err != nil {
 		return err
 	}
@@ -525,14 +535,23 @@ func (c *Compiler) compileSet(args []core.Value) error {
 	if !ok {
 		return compileErrf("compile set!: name must be symbol, got %T", args[0])
 	}
+	idx := c.resolveLocal(sym.V)
+	capt := idx < 0 && c.parent != nil && c.ancestorBinds(sym.V)
+	if idx < 0 && !capt {
+		// evalSet rejects an unbound target before evaluating the RHS; a
+		// lexical store only fails at runtime, so check the binding up
+		// front to keep a rejected set! free of RHS side effects.
+		c.emit(vm.OpCheckLexical, c.chunk.AddConstant(sym))
+	}
 	if err := c.Compile(args[1]); err != nil {
 		return err
 	}
-	if idx := c.resolveLocal(sym.V); idx >= 0 {
+	switch {
+	case idx >= 0:
 		c.emit(vm.OpSetLocal, idx)
-	} else if c.parent != nil && c.ancestorBinds(sym.V) {
+	case capt:
 		c.emit(vm.OpSetCap, c.ensureCapture(sym.V))
-	} else {
+	default:
 		c.emit(vm.OpSetLexical, c.chunk.AddConstant(sym))
 	}
 	return nil
@@ -542,8 +561,8 @@ func (c *Compiler) compileWhen(args []core.Value) error {
 	if c.err != nil {
 		return c.err
 	}
-	if len(args) == 0 {
-		return compileErrf("when: missing condition")
+	if len(args) < 2 {
+		return compileErrf("when requires at least 2 arguments")
 	}
 	if err := c.Compile(args[0]); err != nil {
 		return err
@@ -597,7 +616,7 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 		c.chunk.LocalNames[slots[i]] = binding.Name.V
 	}
 	startIP := len(c.chunk.Code)
-	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots})
+	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots, tryDepth: c.tryDepth})
 	c.inScopeDef = true
 	err = c.compileDo(args[1:])
 	c.inScopeDef = false
@@ -635,6 +654,12 @@ func (c *Compiler) compileRecur(args []core.Value) error {
 		}
 		c.emit(vm.OpPop, 0)
 	}
+	// The tree-walker's recur leaves no trace of the try it escapes; handlers
+	// installed after loop entry would otherwise catch the next iteration's
+	// throws. Deeper loops pushed their own handlers after entry: pop them too.
+	for d := loop.tryDepth; d < c.tryDepth; d++ {
+		c.emit(vm.OpPopTry, 0)
+	}
 	c.emitLoop(loop.start)
 	return nil
 }
@@ -669,8 +694,11 @@ func (c *Compiler) compileTry(args []core.Value) error {
 
 	base := len(c.locals)
 	setup := c.emitJump(vm.OpSetupTry)
-	if err := c.compileDo(body); err != nil {
-		return err
+	c.tryDepth++
+	errBody := c.compileDo(body)
+	c.tryDepth--
+	if errBody != nil {
+		return errBody
 	}
 	c.emit(vm.OpPopTry, 0)
 	skip := c.emitJump(vm.OpJump)
@@ -1051,11 +1079,13 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 		if variadic.V != "" {
 			sub.addLocal(variadic.V)
 		}
+		sub.inScopeDef = true
 		for _, b := range body {
 			if err := sub.Compile(b); err != nil {
 				return err
 			}
 		}
+		sub.inScopeDef = false
 		sub.emit(vm.OpReturn, 0)
 		if sub.err != nil {
 			return sub.err

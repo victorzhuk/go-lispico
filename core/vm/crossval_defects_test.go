@@ -262,3 +262,55 @@ func TestVMVsTreeWalker_MalformedFormParity(t *testing.T) {
 		})
 	}
 }
+
+// TestVMSetLexicalRHSPurity pins evalSet's ordering on the compiled path: an
+// undefined set! target is rejected before the RHS runs, so a failing set!
+// must leave no RHS side effects behind — the VM formerly bound `side` while
+// rejecting `missing`.
+func TestVMSetLexicalRHSPurity(t *testing.T) {
+	t.Parallel()
+
+	forms, err := core.Read("(set! missing (def side 1))")
+	require.NoError(t, err)
+
+	treeEnv := newCrossValEnv()
+	treeEval := core.NewEvaluator()
+	_, treeErr := treeEval.Eval(t.Context(), forms[0], treeEnv)
+	require.Error(t, treeErr, "tree-walker must reject set! on undefined target")
+	_, treeLeaked := treeEnv.Get("side")
+	assert.False(t, treeLeaked, "tree-walker must not run set! RHS effects")
+
+	vmEnv := newCrossValEnv()
+	chunks, cErr := compiler.CompileAll(forms)
+	require.NoError(t, cErr)
+	v := vm.New(vmEnv)
+	_, vmErr := v.Run(t.Context(), chunks[0])
+	require.Error(t, vmErr, "VM must reject set! on undefined target")
+	var le *core.LispicoError
+	require.ErrorAs(t, vmErr, &le)
+	assert.Equal(t, "UndefinedError", le.Code, "VM error code")
+	_, vmLeaked := vmEnv.Get("side")
+	assert.False(t, vmLeaked, "VM must not run set! RHS effects")
+}
+
+// TestVMRecurThroughTryPropagates pins recur escaping a try: the tree-walker
+// drops the handler it recursed through, so the next iteration's throw must
+// propagate on the VM too — formerly a stale handler caught it and the form
+// returned the catch value 99.
+func TestVMRecurThroughTryPropagates(t *testing.T) {
+	t.Parallel()
+
+	forms, err := core.Read(`(loop [i false] (if i (throw "boom") (try (recur true) (catch e 99))))`)
+	require.NoError(t, err)
+
+	treeEval := core.NewEvaluator()
+	_, treeErr := treeEval.Eval(t.Context(), forms[0], newCrossValEnv())
+	require.Error(t, treeErr, "tree-walker must propagate the escaped throw")
+
+	chunks, cErr := compiler.CompileAll(forms)
+	require.NoError(t, cErr)
+	v := vm.New(newCrossValEnv())
+	result, vmErr := v.Run(t.Context(), chunks[0])
+	require.Error(t, vmErr, "VM must propagate the escaped throw, got %v", result)
+	assert.Equal(t, treeErr.Error(), vmErr.Error(), "propagated throw must match the tree-walker")
+}

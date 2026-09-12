@@ -13,6 +13,11 @@ const (
 	OpGetGlobal
 	OpSetGlobal
 	OpSetLexical
+	// OpCheckLexical rejects a set! whose symbol target resolves in no
+	// lexically visible scope before the RHS runs, mirroring evalSet's
+	// bind-before-effect ordering. Same operand and failure shape as
+	// OpSetLexical.
+	OpCheckLexical
 	OpGetLocal
 	OpSetLocal
 	OpCall
@@ -76,6 +81,7 @@ var opNames = [...]string{
 	OpGetGlobal:        "GET_GLOBAL",
 	OpSetGlobal:        "SET_GLOBAL",
 	OpSetLexical:       "SET_LEXICAL",
+	OpCheckLexical:     "CHECK_LEXICAL",
 	OpGetLocal:         "GET_LOCAL",
 	OpSetLocal:         "SET_LOCAL",
 	OpCall:             "CALL",

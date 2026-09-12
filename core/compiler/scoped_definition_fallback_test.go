@@ -107,3 +107,56 @@ func TestCompilerScopedDefinitionFallback(t *testing.T) {
 		})
 	})
 }
+
+// TestCompilerDefunScopedDefinitionFallback covers the Lisp-2 defun route:
+// its fn sub-compiler must open the same lexical-definition scope compileFn
+// does, or a def in a defun body emits a global store instead of falling
+// back to the tree-walker, which binds it into the enclosing scope.
+func TestCompilerDefunScopedDefinitionFallback(t *testing.T) {
+	t.Parallel()
+	clDialect := cl.Dialect()
+	forms, err := core.Read(`(defun outer () (def leaked 1))`)
+	require.NoError(t, err)
+	compileErr := NewCompilerWithDialect("test", &clDialect).Compile(forms[0])
+	var le *core.LispicoError
+	require.ErrorAs(t, compileErr, &le, "want code %s, got %v", CodeUnsupported, compileErr)
+	assert.Equal(t, CodeUnsupported, le.Code)
+
+	eval, err := core.NewEvaluatorWithDialect(clDialect)
+	require.NoError(t, err)
+	env := core.NewEnv(nil)
+	_, err = eval.Eval(t.Context(), forms[0], env)
+	require.NoError(t, err, "define defun")
+	_, err = eval.Eval(t.Context(), core.NewList([]core.Value{core.Symbol{V: "outer"}}), env)
+	require.NoError(t, err, "run defun body")
+	_, leaked := env.Get("leaked")
+	assert.False(t, leaked, "def in a defun body must not reach the root env")
+}
+
+// TestCompilerLetInitializerScopedDefFallback covers definitions in let/let*
+// binding initializers: an initializer evaluates inside the scope it opens,
+// so its def binds the enclosing scope under the tree-walker and the
+// compiler must refuse the form, not emit a global store.
+func TestCompilerLetInitializerScopedDefFallback(t *testing.T) {
+	t.Parallel()
+	for _, src := range []string{`(let [x (def leaked 1)] x)`, `(let* [x (def leaked 1)] x)`} {
+		t.Run(src, func(t *testing.T) {
+			t.Parallel()
+			forms, err := core.Read(src)
+			require.NoError(t, err)
+			compileErr := NewCompiler("test").Compile(forms[0])
+			var le *core.LispicoError
+			require.ErrorAs(t, compileErr, &le, "%s: want code %s, got %v", src, CodeUnsupported, compileErr)
+			assert.Equal(t, CodeUnsupported, le.Code)
+		})
+	}
+
+	forms, err := core.Read(`(let [x (def leaked 1)] x)`)
+	require.NoError(t, err)
+	env := core.NewEnv(nil)
+	got, err := core.NewEvaluator().Eval(t.Context(), forms[0], env)
+	require.NoError(t, err)
+	require.True(t, got.Equals(core.Int{V: 1}), "tree-walker result = %v", got)
+	_, leaked := env.Get("leaked")
+	assert.False(t, leaked, "let-initializer def must not reach the root env")
+}

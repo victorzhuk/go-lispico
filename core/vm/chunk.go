@@ -352,7 +352,7 @@ func (c *Chunk) Validate() error {
 			if _, ok := c.ConstCharges[a]; !ok {
 				return bytecodeErrorf("%s: constant %d has no charge", op, a)
 			}
-		case OpGetGlobal, OpSetGlobal, OpSetLexical, OpGetFunc, OpSetFunc,
+		case OpGetGlobal, OpSetGlobal, OpSetLexical, OpCheckLexical, OpGetFunc, OpSetFunc,
 			OpFreezeNative, OpFreezeNativeFunc:
 			if a < 0 || a >= len(c.Constants) {
 				return bytecodeErrorf("%s: constant index %d out of range", op, a)

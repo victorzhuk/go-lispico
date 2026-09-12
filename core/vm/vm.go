@@ -1123,6 +1123,16 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				continue
 			}
 
+		case OpCheckLexical:
+			sym := chunk.Constants[instr.A()].(core.Symbol)
+			if _, ok := env.Find(sym.V); !ok {
+				if retErr := vm.routeRuntimeError(ip, setLexicalError(sym)); retErr != nil {
+					return nil, retErr
+				}
+				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				continue
+			}
+
 		case OpGetFunc:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
 			v, _, found := vm.resolveFuncValue(chunk.site(ip-1), env, sym)

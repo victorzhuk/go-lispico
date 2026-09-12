@@ -494,9 +494,10 @@ func TestCompiler_Set(t *testing.T) {
 		require.NoError(t, c.Compile(form))
 
 		chunk := c.Chunk()
-		require.Len(t, chunk.Code, 2)
-		assert.Equal(t, vm.OpConst, chunk.Code[0].Op())
-		assert.Equal(t, vm.OpSetLexical, chunk.Code[1].Op())
+		require.Len(t, chunk.Code, 3)
+		assert.Equal(t, vm.OpCheckLexical, chunk.Code[0].Op())
+		assert.Equal(t, vm.OpConst, chunk.Code[1].Op())
+		assert.Equal(t, vm.OpSetLexical, chunk.Code[2].Op())
 	})
 
 	t.Run("local", func(t *testing.T) {

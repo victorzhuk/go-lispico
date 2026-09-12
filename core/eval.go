@@ -1028,6 +1028,453 @@ func (e *engine) resolveHead(ctx context.Context, head Value, env *Env) (Value, 
 	return fn, true
 }
 
+// MacroExpandDeep expands macros at the head of form and in every nested
+// position the evaluator would eventually evaluate, so a form the bytecode
+// path compiles embeds the same expansions the tree-walker would perform at
+// run time. Positions are visited with the compiler's own evaluation map:
+// quote data is never walked, quasi-template unquote segments are, macro
+// argument lists stay opaque (they reach the macro unevaluated), and names
+// bound by an enclosing fn/let/let*/loop/defn/catch shadow the global macro
+// table and are not expanded.
+//
+// It is not lazily scheduled: a branch position the tree-walker may skip
+// (if/cond/and/or/when/try) is expanded eagerly. Macro expanders with side
+// effects observe that difference; expansion is compile-time in this engine
+// by design (see the chunk-cache pre-pass).
+func (e *engine) MacroExpandDeep(ctx context.Context, form Value, env *Env) (Value, error) {
+	ctx = e.evalContext(ctx)
+	expanded, err := e.MacroExpand(ctx, form, env)
+	if err != nil {
+		return nil, err
+	}
+	return e.expandDeep(ctx, expanded, env, nil, 0)
+}
+
+func (e *engine) expandDeep(ctx context.Context, form Value, env *Env, locals []string, depth int) (Value, error) {
+	switch v := form.(type) {
+	case List:
+		if v.Len() == 0 {
+			return form, nil
+		}
+		if depth > MaxCompileDepth {
+			return nil, resourceLimitErrorf("macro expansion nesting limit %d exceeded", MaxCompileDepth)
+		}
+		return e.expandDeepList(ctx, v, env, locals, depth)
+	case Vector:
+		items := make([]Value, 0, v.Len())
+		for _, item := range v.ToSlice() {
+			x, err := e.expandDeep(ctx, item, env, locals, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, x)
+		}
+		return NewVector(items), nil
+	case *HashMap:
+		out := NewHashMap()
+		var setErr error
+		v.Each(func(k, mv Value) {
+			if setErr != nil {
+				return
+			}
+			nk, err := e.expandDeep(ctx, k, env, locals, depth+1)
+			if err != nil {
+				setErr = err
+				return
+			}
+			nv, err := e.expandDeep(ctx, mv, env, locals, depth+1)
+			if err != nil {
+				setErr = err
+				return
+			}
+			if err := out.Set(nk, nv); err != nil {
+				setErr = err
+			}
+		})
+		if setErr != nil {
+			return nil, setErr
+		}
+		return out, nil
+	default:
+		return form, nil
+	}
+}
+
+func (e *engine) expandDeepList(ctx context.Context, v List, env *Env, locals []string, depth int) (Value, error) {
+	items := v.ToSlice()
+	head, isSym := items[0].(Symbol)
+
+	// evalList dispatches special forms before any local lookup, so only
+	// names that are not special can be shadowed.
+	shadowed := false
+	canonical := ""
+	special := false
+	if isSym {
+		c, removed, ok := e.dialect.CanonicalName(head.V)
+		if removed {
+			// compileList refuses a removed form outright; leave the shape
+			// alone so the error surfaces from the same place either way.
+			return v, nil
+		}
+		special = ok
+		canonical = c
+		if !special {
+			for _, l := range locals {
+				if l == head.V {
+					shadowed = true
+					break
+				}
+			}
+		}
+	}
+
+	if isSym && !special && !shadowed {
+		if _, ok := e.lookupMacroHead(head.V, env); ok {
+			// Reuse the top-level head fix-point, then keep walking: the
+			// expansion itself may nest further macro calls.
+			expanded, err := e.MacroExpand(ctx, v, env)
+			if err != nil {
+				return nil, err
+			}
+			return e.expandDeep(ctx, expanded, env, locals, depth+1)
+		}
+	}
+
+	if !special {
+		// A function call: compileCall evaluates the head expression and
+		// every argument.
+		out := make([]Value, len(items))
+		out[0] = items[0]
+		if !isSym {
+			h, err := e.expandDeep(ctx, items[0], env, locals, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			out[0] = h
+		}
+		for i, arg := range items[1:] {
+			x, err := e.expandDeep(ctx, arg, env, locals, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			out[i+1] = x
+		}
+		return NewList(out), nil
+	}
+
+	switch canonical {
+	case "quote", "defmacro", "function":
+		return v, nil
+
+	case "do", "cond", "and", "or", "not", "recur", "throw", "funcall":
+		return e.expandDeepArgs(ctx, items, env, locals, depth)
+
+	case "if":
+		return e.expandDeepArgs(ctx, items, env, locals, depth)
+
+	case "when":
+		return e.expandDeepArgs(ctx, items, env, locals, depth)
+
+	case "def":
+		return e.expandDeepFrom(ctx, items, env, locals, depth, 2)
+
+	case "set!":
+		return e.expandDeepFrom(ctx, items, env, locals, depth, 2)
+
+	case "fn":
+		if len(items) < 2 {
+			return v, nil
+		}
+		// Params bind at call time and shadow global macros of the same
+		// name, so the body walk must see them as locals.
+		return e.expandDeepFrom(ctx, items, env,
+			append(append([]string{}, locals...), e.paramNames(items[1])...), depth, 2)
+
+	case "defn":
+		if len(items) < 3 {
+			return v, nil
+		}
+		return e.expandDeepFrom(ctx, items, env,
+			append(append([]string{}, locals...), e.paramNames(items[2])...), depth, 3)
+
+	case "let", "let*":
+		return e.expandDeepLet(ctx, items, env, locals, depth)
+
+	case "loop":
+		return e.expandDeepLoop(ctx, items, env, locals, depth)
+
+	case "try":
+		return e.expandDeepTry(ctx, items, env, locals, depth)
+
+	case "quasiquote":
+		if len(items) != 2 {
+			return v, nil
+		}
+		t, err := e.expandDeepTemplate(ctx, items[1], env, locals, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		return NewList([]Value{items[0], t}), nil
+
+	default:
+		// A dialect-visible name the walk has no position rule for: visit
+		// every position as a call does. The kernel table is complete, so
+		// this fires only for future forms.
+		return e.expandDeepArgs(ctx, items, env, locals, depth)
+	}
+}
+
+// lookupMacroHead finds a macro bound to name the way evalList resolves a
+// symbol head: under Lisp-2 through the function cell only — a macro in the
+// value cell is not callable there — and under Lisp-1 through the value cell.
+func (e *engine) lookupMacroHead(name string, env *Env) (Macro, bool) {
+	var v Value
+	var ok bool
+	if e.lisp2 {
+		v, ok = env.GetFunc(name)
+	} else {
+		v, ok = env.Get(name)
+	}
+	if !ok {
+		return Macro{}, false
+	}
+	m, isMacro := v.(Macro)
+	return m, isMacro
+}
+
+// paramNames lists the locals a params vector binds, including the variadic
+// rest name. A malformed list yields none: the shape error surfaces later
+// from the unchanged form.
+func (e *engine) paramNames(params Value) []string {
+	pv, err := paramsAsVector(params)
+	if err != nil {
+		return nil
+	}
+	fixed, variadic, err := parseParams(pv)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(fixed)+1)
+	for _, p := range fixed {
+		names = append(names, p.V)
+	}
+	if variadic.V != "" {
+		names = append(names, variadic.V)
+	}
+	return names
+}
+
+func (e *engine) expandDeepArgs(ctx context.Context, items []Value, env *Env, locals []string, depth int) (Value, error) {
+	return e.expandDeepFrom(ctx, items, env, locals, depth, 1)
+}
+
+// expandDeepFrom walks every position at or after skip in evaluation order,
+// leaving the head and positions below skip (unevaluated data slots such as
+// def/set! targets) untouched.
+func (e *engine) expandDeepFrom(ctx context.Context, items []Value, env *Env, locals []string, depth, skip int) (Value, error) {
+	if skip >= len(items) {
+		return NewList(items), nil
+	}
+	out := make([]Value, len(items))
+	copy(out, items[:skip])
+	for i := skip; i < len(items); i++ {
+		x, err := e.expandDeep(ctx, items[i], env, locals, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = x
+	}
+	return NewList(out), nil
+}
+
+
+func (e *engine) expandDeepLet(ctx context.Context, items []Value, env *Env, locals []string, depth int) (Value, error) {
+	if len(items) < 2 {
+		return NewList(items), nil
+	}
+	bindings, err := NormalizeBindings("let", items[0])
+	if err != nil {
+		return NewList(items), nil
+	}
+	flat := make([]Value, 0, 2*len(bindings))
+	names := make([]string, 0, len(bindings))
+	inner := locals
+	for _, b := range bindings {
+		x, err := e.expandDeep(ctx, b.Value, env, inner, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		flat = append(flat, b.Name, x)
+		// let and let* are both sequential here (project contract): each
+		// initializer evaluates with the earlier names already bound.
+		inner = append(append([]string{}, inner...), b.Name.V)
+		names = append(names, b.Name.V)
+	}
+	body := make([]Value, 0, len(items)-1)
+	for _, f := range items[1:] {
+		x, err := e.expandDeep(ctx, f, env, append(append([]string{}, locals...), names...), depth+1)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, x)
+	}
+	return NewList(append([]Value{items[0], rebuildBindings(items[0], flat)}, body...)), nil
+}
+
+// expandDeepLoop walks loop bindings in the enclosing scope (initializers
+// bind in parallel, like the tree-walker and compileLoop), then the body
+// with every name local.
+func (e *engine) expandDeepLoop(ctx context.Context, items []Value, env *Env, locals []string, depth int) (Value, error) {
+	if len(items) < 2 {
+		return NewList(items), nil
+	}
+	bindings, err := NormalizeBindings("loop", items[0])
+	if err != nil {
+		return NewList(items), nil
+	}
+	flat := make([]Value, 0, 2*len(bindings))
+	names := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		x, err := e.expandDeep(ctx, b.Value, env, locals, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		flat = append(flat, b.Name, x)
+		names = append(names, b.Name.V)
+	}
+	body := make([]Value, 0, len(items)-1)
+	for _, f := range items[1:] {
+		x, err := e.expandDeep(ctx, f, env, append(append([]string{}, locals...), names...), depth+1)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, x)
+	}
+	return NewList(append([]Value{items[0], rebuildBindings(items[0], flat)}, body...)), nil
+}
+
+func rebuildBindings(original Value, flat []Value) Value {
+	if _, isVec := original.(Vector); isVec {
+		return NewVector(flat)
+	}
+	return NewList(flat)
+}
+
+// expandDeepTry walks the body forms and the catch handler, binding the
+// error symbol for handler positions only. Indexing mirrors evalTry: an
+// optional type slot shifts the binding to index 2.
+func (e *engine) expandDeepTry(ctx context.Context, items []Value, env *Env, locals []string, depth int) (Value, error) {
+	if len(items) < 2 {
+		return NewList(items), nil
+	}
+	out := make([]Value, len(items))
+	out[0] = items[0]
+	for i := 1; i < len(items)-1; i++ {
+		x, err := e.expandDeep(ctx, items[i], env, locals, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = x
+	}
+	clause, isList := items[len(items)-1].(List)
+	out[len(items)-1] = items[len(items)-1]
+	if !isList || clause.Len() < 3 {
+		return NewList(out), nil
+	}
+	clauseItems := clause.ToSlice()
+	errIdx, bodyIdx := 1, 2
+	if len(clauseItems) >= 4 {
+		errIdx, bodyIdx = 2, 3
+	}
+	errSym, isSym := clauseItems[errIdx].(Symbol)
+	if !isSym {
+		return NewList(out), nil
+	}
+	handler := make([]Value, 0, len(clauseItems)-bodyIdx)
+	for _, f := range clauseItems[bodyIdx:] {
+		x, err := e.expandDeep(ctx, f, env, append(append([]string{}, locals...), errSym.V), depth+1)
+		if err != nil {
+			return nil, err
+		}
+		handler = append(handler, x)
+	}
+	kept := make([]Value, 0, bodyIdx)
+	kept = append(kept, clauseItems[:bodyIdx]...)
+	out[len(items)-1] = NewList(append(kept, handler...))
+	return NewList(out), nil
+}
+
+// expandDeepTemplate walks a quasiquote template: only unquote and
+// unquote-splicing arguments are evaluation positions (evaluated by
+// expandQuasiquote at run time); everything else is template data and is
+// descended as template, never as code.
+func (e *engine) expandDeepTemplate(ctx context.Context, v Value, env *Env, locals []string, depth int) (Value, error) {
+	if depth > MaxCompileDepth {
+		return nil, resourceLimitErrorf("macro expansion nesting limit %d exceeded", MaxCompileDepth)
+	}
+	switch val := v.(type) {
+	case List:
+		if val.Len() > 0 {
+			if sym, ok := val.At(0).(Symbol); ok && (sym.V == "unquote" || sym.V == "unquote-splicing") {
+				if val.Len() != 2 {
+					return val, nil
+				}
+				arg, err := e.expandDeep(ctx, val.At(1), env, locals, depth+1)
+				if err != nil {
+					return nil, err
+				}
+				return NewList([]Value{val.At(0), arg}), nil
+			}
+		}
+		items := make([]Value, 0, val.Len())
+		for _, item := range val.ToSlice() {
+			x, err := e.expandDeepTemplate(ctx, item, env, locals, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, x)
+		}
+		return NewList(items), nil
+	case Vector:
+		items := make([]Value, 0, val.Len())
+		for _, item := range val.ToSlice() {
+			x, err := e.expandDeepTemplate(ctx, item, env, locals, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, x)
+		}
+		return NewVector(items), nil
+	case *HashMap:
+		out := NewHashMap()
+		var setErr error
+		val.Each(func(k, mv Value) {
+			if setErr != nil {
+				return
+			}
+			nk, err := e.expandDeepTemplate(ctx, k, env, locals, depth+1)
+			if err != nil {
+				setErr = err
+				return
+			}
+			nv, err := e.expandDeepTemplate(ctx, mv, env, locals, depth+1)
+			if err != nil {
+				setErr = err
+				return
+			}
+			if err := out.Set(nk, nv); err != nil {
+				setErr = err
+			}
+		})
+		if setErr != nil {
+			return nil, setErr
+		}
+		return out, nil
+	default:
+		return v, nil
+	}
+}
+
 // expandMacroForm runs the macro body with unevaluated args and returns the
 // expansion as a Value. Does NOT evaluate the result — that is the caller's job.
 func (e *engine) expandMacroForm(ctx context.Context, m Macro, args []Value) (Value, error) {
