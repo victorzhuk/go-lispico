@@ -175,6 +175,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A registration operation that retires one of its own binding cells with
+  `ReplaceCell` now carries that binding's retained charge to the replacement
+  cell. The charge previously stayed anchored on the retired cell: a settled
+  charge was never released when the operation aborted, and a charge still
+  pending settlement was metered for a binding the abort then deleted. After
+  the transfer an aborted operation releases the exact charge exactly once, a
+  dropped pending charge never reaches the meter, and no removal path can
+  release the retired cell twice; a `ReplaceCell` after a host write re-based
+  the key transfers nothing. Recorded in the ADR 0012 release path.
+
 - A failed `Use` or `ReloadPlugin` no longer leaves retained-meter charges
   behind for the binding cells its rollback removes. The registration
   journal tracks the operation-owned capacity of the cells a plugin

@@ -66,6 +66,10 @@ removes: the env's byte and slot counters are refunded, and a removed cell
 that had already settled releases its meter charge exactly once, with
 meter calls executed outside the env and lazy-state locks. The path is
 narrow: only cells the operation itself wrote and the abort deletes.
+A `ReplaceCell` on an operation-owned binding first transfers that binding's
+retained charge to the replacement cell — a settled meter anchor moves cell to
+cell, a pending ledger entry is repointed — so a later removal releases the
+exact charge exactly once and the retired cell anchors nothing.
 Capacity backing a binding the abort restores stays charged, and a host
 write that adopts an operation-created cell settles that cell normally —
 the charge stays, bounded by the per-env caps (32 MiB / 100,000 slots).
