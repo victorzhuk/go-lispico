@@ -106,7 +106,16 @@ func (e *engineImpl) removePluginBindings(env *core.Env, name string) {
 // e.bindings, lazy activation and plugin stats as the operation found them.
 func (e *engineImpl) abortPlugin(reg *core.Registration, name string) {
 	e.lazyMaterializer.endOp(false)
-	reg.Abort()
+	// A host meter's ReleaseRetained may panic; Abort has already ended the
+	// registration and unwound the journal, so contain it and keep unwinding.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				e.logger.Error("plugin abort: retained release panicked", "plugin", name, "panic", r)
+			}
+		}()
+		reg.Abort()
+	}()
 	for n := range e.bindings[name] {
 		e.callCache.drop(n)
 	}
