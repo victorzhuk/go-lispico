@@ -757,6 +757,10 @@ func TestUseFailedInitLeavesNoRetainedCharge(t *testing.T) {
 		t.Fatal("plugin remained registered after failed Use")
 	}
 	snap := m.snapshot()
+	if snap.chargeCalls != 0 || snap.releaseCalls != 0 {
+		t.Fatalf("charge/release calls = %d/%d, want 0/0: settlement must not charge a cell the abort's removal already decided",
+			snap.chargeCalls, snap.releaseCalls)
+	}
 	if netBytes, netSlots := snap.chargedBytes-snap.releasedBytes, snap.chargedSlots-snap.releasedSlots; netBytes != 0 || netSlots != 0 {
 		t.Fatalf("net retained charge after failed Use = (%d, %d), want (0, 0)", netBytes, netSlots)
 	}
