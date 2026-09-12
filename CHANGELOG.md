@@ -30,8 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through: it forwards reads and writes to the root and journals each write
   while the operation is active. `Registration.Complete` keeps the writes;
   `Registration.Abort` restores in place the bindings and root configuration
-  the operation still owns, tombstones the names it added — released by the
-  next `Rebuild` — and bumps the name-generation and macro-epoch counters once
+  the operation still owns, deletes the names it added from the binding maps —
+  orphaning their cells, so a later binding of the same name charges as fresh —
+  and bumps the name-generation and macro-epoch counters once
   when it restores anything. A root runs one registration at a time: a second
   `BeginRegistration` returns a `*LispicoError` with `CodeRegistrationActive`.
 

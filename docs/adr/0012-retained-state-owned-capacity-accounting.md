@@ -58,8 +58,8 @@ child envs are untouched. This is the only broad release path;
 While a registration is active, `Rebuild` keeps every tombstoned cell that is
 the last write of one of its journal entries — not released, still counted —
 so an abort restores that cell in place and its holders see the restore.
-Names an aborted registration added stay tombstoned and are released by the
-next `Rebuild`.
+An entry an aborted registration added is deleted from the binding map and
+its cell orphaned; the next binding of that name reserves and charges fresh.
 **`Registration.Abort` is the second, narrow release path.** A failed
 plugin operation releases the operation-owned capacity of the cells it
 removes: the env's byte and slot counters are refunded, and a removed cell
