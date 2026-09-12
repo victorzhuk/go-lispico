@@ -501,12 +501,18 @@ a binding SHALL tombstone the slot without releasing backing or decrementing
 counters. The runtime SHALL provide `(*Env).RetainedUsage() (bytes, slots
 int64)` and `(*Env).Rebuild()`; `Rebuild` SHALL compact in place — same
 `*Env` identity, live `*Cell` pointers preserved, tombstoned cells dropped,
-counters recomputed, name generation bumped — and is the only path that
-releases dead backing. The runtime SHALL provide `Engine.LoadScope(ctx,
-source, bindings) (core.Value, *core.Env, error)` returning the retained
-child scope with `EvalWithBindings` evaluation semantics. Capturing an env
-through a closure SHALL NOT transfer or double-count ownership; values charge
-shallow backing only.
+counters recomputed, name generation bumped — and besides registration abort
+is the only path that releases dead backing. Registration abort of a failed
+plugin operation SHALL release dead backing for exactly the journal-owned
+cells the operation created and the rollback removes: counters refunded by
+the reserved amount, settled retained charges released once with their exact
+amounts, charges and capacity backing surviving bindings — restored,
+foreign-touched, host-created — untouched, and no meter call executed while
+an environment or lazy-state lock is held. The runtime SHALL provide
+`Engine.LoadScope(ctx, source, bindings) (core.Value, *core.Env, error)`
+returning the retained child scope with `EvalWithBindings` evaluation
+semantics. Capturing an env through a closure SHALL NOT transfer or
+double-count ownership; values charge shallow backing only.
 
 #### Scenario: Slot ceiling fails closed
 
@@ -542,6 +548,11 @@ shallow backing only.
 
 - **WHEN** a `Lambda` captures an env and the env's counters are later inspected
 - **THEN** the captured env's counters SHALL be the same as before the capture
+
+#### Scenario: Failed plugin operation releases removed owned backing
+
+- **WHEN** a plugin operation creates new bindings and then fails so its registration journal aborts
+- **THEN** the capacity and settled charges of exactly the removed operation-owned cells SHALL be released, and the meter's net retained usage SHALL equal its value before the operation
 
 ### Requirement: Meter interface with engine-side lease amortization
 
@@ -1056,3 +1067,27 @@ The environment supplied to `Plugin.Init` SHALL retain normal binding, lookup, e
 
 - **WHEN** a plugin retains its supplied environment or creates closures against it and initialization succeeds
 - **THEN** later calls SHALL observe root rebindings, and subsequent successful unload/reload SHALL preserve existing ownership semantics
+
+### Requirement: Failed plugin operations settle retained ownership once
+
+When `Use` or `ReloadPlugin` returns an initialization, vocabulary, capacity, or retained-settlement error, retained charges for cells the failed operation created and rollback removed SHALL NOT remain charged to any meter. Charges backing bindings that survive rollback SHALL remain charged. No charge SHALL be released twice, and every charge a denied settlement already applied SHALL be released with its exact amount. Meter calls SHALL NOT run while environment or lazy-state locks are held. The operation's error SHALL be returned and unused compute lease SHALL be returned.
+
+#### Scenario: Failed initialization leaves no retained charge
+
+- **WHEN** a plugin binds new names and initialization then fails, with no concurrent host writes
+- **THEN** every metered retained charge made for those names SHALL be released and the meter's net retained usage SHALL equal its value before the operation
+
+#### Scenario: Settlement denial releases exactly once
+
+- **WHEN** retained settlement for a plugin operation is denied by a later meter or by the host meter after earlier charges succeeded
+- **THEN** each earlier charge SHALL be released exactly once with its charged amount, the error SHALL be returned, and the operation's bindings SHALL be rolled back
+
+#### Scenario: Surviving host binding keeps its charge
+
+- **WHEN** a host binds a new name concurrently with a plugin operation that later fails
+- **THEN** the host binding's retained charge SHALL remain charged after rollback
+
+#### Scenario: Capacity rejection mid-operation
+
+- **WHEN** a plugin write is rejected by a per-env retained capacity limit during initialization
+- **THEN** a `ResourceLimitError`-coded error SHALL be returned and no retained charge for the operation's removed cells SHALL remain

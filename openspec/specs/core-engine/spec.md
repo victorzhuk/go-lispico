@@ -481,9 +481,16 @@ through an existing `Cell` and reviving a tombstoned `Cell` SHALL NOT charge.
 Deleting a binding SHALL tombstone without decrementing. `Rebuild` SHALL
 preserve `*Env` identity and live `*Cell` identity, drop tombstoned cells,
 recompute counters, and bump the name generation so cached resolutions of
-dropped cells invalidate. Counters SHALL be uniform across persistent and
-transient envs; a transient env's counter dies with the env. Capturing an env
-through a closure SHALL NOT transfer or double-count ownership.
+dropped cells invalidate. Registration abort SHALL be a second release path,
+scoped to journal-owned cells a failed registration operation removes: it SHALL
+refund the owned-capacity counters by exactly the capacity those cells
+reserved, SHALL release once any settled retained charge backing them, SHALL
+leave untouched the charges and capacity backing bindings that survive the
+rollback (restored, foreign-touched, or host-created), and SHALL NOT execute
+meter calls while an environment or lazy-state lock is held. Counters SHALL be
+uniform across persistent and transient envs; a transient env's counter dies
+with the env. Capturing an env through a closure SHALL NOT transfer or
+double-count ownership.
 
 #### Scenario: Slot ceiling fails closed
 
@@ -519,6 +526,11 @@ through a closure SHALL NOT transfer or double-count ownership.
 
 - **WHEN** a `Lambda` captures an env and the env's counters are later inspected
 - **THEN** the captured env's counters SHALL be the same as before the capture
+
+#### Scenario: Failed registration abort refunds owned capacity
+
+- **WHEN** a registration operation adds new names and then aborts
+- **THEN** the owned-capacity counters SHALL return to their pre-operation values for the cells the abort removed, and capacity backing surviving bindings SHALL remain charged
 
 ### Requirement: Call recursion is bounded across re-entrant apply
 
