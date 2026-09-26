@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,6 +102,57 @@ type engineImpl struct {
 	vmSlot           *vm.VM
 	vmSlotInUse      atomic.Bool
 	lazyMaterializer *stdlibLazyMaterializer
+	vocab            *vocabShape
+}
+
+// vocabShape is the part of a Dialect's vocabulary a plugin operation needs,
+// resolved once per dialect so neither New nor Use copies the vocabulary map.
+type vocabShape struct {
+	present  bool
+	adapters []vocabAdapter
+}
+
+// vocabAdapter is one adapter binding of the dialect's vocabulary.
+type vocabAdapter struct {
+	name  string
+	value core.Value
+}
+
+// vocabShapes caches vocabShape by dialect fingerprint; a Dialect is
+// immutable, so an entry never goes stale.
+var vocabShapes struct {
+	mu   sync.RWMutex
+	byFP map[string]*vocabShape
+}
+
+func vocabShapeOf(d core.Dialect) *vocabShape {
+	fp := d.Fingerprint()
+	vocabShapes.mu.RLock()
+	vs, ok := vocabShapes.byFP[fp]
+	vocabShapes.mu.RUnlock()
+	if ok {
+		return vs
+	}
+
+	vocab := d.Vocab()
+	vs = &vocabShape{present: vocab != nil}
+	for name, entry := range vocab {
+		if entry.Adapter != nil {
+			vs.adapters = append(vs.adapters, vocabAdapter{name: name, value: entry.Adapter})
+		}
+	}
+	slices.SortFunc(vs.adapters, func(a, b vocabAdapter) int { return strings.Compare(a.name, b.name) })
+
+	vocabShapes.mu.Lock()
+	defer vocabShapes.mu.Unlock()
+	if cached, ok := vocabShapes.byFP[fp]; ok {
+		return cached
+	}
+	if vocabShapes.byFP == nil {
+		vocabShapes.byFP = make(map[string]*vocabShape)
+	}
+	vocabShapes.byFP[fp] = vs
+	return vs
 }
 
 type engineConfig struct {
@@ -304,6 +357,7 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		stats:    newStats(),
 	}
 	e.rootEnvPtr.Store(rootEnv)
+	e.vocab = vocabShapeOf(cfg.dialect)
 
 	if cfg.bytecode {
 		be := newBytecodeEvaluator(rootEnv, cfg.maxEvalDepth, cfg.timeout, cfg.limits, treeWalker, cfg.dialect, cfg.engineMeter, cfg.cacheStripes)
@@ -452,91 +506,118 @@ func (e *engineImpl) deliverPluginCallEvent(cb func(PluginCallEvent), event Plug
 	cb(event)
 }
 
-// applyVocabulary reconciles env, the environment a plugin's Init wrote
-// through, with the configured Dialect's vocabulary map. It is invoked after
-// each plugin's Init so plugin-registered GoFuncs are then renamed, exposed
-// under adapter wrappers, or stripped according to the Dialect's base and
-// vocab.
+// applyVocabulary reconciles the cells a plugin operation wrote through env,
+// its registration view, with the configured Dialect's vocabulary. It runs
+// after each plugin's Init and only reads and writes the names reg recorded
+// (live ones; a reload deletes through the view too), the visible renames of
+// those names, and the dialect's adapters:
 //
-// On a full-base Dialect with a vocab, the operation is purely additive: every
-// registered GoFunc remains, and the vocab entries either rename a canonical
-// name to a visible name or bind a visible name to a GoFunc adapter.
+//   - a GoFunc an empty-base vocabulary does not list is deleted;
+//   - each written name's own binding lands next, then every rename of it;
+//   - an adapter whose value cell is absent is bound.
 //
-// On an empty-base Dialect, the vocabulary is an allowlist. Every GoFunc whose name
-// is not in the vocab is removed from the env, and the vocab entries are then
-// applied. Macros, Lambdas, and any non-GoFunc values are left alone so
-// bootstrap macros survive the allowlist pass. A snapshot of every GoFunc is
-// taken before the strip so the apply phase can resolve renames whose
-// canonical name is absent from the allowlist and would otherwise be deleted.
-func (e *engineImpl) applyVocabulary(env *core.Env) error {
-	vocab := e.config.dialect.Vocab()
-	if vocab == nil {
+// Under Lisp-2 each GoFunc binding is mirrored into the function cell so it
+// resolves in head position; a canonical binding (stdlib's native operators)
+// mirrors canonically so the VM's native-op fast path still fires. A function
+// cell already holding a different live value is left alone: it is a user
+// defun the plugin must not revert. A rename the operation itself wrote is
+// overwritten regardless, so the rename wins whatever order Init bound them
+// in. Nothing outside those names is touched, so a host Bind and the cells of
+// earlier plugins keep their bindings and versions.
+func (e *engineImpl) applyVocabulary(env *core.Env, reg *core.Registration) error {
+	d := e.config.dialect
+	lisp2 := d.IsLisp2()
+	if !e.vocab.present && !lisp2 {
 		return nil
 	}
 
-	goFuncs := make(map[string]core.Value)
-	for _, name := range env.LocalNames() {
-		v, ok := env.Get(name)
+	written := reg.Names()
+	slices.Sort(written)
+	var scratch [8]core.VocabBinding
+	renames := scratch[:0]
+	// Own bindings and deletions touch only the written name itself, so they
+	// land in one pass; renames wait until every own binding is in place.
+	for _, name := range written {
+		v, ok, canon := env.GetMaterializedCanonical(name)
 		if !ok {
 			continue
 		}
-		if _, isGoFunc := v.(core.GoFunc); isGoFunc {
-			goFuncs[name] = v
+		start := len(renames)
+		renames = d.AppendVocabBindings(renames, name, v, canon)
+		if len(renames) == start || renames[start].Name != name {
+			env.Delete(name)
+			continue
 		}
-	}
-
-	if e.config.dialect.IsBaseEmpty() {
-		for name := range goFuncs {
-			if _, allowed := vocab[name]; !allowed {
-				env.Delete(name)
+		b := renames[start]
+		renames = append(renames[:start], renames[start+1:]...)
+		if canon != b.Canonical || !v.Equals(b.Value) {
+			if err := setVocabValue(env, b); err != nil {
+				return err
+			}
+		}
+		if b.Func {
+			if err := setVocabFuncUnlessRebound(env, b); err != nil {
+				return err
 			}
 		}
 	}
 
-	for visibleName, entry := range vocab {
-		if entry.Adapter != nil {
-			if err := env.Set(visibleName, entry.Adapter); err != nil {
+	for _, b := range renames {
+		if _, ours := slices.BinarySearch(written, b.Name); ours {
+			if err := setVocabValue(env, b); err != nil {
 				return err
+			}
+			if b.Func {
+				if err := setVocabFunc(env, b); err != nil {
+					return err
+				}
 			}
 			continue
 		}
-		if val, ok := goFuncs[entry.Canonical]; ok {
-			if err := env.Set(visibleName, val); err != nil {
+		if cur, ok, _ := env.GetMaterializedCanonical(b.Name); !ok || cur.Equals(b.Value) {
+			if err := setVocabValue(env, b); err != nil {
+				return err
+			}
+		}
+		if b.Func {
+			if err := setVocabFuncUnlessRebound(env, b); err != nil {
 				return err
 			}
 		}
 	}
 
-	// Bridge every GoFunc to the function cell under Lisp-2 so they are
-	// callable in head position. Without this, head lookup of a GoFunc (e.g.
-	// `(* x x)`, `(car '...)`) returns undefined because the value cell is
-	// not consulted for head resolution in Lisp-2. A canonical value-cell
-	// binding (stdlib's native operators) bridges canonically too, so the VM's
-	// native-op fast path — which under Lisp-2 freezes off the function cell —
-	// still fires; a defun rebind lands through SetFunc and loses it again.
-	// Iterate LocalNames() so all visible and helper bindings are bridged; this is
-	// intentionally wider than just the dialect vocabulary map.
-	if e.config.dialect.IsLisp2() {
-		for _, name := range env.LocalNames() {
-			v, ok, canon := env.GetCanonical(name)
-			if !ok {
-				continue
+	for _, a := range e.vocab.adapters {
+		if !env.HasLive(a.name) {
+			if err := env.Set(a.name, a.value); err != nil {
+				return err
 			}
-			if _, isGoFunc := v.(core.GoFunc); isGoFunc {
-				if existing, hasFunc := env.GetFunc(name); hasFunc && !existing.Equals(v) {
-					continue
-				}
-				if canon {
-					if err := env.SetFuncCanonical(name, v); err != nil {
-						return err
-					}
-				} else {
-					if err := env.SetFunc(name, v); err != nil {
-						return err
-					}
-				}
+		}
+		if _, isGoFunc := a.value.(core.GoFunc); lisp2 && isGoFunc && !env.HasLiveFunc(a.name) {
+			if err := env.SetFunc(a.name, a.value); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func setVocabValue(env *core.Env, b core.VocabBinding) error {
+	if b.Canonical {
+		return env.SetCanonical(b.Name, b.Value)
+	}
+	return env.Set(b.Name, b.Value)
+}
+
+func setVocabFunc(env *core.Env, b core.VocabBinding) error {
+	if b.Canonical {
+		return env.SetFuncCanonical(b.Name, b.Value)
+	}
+	return env.SetFunc(b.Name, b.Value)
+}
+
+func setVocabFuncUnlessRebound(env *core.Env, b core.VocabBinding) error {
+	if cur, ok, _ := env.GetMaterializedFuncCanonical(b.Name); ok && !cur.Equals(b.Value) {
+		return nil
+	}
+	return setVocabFunc(env, b)
 }

@@ -186,7 +186,7 @@ func (e *engineImpl) loadPlugin(p core.Plugin, reg *core.Registration, name, ver
 	if initErr := e.initPlugin(p, env, name, version); initErr != nil {
 		return nil, fmt.Errorf("init plugin %s: %w", name, initErr)
 	}
-	if vocabErr := e.applyVocabulary(env); vocabErr != nil {
+	if vocabErr := e.applyVocabulary(env, reg); vocabErr != nil {
 		return nil, fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
 	}
 	return diff(e.snapshotBindings(), before), nil
