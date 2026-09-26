@@ -95,11 +95,17 @@ func (r *Registration) Complete() { r.finish() }
 func (r *Registration) Names() []string {
 	r.root.mu.RLock()
 	defer r.root.mu.RUnlock()
-	var names []string
+	if len(r.entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(r.entries))
 	for key := range r.entries {
 		if !key.fn {
 			names = append(names, key.name)
 		}
+	}
+	if len(names) == 0 {
+		return nil
 	}
 	return names
 }
