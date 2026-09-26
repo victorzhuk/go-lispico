@@ -11,9 +11,8 @@ every builder method returns a new `core.Dialect`.
 `WithAdapter(name, semanticID, value)` binds `value` under `name` and folds
 `semanticID` into the dialect fingerprint. The ID makes adapters with the
 same name but different semantics distinguishable within a process. The
-fingerprint is not persistent and may change between releases. The Common
-Lisp dialect registers its
-collection adapters under fixed IDs:
+fingerprint is not persistent and may change between releases.
+The Common Lisp dialect registers its collection adapters under fixed IDs:
 
 ```go
 d := core.FullDialect().
