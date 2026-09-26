@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"maps"
 	"sort"
 )
@@ -519,10 +520,13 @@ func (d Dialect) resolveUncached() (map[string]formFn, error) {
 	return table, nil
 }
 
-// Fingerprint returns a stable hash string that changes when the Dialect's
-// semantic configuration changes. Used as part of the bytecode chunk cache
-// key. A Memoized value returns its cached hash on every call; any other
-// Dialect hashes fresh each time (see fingerprintUncached).
+// Fingerprint returns a hash string that changes when the Dialect's semantic
+// configuration changes. Used as part of the bytecode chunk cache key. A
+// Memoized value returns its cached hash on every call; any other Dialect
+// hashes fresh each time (see fingerprintUncached).
+//
+// The fingerprint is a process-local identity for one go-lispico version: it
+// may change between releases and is not a persistence format.
 func (d Dialect) Fingerprint() string {
 	if d.cache != nil {
 		return d.cache.fp
@@ -536,7 +540,9 @@ func (d Dialect) fingerprintUncached() string {
 	fmt.Fprintf(h, "base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
 		d.base, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
 	for _, op := range d.ops {
-		fmt.Fprintf(h, "|%d:%s:%s", op.kind, op.name, op.canonical)
+		fmt.Fprintf(h, "|%d", op.kind)
+		writeField(h, op.name)
+		writeField(h, op.canonical)
 	}
 	// Sort vocabulary keys for stable order.
 	if len(d.vocab) > 0 {
@@ -547,10 +553,19 @@ func (d Dialect) fingerprintUncached() string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			entry := d.vocab[k]
-			fmt.Fprintf(h, "|v:%s:%s:%s", k, entry.Canonical, entry.AdapterID)
+			fmt.Fprint(h, "|v")
+			writeField(h, k)
+			writeField(h, entry.Canonical)
+			writeField(h, entry.AdapterID)
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// writeField writes s as ":<byte length>:<bytes>" so no string content can
+// shift a field boundary and collide with a different field split.
+func writeField(w io.Writer, s string) {
+	fmt.Fprintf(w, ":%d:%s", len(s), s)
 }
 
 // visibleName returns the dialect-visible name for a canonical kernel form.
