@@ -7,7 +7,7 @@ import (
 	"io"
 	"maps"
 	"slices"
-	"sort"
+	"sync"
 )
 
 // formFn implements one special form. It is the value type of both the kernel
@@ -164,9 +164,10 @@ type dialectState struct {
 	table map[string]formFn
 	// canon maps every name the dialect knows to its canonical kernel form;
 	// a removed name maps to "".
-	canon  map[string]string
-	doName string
-	fp     string
+	canon      map[string]string
+	doName     string
+	fp         string
+	isIdentity bool
 }
 
 // dialectCache is the memoized state for one Memoized Dialect. It is
@@ -299,20 +300,13 @@ func NewDialect(spec DialectSpec) (Dialect, error) {
 	if err != nil {
 		return Dialect{}, err
 	}
-	canon := make(map[string]string, len(table)+len(d.ops))
-	for _, name := range knownNames(table, d.ops) {
-		if c, removed, ok := d.canonicalNameUncached(name); ok {
-			if removed {
-				c = ""
-			}
-			canon[name] = c
-		}
-	}
+	canon := d.canonTable()
 	d.st = &dialectState{
-		table:  table,
-		canon:  canon,
-		doName: frozenDoName(canon),
-		fp:     d.fingerprintUncached(),
+		table:      table,
+		canon:      canon,
+		doName:     frozenDoName(canon),
+		fp:         d.fingerprintOf(canon),
+		isIdentity: d.identityOf(canon),
 	}
 	return d, nil
 }
@@ -364,17 +358,34 @@ func validateSpec(spec DialectSpec, hide []string) error {
 	return nil
 }
 
-// knownNames lists every name a resolved table or its delta mentions: the
-// callable names plus the ones the delta removed or renamed away.
-func knownNames(table map[string]formFn, ops []deltaOp) []string {
-	names := slices.Collect(maps.Keys(table))
-	for _, op := range ops {
-		names = append(names, op.name)
-		if op.canonical != "" {
-			names = append(names, op.canonical)
+// canonTable maps every name d knows to its canonical kernel form: the callable
+// names plus the ones the delta removed or renamed away, which map to "".
+func (d Dialect) canonTable() map[string]string {
+	canon := make(map[string]string, len(kernel)+len(d.ops)+2)
+	add := func(name string) {
+		if c, removed, ok := d.canonicalNameUncached(name); ok {
+			if removed {
+				c = ""
+			}
+			canon[name] = c
 		}
 	}
-	return names
+	if d.base == baseFull {
+		for name := range kernel {
+			add(name)
+		}
+	}
+	for _, op := range d.ops {
+		add(op.name)
+		if op.canonical != "" {
+			add(op.canonical)
+		}
+	}
+	if d.ns == nsLisp2 {
+		add("funcall")
+		add("function")
+	}
+	return canon
 }
 
 // frozenDoName picks the visible name of the do form: do itself when visible,
@@ -663,14 +674,38 @@ func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth 
 	return s.read(src, d.readerFlags(), maxDepth)
 }
 
-// IsIdentity reports whether d is the identity dialect — the full kernel base
-// with no delta and no vocabulary. The bytecode VM dispatches canonical form
-// names directly, so only the identity dialect is safe to run under it.
+// IsIdentity reports whether d is the identity dialect: the full kernel base
+// where every kernel form is callable under its own name and nothing else is,
+// with default namespace and reader axes and no vocabulary. The cond axis does
+// not take part. The bytecode VM dispatches canonical form names directly, so
+// only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
-	return d.base == baseFull && len(d.ops) == 0 &&
-		d.ns == nsLisp1 && d.brackets == bracketsOn &&
-		d.funcRef == funcRefOff && d.readerVec == readerVecOff &&
-		d.vocab == nil
+	if d.st != nil {
+		return d.st.isIdentity
+	}
+	return d.identityOf(d.canonTable())
+}
+
+// identityOf reports whether d, whose canonTable is canon, is the identity
+// dialect.
+func (d Dialect) identityOf(canon map[string]string) bool {
+	defaultAxes := d.base == baseFull && d.ns == nsLisp1 &&
+		d.brackets == bracketsOn && d.funcRef == funcRefOff &&
+		d.readerVec == readerVecOff
+	if !defaultAxes || d.vocab != nil {
+		return false
+	}
+	callable := 0
+	for name, c := range canon {
+		if c == "" {
+			continue
+		}
+		if c != name {
+			return false
+		}
+		callable++
+	}
+	return callable == len(kernel)
 }
 
 func (d Dialect) with(op deltaOp) Dialect {
@@ -753,30 +788,47 @@ func (d Dialect) Fingerprint() string {
 	return d.fingerprintUncached()
 }
 
+// zeroFingerprint is the fingerprint of the zero Dialect, which every default
+// engine hashes; it is computed once.
+var zeroFingerprint = sync.OnceValue(func() string {
+	var d Dialect
+	return d.fingerprintOf(d.canonTable())
+})
+
 // fingerprintUncached computes d's fingerprint hash from scratch.
 func (d Dialect) fingerprintUncached() string {
-	h := sha256.New()
-	fmt.Fprintf(h, "base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
-		d.base, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
-	for _, op := range d.ops {
-		fmt.Fprintf(h, "|%d", op.kind)
-		writeField(h, op.name)
-		writeField(h, op.canonical)
+	isZero := d.base == baseFull && len(d.ops) == 0 && d.ns == nsLisp1 &&
+		d.brackets == bracketsOn && d.funcRef == funcRefOff &&
+		d.readerVec == readerVecOff && d.cond == condNested && d.vocab == nil
+	if isZero {
+		return zeroFingerprint()
 	}
-	// Sort vocabulary keys for stable order.
-	if len(d.vocab) > 0 {
-		keys := make([]string, 0, len(d.vocab))
-		for k := range d.vocab {
-			keys = append(keys, k)
+	return d.fingerprintOf(d.canonTable())
+}
+
+// fingerprintOf hashes d's resolved configuration, where canon is its
+// canonTable. It covers the axes, the callable visible→canonical table and
+// the vocabulary, each in sorted order, so two dialects that resolve alike
+// fingerprint alike however they were built.
+func (d Dialect) fingerprintOf(canon map[string]string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "dialect/2|base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
+		d.base, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
+	for _, name := range slices.Sorted(maps.Keys(canon)) {
+		if canon[name] == "" {
+			continue
 		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			entry := d.vocab[k]
-			fmt.Fprint(h, "|v")
-			writeField(h, k)
-			writeField(h, entry.Canonical)
-			writeField(h, entry.AdapterID)
-		}
+		fmt.Fprint(h, "|f")
+		writeField(h, name)
+		writeField(h, canon[name])
+	}
+	fmt.Fprintf(h, "|vocab=%t", d.vocab != nil)
+	for _, name := range slices.Sorted(maps.Keys(d.vocab)) {
+		entry := d.vocab[name]
+		fmt.Fprint(h, "|v")
+		writeField(h, name)
+		writeField(h, entry.Canonical)
+		writeField(h, entry.AdapterID)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }

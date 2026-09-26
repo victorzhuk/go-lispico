@@ -8,7 +8,7 @@
 //   - Adapters binding nth, mapcar, and sort to their CL argument shapes
 //     over the shared collection kernels
 //
-// defun is registered as an alias for the kernel defn form via [Dialect.Add].
+// defun is mapped to the kernel defn form in the dialect's [core.DialectSpec].
 // defn/fn/defmacro accept both Vector and List params via paramsAsVector for
 // dialect portability. The CL reader disables bracket literals, so a List
 // is the only on-disk representation — forms typed in Lisp naturally use
@@ -199,15 +199,18 @@ var clSort = sync.OnceValue(func() core.Value {
 })
 
 var stockDialect = sync.OnceValue(func() core.Dialect {
-	return core.FullDialect().
-		Lisp2().
-		WithoutBracketLiterals().
-		WithFunctionRef().
-		WithReaderVector().
-		Add("defun", "defn").
-		Rename("set!", "setq").
-		Rename("do", "progn").
-		Vocabulary(map[string]string{
+	d, err := core.NewDialect(core.DialectSpec{
+		Lisp2:        true,
+		NoBrackets:   true,
+		FunctionRef:  true,
+		ReaderVector: true,
+		Forms: map[string]string{
+			"defun": "defn",
+			"setq":  "set!",
+			"progn": "do",
+		},
+		Hide: []string{"set!", "do"},
+		Vocab: map[string]string{
 			"car":     "first",
 			"cdr":     "rest",
 			"null":    "nil?",
@@ -218,11 +221,17 @@ var stockDialect = sync.OnceValue(func() core.Dialect {
 			"reverse": "reverse",
 			"apply":   "apply",
 			"type":    "type",
-		}).
-		WithAdapter("nth", clNthID, clNth()).
-		WithAdapter("mapcar", clMapcarID, clMapcar()).
-		WithAdapter("sort", clSortID, clSort()).
-		Memoized()
+		},
+		Adapters: map[string]core.Adapter{
+			"nth":    {ID: clNthID, Value: clNth()},
+			"mapcar": {ID: clMapcarID, Value: clMapcar()},
+			"sort":   {ID: clSortID, Value: clSort()},
+		},
+	})
+	if err != nil {
+		panic(fmt.Sprintf("cl: stock dialect: %v", err))
+	}
+	return d
 })
 
 // Dialect returns the Common Lisp dialect — a non-identity composition over

@@ -15,7 +15,11 @@ import (
 )
 
 var stockDialect = sync.OnceValue(func() core.Dialect {
-	return core.FullDialect().FlatCond().Memoized()
+	d, err := core.NewDialect(core.DialectSpec{FlatCond: true})
+	if err != nil {
+		panic("clojure: stock dialect: " + err.Error())
+	}
+	return d
 })
 
 // Dialect returns the Clojure dialect — the full kernel with flat cond
