@@ -6,7 +6,7 @@ Under a Lisp-2 Dialect, every GoFunc a plugin registers and the Dialect exposes 
 
 #### Scenario: Lisp-2 without vocabulary
 
-- **WHEN** an Engine runs `FullDialect().Lisp2()` with the stdlib and json plugins loaded
+- **WHEN** an Engine runs `core.NewDialect(core.DialectSpec{Lisp2: true})` with the stdlib and json plugins loaded
 - **THEN** `(json/encode 1)` and `(+ 1 2)` SHALL both evaluate successfully on both execution paths
 
 ### Requirement: Host bindings survive plugin vocabulary passes
