@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"sort"
 )
 
@@ -151,6 +152,21 @@ type Dialect struct {
 	// base's resolved table and fingerprint instead of the mutated one. See
 	// Memoized.
 	cache *dialectCache
+	// st is the frozen state of a Dialect built by NewDialect, or nil. Like
+	// cache, every builder method clears it on the copy it returns.
+	st *dialectState
+}
+
+// dialectState is the resolved, immutable form of a spec-built Dialect. It is
+// written once by NewDialect and only read afterwards, so copies of the
+// Dialect share it safely.
+type dialectState struct {
+	table map[string]formFn
+	// canon maps every name the dialect knows to its canonical kernel form;
+	// a removed name maps to "".
+	canon  map[string]string
+	doName string
+	fp     string
 }
 
 // dialectCache is the memoized state for one Memoized Dialect. It is
@@ -193,6 +209,192 @@ func FullDialect() Dialect { return Dialect{base: baseFull} }
 // changes never leak in.
 func EmptyDialect() Dialect { return Dialect{base: baseEmpty} }
 
+// DialectBase selects the special-form table a DialectSpec starts from.
+type DialectBase int
+
+const (
+	// BaseFull starts from the full kernel table.
+	BaseFull DialectBase = iota
+	// BaseEmpty starts from an empty table: only the forms the spec maps are
+	// callable.
+	BaseEmpty
+)
+
+// Adapter binds a visible builtin name to a Value that wraps a shared
+// implementation. ID names the adapter's semantics and takes part in the
+// dialect's identity.
+type Adapter struct {
+	ID    string
+	Value Value
+}
+
+// DialectSpec declares a Dialect as data. Forms maps a visible name to the
+// kernel form it exposes; Hide drops base forms. The boolean fields set the
+// namespace, reader and cond axes. Vocab maps a visible builtin name to a
+// canonical one and Adapters binds visible names to adapters; the dialect has
+// a vocabulary iff either map is non-nil, so an empty map is a vocabulary that
+// admits nothing.
+type DialectSpec struct {
+	Base         DialectBase
+	Forms        map[string]string
+	Hide         []string
+	Lisp2        bool
+	NoBrackets   bool
+	FunctionRef  bool
+	ReaderVector bool
+	FlatCond     bool
+	Vocab        map[string]string
+	Adapters     map[string]Adapter
+}
+
+// NewDialect validates spec and returns the Dialect it describes, resolved
+// once up front. The spec is copied: later writes to its maps or slices never
+// reach the returned Dialect. On an invalid spec it returns the zero Dialect
+// and an error naming the offending entry; the same spec always reports the
+// same error.
+func NewDialect(spec DialectSpec) (Dialect, error) {
+	hide := slices.Clone(spec.Hide)
+	slices.Sort(hide)
+	hide = slices.Compact(hide)
+	if err := validateSpec(spec, hide); err != nil {
+		return Dialect{}, err
+	}
+
+	d := Dialect{base: baseFull}
+	if spec.Base == BaseEmpty {
+		d.base = baseEmpty
+	}
+	for _, name := range hide {
+		d.ops = append(d.ops, deltaOp{kind: opRemove, name: name})
+	}
+	for _, name := range slices.Sorted(maps.Keys(spec.Forms)) {
+		d.ops = append(d.ops, deltaOp{kind: opAdd, name: name, canonical: spec.Forms[name]})
+	}
+	if spec.Lisp2 {
+		d.ns = nsLisp2
+	}
+	if spec.NoBrackets {
+		d.brackets = bracketsOff
+	}
+	if spec.FunctionRef {
+		d.funcRef = funcRefOn
+	}
+	if spec.ReaderVector {
+		d.readerVec = readerVecOn
+	}
+	if spec.FlatCond {
+		d.cond = condFlat
+	}
+	if spec.Vocab != nil || spec.Adapters != nil {
+		d.vocab = make(map[string]VocabEntry, len(spec.Vocab)+len(spec.Adapters))
+		for name, canonical := range spec.Vocab {
+			d.vocab[name] = VocabEntry{Canonical: canonical}
+		}
+		for name, a := range spec.Adapters {
+			d.vocab[name] = VocabEntry{AdapterID: a.ID, Adapter: a.Value}
+		}
+	}
+
+	table, err := d.resolveUncached()
+	if err != nil {
+		return Dialect{}, err
+	}
+	canon := make(map[string]string, len(table)+len(d.ops))
+	for _, name := range knownNames(table, d.ops) {
+		if c, removed, ok := d.canonicalNameUncached(name); ok {
+			if removed {
+				c = ""
+			}
+			canon[name] = c
+		}
+	}
+	d.st = &dialectState{
+		table:  table,
+		canon:  canon,
+		doName: frozenDoName(canon),
+		fp:     d.fingerprintUncached(),
+	}
+	return d, nil
+}
+
+// validateSpec checks spec guard by guard, each over sorted names, so a spec
+// that breaks several rules always reports the same one. hide is the sorted,
+// deduplicated Hide list.
+func validateSpec(spec DialectSpec, hide []string) error {
+	forms := slices.Sorted(maps.Keys(spec.Forms))
+	adapters := slices.Sorted(maps.Keys(spec.Adapters))
+
+	if spec.Lisp2 {
+		for _, name := range forms {
+			if name == "funcall" || name == "function" {
+				return fmt.Errorf("dialect: %q is reserved by the Lisp-2 namespace", name)
+			}
+		}
+	}
+	for _, name := range hide {
+		if _, ok := spec.Forms[name]; ok {
+			return fmt.Errorf("dialect: %q is both hidden and mapped", name)
+		}
+	}
+	for _, name := range forms {
+		if _, ok := kernel[spec.Forms[name]]; !ok {
+			return fmt.Errorf("dialect: %q maps to unknown kernel form %q", name, spec.Forms[name])
+		}
+	}
+	for _, name := range hide {
+		if _, ok := kernel[name]; spec.Base == BaseEmpty || !ok {
+			return fmt.Errorf("dialect: hidden name %q is not in the base", name)
+		}
+	}
+	for _, name := range adapters {
+		if spec.Adapters[name].ID == "" {
+			return fmt.Errorf("dialect: adapter %q has no semantic ID", name)
+		}
+	}
+	for _, name := range adapters {
+		if spec.Adapters[name].Value == nil {
+			return fmt.Errorf("dialect: adapter %q has no value", name)
+		}
+	}
+	for _, name := range adapters {
+		if _, ok := spec.Vocab[name]; ok {
+			return fmt.Errorf("dialect: %q is both a vocabulary rename and an adapter", name)
+		}
+	}
+	return nil
+}
+
+// knownNames lists every name a resolved table or its delta mentions: the
+// callable names plus the ones the delta removed or renamed away.
+func knownNames(table map[string]formFn, ops []deltaOp) []string {
+	names := slices.Collect(maps.Keys(table))
+	for _, op := range ops {
+		names = append(names, op.name)
+		if op.canonical != "" {
+			names = append(names, op.canonical)
+		}
+	}
+	return names
+}
+
+// frozenDoName picks the visible name of the do form: do itself when visible,
+// else the smallest visible alias, else "do".
+func frozenDoName(canon map[string]string) string {
+	if canon["do"] == "do" {
+		return "do"
+	}
+	name := ""
+	for k, c := range canon {
+		if c == "do" && (name == "" || k < name) {
+			name = k
+		}
+	}
+	if name == "" {
+		return "do"
+	}
+	return name
+}
+
 // Add exposes the kernel form canonical under name.
 func (d Dialect) Add(name, canonical string) Dialect {
 	return d.with(deltaOp{kind: opAdd, name: name, canonical: canonical})
@@ -212,7 +414,7 @@ func (d Dialect) Remove(name string) Dialect {
 // FlatCond sets the cond clause-shape axis so cond parses flat test/expression
 // pairs (Clojure-style): (cond t1 e1 t2 e2 ...). The default axis keeps nested
 // clauses (Common Lisp-style).
-func (d Dialect) FlatCond() Dialect { d.cond = condFlat; d.cache = nil; return d }
+func (d Dialect) FlatCond() Dialect { d.cond = condFlat; d.cache, d.st = nil, nil; return d }
 
 // Vocabulary sets a name→canonical-name map: each visible name resolves to
 // the GoFunc the canonical name was registered under. A nil vocab (the zero
@@ -224,7 +426,7 @@ func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
 	for name, canonical := range vocab {
 		d.vocab[name] = VocabEntry{Canonical: canonical}
 	}
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -237,7 +439,7 @@ func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
 func (d Dialect) WithAdapter(name, semanticID string, value Value) Dialect {
 	d.vocab = copyVocab(d.vocab)
 	d.vocab[name] = VocabEntry{AdapterID: semanticID, Adapter: value}
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -277,6 +479,17 @@ func (d Dialect) VocabEntry(name string) (VocabEntry, bool) {
 //   - "", true, true if the name was removed from this dialect's dispatch table
 //   - "", false, false if the name is not a special form at all in this dialect
 func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok bool) {
+	if d.st != nil {
+		c, ok := d.st.canon[name]
+		if !ok {
+			return "", false, false
+		}
+		return c, c == "", true
+	}
+	return d.canonicalNameUncached(name)
+}
+
+func (d Dialect) canonicalNameUncached(name string) (canonical string, removed bool, ok bool) {
 	present := false
 	affected := false
 	if d.base == baseFull {
@@ -352,7 +565,7 @@ func (d Dialect) isTruthy(v Value) bool {
 // The default axis is Lisp-1, a single namespace.
 func (d Dialect) Lisp2() Dialect {
 	d.ns = nsLisp2
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -370,7 +583,7 @@ func (d Dialect) IsLisp2() bool { return d.isLisp2() }
 // keeps bracket literals on.
 func (d Dialect) WithoutBracketLiterals() Dialect {
 	d.brackets = bracketsOff
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -379,7 +592,7 @@ func (d Dialect) WithoutBracketLiterals() Dialect {
 // defined by the namespace axis; this flag only makes it parse.
 func (d Dialect) WithFunctionRef() Dialect {
 	d.funcRef = funcRefOn
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -387,7 +600,7 @@ func (d Dialect) WithFunctionRef() Dialect {
 // vector. The default axis leaves # non-special.
 func (d Dialect) WithReaderVector() Dialect {
 	d.readerVec = readerVecOn
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -464,7 +677,7 @@ func (d Dialect) with(op deltaOp) Dialect {
 	ops := make([]deltaOp, len(d.ops), len(d.ops)+1)
 	copy(ops, d.ops)
 	d.ops = append(ops, op)
-	d.cache = nil
+	d.cache, d.st = nil, nil
 	return d
 }
 
@@ -472,6 +685,9 @@ func (d Dialect) with(op deltaOp) Dialect {
 // returns its cached table on every call; any other Dialect resolves fresh
 // each time (see resolveUncached).
 func (d Dialect) resolve() (map[string]formFn, error) {
+	if d.st != nil {
+		return d.st.table, nil
+	}
 	if d.cache != nil {
 		return d.cache.table, d.cache.err
 	}
@@ -528,6 +744,9 @@ func (d Dialect) resolveUncached() (map[string]formFn, error) {
 // The fingerprint is a process-local identity for one go-lispico version: it
 // may change between releases and is not a persistence format.
 func (d Dialect) Fingerprint() string {
+	if d.st != nil {
+		return d.st.fp
+	}
 	if d.cache != nil {
 		return d.cache.fp
 	}
@@ -572,6 +791,9 @@ func writeField(w io.Writer, s string) {
 // It scans the delta ops; with no rename/add targeting canonical, the canonical
 // name is itself the visible name (identity behavior).
 func (d Dialect) visibleName(canonical string) string {
+	if d.st != nil && canonical == "do" {
+		return d.st.doName
+	}
 	for i := len(d.ops) - 1; i >= 0; i-- {
 		op := d.ops[i]
 		if op.canonical == canonical && (op.kind == opRename || op.kind == opAdd) {
