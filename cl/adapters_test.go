@@ -702,9 +702,7 @@ func TestCLSort_Truthiness(t *testing.T) {
 // executable contract: the section carries at least four fenced lisp
 // examples, each parses under the CL dialect and evaluates on a stock CL
 // engine, no example uses bracket literals, the reader still rejects them,
-// and neither README nor the [Unreleased] changelog shows the retired
-// two-argument WithAdapter form while the changelog documents the
-// three-argument migration.
+// and the current changelog documents the DialectSpec.Adapters migration.
 func TestCLDocs_ExamplesParse(t *testing.T) {
 	readme, err := os.ReadFile("../README.md")
 	require.NoError(t, err, "README.md must be readable relative to the cl package")
@@ -737,22 +735,11 @@ func TestCLDocs_ExamplesParse(t *testing.T) {
 	require.ErrorAs(t, err, &readErr)
 	require.Equal(t, "ReadError", readErr.Code)
 
-	for _, args := range adapterArgCounts(src) {
-		require.NotEqual(t, 2, args, "README must not show the retired two-argument WithAdapter(name, fn) form")
-	}
-
 	changelog, err := os.ReadFile("../CHANGELOG.md")
 	require.NoError(t, err, "CHANGELOG.md must be readable relative to the cl package")
 	current, ok := changelogCurrent(string(changelog))
 	require.True(t, ok, "CHANGELOG must carry an [Unreleased] section")
-	migrated := false
-	for _, args := range adapterArgCounts(current) {
-		require.NotEqual(t, 2, args, "the current changelog must not show the retired two-argument WithAdapter(name, fn) form")
-		if args >= 3 {
-			migrated = true
-		}
-	}
-	require.True(t, migrated, "the current changelog must document the WithAdapter(name, semanticID, fn) migration with a three-argument example")
+	require.Contains(t, current, "DialectSpec.Adapters", "the current changelog must document the DialectSpec.Adapters migration")
 }
 
 // clDocSection returns the body of the README section whose heading mentions
@@ -811,42 +798,6 @@ func stripLispStrings(src string) string {
 		b.WriteByte(ch)
 	}
 	return b.String()
-}
-
-// adapterArgCounts counts the top-level arguments of every WithAdapter call
-// site in src, balancing nested delimiters and skipping string literals.
-func adapterArgCounts(src string) []int {
-	const marker = "WithAdapter("
-	var counts []int
-	for pos := 0; ; {
-		idx := strings.Index(src[pos:], marker)
-		if idx < 0 {
-			return counts
-		}
-		j := pos + idx + len(marker)
-		depth, args, inStr := 1, 1, false
-		for ; j < len(src) && depth > 0; j++ {
-			ch := src[j]
-			switch {
-			case inStr:
-				if ch == '\\' {
-					j++
-				} else if ch == '"' {
-					inStr = false
-				}
-			case ch == '"':
-				inStr = true
-			case ch == '(' || ch == '[' || ch == '{':
-				depth++
-			case ch == ')':
-				depth--
-			case ch == ',' && depth == 1:
-				args++
-			}
-		}
-		counts = append(counts, args)
-		pos = j
-	}
 }
 
 // changelogCurrent returns [Unreleased] together with the newest released

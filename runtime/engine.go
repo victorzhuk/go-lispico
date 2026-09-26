@@ -229,8 +229,9 @@ func WithResourceLimits(limits ResourceLimits) EngineOption {
 	}
 }
 
-// WithDialect selects the Dialect the Engine runs. The Dialect is resolved once
-// at New and is immutable for the Engine's lifetime. Without this option the
+// WithDialect selects the Dialect the Engine runs. The Dialect is resolved and
+// validated by core.NewDialect and is immutable for the Engine's lifetime; New
+// only reads its frozen dispatch table. Without this option the
 // Engine runs the Common Lisp dialect. Select the prior Clojure-style surface
 // with WithDialect(clojure.Dialect()).
 func WithDialect(d core.Dialect) EngineOption {
