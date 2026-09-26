@@ -99,10 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compilation with a `CompileError` "undefined form".
 - `cond` clause bodies normalize to structured clauses with no surface `do`
   name: `(cond (true 1 2))` now evaluates under `Hide-do` and empty-base
-  dialects, and the per-evaluation clause-list allocation is gone. A 4-pair
-  flat `cond` through the tree-walker drops from 904 B/op / 19 allocs/op to
-  792 B/op / 14 allocs/op (measured with `-benchmem`, base `c29604d` vs this
-  tree).
+  dialects, and the tree-walker no longer allocates a clause list per
+  evaluation. A 4-pair flat `cond` through the tree-walker drops from
+  904 B/op / 19 allocs/op to 808 B/op / 15 allocs/op (measured with
+  `-benchmem`, base `c29604d` vs this tree). The remaining per-evaluation
+  allocation is the `[]core.CondClause` slice itself; each clause's body
+  borrows a view of the argument forms instead of copying them.
 - Compiler shape errors for `function`/`funcall` arguments are typed
   `EvalError`, matching the tree-walker instead of an untyped compile error.
 
