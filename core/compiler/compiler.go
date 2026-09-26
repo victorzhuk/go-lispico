@@ -256,18 +256,18 @@ func (c *Compiler) compileList(f core.List) error {
 				return c.compileFn(items[1:])
 			case "function":
 				if len(items[1:]) != 1 {
-					return fmt.Errorf("function: requires exactly 1 argument")
+					return &core.LispicoError{Code: "EvalError", Message: "function requires exactly 1 argument"}
 				}
 				sym, ok := items[1].(core.Symbol)
 				if !ok {
-					return fmt.Errorf("function: argument must be symbol, got %T", items[1])
+					return &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("function: argument must be a symbol, got %T", items[1])}
 				}
 				c.emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
 				return nil
 			case "funcall":
 				// funcall evaluates its first argument as a value expression and calls it.
 				if len(items[1:]) < 1 {
-					return fmt.Errorf("funcall: requires at least 1 argument")
+					return &core.LispicoError{Code: "EvalError", Message: "funcall requires at least 1 argument"}
 				}
 				if err := c.Compile(items[1]); err != nil {
 					return err
