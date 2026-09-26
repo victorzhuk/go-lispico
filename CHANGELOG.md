@@ -94,6 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer rewrite or journal unrelated bindings, and a user redefinition of a
   builtin's function cell is kept. Under `cl.Dialect()` with eager stdlib,
   `Use(json)` drops from 63 KB / 170 allocs to 34 KB / 47 allocs.
+- Form names hidden or renamed away by a Dialect evaluate as ordinary symbols
+  on both the tree-walker and the bytecode VM instead of failing VM
+  compilation with a `CompileError` "undefined form".
+- `cond` clause bodies normalize to structured clauses with no surface `do`
+  name: `(cond (true 1 2))` now evaluates under `Hide-do` and empty-base
+  dialects, and the per-evaluation clause-list allocation is gone. A 4-pair
+  flat `cond` through the tree-walker drops from 904 B/op / 19 allocs/op to
+  792 B/op / 14 allocs/op (measured with `-benchmem`, base `c29604d` vs this
+  tree).
+- Compiler shape errors for `function`/`funcall` arguments are typed
+  `EvalError`, matching the tree-walker instead of an untyped compile error.
 
 ## [0.14.0] - 2026-09-13
 
