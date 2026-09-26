@@ -127,8 +127,8 @@ type dialectState struct {
 	readerVec readerVecSyntax
 	cond      condShape
 	table     map[string]formFn
-	// canon maps every name the dialect knows to its canonical kernel form;
-	// a hidden name maps to "".
+	// canon maps every name the dialect knows to its canonical kernel
+	// form; hidden names are absent, not mapped to "".
 	canon map[string]string
 	// vocab maps a visible builtin name to a canonical builtin name or an
 	// adapter. nil means no vocabulary: every registered builtin stays
@@ -579,17 +579,21 @@ func (d Dialect) normalizeCondNested(args []Value) ([]CondClause, error) {
 		if n < 2 {
 			return nil, evalErrorf("cond: clauses must be (test body...) lists")
 		}
-		// Cursor rather than At(i): a clause body past the flat
-		// threshold is a shared chain, where positional indexing
-		// restarts the walk per element.
-		cur := list.cursor()
-		test, _ := cur.next()
-		body := make([]Value, 0, n-1)
-		for i := 1; i < n; i++ {
-			v, _ := cur.next()
-			body = append(body, v)
+		// Body is read-only everywhere (Evaluator, Compiler, depth
+		// metering), so a flat clause borrows the list's storage —
+		// the same alias list.slice() grants core hot paths — and
+		// only the shared-chain form pays for a contiguous copy.
+		if list.shared == nil {
+			clauses = append(clauses, CondClause{Test: list.flat[0], Body: list.flat[1:]})
+			continue
 		}
-		clauses = append(clauses, CondClause{Test: test, Body: body})
+		body := make([]Value, n-1)
+		node := list.shared.tail
+		for i := range body {
+			body[i] = node.head
+			node = node.tail
+		}
+		clauses = append(clauses, CondClause{Test: list.shared.head, Body: body})
 	}
 	return clauses, nil
 }
@@ -600,7 +604,9 @@ func (d Dialect) normalizeCondFlat(args []Value) ([]CondClause, error) {
 	}
 	clauses := make([]CondClause, 0, len(args)/2)
 	for i := 0; i < len(args); i += 2 {
-		clauses = append(clauses, CondClause{Test: args[i], Body: []Value{args[i+1]}})
+		// Borrow a one-element view of args: the operands are
+		// immutable forms, so a copy per pair is pure overhead.
+		clauses = append(clauses, CondClause{Test: args[i], Body: args[i+1 : i+2]})
 	}
 	return clauses, nil
 }
