@@ -26,7 +26,12 @@ type stdlibTemplateEntry struct {
 	kind      stdlibTemplateKind
 	value     core.Value
 	canonical bool
-	source    string
+	// fn mirrors the value into the function cell on install (a GoFunc
+	// under Lisp-2); alias marks a vocabulary rename, which owns its
+	// visible name over any own registration of that name.
+	fn     bool
+	alias  bool
+	source string
 }
 
 type stdlibTemplateKey struct {
@@ -238,6 +243,9 @@ func (r *stdlibTemplateRegistry) putEntry(key stdlibTemplateKey, entry *stdlibTe
 	if layer.complete {
 		return fmt.Errorf("stdlib template layer %s/%s/%s already published: refusing write to %q",
 			key.dialectFP, key.pluginName, key.pluginVersion, entry.name)
+	}
+	if prev, ok := layer.entries[entry.name]; ok && prev.alias && !entry.alias {
+		return nil
 	}
 	layer.entries[entry.name] = entry
 	return nil
@@ -546,7 +554,7 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 // still empty.
 func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, entry *stdlibTemplateEntry) error {
 	valueMissing := !env.HasLive(entry.name)
-	funcMissing := m.engine.config.dialect.IsLisp2() && !env.HasLiveFunc(entry.name)
+	funcMissing := entry.fn && !env.HasLiveFunc(entry.name)
 
 	if valueMissing && funcMissing {
 		if entry.canonical {
@@ -574,7 +582,7 @@ func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, 
 		}
 	}
 
-	if m.engine.config.dialect.IsLisp2() && funcMissing {
+	if funcMissing {
 		if entry.canonical {
 			if err := env.SetFuncCanonical(entry.name, entry.value); err != nil {
 				return err
@@ -723,38 +731,20 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 		return env.Set(name, val)
 	}
 
-	dialect := m.engine.config.dialect
-	vocab := dialect.Vocab()
-
-	// Vocabulary renames bind the visible name to the canonical GoFunc. The
-	// alias is a plain (non-canonical) binding, matching the eager Set in
-	// applyVocabulary; it is registered even when the canonical name itself
-	// is stripped by an empty-base allowlist (the eager apply phase
-	// resolves renames from the pre-strip snapshot).
-	for visible, ve := range vocab {
-		if ve.Adapter == nil && ve.Canonical == name {
-			if err := stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
-				name:  visible,
-				kind:  stdlibTemplateGoValue,
-				value: val,
-			}); err != nil {
-				return err
-			}
+	var scratch [4]core.VocabBinding
+	for _, b := range m.engine.config.dialect.AppendVocabBindings(scratch[:0], name, val, canonical) {
+		if err := stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
+			name:      b.Name,
+			kind:      stdlibTemplateGoValue,
+			value:     b.Value,
+			canonical: b.Canonical,
+			fn:        b.Func,
+			alias:     b.Name != name,
+		}); err != nil {
+			return err
 		}
 	}
-
-	if vocab != nil && dialect.IsBaseEmpty() {
-		if _, allowed := vocab[name]; !allowed {
-			return nil
-		}
-	}
-
-	return stdlibLazyTemplateRegistry.putEntry(key, &stdlibTemplateEntry{
-		name:      name,
-		kind:      stdlibTemplateGoValue,
-		value:     val,
-		canonical: canonical,
-	})
+	return nil
 }
 
 // RegisterSource defers a pure-Lisp bootstrap definition (defmacro/defn).
