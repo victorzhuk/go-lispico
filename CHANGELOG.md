@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `core.Dialect.VocabEntry(name)` looks up one vocabulary entry without copying
+  the map.
+
 ### Changed
 
 - `core.Dialect.WithAdapter` keeps the 0.13.0 signature: adapters register as
@@ -21,8 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `core.Dialect.Vocab` returns a caller-owned copy. Writing to the returned map
   no longer changes the dialect, its fingerprint, the shared `cl.Dialect()`
-  value, or the names an engine allows. `Dialect.VocabEntry(name)` looks up one
-  entry without copying.
+  value, or the names an engine allows.
 
 ## [0.14.0] - 2026-09-13
 
