@@ -229,7 +229,7 @@ var stockDialect = sync.OnceValue(func() core.Dialect {
 		},
 	})
 	if err != nil {
-		panic(fmt.Sprintf("cl: stock dialect: %v", err))
+		panic("cl: stock dialect: " + err.Error())
 	}
 	return d
 })
