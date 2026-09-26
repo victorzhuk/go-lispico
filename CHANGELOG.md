@@ -51,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | --- | --- |
   | `core.FullDialect()` | `core.Dialect{}` (the zero value) |
   | `core.EmptyDialect()` | `core.DialectSpec{Base: core.BaseEmpty}` |
-  | `d.Add(name, canonical)` / `d.Rename(name, canonical)` | `DialectSpec.Forms[name] = canonical` |
+  | `d.Add(name, canonical)` | `DialectSpec.Forms[name] = canonical` |
+  | `d.Rename(canonical, to)` | `DialectSpec.Forms[to] = canonical`, plus `canonical` in `DialectSpec.Hide` |
   | `d.Remove(name)` | append `name` to `DialectSpec.Hide` |
   | `d.Lisp2()` | `DialectSpec.Lisp2 = true` |
   | `d.FlatCond()` | `DialectSpec.FlatCond = true` |
