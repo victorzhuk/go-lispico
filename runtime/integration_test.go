@@ -285,10 +285,14 @@ func TestIntegration_NoGoroutineLeak(t *testing.T) {
 
 	require.NoError(t, eng.Close())
 
-	time.Sleep(100 * time.Millisecond)
-
+	// Goroutines from earlier tests may still be exiting, so the count can drop below before.
+	// Polled inline: assert.Eventually runs its condition in an extra goroutine.
 	after := runtime.NumGoroutine()
-	assert.Equal(t, before, after, "goroutine leak detected")
+	for deadline := time.Now().Add(time.Second); after > before && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		after = runtime.NumGoroutine()
+	}
+	assert.LessOrEqual(t, after, before, "goroutine leak detected")
 }
 
 func TestIntegration_LoadDirAndEval(t *testing.T) {
