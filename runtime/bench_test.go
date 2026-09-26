@@ -12,6 +12,7 @@ import (
 	"github.com/victorzhuk/go-lispico/cl"
 	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
+	"github.com/victorzhuk/go-lispico/plugins/json"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
@@ -103,6 +104,97 @@ func BenchmarkEngine_UseStdlibBytecode(b *testing.B) {
 		b.ResetTimer()
 		run(b)
 	})
+}
+
+// BenchmarkEngine_UseStdlibCL is BenchmarkEngine_UseStdlibBytecode under the
+// shipped default dialect.
+func BenchmarkEngine_UseStdlibCL(b *testing.B) {
+	run := func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			eng, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := eng.Use(stdlib.New()); err != nil {
+				b.Fatal(err)
+			}
+			eng.Close()
+		}
+	}
+	warmUp := func(b *testing.B) {
+		warm, err := New(nil, WithBytecode(), WithDialect(cl.Dialect()))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := warm.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ResetTimer()
+	}
+	b.Run("lazy", func(b *testing.B) {
+		warmUp(b)
+		run(b)
+	})
+	b.Run("eager", func(b *testing.B) {
+		restoreLazy := SetStdlibLazyDisabledForTesting(true)
+		defer restoreLazy()
+		warmUp(b)
+		run(b)
+	})
+}
+
+// BenchmarkEngine_UseJSONAfterStdlib times only Use(json) on an engine that
+// already carries stdlib; construction, stdlib load and Close stay untimed.
+func BenchmarkEngine_UseJSONAfterStdlib(b *testing.B) {
+	dialects := []struct {
+		name    string
+		dialect func() core.Dialect
+	}{
+		{name: "cl", dialect: cl.Dialect},
+		{name: "clojure", dialect: clojure.Dialect},
+	}
+	newEngine := func(b *testing.B, d core.Dialect) Engine {
+		eng, err := New(nil, WithBytecode(), WithDialect(d))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := eng.Use(stdlib.New()); err != nil {
+			b.Fatal(err)
+		}
+		return eng
+	}
+	run := func(b *testing.B, dialect func() core.Dialect) {
+		warm := newEngine(b, dialect())
+		if err := warm.Use(json.New()); err != nil {
+			b.Fatal(err)
+		}
+		warm.Close()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for b.Loop() {
+			b.StopTimer()
+			eng := newEngine(b, dialect())
+			b.StartTimer()
+			if err := eng.Use(json.New()); err != nil {
+				b.Fatal(err)
+			}
+			b.StopTimer()
+			eng.Close()
+			b.StartTimer()
+		}
+	}
+	for _, d := range dialects {
+		b.Run(d.name+"/eager", func(b *testing.B) {
+			restoreLazy := SetStdlibLazyDisabledForTesting(true)
+			defer restoreLazy()
+			run(b, d.dialect)
+		})
+		b.Run(d.name+"/lazy", func(b *testing.B) {
+			run(b, d.dialect)
+		})
+	}
 }
 
 // BenchmarkEngine_StartupFullSurfaceBytecode measures the lazy/eager
