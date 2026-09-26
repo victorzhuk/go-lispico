@@ -133,7 +133,10 @@ type dialectState struct {
 	// vocab maps a visible builtin name to a canonical builtin name or an
 	// adapter. nil means no vocabulary: every registered builtin stays
 	// callable under its registered name.
-	vocab    map[string]VocabEntry
+	vocab map[string]VocabEntry
+	// aliases maps a canonical builtin name to the sorted visible names that
+	// rename it, the name itself excluded.
+	aliases  map[string][]string
 	doName   string
 	identity bool
 	fp       string
@@ -299,6 +302,18 @@ func freeze(spec DialectSpec, hide []string) *dialectState {
 		for name, a := range spec.Adapters {
 			st.vocab[name] = VocabEntry{AdapterID: a.ID, Adapter: a.Value}
 		}
+		for name, canonical := range spec.Vocab {
+			if name == canonical {
+				continue
+			}
+			if st.aliases == nil {
+				st.aliases = make(map[string][]string)
+			}
+			st.aliases[canonical] = append(st.aliases[canonical], name)
+		}
+		for _, names := range st.aliases {
+			slices.Sort(names)
+		}
 	}
 
 	st.doName = doNameOf(st.canon)
@@ -386,6 +401,44 @@ func writeField(w io.Writer, s string) {
 // shared immutable values, not copies.
 func (d Dialect) Vocab() map[string]VocabEntry {
 	return maps.Clone(d.state().vocab)
+}
+
+// VocabBinding is one cell a plugin registration makes under a Dialect. Func
+// reports whether the cell is a function cell, which only a Lisp-2 dialect
+// binds and only for a GoFunc.
+type VocabBinding struct {
+	Name      string
+	Value     Value
+	Canonical bool
+	Func      bool
+}
+
+// AppendVocabBindings appends to dst the cells a plugin registering v under
+// name makes under d, and returns the extended slice. A non-GoFunc binds only
+// name. A GoFunc binds name — to its adapter when the vocabulary has one, not
+// at all when an empty-base vocabulary does not list name — followed by every
+// visible rename of name in sorted order. Renames and adapters are never
+// canonical. It does not allocate when cap(dst) leaves room for the result.
+func (d Dialect) AppendVocabBindings(dst []VocabBinding, name string, v Value, canonical bool) []VocabBinding {
+	if _, ok := v.(GoFunc); !ok {
+		return append(dst, VocabBinding{Name: name, Value: v, Canonical: canonical})
+	}
+	st := d.state()
+	lisp2 := st.ns == nsLisp2
+	entry, listed := st.vocab[name]
+	switch {
+	case entry.Adapter != nil:
+		_, fn := entry.Adapter.(GoFunc)
+		dst = append(dst, VocabBinding{Name: name, Value: entry.Adapter, Func: lisp2 && fn})
+	case st.vocab != nil && st.base == BaseEmpty && !listed:
+		// An empty-base vocabulary is an allowlist: an unlisted name stays unbound.
+	default:
+		dst = append(dst, VocabBinding{Name: name, Value: v, Canonical: canonical, Func: lisp2})
+	}
+	for _, alias := range st.aliases[name] {
+		dst = append(dst, VocabBinding{Name: alias, Value: v, Func: lisp2})
+	}
+	return dst
 }
 
 // VocabEntry returns the vocabulary entry bound to name, and whether one

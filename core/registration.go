@@ -89,6 +89,21 @@ func (r *Registration) Env() *Env { return r.view }
 // Complete keeps the operation's writes and ends the registration.
 func (r *Registration) Complete() { r.finish() }
 
+// Names returns the value-cell names written through the view — set,
+// canonical-set or deleted — each once, in no particular order. It is nil
+// before the first such write and once the registration has ended.
+func (r *Registration) Names() []string {
+	r.root.mu.RLock()
+	defer r.root.mu.RUnlock()
+	var names []string
+	for key := range r.entries {
+		if !key.fn {
+			names = append(names, key.name)
+		}
+	}
+	return names
+}
+
 // Abort rolls back the operation's writes and ends the registration. A key is
 // restored only while the operation still owns it: its map cell is the op's
 // last written cell at the version that write left. A key a foreign write
