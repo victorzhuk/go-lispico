@@ -379,6 +379,31 @@ func TestDialect_FingerprintStableUnderMemoization(t *testing.T) {
 	}
 }
 
+func TestDialect_FingerprintFieldsDoNotCollide(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b Dialect
+	}{
+		{
+			name: "vocabulary separator in name vs canonical",
+			a:    FullDialect().Vocabulary(map[string]string{"a:b": "c"}),
+			b:    FullDialect().Vocabulary(map[string]string{"a": "b:c"}),
+		},
+		{
+			name: "add op separators in name vs two ops",
+			a:    FullDialect().Add("a:if|1:b", "if"),
+			b:    FullDialect().Add("a", "if").Add("b", "if"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if fa, fb := tt.a.Fingerprint(), tt.b.Fingerprint(); fa == fb {
+				t.Fatalf("Fingerprint() collides at %q for dialects differing only in separator placement; want distinct digests", fa)
+			}
+		})
+	}
+}
+
 func TestDialect_RedefinitionDoesNotLeakAcrossEngines(t *testing.T) {
 	d := FullDialect().Memoized()
 
