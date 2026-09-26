@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `core.Dialect.WithAdapter` keeps the 0.13.0 signature: adapters register as
   `WithAdapter(name, semanticID, value)` with a non-empty semantic ID that
   joins the dialect fingerprint.
+- `core.Dialect.Fingerprint` values differ from earlier releases: every string
+  field is length-prefixed, so names that differ only in where `:` or `|` sit
+  no longer collide. The fingerprint is a process-local identity and may change
+  between releases; do not persist it.
+
+### Fixed
+
+- `core.Dialect.Vocab` returns a caller-owned copy. Writing to the returned map
+  no longer changes the dialect, its fingerprint, the shared `cl.Dialect()`
+  value, or the names an engine allows. `Dialect.VocabEntry(name)` looks up one
+  entry without copying.
 
 ## [0.14.0] - 2026-09-13
 
