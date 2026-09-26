@@ -261,6 +261,9 @@ func TestNewDialect_FrozenAxesAndVocabulary(t *testing.T) {
 		if len(clauses) != 1 {
 			t.Errorf("FlatCond: got %d clauses, want 1", len(clauses))
 		}
+		if clause := clauses[0]; !clause.Test.Equals(Bool{V: true}) || !clause.Body[0].Equals(Int{V: 1}) {
+			t.Errorf("FlatCond clause = %+v, want test true body 1", clause)
+		}
 	})
 
 	t.Run("axes off", func(t *testing.T) {
@@ -359,7 +362,7 @@ func TestNewDialect_EvaluatorsShareResolution(t *testing.T) {
 	}
 }
 
-func TestNewDialect_CondBodyUsesVisibleDo(t *testing.T) {
+func TestNewDialect_CondBodyCarriesForms(t *testing.T) {
 	d := mustDialect(t, spec{Forms: map[string]string{"begin": "do", "progn": "do"}, Hide: []string{"do"}})
 
 	args, err := d.Read("(x 1 2)")
@@ -373,11 +376,11 @@ func TestNewDialect_CondBodyUsesVisibleDo(t *testing.T) {
 	if len(clauses) != 1 {
 		t.Fatalf("got %d clauses, want 1", len(clauses))
 	}
-	body, ok := clauses[0].(List).At(1).(List)
-	if !ok {
-		t.Fatalf("clause body = %v, want a wrapped list", clauses[0])
+	clause := clauses[0]
+	if !clause.Test.Equals(Symbol{V: "x"}) {
+		t.Errorf("clause test = %v, want x", clause.Test)
 	}
-	if head := body.At(0); !(Symbol{V: "begin"}).Equals(head) {
-		t.Errorf("multi-body clause wrapped with %v, want begin", head)
+	if len(clause.Body) != 2 || !clause.Body[0].Equals(Int{V: 1}) || !clause.Body[1].Equals(Int{V: 2}) {
+		t.Errorf("clause body = %v, want (1 2) as plain forms", clause.Body)
 	}
 }

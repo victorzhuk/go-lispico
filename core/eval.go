@@ -1871,17 +1871,15 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		return nil, err
 	}
 	for _, clause := range clauses {
-		items := clause.(List).slice()
-		test, body := items[0], items[1]
-		if isCondElse(test) {
-			return e.Eval(ctx, body, env)
+		if isCondElse(clause.Test) {
+			return e.evalBody(ctx, clause.Body, env)
 		}
-		result, err := e.Eval(ctx, test, env)
+		result, err := e.Eval(ctx, clause.Test, env)
 		if err != nil {
 			return nil, err
 		}
 		if e.truthy(result) {
-			return e.Eval(ctx, body, env)
+			return e.evalBody(ctx, clause.Body, env)
 		}
 	}
 	return Nil{}, nil

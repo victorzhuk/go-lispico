@@ -137,7 +137,6 @@ type dialectState struct {
 	// aliases maps a canonical builtin name to the sorted visible names that
 	// rename it, the name itself excluded.
 	aliases  map[string][]string
-	doName   string
 	identity bool
 	fp       string
 }
@@ -316,28 +315,9 @@ func freeze(spec DialectSpec, hide []string) *dialectState {
 		}
 	}
 
-	st.doName = doNameOf(st.canon)
 	st.identity = st.isIdentity()
 	st.fp = st.fingerprint()
 	return st
-}
-
-// doNameOf picks the visible name of the do form: do itself when visible,
-// else the smallest visible alias, else "do".
-func doNameOf(canon map[string]string) string {
-	if canon["do"] == "do" {
-		return "do"
-	}
-	name := ""
-	for k, c := range canon {
-		if c == "do" && (name == "" || k < name) {
-			name = k
-		}
-	}
-	if name == "" {
-		return "do"
-	}
-	return name
 }
 
 // isIdentity reports whether st is the identity dialect.
@@ -566,13 +546,20 @@ func (d Dialect) Fingerprint() string {
 	return d.state().fp
 }
 
-// NormalizeCond parses raw cond operands into canonical (test body) clauses
-// under the Dialect's cond clause-shape axis. One canonical clause is one test
-// plus one body expression; a Common Lisp nested clause with a multi-expression
-// implicit-progn body normalizes by wrapping the body in the dialect-visible
-// `do` form. Both the Evaluator and the Compiler call this, so the two paths
-// cannot parse cond differently.
-func (d Dialect) NormalizeCond(args []Value) ([]Value, error) {
+// CondClause is one normalized cond clause: a test expression and the body
+// forms evaluated as an implicit progn when the test is truthy (or when the
+// test is :else).
+type CondClause struct {
+	Test Value
+	Body []Value
+}
+
+// NormalizeCond parses raw cond operands into canonical clauses under the
+// Dialect's cond clause-shape axis. A nested clause carries every form after
+// its test as the clause body; a flat operand pair carries its single body
+// form. No list or symbol is synthesized. Both the Evaluator and the Compiler
+// call this, so the two paths cannot parse cond differently.
+func (d Dialect) NormalizeCond(args []Value) ([]CondClause, error) {
 	switch d.state().cond {
 	case condFlat:
 		return d.normalizeCondFlat(args)
@@ -581,8 +568,8 @@ func (d Dialect) NormalizeCond(args []Value) ([]Value, error) {
 	}
 }
 
-func (d Dialect) normalizeCondNested(args []Value) ([]Value, error) {
-	var clauses []Value
+func (d Dialect) normalizeCondNested(args []Value) ([]CondClause, error) {
+	var clauses []CondClause
 	for _, arg := range args {
 		list, ok := arg.(List)
 		if !ok {
@@ -592,35 +579,28 @@ func (d Dialect) normalizeCondNested(args []Value) ([]Value, error) {
 		if n < 2 {
 			return nil, evalErrorf("cond: clauses must be (test body...) lists")
 		}
-		if n == 2 {
-			clauses = append(clauses, list)
-		} else {
-			// Multi-expression body: wrap in (doVisible body...).
-			// Cursor rather than At(i): a clause body past the flat
-			// threshold is a shared chain, where positional indexing
-			// restarts the walk per element.
-			wrapped := make([]Value, 0, n)
-			wrapped = append(wrapped, Symbol{V: d.state().doName})
-			cur := list.cursor()
-			test, _ := cur.next()
-			for i := 1; i < n; i++ {
-				v, _ := cur.next()
-				wrapped = append(wrapped, v)
-			}
-			clause := NewList([]Value{test, NewList(wrapped)})
-			clauses = append(clauses, clause)
+		// Cursor rather than At(i): a clause body past the flat
+		// threshold is a shared chain, where positional indexing
+		// restarts the walk per element.
+		cur := list.cursor()
+		test, _ := cur.next()
+		body := make([]Value, 0, n-1)
+		for i := 1; i < n; i++ {
+			v, _ := cur.next()
+			body = append(body, v)
 		}
+		clauses = append(clauses, CondClause{Test: test, Body: body})
 	}
 	return clauses, nil
 }
 
-func (d Dialect) normalizeCondFlat(args []Value) ([]Value, error) {
+func (d Dialect) normalizeCondFlat(args []Value) ([]CondClause, error) {
 	if len(args)%2 != 0 {
 		return nil, evalErrorf("cond: flat pairs require an even number of forms")
 	}
-	clauses := make([]Value, 0, len(args)/2)
+	clauses := make([]CondClause, 0, len(args)/2)
 	for i := 0; i < len(args); i += 2 {
-		clauses = append(clauses, NewList([]Value{args[i], args[i+1]}))
+		clauses = append(clauses, CondClause{Test: args[i], Body: []Value{args[i+1]}})
 	}
 	return clauses, nil
 }

@@ -1141,20 +1141,18 @@ func (c *Compiler) compileCond(args []core.Value) error {
 	var jumps []int
 	hasElse := false
 	for _, clause := range clauses {
-		items := clause.(core.List).ToSlice()
-		test, expr := items[0], items[1]
-		if isElse(test) {
-			if err := c.Compile(expr); err != nil {
+		if isElse(clause.Test) {
+			if err := c.compileDo(clause.Body); err != nil {
 				return err
 			}
 			hasElse = true
 			break
 		}
-		if err := c.Compile(test); err != nil {
+		if err := c.Compile(clause.Test); err != nil {
 			return err
 		}
 		jumpFalse := c.emitJump(vm.OpJumpIfFalse)
-		if err := c.Compile(expr); err != nil {
+		if err := c.compileDo(clause.Body); err != nil {
 			return err
 		}
 		jumps = append(jumps, c.emitJump(vm.OpJump))
@@ -1169,7 +1167,7 @@ func (c *Compiler) compileCond(args []core.Value) error {
 	return nil
 }
 
-func (c *Compiler) condNormalizer() func([]core.Value) ([]core.Value, error) {
+func (c *Compiler) condNormalizer() func([]core.Value) ([]core.CondClause, error) {
 	if c.dialect != nil {
 		return c.dialect.NormalizeCond
 	}

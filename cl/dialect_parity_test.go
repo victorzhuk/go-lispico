@@ -144,7 +144,11 @@ func TestCL_StockFormTable(t *testing.T) {
 		require.NoError(t, err)
 		clauses, err := d.NormalizeCond(args)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"(a (progn 1 2))", "(b 3)"}, valueStrings(clauses))
+		require.Len(t, clauses, 2)
+		assert.True(t, clauses[0].Test.Equals(core.Symbol{V: "a"}))
+		assert.Equal(t, []core.Value{core.Int{V: 1}, core.Int{V: 2}}, clauses[0].Body)
+		assert.True(t, clauses[1].Test.Equals(core.Symbol{V: "b"}))
+		assert.Equal(t, []core.Value{core.Int{V: 3}}, clauses[1].Body)
 
 		flat, err := d.Read("a 1 b 2")
 		require.NoError(t, err)
@@ -221,12 +225,4 @@ func typeName(v core.Value) string {
 	default:
 		return "other"
 	}
-}
-
-func valueStrings(vals []core.Value) []string {
-	out := make([]string, len(vals))
-	for i, v := range vals {
-		out[i] = v.String()
-	}
-	return out
 }

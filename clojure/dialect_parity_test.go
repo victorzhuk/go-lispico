@@ -88,11 +88,14 @@ func TestClojure_StockFormTable(t *testing.T) {
 		require.NoError(t, err)
 		clauses, err := d.NormalizeCond(args)
 		require.NoError(t, err)
-		got := make([]string, len(clauses))
-		for i, c := range clauses {
-			got[i] = c.String()
-		}
-		assert.Equal(t, []string{"(a 1)", "(b (do 2 3))"}, got)
+		require.Len(t, clauses, 2)
+		assert.True(t, clauses[0].Test.Equals(core.Symbol{V: "a"}))
+		assert.Equal(t, []core.Value{core.Int{V: 1}}, clauses[0].Body)
+		assert.True(t, clauses[1].Test.Equals(core.Symbol{V: "b"}))
+		require.Len(t, clauses[1].Body, 1)
+		wantDo, err := d.Read("(do 2 3)")
+		require.NoError(t, err)
+		assert.True(t, clauses[1].Body[0].Equals(wantDo[0]))
 
 		odd, err := d.Read("a 1 b")
 		require.NoError(t, err)
