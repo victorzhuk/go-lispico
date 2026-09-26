@@ -213,7 +213,7 @@ func TestEval_StructuralDepthVectorExceeded(t *testing.T) {
 	n := 200
 	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
 	// Parse with reader ceiling ABOVE eval default so reader does not reject first
-	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	forms, err := Dialect{}.ReadWithMaxDepth(src, 5000)
 	if err != nil {
 		t.Fatalf("reader rejected depth %d with maxDepth=5000: %v", n, err)
 	}
@@ -238,7 +238,7 @@ func TestEval_StructuralDepthVectorUnderLimitOK(t *testing.T) {
 
 	n := 200
 	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
-	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	forms, err := Dialect{}.ReadWithMaxDepth(src, 5000)
 	if err != nil {
 		t.Fatalf("reader rejected depth %d: %v", n, err)
 	}
@@ -296,7 +296,7 @@ func TestEval_StructuralDepthQuasiquoteExceeded(t *testing.T) {
 		return "(quasiquote " + build(depth-1) + ")"
 	}
 	src := build(100)
-	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	forms, err := Dialect{}.ReadWithMaxDepth(src, 5000)
 	if err != nil {
 		t.Fatalf("reader rejected deep quasiquote source: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestEval_StructuralDepthDirectEvaluatorEnforces(t *testing.T) {
 	// Parse with reader ceiling ABOVE eval default so reader does NOT reject first
 	n := 2000
 	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
-	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	forms, err := Dialect{}.ReadWithMaxDepth(src, 5000)
 	if err != nil {
 		t.Fatalf("reader rejected depth %d with maxDepth=5000: %v", n, err)
 	}
@@ -347,7 +347,7 @@ func TestConcurrent_StructuralDepthIsolation(t *testing.T) {
 	// succeed proves per-call isolation; run under -race to catch any data race.
 	const depth, limit, workers = 150, 200, 8
 	src := strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth)
-	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	forms, err := Dialect{}.ReadWithMaxDepth(src, 5000)
 	if err != nil {
 		t.Fatalf("reader: %v", err)
 	}

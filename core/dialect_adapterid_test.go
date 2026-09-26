@@ -15,14 +15,14 @@ func noopAdapter(name string) GoFunc {
 	}
 }
 
-// TestDialect_WithAdapterStoresSemanticID pins the VocabEntry shape
-// WithAdapter produces: the semantic ID lands in AdapterID, the bound value
+// TestDialect_AdapterStoresSemanticID pins the VocabEntry shape an Adapters
+// entry produces: the semantic ID lands in AdapterID, the bound value
 // in Adapter, and Canonical stays empty — an adapter entry is not a rename.
-func TestDialect_WithAdapterStoresSemanticID(t *testing.T) {
-	d := FullDialect().WithAdapter("sort", "cl/sort@1", noopAdapter("sort-noop"))
+func TestDialect_AdapterStoresSemanticID(t *testing.T) {
+	d := mustDialect(t, spec{Adapters: map[string]Adapter{"sort": {ID: "cl/sort@1", Value: noopAdapter("sort-noop")}}})
 	entry, ok := d.Vocab()["sort"]
 	if !ok {
-		t.Fatal(`WithAdapter("sort", "cl/sort@1", ...) must add a "sort" vocab entry`)
+		t.Fatal(`Adapters{"sort": {ID: "cl/sort@1"}} must add a "sort" vocab entry`)
 	}
 	if entry.AdapterID != "cl/sort@1" {
 		t.Errorf("AdapterID = %q, want %q", entry.AdapterID, "cl/sort@1")
@@ -35,13 +35,14 @@ func TestDialect_WithAdapterStoresSemanticID(t *testing.T) {
 	}
 }
 
-// TestDialect_ResolveRejectsEmptyAdapterID asserts Dialect resolution refuses
-// an adapter entry whose AdapterID is empty, instead of silently resolving it.
-func TestDialect_ResolveRejectsEmptyAdapterID(t *testing.T) {
-	d := FullDialect().WithAdapter("x", "", noopAdapter("x-noop"))
-	if _, err := NewEvaluatorWithDialect(d); err == nil {
-		t.Fatal(`NewEvaluatorWithDialect resolved an adapter entry with empty AdapterID; want error containing "has no semantic ID"`)
-	} else if !strings.Contains(err.Error(), "has no semantic ID") {
+// TestDialect_RejectsEmptyAdapterID asserts NewDialect refuses an adapter
+// whose ID is empty, instead of silently accepting it.
+func TestDialect_RejectsEmptyAdapterID(t *testing.T) {
+	_, err := NewDialect(spec{Adapters: map[string]Adapter{"x": {ID: "", Value: noopAdapter("x-noop")}}})
+	if err == nil {
+		t.Fatal(`NewDialect accepted an adapter with an empty ID; want error containing "has no semantic ID"`)
+	}
+	if !strings.Contains(err.Error(), "has no semantic ID") {
 		t.Errorf("error = %q, want it to contain %q", err.Error(), "has no semantic ID")
 	}
 }
@@ -53,15 +54,15 @@ func TestDialect_ResolveRejectsEmptyAdapterID(t *testing.T) {
 func TestDialect_Fingerprint_AdapterIDDeterminism(t *testing.T) {
 	a := noopAdapter("sort-noop-a")
 	b := noopAdapter("sort-noop-b")
-	id1 := FullDialect().WithAdapter("sort", "cl/sort@1", a)
-	id1Again := FullDialect().WithAdapter("sort", "cl/sort@1", b)
-	id2 := FullDialect().WithAdapter("sort", "cl/sort@2", a)
+	id1 := mustDialect(t, spec{Adapters: map[string]Adapter{"sort": {ID: "cl/sort@1", Value: a}}})
+	id1Again := mustDialect(t, spec{Adapters: map[string]Adapter{"sort": {ID: "cl/sort@1", Value: b}}})
+	id2 := mustDialect(t, spec{Adapters: map[string]Adapter{"sort": {ID: "cl/sort@2", Value: a}}})
 
 	fp := id1.Fingerprint()
 	if other := id1Again.Fingerprint(); other != fp {
 		t.Errorf("distinct GoFunc values under (sort, cl/sort@1) must fingerprint identically; got %s vs %s", fp, other)
 	}
-	if rebuilt := FullDialect().WithAdapter("sort", "cl/sort@1", a).Fingerprint(); rebuilt != fp {
+	if rebuilt := mustDialect(t, spec{Adapters: map[string]Adapter{"sort": {ID: "cl/sort@1", Value: a}}}).Fingerprint(); rebuilt != fp {
 		t.Errorf("Fingerprint must be stable across independent builds; got %s vs %s", fp, rebuilt)
 	}
 	if changed := id2.Fingerprint(); changed == fp {

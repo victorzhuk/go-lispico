@@ -11,10 +11,7 @@ func samePtr(a, b formFn) bool {
 }
 
 func TestDialect_FullBaseIsIdentity(t *testing.T) {
-	table, err := FullDialect().resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
+	table := Dialect{}.resolve()
 	if len(table) != len(kernel) {
 		t.Fatalf("full base size = %d, want %d", len(table), len(kernel))
 	}
@@ -30,34 +27,24 @@ func TestDialect_FullBaseIsIdentity(t *testing.T) {
 }
 
 func TestDialect_EmptyBaseFailClosed(t *testing.T) {
-	table, err := EmptyDialect().resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if len(table) != 0 {
+	if table := mustDialect(t, spec{Base: emptyBase}).resolve(); len(table) != 0 {
 		t.Fatalf("empty base size = %d, want 0", len(table))
 	}
 
-	table, err = EmptyDialect().Add("if", "if").resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
+	table := mustDialect(t, spec{Base: emptyBase, Forms: map[string]string{"if": "if"}}).resolve()
 	if len(table) != 1 {
-		t.Fatalf("empty+add size = %d, want 1", len(table))
+		t.Fatalf("empty+if size = %d, want 1", len(table))
 	}
 	if _, ok := table["def"]; ok {
 		t.Fatal("empty base leaked kernel form def")
 	}
 	if !samePtr(table["if"], kernel["if"]) {
-		t.Fatal("added if is not the canonical form")
+		t.Fatal("mapped if is not the canonical form")
 	}
 }
 
 func TestDialect_Rename(t *testing.T) {
-	table, err := FullDialect().Rename("if", "si").resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
+	table := mustDialect(t, spec{Forms: map[string]string{"si": "if"}, Hide: []string{"if"}}).resolve()
 	if _, ok := table["if"]; ok {
 		t.Fatal("rename left original name callable")
 	}
@@ -67,10 +54,7 @@ func TestDialect_Rename(t *testing.T) {
 }
 
 func TestDialect_Remove(t *testing.T) {
-	table, err := FullDialect().Remove("if").resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
+	table := mustDialect(t, spec{Hide: []string{"if"}}).resolve()
 	if _, ok := table["if"]; ok {
 		t.Fatal("removed form still callable")
 	}
@@ -80,208 +64,14 @@ func TestDialect_Remove(t *testing.T) {
 }
 
 func TestDialect_UnknownCanonicalErrors(t *testing.T) {
-	if _, err := EmptyDialect().Add("x", "no-such-form").resolve(); err == nil {
-		t.Fatal("add of unknown canonical form did not error")
+	if _, err := NewDialect(spec{Base: emptyBase, Forms: map[string]string{"x": "no-such-form"}}); err == nil {
+		t.Fatal("mapping to an unknown canonical form did not error")
 	}
-	if _, err := FullDialect().Rename("no-such-form", "y").resolve(); err == nil {
-		t.Fatal("rename of unknown canonical form did not error")
-	}
-}
-
-func TestDialect_ResolveIsFreshPerCall(t *testing.T) {
-	a, err := FullDialect().resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	b, err := FullDialect().resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	delete(a, "if")
-	if _, ok := b["if"]; !ok {
-		t.Fatal("resolved tables share backing state")
-	}
-}
-
-func TestDialect_MemoizedConstructionSharesResolution(t *testing.T) {
-	d := FullDialect().Memoized()
-	if d.cache == nil {
-		t.Fatal("Memoized() must populate a cache")
-	}
-
-	a, err := d.resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	b, err := d.resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	delete(a, "if")
-	if _, ok := b["if"]; ok {
-		t.Fatal("a memoized Dialect's resolve() must return the same shared table on repeated calls, not recompute it")
-	}
-
-	if got := d.Fingerprint(); got != d.cache.fp {
-		t.Fatalf("Fingerprint() on a memoized Dialect must return the cached hash, got %q want %q", got, d.cache.fp)
-	}
-}
-
-func TestDialect_MutationInvalidatesCache(t *testing.T) {
-	base := FullDialect().Lisp2().Memoized()
-	baseTable, err := base.resolve()
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	baseFP := base.Fingerprint()
-	baseCache := base.cache
-	if baseCache == nil {
-		t.Fatal("base dialect must be memoized")
-	}
-
-	assertInvalidated := func(t *testing.T, mutated Dialect) {
-		t.Helper()
-		if mutated.cache != nil {
-			t.Fatal("mutated copy must not carry the base's cache")
-		}
-		if base.cache != baseCache {
-			t.Fatal("mutating a copy must not disturb the singleton's own cache")
-		}
-		if mutated.Fingerprint() == baseFP {
-			t.Fatal("mutated copy's Fingerprint() must differ from the singleton's")
-		}
-
-		table, err := base.resolve()
-		if err != nil {
-			t.Fatalf("resolve base: %v", err)
-		}
-		if !reflect.DeepEqual(table, baseTable) {
-			t.Fatal("mutating a copy must not change the singleton's resolved table")
-		}
-	}
-
-	t.Run("Add", func(t *testing.T) {
-		mutated := base.Add("si", "if")
-		table, err := mutated.resolve()
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if _, ok := table["si"]; !ok {
-			t.Fatal("Add must appear in the mutated copy's resolved table")
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("Rename", func(t *testing.T) {
-		mutated := base.Rename("if", "si")
-		table, err := mutated.resolve()
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if _, ok := table["if"]; ok {
-			t.Fatal("Rename must drop the original name from the mutated copy")
-		}
-		if _, ok := table["si"]; !ok {
-			t.Fatal("Rename must add the new name to the mutated copy")
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("Remove", func(t *testing.T) {
-		mutated := base.Remove("if")
-		table, err := mutated.resolve()
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if _, ok := table["if"]; ok {
-			t.Fatal("Remove must drop the name from the mutated copy")
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("FlatCond", func(t *testing.T) {
-		mutated := base.FlatCond()
-		clauses, err := mutated.NormalizeCond([]Value{Bool{V: true}, Int{V: 1}})
-		if err != nil {
-			t.Fatalf("NormalizeCond: %v", err)
-		}
-		if len(clauses) != 1 {
-			t.Fatalf("FlatCond must parse flat pairs, got %d clauses", len(clauses))
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("Lisp2", func(t *testing.T) {
-		mutated := FullDialect().Memoized().Lisp2()
-		table, err := mutated.resolve()
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if _, ok := table["funcall"]; !ok {
-			t.Fatal("Lisp2 must inject funcall into the mutated copy's resolved table")
-		}
-		if mutated.cache != nil {
-			t.Fatal("mutated copy must not carry the base's cache")
-		}
-	})
-
-	t.Run("WithoutBracketLiterals", func(t *testing.T) {
-		mutated := base.WithoutBracketLiterals()
-		if _, err := mutated.Read("[1]"); err == nil {
-			t.Fatal("WithoutBracketLiterals must make [1] fail to parse in the mutated copy")
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("WithFunctionRef", func(t *testing.T) {
-		mutated := base.WithFunctionRef()
-		vals, err := mutated.Read("#'f")
-		if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
-		want := NewList([]Value{Symbol{V: "function"}, Symbol{V: "f"}})
-		if !want.Equals(vals[0]) {
-			t.Fatalf("WithFunctionRef must enable #' parsing in the mutated copy, got %v", vals[0])
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("WithReaderVector", func(t *testing.T) {
-		mutated := base.WithReaderVector()
-		vals, err := mutated.Read("#(1 2)")
-		if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
-		if _, ok := vals[0].(Vector); !ok {
-			t.Fatal("WithReaderVector must enable #(...) parsing in the mutated copy")
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("Vocabulary", func(t *testing.T) {
-		mutated := base.Vocabulary(map[string]string{"car": "first"})
-		if _, ok := mutated.Vocab()["car"]; !ok {
-			t.Fatal("Vocabulary must appear in the mutated copy")
-		}
-		assertInvalidated(t, mutated)
-	})
-
-	t.Run("WithAdapter", func(t *testing.T) {
-		adapter := GoFunc{Name: "noop", Fn: func(context.Context, Evaluator, []Value, *Env) (Value, error) {
-			return Nil{}, nil
-		}}
-		mutated := base.WithAdapter("noop", "noop@1", adapter)
-		entry, ok := mutated.Vocab()["noop"]
-		if !ok || entry.Adapter == nil {
-			t.Fatal("WithAdapter must appear in the mutated copy's vocabulary")
-		}
-		assertInvalidated(t, mutated)
-	})
 }
 
 func TestDialect_VocabReturnsCopy(t *testing.T) {
 	t.Run("vocab set", func(t *testing.T) {
-		d := FullDialect().Vocabulary(map[string]string{"car": "first"})
+		d := mustDialect(t, spec{Vocab: map[string]string{"car": "first"}})
 		fp := d.Fingerprint()
 
 		v := d.Vocab()
@@ -301,13 +91,13 @@ func TestDialect_VocabReturnsCopy(t *testing.T) {
 	})
 
 	t.Run("vocab nil", func(t *testing.T) {
-		if got := FullDialect().Vocab(); got != nil {
-			t.Fatalf("FullDialect().Vocab() = %v, want nil", got)
+		if got := (Dialect{}).Vocab(); got != nil {
+			t.Fatalf("Dialect{}.Vocab() = %v, want nil", got)
 		}
 	})
 
 	t.Run("vocab empty", func(t *testing.T) {
-		d := EmptyDialect().Vocabulary(map[string]string{})
+		d := mustDialect(t, spec{Base: emptyBase, Vocab: map[string]string{}})
 		v := d.Vocab()
 		if v == nil || len(v) != 0 {
 			t.Fatalf("Vocab() = %#v, want a non-nil empty map", v)
@@ -319,61 +109,27 @@ func TestDialect_VocabReturnsCopy(t *testing.T) {
 	})
 }
 
-func TestDialect_FingerprintStableUnderMemoization(t *testing.T) {
+func TestDialect_FingerprintStoredAtBuild(t *testing.T) {
+	cl := clShapedSpec()
+	cl.Vocab = map[string]string{"car": "first", "cdr": "rest"}
 	corpus := []struct {
-		name       string
-		build      func() Dialect
-		buildFresh func() Dialect
+		name string
+		spec spec
 	}{
-		{
-			name:       "identity",
-			build:      func() Dialect { return FullDialect().Memoized() },
-			buildFresh: func() Dialect { return FullDialect() },
-		},
-		{
-			name:       "empty base",
-			build:      func() Dialect { return EmptyDialect().Add("if", "if").Memoized() },
-			buildFresh: func() Dialect { return EmptyDialect().Add("if", "if") },
-		},
-		{
-			name: "cl-shaped",
-			build: func() Dialect {
-				return FullDialect().
-					Lisp2().
-					WithoutBracketLiterals().
-					WithFunctionRef().
-					WithReaderVector().
-					Add("defun", "defn").
-					Rename("set!", "setq").
-					Rename("do", "progn").
-					Vocabulary(map[string]string{"car": "first", "cdr": "rest"}).
-					Memoized()
-			},
-			buildFresh: func() Dialect {
-				return FullDialect().
-					Lisp2().
-					WithoutBracketLiterals().
-					WithFunctionRef().
-					WithReaderVector().
-					Add("defun", "defn").
-					Rename("set!", "setq").
-					Rename("do", "progn").
-					Vocabulary(map[string]string{"car": "first", "cdr": "rest"})
-			},
-		},
-		{
-			name:       "clojure-shaped",
-			build:      func() Dialect { return FullDialect().FlatCond().Memoized() },
-			buildFresh: func() Dialect { return FullDialect().FlatCond() },
-		},
+		{name: "identity", spec: spec{}},
+		{name: "empty base", spec: spec{Base: emptyBase, Forms: map[string]string{"if": "if"}}},
+		{name: "cl-shaped", spec: cl},
+		{name: "clojure-shaped", spec: spec{FlatCond: true}},
 	}
 
 	for _, tc := range corpus {
 		t.Run(tc.name, func(t *testing.T) {
-			memoized := tc.build()
-			fresh := tc.buildFresh()
-			if got, want := memoized.Fingerprint(), fresh.Fingerprint(); got != want {
-				t.Fatalf("memoized Fingerprint() = %q, want byte-identical to uncached %q", got, want)
+			d := mustDialect(t, tc.spec)
+			if got, want := d.Fingerprint(), mustDialect(t, tc.spec).Fingerprint(); got != want {
+				t.Fatalf("Fingerprint() = %q, want byte-identical to an independent build %q", got, want)
+			}
+			if allocs := testing.AllocsPerRun(50, func() { _ = d.Fingerprint() }); allocs != 0 {
+				t.Fatalf("Fingerprint() allocs = %.1f, want 0", allocs)
 			}
 		})
 	}
@@ -386,13 +142,13 @@ func TestDialect_FingerprintFieldsDoNotCollide(t *testing.T) {
 	}{
 		{
 			name: "vocabulary separator in name vs canonical",
-			a:    FullDialect().Vocabulary(map[string]string{"a:b": "c"}),
-			b:    FullDialect().Vocabulary(map[string]string{"a": "b:c"}),
+			a:    mustDialect(t, spec{Vocab: map[string]string{"a:b": "c"}}),
+			b:    mustDialect(t, spec{Vocab: map[string]string{"a": "b:c"}}),
 		},
 		{
-			name: "add op separators in name vs two ops",
-			a:    FullDialect().Add("a:if|1:b", "if"),
-			b:    FullDialect().Add("a", "if").Add("b", "if"),
+			name: "form separators in one name vs two names",
+			a:    mustDialect(t, spec{Forms: map[string]string{"a:if|1:b": "if"}}),
+			b:    mustDialect(t, spec{Forms: map[string]string{"a": "if", "b": "if"}}),
 		},
 	}
 	for _, tt := range tests {
@@ -405,7 +161,7 @@ func TestDialect_FingerprintFieldsDoNotCollide(t *testing.T) {
 }
 
 func TestDialect_RedefinitionDoesNotLeakAcrossEngines(t *testing.T) {
-	d := FullDialect().Memoized()
+	var d Dialect
 
 	engA, err := NewEvaluatorWithDialect(d)
 	if err != nil {
@@ -416,7 +172,7 @@ func TestDialect_RedefinitionDoesNotLeakAcrossEngines(t *testing.T) {
 		t.Fatalf("NewEvaluatorWithDialect engB: %v", err)
 	}
 	if !samePtr(engA.forms["if"], engB.forms["if"]) {
-		t.Fatal("engines built from a memoized dialect must share the resolved forms table")
+		t.Fatal("engines built from one dialect must share the resolved forms table")
 	}
 
 	ctx := context.Background()

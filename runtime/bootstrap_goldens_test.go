@@ -162,7 +162,7 @@ func TestBootstrapDialectGoldens_Lisp1(t *testing.T) {
 func TestBootstrapDialectGoldens_EmptyBase(t *testing.T) {
 	for _, mode := range goldenModes {
 		t.Run(mode.name, func(t *testing.T) {
-			eng := loadStdlibEngine(t, core.EmptyDialect(), mode.eager)
+			eng := loadStdlibEngine(t, mustDialect(t, spec{Base: core.BaseEmpty}), mode.eager)
 			root := eng.RootEnv()
 			for _, g := range bootstrapGoldenNames {
 				got, ok := root.Get(g.name)
@@ -211,7 +211,7 @@ func TestGetIn_CallableIsBuiltin(t *testing.T) {
 		})
 
 		t.Run("empty-base/"+mode.name, func(t *testing.T) {
-			root := loadStdlibEngine(t, core.EmptyDialect(), mode.eager).RootEnv()
+			root := loadStdlibEngine(t, mustDialect(t, spec{Base: core.BaseEmpty}), mode.eager).RootEnv()
 
 			val, ok := root.Get("get-in")
 			require.True(t, ok, "empty-base/%s: a nil vocabulary strips nothing, so get-in stays bound", mode.name)
@@ -227,7 +227,7 @@ func TestGetIn_CallableIsBuiltin(t *testing.T) {
 func TestBootstrap_NoKernelTableWidening(t *testing.T) {
 	for _, mode := range goldenModes {
 		t.Run(mode.name, func(t *testing.T) {
-			eng := loadStdlibEngine(t, core.EmptyDialect(), mode.eager)
+			eng := loadStdlibEngine(t, mustDialect(t, spec{Base: core.BaseEmpty}), mode.eager)
 			root := eng.RootEnv()
 			for _, g := range bootstrapGoldenNames {
 				if _, ok := root.Get(g.name); !ok {
@@ -304,7 +304,7 @@ func TestBootstrapCapability_TrustBoundary(t *testing.T) {
 	}
 
 	// The empty-base dialect's vocabulary carries no capability-naming entry.
-	for name := range core.EmptyDialect().Vocab() {
+	for name := range mustDialect(t, spec{Base: core.BaseEmpty}).Vocab() {
 		assert.NotContains(t, strings.ToLower(name), "bootstrap",
 			"empty-base vocabulary entry %q names the host capability", name)
 	}

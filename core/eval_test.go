@@ -1147,7 +1147,7 @@ func TestEval_MacroExpand_SpecialFormHead(t *testing.T) {
 
 func TestEval_MacroExpand_Lisp2FunctionCellWinsOverSpecialForm(t *testing.T) {
 	t.Parallel()
-	e, err := NewEvaluatorWithDialect(FullDialect().Lisp2())
+	e, err := NewEvaluatorWithDialect(mustDialect(t, spec{Lisp2: true}))
 	if err != nil {
 		t.Fatalf("NewEvaluatorWithDialect: %v", err)
 	}

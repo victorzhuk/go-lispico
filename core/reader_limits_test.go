@@ -82,7 +82,7 @@ func TestReader_ReadWithMaxDepthLowCeiling(t *testing.T) {
 	t.Parallel()
 	n := 20
 	src := strings.Repeat("(", n) + "1" + strings.Repeat(")", n)
-	_, err := FullDialect().ReadWithMaxDepth(src, 10)
+	_, err := Dialect{}.ReadWithMaxDepth(src, 10)
 	if err == nil {
 		t.Fatal("expected error with maxDepth=10 on depth-20 input")
 	}
@@ -99,7 +99,7 @@ func TestReader_ReadWithMaxDepthAboveDefaultAccepts(t *testing.T) {
 	t.Parallel()
 	n := 2000
 	src := strings.Repeat("[", n) + "1" + strings.Repeat("]", n)
-	forms, err := FullDialect().ReadWithMaxDepth(src, 5000)
+	forms, err := Dialect{}.ReadWithMaxDepth(src, 5000)
 	if err != nil {
 		t.Fatalf("depth 2000 with maxDepth=5000 should parse OK: %v", err)
 	}

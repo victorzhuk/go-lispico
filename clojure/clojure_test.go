@@ -15,7 +15,7 @@ import (
 // dialect — no delta, no vocab, default axes — which is required for bytecode
 // VM compatibility.
 func TestClojure_IsIdentity(t *testing.T) {
-	assert.True(t, Dialect().IsIdentity(), "Clojure dialect must be the identity (bare FullDialect)")
+	assert.True(t, Dialect().IsIdentity(), "Clojure dialect must be the identity")
 }
 
 // TestClojure_NoVocab asserts that no vocabulary map leaks into the Clojure
@@ -44,27 +44,20 @@ func TestClojure_ReaderFlags_DefaultsClojureStyle(t *testing.T) {
 	assert.True(t, ok, "{:a 1} must read as a HashMap")
 }
 
-// TestClojure_Dialect_Memoized asserts that repeated Dialect() calls are
-// stable and that Fingerprint() on the memoized value skips the SHA-256 hash
-// work an uncached Dialect repeats on every call. Allocation count, not
-// wall-clock, is the observation mechanism: a cache hit returns the
-// already-hashed string, while an uncached Fingerprint() allocates a new
-// hash.Hash and formats its inputs every time.
-func TestClojure_Dialect_Memoized(t *testing.T) {
-	memoized := Dialect()
-	uncached := core.FullDialect().FlatCond()
-	assert.Equal(t, memoized.Fingerprint(), uncached.Fingerprint(), "memoized and uncached Fingerprint() must agree")
-	assert.Equal(t, Dialect().Fingerprint(), memoized.Fingerprint(), "repeated Dialect() calls must produce the same fingerprint")
+// TestClojure_Dialect_StockFingerprint asserts that Dialect() fingerprints
+// like the equivalent spec-built dialect, stays stable across calls, and
+// reads the stored hash without allocating.
+func TestClojure_Dialect_StockFingerprint(t *testing.T) {
+	stock := Dialect()
+	built, err := core.NewDialect(core.DialectSpec{FlatCond: true})
+	require.NoError(t, err)
+	assert.Equal(t, built.Fingerprint(), stock.Fingerprint(), "stock and spec-built Fingerprint() must agree")
+	assert.Equal(t, Dialect().Fingerprint(), stock.Fingerprint(), "repeated Dialect() calls must produce the same fingerprint")
 
-	memoizedAllocs := testing.AllocsPerRun(50, func() {
-		_ = memoized.Fingerprint()
+	allocs := testing.AllocsPerRun(50, func() {
+		_ = stock.Fingerprint()
 	})
-	uncachedAllocs := testing.AllocsPerRun(50, func() {
-		_ = uncached.Fingerprint()
-	})
-
-	t.Logf("memoized Fingerprint(): %.1f allocs/op, uncached Fingerprint(): %.1f allocs/op", memoizedAllocs, uncachedAllocs)
-	assert.Less(t, memoizedAllocs, uncachedAllocs, "Fingerprint() on a memoized Dialect must not redo the SHA-256 hash work")
+	assert.Zero(t, allocs, "Fingerprint() must return the stored hash")
 }
 
 // TestClojure_ConcurrentDialectCorpusParity builds the Clojure dialect

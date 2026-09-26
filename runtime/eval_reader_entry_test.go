@@ -37,14 +37,15 @@ type readerEntryDialect struct {
 	overBudget string
 }
 
-func readerEntryDialects() []readerEntryDialect {
+func readerEntryDialects(t *testing.T) []readerEntryDialect {
+	t.Helper()
 	ints := readerEntryItems("1", readerEntryLiteralWidth)
 	refs := readerEntryItems("#'a", readerEntryLiteralWidth)
 	return []readerEntryDialect{
 		{name: "clojure", dialect: clojure.Dialect(), overBudget: "[" + ints + "]"},
 		{name: "cl", dialect: cl.Dialect(), overBudget: "#(" + ints + ")"},
-		{name: "reader-vector", dialect: core.FullDialect().WithReaderVector(), overBudget: "#(" + ints + ")"},
-		{name: "function-ref", dialect: core.FullDialect().WithFunctionRef(), overBudget: "(quote (" + refs + "))"},
+		{name: "reader-vector", dialect: mustDialect(t, spec{ReaderVector: true}), overBudget: "#(" + ints + ")"},
+		{name: "function-ref", dialect: mustDialect(t, spec{FunctionRef: true}), overBudget: "(quote (" + refs + "))"},
 	}
 }
 
@@ -166,7 +167,7 @@ func TestPublicEntries_ReaderBudget(t *testing.T) {
 
 	for _, bytecode := range []bool{false, true} {
 		t.Run(evalModeName(bytecode), func(t *testing.T) {
-			for _, d := range readerEntryDialects() {
+			for _, d := range readerEntryDialects(t) {
 				t.Run(d.name, func(t *testing.T) {
 					for _, src := range readerEntryMeterSources() {
 						t.Run(src.name, func(t *testing.T) {
@@ -268,7 +269,7 @@ func TestPublicEntries_ReaderBudgetHotReload(t *testing.T) {
 
 	for _, bytecode := range []bool{false, true} {
 		t.Run(evalModeName(bytecode), func(t *testing.T) {
-			for _, d := range readerEntryDialects() {
+			for _, d := range readerEntryDialects(t) {
 				t.Run(d.name, func(t *testing.T) {
 					for _, src := range readerEntryMeterSources() {
 						t.Run(src.name, func(t *testing.T) {

@@ -20,12 +20,12 @@ func evalTruthiness(t *testing.T, d core.Dialect, src string) core.Value {
 }
 
 func TestDialect_Truthiness_IfFalseIsFalsy(t *testing.T) {
-	got := evalTruthiness(t, core.FullDialect(), "(if false :yes :no)")
+	got := evalTruthiness(t, core.Dialect{}, "(if false :yes :no)")
 	assert.True(t, core.Keyword{V: "no"}.Equals(got), "false is falsy")
 }
 
 func TestDialect_Truthiness_AllConditionalForms(t *testing.T) {
-	d := core.FullDialect()
+	d := core.Dialect{}
 
 	cases := []struct {
 		name string

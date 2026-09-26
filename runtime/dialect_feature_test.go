@@ -11,11 +11,11 @@ import (
 )
 
 func TestDialect_TwoEnginesDoNotInterfere(t *testing.T) {
-	full, err := New(nil, WithDialect(core.FullDialect()))
+	full, err := New(nil, WithDialect(core.Dialect{}))
 	require.NoError(t, err)
 	defer full.Close()
 
-	empty, err := New(nil, WithDialect(core.EmptyDialect().Add("if", "if")))
+	empty, err := New(nil, WithDialect(mustDialect(t, spec{Base: core.BaseEmpty, Forms: map[string]string{"if": "if"}})))
 	require.NoError(t, err)
 	defer empty.Close()
 
@@ -33,7 +33,7 @@ func TestDialect_TwoEnginesDoNotInterfere(t *testing.T) {
 }
 
 func TestDialect_EmptyBaseRejectsUnlistedKernelForm(t *testing.T) {
-	e, err := New(nil, WithDialect(core.EmptyDialect().Add("if", "if")))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Base: core.BaseEmpty, Forms: map[string]string{"if": "if"}})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -47,7 +47,7 @@ func TestDialect_EmptyBaseRejectsUnlistedKernelForm(t *testing.T) {
 }
 
 func TestDialect_RenameResolvesToCanonicalForm(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Rename("if", "si")))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Forms: map[string]string{"si": "if"}, Hide: []string{"if"}})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -60,7 +60,7 @@ func TestDialect_RenameResolvesToCanonicalForm(t *testing.T) {
 }
 
 func TestDialect_RemoveMakesFormUncallable(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Remove("def")))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Hide: []string{"def"}})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -74,7 +74,7 @@ func TestDialect_RemoveMakesFormUncallable(t *testing.T) {
 }
 
 func TestDialect_BytecodeAllowsNonIdentity(t *testing.T) {
-	e, err := New(nil, WithBytecode(), WithDialect(core.EmptyDialect().Add("if", "if")))
+	e, err := New(nil, WithBytecode(), WithDialect(mustDialect(t, spec{Base: core.BaseEmpty, Forms: map[string]string{"if": "if"}})))
 	require.NoError(t, err, "bytecode + non-identity dialect must be allowed")
 	e.Close()
 
@@ -83,9 +83,9 @@ func TestDialect_BytecodeAllowsNonIdentity(t *testing.T) {
 	e.Close()
 }
 
-func TestDialect_NewSurfacesResolutionError(t *testing.T) {
-	_, err := New(nil, WithDialect(core.EmptyDialect().Add("x", "no-such-form")))
-	require.Error(t, err, "an unresolvable dialect must fail construction")
+func TestDialect_UnknownFormRefused(t *testing.T) {
+	_, err := core.NewDialect(spec{Base: core.BaseEmpty, Forms: map[string]string{"x": "no-such-form"}})
+	require.Error(t, err, "a dialect mapping an unknown kernel form must be refused")
 }
 
 func TestDialect_EvaluatedCodeCannotChangeDialect(t *testing.T) {

@@ -26,7 +26,7 @@ func readerEntries() []readerEntry {
 	return []readerEntry{
 		{"read", Read},
 		{"read-context", func(src string) ([]Value, error) {
-			forms, _, err := readContextStats(context.Background(), FullDialect(), src, 0)
+			forms, _, err := readContextStats(context.Background(), Dialect{}, src, 0)
 			return forms, err
 		}},
 	}

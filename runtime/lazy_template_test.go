@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
@@ -61,7 +60,7 @@ func TestPutEntry_RefusesWriteOnPublishedLayer(t *testing.T) {
 func TestUnloadPlugin_PublishedLayerIdentityUnaffected(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("published-unload-identity", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"published-unload-identity": "if"}})
 
 	first, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)
@@ -114,7 +113,7 @@ func TestUnloadPlugin_PublishedLayerIdentityUnaffected(t *testing.T) {
 func TestPublishedLayer_ConcurrentFirstBuildRacesAttach(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("published-concurrent-first-build", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"published-concurrent-first-build": "if"}})
 
 	const engines = 16
 	var wg sync.WaitGroup
@@ -181,7 +180,7 @@ func TestPublishedLayer_ConcurrentFirstBuildRacesAttach(t *testing.T) {
 func TestPublishedLayer_ConcurrentAttachRacesUnload(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("published-concurrent-attach-unload", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"published-concurrent-attach-unload": "if"}})
 
 	builder, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)
@@ -239,7 +238,7 @@ func TestPublishedEntries_AllocsZeroOnCompleteLayer(t *testing.T) {
 		t.Skip("alloc counts are unreliable under the race detector")
 	}
 
-	dialect := clojure.Dialect().Add("published-entries-zero-alloc", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"published-entries-zero-alloc": "if"}})
 	eng, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })

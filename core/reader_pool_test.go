@@ -187,8 +187,8 @@ func TestReaderScratch_StatsIdenticalAcrossReuse(t *testing.T) {
 // silently accept the brackets the other dialect's checkout enabled, which
 // -race alone would never catch.
 func TestReadWithMaxDepthStats_CrossDialectPoolReuseNoFlagLeak(t *testing.T) {
-	withBrackets := FullDialect()
-	withoutBrackets := FullDialect().WithoutBracketLiterals()
+	withBrackets := Dialect{}
+	withoutBrackets := mustDialect(t, spec{NoBrackets: true})
 
 	const iterations = 200
 	var wg sync.WaitGroup
@@ -246,7 +246,7 @@ func TestReadWithMaxDepthStats_CrossDialectPoolReuseNoFlagLeak(t *testing.T) {
 
 func TestReadWithMaxDepthStats_ErrorPositionOneBasedAfterPooledReuse(t *testing.T) {
 	t.Parallel()
-	d := FullDialect()
+	d := Dialect{}
 	if _, _, err := d.ReadWithMaxDepthStats("(+ 1 2)", 0); err != nil {
 		t.Fatalf("warm-up read: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestReadWithMaxDepthStats_ZeroMaxDepthUsesDefault(t *testing.T) {
 		b.WriteString(")")
 	}
 
-	d := FullDialect()
+	d := Dialect{}
 	forms, _, err := d.ReadWithMaxDepthStats(b.String(), 0)
 	if err != nil {
 		t.Fatalf("ReadWithMaxDepthStats(src, 0): %v", err)
@@ -295,7 +295,7 @@ func TestReadWithMaxDepthStats_ZeroMaxDepthUsesDefault(t *testing.T) {
 // String.V must alias the source string even when read off a scratch object
 // recycled from readerScratchPool, not just off a fresh Reader.
 func TestReadWithMaxDepthStats_PooledNoEscapeStringSharesBackingArray(t *testing.T) {
-	d := FullDialect()
+	d := Dialect{}
 
 	for i := 0; i < 2; i++ {
 		if _, _, err := d.ReadWithMaxDepthStats(`"warmup"`, 0); err != nil {
@@ -326,7 +326,7 @@ func TestReadWithMaxDepthStats_PooledNoEscapeStringSharesBackingArray(t *testing
 // pooled result against the non-pooled baseline by both Equals and String().
 func TestReadWithMaxDepthStats_PooledOutputMatchesNonPooledBaseline(t *testing.T) {
 	t.Parallel()
-	d := FullDialect()
+	d := Dialect{}
 	cases := []string{
 		`(+ 1 (* 2 3) (- 4 5))`,                // nested list
 		`[1 2 [3 4] 5]`,                        // nested vector

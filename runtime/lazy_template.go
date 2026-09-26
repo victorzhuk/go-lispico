@@ -729,7 +729,7 @@ func (m *stdlibLazyMaterializer) RegisterValue(env *core.Env, name string, val c
 	// Vocabulary renames bind the visible name to the canonical GoFunc. The
 	// alias is a plain (non-canonical) binding, matching the eager Set in
 	// applyVocabulary; it is registered even when the canonical name itself
-	// is stripped by an EmptyDialect allowlist (the eager apply phase
+	// is stripped by an empty-base allowlist (the eager apply phase
 	// resolves renames from the pre-strip snapshot).
 	for visible, ve := range vocab {
 		if ve.Adapter == nil && ve.Canonical == name {

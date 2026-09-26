@@ -83,7 +83,7 @@ func (p *allocationProbe) Err() error {
 func admittedForSource(t *testing.T, src string) int64 {
 	t.Helper()
 	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
-	if _, _, err := readContextStats(ctx, FullDialect(), src, 0); err != nil {
+	if _, _, err := readContextStats(ctx, Dialect{}, src, 0); err != nil {
 		t.Fatalf("read of %d bytes failed: %v", len(src), err)
 	}
 	return admittedBytes(meter)
@@ -184,7 +184,7 @@ func TestGuardedRead_AdmitsOutputStorage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
-			_, stats, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			_, stats, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if err != nil {
 				t.Fatalf("read failed: %v", err)
 			}
@@ -210,7 +210,7 @@ func TestGuardedRead_AdmittedBytesNeverDecrease(t *testing.T) {
 	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 	probe := &allocationProbe{Context: ctx, meter: meter}
 
-	if _, _, err := readContextStats(probe, FullDialect(), src, 0); err != nil {
+	if _, _, err := readContextStats(probe, Dialect{}, src, 0); err != nil {
 		t.Fatalf("read of %d bytes failed: %v", len(src), err)
 	}
 	if len(probe.seen) < 2 {
@@ -308,12 +308,12 @@ func TestGuardedRead_AllowanceBoundary(t *testing.T) {
 			}
 
 			ctx, _ := allocCeilingContext(total)
-			if _, _, err := readContextStats(ctx, FullDialect(), tc.src, 0); err != nil {
+			if _, _, err := readContextStats(ctx, Dialect{}, tc.src, 0); err != nil {
 				t.Fatalf("read under an allowance of exactly its own %d bytes failed: %v", total, err)
 			}
 
 			ctx, _ = allocCeilingContext(total - 1)
-			_, _, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			_, _, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if code := readErrorCode(err); code != CodeResourceLimit {
 				t.Fatalf("read needing %d bytes under a %d-byte allowance returned %v (code %q), want a %s",
 					total, total-1, err, code, CodeResourceLimit)
@@ -343,7 +343,7 @@ func TestGuardedRead_PromotionRefusedBeforeStorage(t *testing.T) {
 	t.Run("refused-before-storage", func(t *testing.T) {
 		ceiling := admittedForSource(t, control)
 		controlCtx, _ := allocCeilingContext(ceiling)
-		if _, _, err := readContextStats(controlCtx, FullDialect(), control, 0); err != nil {
+		if _, _, err := readContextStats(controlCtx, Dialect{}, control, 0); err != nil {
 			t.Fatalf("the control read failed under its own admitted total of %d bytes (%v), want it to fit: the ceiling isolates the promotion only while the non-promoting literal completes",
 				ceiling, err)
 		}
@@ -351,7 +351,7 @@ func TestGuardedRead_PromotionRefusedBeforeStorage(t *testing.T) {
 		ctx, meter := allocCeilingContext(ceiling)
 		probe := &allocationProbe{Context: ctx, meter: meter}
 
-		forms, _, err := readContextStats(probe, FullDialect(), promoting, 0)
+		forms, _, err := readContextStats(probe, Dialect{}, promoting, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("a promoting read under an allowance of %d bytes returned %v (code %q), want a %s: the promotion cannot fit and must be refused",
 				ceiling, err, code, CodeResourceLimit)
@@ -428,7 +428,7 @@ func TestGuardedRead_MapConstructionContracts(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, _ := allocCeilingContext(DefaultMaxAllocationBytes)
-			forms, _, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			forms, _, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if err != nil {
 				t.Fatalf("read failed: %v", err)
 			}
@@ -477,13 +477,13 @@ func TestGuardedRead_StatsUnchanged(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			wantForms, wantStats, wantErr := FullDialect().ReadWithMaxDepthStats(tc.src, 0)
+			wantForms, wantStats, wantErr := Dialect{}.ReadWithMaxDepthStats(tc.src, 0)
 			if wantErr != nil {
 				t.Fatalf("legacy read failed: %v", wantErr)
 			}
 
 			ctx, _ := allocCeilingContext(DefaultMaxAllocationBytes)
-			forms, stats, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			forms, stats, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if err != nil {
 				t.Fatalf("read failed: %v", err)
 			}
@@ -513,13 +513,13 @@ func TestGuardedRead_PrepaidPayloadKeepsOutputTotals(t *testing.T) {
 		plain   = `("axb")`
 	)
 
-	_, wantStats, wantErr := FullDialect().ReadWithMaxDepthStats(escaped, 0)
+	_, wantStats, wantErr := Dialect{}.ReadWithMaxDepthStats(escaped, 0)
 	if wantErr != nil {
 		t.Fatalf("legacy read failed: %v", wantErr)
 	}
 
 	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
-	_, stats, err := readContextStats(ctx, FullDialect(), escaped, 0)
+	_, stats, err := readContextStats(ctx, Dialect{}, escaped, 0)
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}

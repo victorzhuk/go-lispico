@@ -7,7 +7,6 @@ import (
 	"io"
 	"maps"
 	"slices"
-	"sync"
 )
 
 // formFn implements one special form. It is the value type of both the kernel
@@ -46,16 +45,16 @@ func init() {
 	}
 }
 
-type dialectBase int
+// identityState is the frozen state of the zero Dialect. It is built after
+// kernel is populated, so it must stay out of package-level var initializers.
+var identityState *dialectState
 
-const (
-	baseFull dialectBase = iota
-	baseEmpty
-)
+func init() {
+	identityState = freeze(DialectSpec{}, nil)
+}
 
 // namespace is the Dialect's symbol-namespace rule. The zero value is Lisp-1: a
-// symbol names one binding, and a Dialect built without touching the axis
-// behaves as before.
+// symbol names one binding.
 type namespace int
 
 const (
@@ -64,8 +63,7 @@ const (
 )
 
 // bracketSyntax is the Dialect's rule for [..]/{..} literals. The zero value
-// keeps them on (Clojure-style), so a Dialect built without touching the axis
-// parses brackets as before.
+// keeps them on (Clojure-style).
 type bracketSyntax int
 
 const (
@@ -92,28 +90,13 @@ const (
 )
 
 // condShape is the Dialect's cond clause-shape rule. The zero value is nested
-// clauses (the kernel default), so a Dialect built without touching the axis
-// parses cond as before.
+// clauses (the kernel default).
 type condShape int
 
 const (
 	condNested condShape = iota // (cond (test body...) ...) — kernel default
 	condFlat                    // (cond test body test body ...) — Clojure
 )
-
-type deltaKind int
-
-const (
-	opRename deltaKind = iota
-	opAdd
-	opRemove
-)
-
-type deltaOp struct {
-	kind      deltaKind
-	name      string
-	canonical string
-}
 
 // VocabEntry is one entry in a Dialect's vocabulary map. A canonical name
 // resolves to the GoFunc the engine already has under that name (a rename).
@@ -124,91 +107,44 @@ type VocabEntry struct {
 	Adapter   Value
 }
 
-// Dialect describes an Engine's special-form table as a delta over a base. The
-// base is either the full kernel table or empty; the delta renames, adds, or
-// removes forms. Resolving a Dialect yields the effective name→form table an
-// Engine dispatches through. A Dialect is an immutable value: the builder
-// methods return a new Dialect and never mutate the receiver.
+// Dialect is an Engine's language surface: its special-form table, namespace,
+// reader and cond axes, and builtin vocabulary. Build one with NewDialect. The
+// zero value is the identity dialect — the full kernel table under canonical
+// names with default axes and no vocabulary. A Dialect is an immutable value
+// that is safe to copy and share across goroutines.
 type Dialect struct {
-	base      dialectBase
-	ops       []deltaOp
+	st *dialectState
+}
+
+// dialectState is the resolved, immutable form of a Dialect. It is written
+// once by freeze and only read afterwards, so copies of the Dialect share it
+// safely.
+type dialectState struct {
+	base      DialectBase
 	ns        namespace
 	brackets  bracketSyntax
 	funcRef   funcRefSyntax
 	readerVec readerVecSyntax
-	// vocab is the dialect's vocabulary: a map from a dialect-visible name to
-	// either a canonical shared builtin name (a rename) or a GoFunc that wraps
-	// the shared implementation (an adapter). A nil vocab means the identity
-	// dialect — no vocabulary filtering, every builtin plugins register is
-	// callable under its registered name.
-	vocab map[string]VocabEntry
-	// cond is the cond clause-shape axis. Zero value (condNested) is the kernel
-	// default: (cond (test body...) ...). condFlat is Clojure-style.
-	cond condShape
-	// cache holds this value's memoized resolve()/Fingerprint() results, or is
-	// nil for an ordinary (non-memoized) Dialect. Every builder method below
-	// clears it on the copy it returns: a Dialect value is copied by every
-	// builder, so a cache left in place would silently serve the pre-mutation
-	// base's resolved table and fingerprint instead of the mutated one. See
-	// Memoized.
-	cache *dialectCache
-	// st is the frozen state of a Dialect built by NewDialect, or nil. Like
-	// cache, every builder method clears it on the copy it returns.
-	st *dialectState
-}
-
-// dialectState is the resolved, immutable form of a spec-built Dialect. It is
-// written once by NewDialect and only read afterwards, so copies of the
-// Dialect share it safely.
-type dialectState struct {
-	table map[string]formFn
+	cond      condShape
+	table     map[string]formFn
 	// canon maps every name the dialect knows to its canonical kernel form;
-	// a removed name maps to "".
-	canon      map[string]string
-	doName     string
-	fp         string
-	isIdentity bool
+	// a hidden name maps to "".
+	canon map[string]string
+	// vocab maps a visible builtin name to a canonical builtin name or an
+	// adapter. nil means no vocabulary: every registered builtin stays
+	// callable under its registered name.
+	vocab    map[string]VocabEntry
+	doName   string
+	identity bool
+	fp       string
 }
 
-// dialectCache is the memoized state for one Memoized Dialect. It is
-// populated once, eagerly, by Memoized itself and never written again, so
-// sharing the pointer across copies of that Dialect value (and across
-// goroutines, once the value has been safely published — e.g. via
-// sync.OnceValue) is race-free.
-type dialectCache struct {
-	table map[string]formFn
-	err   error
-	fp    string
+func (d Dialect) state() *dialectState {
+	if d.st == nil {
+		return identityState
+	}
+	return d.st
 }
-
-// Memoized returns a copy of d whose resolve() table and Fingerprint() hash
-// are computed once, up front, and shared by every copy of the returned
-// value. The stock dialect singletons (cl.Dialect, clojure.Dialect) build
-// theirs behind sync.OnceValue, so the eager computation below runs exactly
-// once per process and is safely published to every caller that follows. A
-// hand-built dialect reused across several engines gains the same thing:
-// without it, every engine re-resolves the delta chain and re-hashes the
-// fingerprint.
-//
-// Every builder method clears the cache on the Dialect it returns, so
-// mutating a Memoized value (Add, Vocabulary, ...) always resolves and
-// fingerprints the mutated copy fresh rather than inheriting the base's
-// cached answer.
-func (d Dialect) Memoized() Dialect {
-	d.cache = &dialectCache{}
-	d.cache.table, d.cache.err = d.resolveUncached()
-	d.cache.fp = d.fingerprintUncached()
-	return d
-}
-
-// FullDialect starts from the full kernel table. With no delta it is the
-// identity dialect, reproducing the interpreter's default special forms.
-func FullDialect() Dialect { return Dialect{base: baseFull} }
-
-// EmptyDialect starts from an empty table. It is fail-closed: only the forms
-// its delta explicitly adds are callable, and kernel forms added by later
-// changes never leak in.
-func EmptyDialect() Dialect { return Dialect{base: baseEmpty} }
 
 // DialectBase selects the special-form table a DialectSpec starts from.
 type DialectBase int
@@ -260,55 +196,7 @@ func NewDialect(spec DialectSpec) (Dialect, error) {
 	if err := validateSpec(spec, hide); err != nil {
 		return Dialect{}, err
 	}
-
-	d := Dialect{base: baseFull}
-	if spec.Base == BaseEmpty {
-		d.base = baseEmpty
-	}
-	for _, name := range hide {
-		d.ops = append(d.ops, deltaOp{kind: opRemove, name: name})
-	}
-	for _, name := range slices.Sorted(maps.Keys(spec.Forms)) {
-		d.ops = append(d.ops, deltaOp{kind: opAdd, name: name, canonical: spec.Forms[name]})
-	}
-	if spec.Lisp2 {
-		d.ns = nsLisp2
-	}
-	if spec.NoBrackets {
-		d.brackets = bracketsOff
-	}
-	if spec.FunctionRef {
-		d.funcRef = funcRefOn
-	}
-	if spec.ReaderVector {
-		d.readerVec = readerVecOn
-	}
-	if spec.FlatCond {
-		d.cond = condFlat
-	}
-	if spec.Vocab != nil || spec.Adapters != nil {
-		d.vocab = make(map[string]VocabEntry, len(spec.Vocab)+len(spec.Adapters))
-		for name, canonical := range spec.Vocab {
-			d.vocab[name] = VocabEntry{Canonical: canonical}
-		}
-		for name, a := range spec.Adapters {
-			d.vocab[name] = VocabEntry{AdapterID: a.ID, Adapter: a.Value}
-		}
-	}
-
-	table, err := d.resolveUncached()
-	if err != nil {
-		return Dialect{}, err
-	}
-	canon := d.canonTable()
-	d.st = &dialectState{
-		table:      table,
-		canon:      canon,
-		doName:     frozenDoName(canon),
-		fp:         d.fingerprintOf(canon),
-		isIdentity: d.identityOf(canon),
-	}
-	return d, nil
+	return Dialect{st: freeze(spec, hide)}, nil
 }
 
 // validateSpec checks spec guard by guard, each over sorted names, so a spec
@@ -358,39 +246,70 @@ func validateSpec(spec DialectSpec, hide []string) error {
 	return nil
 }
 
-// canonTable maps every name d knows to its canonical kernel form: the callable
-// names plus the ones the delta removed or renamed away, which map to "".
-func (d Dialect) canonTable() map[string]string {
-	canon := make(map[string]string, len(kernel)+len(d.ops)+2)
-	add := func(name string) {
-		if c, removed, ok := d.canonicalNameUncached(name); ok {
-			if removed {
-				c = ""
-			}
-			canon[name] = c
+// freeze resolves a validated spec into its immutable state. hide is the
+// sorted, deduplicated Hide list.
+func freeze(spec DialectSpec, hide []string) *dialectState {
+	st := &dialectState{base: spec.Base}
+	if spec.Lisp2 {
+		st.ns = nsLisp2
+	}
+	if spec.NoBrackets {
+		st.brackets = bracketsOff
+	}
+	if spec.FunctionRef {
+		st.funcRef = funcRefOn
+	}
+	if spec.ReaderVector {
+		st.readerVec = readerVecOn
+	}
+	if spec.FlatCond {
+		st.cond = condFlat
+	}
+
+	st.table = make(map[string]formFn, len(kernel)+len(spec.Forms)+2)
+	st.canon = make(map[string]string, len(kernel)+len(spec.Forms)+2)
+	if spec.Base == BaseFull {
+		for name, fn := range kernel {
+			st.table[name] = fn
+			st.canon[name] = name
 		}
 	}
-	if d.base == baseFull {
-		for name := range kernel {
-			add(name)
+	for _, name := range hide {
+		delete(st.table, name)
+		st.canon[name] = ""
+	}
+	for name, canonical := range spec.Forms {
+		st.table[name] = kernel[canonical]
+		st.canon[name] = canonical
+	}
+	// funcall and function are intrinsic to the Lisp-2 axis, not kernel forms,
+	// so the axis owns these two names.
+	if st.ns == nsLisp2 {
+		st.table["funcall"] = evalFuncall
+		st.table["function"] = evalFunction
+		st.canon["funcall"] = "funcall"
+		st.canon["function"] = "function"
+	}
+
+	if spec.Vocab != nil || spec.Adapters != nil {
+		st.vocab = make(map[string]VocabEntry, len(spec.Vocab)+len(spec.Adapters))
+		for name, canonical := range spec.Vocab {
+			st.vocab[name] = VocabEntry{Canonical: canonical}
+		}
+		for name, a := range spec.Adapters {
+			st.vocab[name] = VocabEntry{AdapterID: a.ID, Adapter: a.Value}
 		}
 	}
-	for _, op := range d.ops {
-		add(op.name)
-		if op.canonical != "" {
-			add(op.canonical)
-		}
-	}
-	if d.ns == nsLisp2 {
-		add("funcall")
-		add("function")
-	}
-	return canon
+
+	st.doName = doNameOf(st.canon)
+	st.identity = st.isIdentity()
+	st.fp = st.fingerprint()
+	return st
 }
 
-// frozenDoName picks the visible name of the do form: do itself when visible,
+// doNameOf picks the visible name of the do form: do itself when visible,
 // else the smallest visible alias, else "do".
-func frozenDoName(canon map[string]string) string {
+func doNameOf(canon map[string]string) string {
 	if canon["do"] == "do" {
 		return "do"
 	}
@@ -406,80 +325,73 @@ func frozenDoName(canon map[string]string) string {
 	return name
 }
 
-// Add exposes the kernel form canonical under name.
-func (d Dialect) Add(name, canonical string) Dialect {
-	return d.with(deltaOp{kind: opAdd, name: name, canonical: canonical})
-}
-
-// Rename exposes the kernel form canonical under to and drops the canonical
-// name, unless a later op re-adds it.
-func (d Dialect) Rename(canonical, to string) Dialect {
-	return d.with(deltaOp{kind: opRename, name: to, canonical: canonical})
-}
-
-// Remove makes name uncallable.
-func (d Dialect) Remove(name string) Dialect {
-	return d.with(deltaOp{kind: opRemove, name: name})
-}
-
-// FlatCond sets the cond clause-shape axis so cond parses flat test/expression
-// pairs (Clojure-style): (cond t1 e1 t2 e2 ...). The default axis keeps nested
-// clauses (Common Lisp-style).
-func (d Dialect) FlatCond() Dialect { d.cond = condFlat; d.cache, d.st = nil, nil; return d }
-
-// Vocabulary sets a name→canonical-name map: each visible name resolves to
-// the GoFunc the canonical name was registered under. A nil vocab (the zero
-// value, the identity Dialect) leaves every registered builtin callable under
-// its registered name. On an EmptyDialect the vocabulary is fail-closed: a
-// builtin whose registered name is not in the map is removed from the env.
-func (d Dialect) Vocabulary(vocab map[string]string) Dialect {
-	d.vocab = make(map[string]VocabEntry, len(vocab))
-	for name, canonical := range vocab {
-		d.vocab[name] = VocabEntry{Canonical: canonical}
+// isIdentity reports whether st is the identity dialect.
+func (st *dialectState) isIdentity() bool {
+	defaultAxes := st.base == BaseFull && st.ns == nsLisp1 &&
+		st.brackets == bracketsOn && st.funcRef == funcRefOff &&
+		st.readerVec == readerVecOff
+	if !defaultAxes || st.vocab != nil {
+		return false
 	}
-	d.cache, d.st = nil, nil
-	return d
-}
-
-// WithAdapter binds a visible name to a GoFunc that wraps a shared
-// implementation. Use it for semantics-differing names where a plain rename
-// is not enough; the adapter itself is expected to delegate to a shared
-// builtin rather than reimplement the operation. Calling WithAdapter on a
-// Dialect that already has vocabulary entries returns a new Dialect whose
-// vocab is a fresh copy plus the adapter — the receiver is not mutated.
-func (d Dialect) WithAdapter(name, semanticID string, value Value) Dialect {
-	d.vocab = copyVocab(d.vocab)
-	d.vocab[name] = VocabEntry{AdapterID: semanticID, Adapter: value}
-	d.cache, d.st = nil, nil
-	return d
-}
-
-// copyVocab returns a fresh map containing the receiver's entries, or an empty
-// map if the receiver is nil. It exists so vocab-mutating builders
-// (WithAdapter and any future ones) never share the underlying map with the
-// previous Dialect.
-func copyVocab(src map[string]VocabEntry) map[string]VocabEntry {
-	dst := make(map[string]VocabEntry, len(src)+1)
-	for k, v := range src {
-		dst[k] = v
+	callable := 0
+	for name, c := range st.canon {
+		if c == "" {
+			continue
+		}
+		if c != name {
+			return false
+		}
+		callable++
 	}
-	return dst
+	return callable == len(kernel)
+}
+
+// fingerprint hashes st's resolved configuration: the axes, the callable
+// visible→canonical table and the vocabulary, each in sorted order, so two
+// dialects that resolve alike fingerprint alike however they were declared.
+func (st *dialectState) fingerprint() string {
+	h := sha256.New()
+	fmt.Fprintf(h, "dialect/2|base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
+		st.base, st.ns, st.brackets, st.funcRef, st.readerVec, st.cond)
+	for _, name := range slices.Sorted(maps.Keys(st.canon)) {
+		if st.canon[name] == "" {
+			continue
+		}
+		fmt.Fprint(h, "|f")
+		writeField(h, name)
+		writeField(h, st.canon[name])
+	}
+	fmt.Fprintf(h, "|vocab=%t", st.vocab != nil)
+	for _, name := range slices.Sorted(maps.Keys(st.vocab)) {
+		entry := st.vocab[name]
+		fmt.Fprint(h, "|v")
+		writeField(h, name)
+		writeField(h, entry.Canonical)
+		writeField(h, entry.AdapterID)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// writeField writes s as ":<byte length>:<bytes>" so no string content can
+// shift a field boundary and collide with a different field split.
+func writeField(w io.Writer, s string) {
+	fmt.Fprintf(w, ":%d:%s", len(s), s)
 }
 
 // Vocab returns a caller-owned copy of the vocabulary map the Dialect was
-// configured with. It is nil for the identity dialect and a non-nil empty map
-// for an empty vocabulary. Each visible name maps to either a canonical shared
-// builtin name (Canonical) or an adapter (Adapter non-nil). Writes to the
-// returned map never reach the Dialect; adapter Values are shared immutable
-// values, not copies.
+// configured with. It is nil for a dialect without a vocabulary and a non-nil
+// empty map for an empty vocabulary. Each visible name maps to either a
+// canonical shared builtin name (Canonical) or an adapter (Adapter non-nil).
+// Writes to the returned map never reach the Dialect; adapter Values are
+// shared immutable values, not copies.
 func (d Dialect) Vocab() map[string]VocabEntry {
-	return maps.Clone(d.vocab)
+	return maps.Clone(d.state().vocab)
 }
 
 // VocabEntry returns the vocabulary entry bound to name, and whether one
 // exists. It does not copy the vocabulary.
 func (d Dialect) VocabEntry(name string) (VocabEntry, bool) {
-	entry, ok := d.vocab[name]
+	entry, ok := d.state().vocab[name]
 	return entry, ok
 }
 
@@ -490,67 +402,11 @@ func (d Dialect) VocabEntry(name string) (VocabEntry, bool) {
 //   - "", true, true if the name was removed from this dialect's dispatch table
 //   - "", false, false if the name is not a special form at all in this dialect
 func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok bool) {
-	if d.st != nil {
-		c, ok := d.st.canon[name]
-		if !ok {
-			return "", false, false
-		}
-		return c, c == "", true
+	c, ok := d.state().canon[name]
+	if !ok {
+		return "", false, false
 	}
-	return d.canonicalNameUncached(name)
-}
-
-func (d Dialect) canonicalNameUncached(name string) (canonical string, removed bool, ok bool) {
-	present := false
-	affected := false
-	if d.base == baseFull {
-		if _, ok := kernel[name]; ok {
-			canonical = name
-			present = true
-			affected = true
-		}
-	}
-
-	for _, op := range d.ops {
-		switch op.kind {
-		case opAdd:
-			if op.name == name {
-				canonical = op.canonical
-				present = true
-				affected = true
-			}
-		case opRename:
-			if op.canonical == name {
-				canonical = ""
-				present = false
-				affected = true
-			}
-			if op.name == name {
-				canonical = op.canonical
-				present = true
-				affected = true
-			}
-		case opRemove:
-			if op.name == name {
-				canonical = ""
-				present = false
-				affected = true
-			}
-		}
-	}
-
-	if d.ns == nsLisp2 {
-		if name == "function" || name == "funcall" {
-			return name, false, true
-		}
-	}
-	if present {
-		return canonical, false, true
-	}
-	if affected {
-		return "", true, true
-	}
-	return "", false, false
+	return c, c == "", true
 }
 
 // TruthyFunc returns the predicate used by dialect-specific conditional evaluation.
@@ -561,7 +417,7 @@ func (d Dialect) TruthyFunc() func(Value) bool {
 
 // IsBaseEmpty reports whether the Dialect starts from an empty base.
 func (d Dialect) IsBaseEmpty() bool {
-	return d.base == baseEmpty
+	return d.state().base == BaseEmpty
 }
 
 // isTruthy reports whether v is a true value. All dialects treat nil and false
@@ -570,57 +426,22 @@ func (d Dialect) isTruthy(v Value) bool {
 	return IsTruthy(v)
 }
 
-// Lisp2 sets the namespace axis so a symbol may name a function and a value at
-// once: head position resolves through the function cell, definition forms bind
-// functions there, and the funcall and function (#') forms become available.
-// The default axis is Lisp-1, a single namespace.
-func (d Dialect) Lisp2() Dialect {
-	d.ns = nsLisp2
-	d.cache, d.st = nil, nil
-	return d
-}
-
 // isLisp2 reports whether the Dialect uses a separate function cell. It is the
 // single hook eval consults to split head from argument resolution.
 func (d Dialect) isLisp2() bool {
-	return d.ns == nsLisp2
+	return d.state().ns == nsLisp2
 }
 
 // IsLisp2 reports whether d uses a separate function cell (Lisp-2).
 func (d Dialect) IsLisp2() bool { return d.isLisp2() }
 
-// WithoutBracketLiterals turns off [..]/{..} literal syntax, so those brackets
-// stop reading as vector/map literals (Common Lisp-style). The default axis
-// keeps bracket literals on.
-func (d Dialect) WithoutBracketLiterals() Dialect {
-	d.brackets = bracketsOff
-	d.cache, d.st = nil, nil
-	return d
-}
-
-// WithFunctionRef enables the #' reader syntax, so #'x reads as (function x).
-// The default axis leaves # non-special. What (function x) means once read is
-// defined by the namespace axis; this flag only makes it parse.
-func (d Dialect) WithFunctionRef() Dialect {
-	d.funcRef = funcRefOn
-	d.cache, d.st = nil, nil
-	return d
-}
-
-// WithReaderVector enables the #(...) reader syntax, so #(...) reads as a
-// vector. The default axis leaves # non-special.
-func (d Dialect) WithReaderVector() Dialect {
-	d.readerVec = readerVecOn
-	d.cache, d.st = nil, nil
-	return d
-}
-
 // readerFlags projects the reader axes onto the flag set the tokenizer consults.
 func (d Dialect) readerFlags() readerFlags {
+	st := d.state()
 	return readerFlags{
-		bracketLiterals: d.brackets == bracketsOn,
-		functionRef:     d.funcRef == funcRefOn,
-		readerVector:    d.readerVec == readerVecOn,
+		bracketLiterals: st.brackets == bracketsOn,
+		functionRef:     st.funcRef == funcRefOn,
+		readerVector:    st.readerVec == readerVecOn,
 	}
 }
 
@@ -680,179 +501,22 @@ func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth 
 // not take part. The bytecode VM dispatches canonical form names directly, so
 // only the identity dialect is safe to run under it.
 func (d Dialect) IsIdentity() bool {
-	if d.st != nil {
-		return d.st.isIdentity
-	}
-	return d.identityOf(d.canonTable())
+	return d.state().identity
 }
 
-// identityOf reports whether d, whose canonTable is canon, is the identity
-// dialect.
-func (d Dialect) identityOf(canon map[string]string) bool {
-	defaultAxes := d.base == baseFull && d.ns == nsLisp1 &&
-		d.brackets == bracketsOn && d.funcRef == funcRefOff &&
-		d.readerVec == readerVecOff
-	if !defaultAxes || d.vocab != nil {
-		return false
-	}
-	callable := 0
-	for name, c := range canon {
-		if c == "" {
-			continue
-		}
-		if c != name {
-			return false
-		}
-		callable++
-	}
-	return callable == len(kernel)
-}
-
-func (d Dialect) with(op deltaOp) Dialect {
-	ops := make([]deltaOp, len(d.ops), len(d.ops)+1)
-	copy(ops, d.ops)
-	d.ops = append(ops, op)
-	d.cache, d.st = nil, nil
-	return d
-}
-
-// resolve returns the Dialect's effective dispatch table. A Memoized value
-// returns its cached table on every call; any other Dialect resolves fresh
-// each time (see resolveUncached).
-func (d Dialect) resolve() (map[string]formFn, error) {
-	if d.st != nil {
-		return d.st.table, nil
-	}
-	if d.cache != nil {
-		return d.cache.table, d.cache.err
-	}
-	return d.resolveUncached()
-}
-
-// resolveUncached applies the delta to a fresh copy of the base, producing
-// the effective dispatch table. It fails if a rename or add references a
-// canonical form absent from the kernel.
-func (d Dialect) resolveUncached() (map[string]formFn, error) {
-	table := make(map[string]formFn, len(kernel))
-	if d.base == baseFull {
-		maps.Copy(table, kernel)
-	}
-	for name, entry := range d.vocab {
-		if entry.Adapter != nil && entry.AdapterID == "" {
-			return nil, fmt.Errorf("dialect: adapter %q has no semantic ID", name)
-		}
-	}
-	for _, op := range d.ops {
-		switch op.kind {
-		case opAdd:
-			fn, ok := kernel[op.canonical]
-			if !ok {
-				return nil, fmt.Errorf("dialect: add references unknown kernel form %q", op.canonical)
-			}
-			table[op.name] = fn
-		case opRename:
-			fn, ok := kernel[op.canonical]
-			if !ok {
-				return nil, fmt.Errorf("dialect: rename references unknown kernel form %q", op.canonical)
-			}
-			delete(table, op.canonical)
-			table[op.name] = fn
-		case opRemove:
-			delete(table, op.name)
-		}
-	}
-	// funcall and function are intrinsic to the Lisp-2 axis, not kernel forms, so
-	// they are injected here rather than referenced through Add/Rename/Remove.
-	// Injecting after the delta means the axis owns these two names.
-	if d.ns == nsLisp2 {
-		table["funcall"] = evalFuncall
-		table["function"] = evalFunction
-	}
-	return table, nil
+// resolve returns the Dialect's effective dispatch table. The table is shared
+// by every engine built from d and must not be written.
+func (d Dialect) resolve() map[string]formFn {
+	return d.state().table
 }
 
 // Fingerprint returns a hash string that changes when the Dialect's semantic
-// configuration changes. Used as part of the bytecode chunk cache key. A
-// Memoized value returns its cached hash on every call; any other Dialect
-// hashes fresh each time (see fingerprintUncached).
+// configuration changes. Used as part of the bytecode chunk cache key.
 //
 // The fingerprint is a process-local identity for one go-lispico version: it
 // may change between releases and is not a persistence format.
 func (d Dialect) Fingerprint() string {
-	if d.st != nil {
-		return d.st.fp
-	}
-	if d.cache != nil {
-		return d.cache.fp
-	}
-	return d.fingerprintUncached()
-}
-
-// zeroFingerprint is the fingerprint of the zero Dialect, which every default
-// engine hashes; it is computed once.
-var zeroFingerprint = sync.OnceValue(func() string {
-	var d Dialect
-	return d.fingerprintOf(d.canonTable())
-})
-
-// fingerprintUncached computes d's fingerprint hash from scratch.
-func (d Dialect) fingerprintUncached() string {
-	isZero := d.base == baseFull && len(d.ops) == 0 && d.ns == nsLisp1 &&
-		d.brackets == bracketsOn && d.funcRef == funcRefOff &&
-		d.readerVec == readerVecOff && d.cond == condNested && d.vocab == nil
-	if isZero {
-		return zeroFingerprint()
-	}
-	return d.fingerprintOf(d.canonTable())
-}
-
-// fingerprintOf hashes d's resolved configuration, where canon is its
-// canonTable. It covers the axes, the callable visible→canonical table and
-// the vocabulary, each in sorted order, so two dialects that resolve alike
-// fingerprint alike however they were built.
-func (d Dialect) fingerprintOf(canon map[string]string) string {
-	h := sha256.New()
-	fmt.Fprintf(h, "dialect/2|base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
-		d.base, d.ns, d.brackets, d.funcRef, d.readerVec, d.cond)
-	for _, name := range slices.Sorted(maps.Keys(canon)) {
-		if canon[name] == "" {
-			continue
-		}
-		fmt.Fprint(h, "|f")
-		writeField(h, name)
-		writeField(h, canon[name])
-	}
-	fmt.Fprintf(h, "|vocab=%t", d.vocab != nil)
-	for _, name := range slices.Sorted(maps.Keys(d.vocab)) {
-		entry := d.vocab[name]
-		fmt.Fprint(h, "|v")
-		writeField(h, name)
-		writeField(h, entry.Canonical)
-		writeField(h, entry.AdapterID)
-	}
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
-// writeField writes s as ":<byte length>:<bytes>" so no string content can
-// shift a field boundary and collide with a different field split.
-func writeField(w io.Writer, s string) {
-	fmt.Fprintf(w, ":%d:%s", len(s), s)
-}
-
-// visibleName returns the dialect-visible name for a canonical kernel form.
-// It scans the delta ops; with no rename/add targeting canonical, the canonical
-// name is itself the visible name (identity behavior).
-func (d Dialect) visibleName(canonical string) string {
-	if d.st != nil && canonical == "do" {
-		return d.st.doName
-	}
-	for i := len(d.ops) - 1; i >= 0; i-- {
-		op := d.ops[i]
-		if op.canonical == canonical && (op.kind == opRename || op.kind == opAdd) {
-			return op.name
-		}
-	}
-	return canonical
+	return d.state().fp
 }
 
 // NormalizeCond parses raw cond operands into canonical (test body) clauses
@@ -862,7 +526,7 @@ func (d Dialect) visibleName(canonical string) string {
 // `do` form. Both the Evaluator and the Compiler call this, so the two paths
 // cannot parse cond differently.
 func (d Dialect) NormalizeCond(args []Value) ([]Value, error) {
-	switch d.cond {
+	switch d.state().cond {
 	case condFlat:
 		return d.normalizeCondFlat(args)
 	default:
@@ -888,9 +552,8 @@ func (d Dialect) normalizeCondNested(args []Value) ([]Value, error) {
 			// Cursor rather than At(i): a clause body past the flat
 			// threshold is a shared chain, where positional indexing
 			// restarts the walk per element.
-			doName := d.visibleName("do")
 			wrapped := make([]Value, 0, n)
-			wrapped = append(wrapped, Symbol{V: doName})
+			wrapped = append(wrapped, Symbol{V: d.state().doName})
 			cur := list.cursor()
 			test, _ := cur.next()
 			for i := 1; i < n; i++ {

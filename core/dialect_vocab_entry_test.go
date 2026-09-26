@@ -9,9 +9,10 @@ func TestDialect_VocabEntryLookup(t *testing.T) {
 	adapter := GoFunc{Name: "noop", Fn: func(context.Context, Evaluator, []Value, *Env) (Value, error) {
 		return Nil{}, nil
 	}}
-	d := FullDialect().
-		Vocabulary(map[string]string{"car": "first"}).
-		WithAdapter("noop", "noop@1", adapter)
+	d := mustDialect(t, spec{
+		Vocab:    map[string]string{"car": "first"},
+		Adapters: map[string]Adapter{"noop": {ID: "noop@1", Value: adapter}},
+	})
 
 	t.Run("present rename", func(t *testing.T) {
 		entry, ok := d.VocabEntry("car")
@@ -41,9 +42,9 @@ func TestDialect_VocabEntryLookup(t *testing.T) {
 	})
 
 	t.Run("nil vocabulary", func(t *testing.T) {
-		entry, ok := FullDialect().VocabEntry("car")
+		entry, ok := Dialect{}.VocabEntry("car")
 		if ok || entry != (VocabEntry{}) {
-			t.Fatalf("FullDialect().VocabEntry(car) = %+v, %v; want zero entry, false", entry, ok)
+			t.Fatalf("Dialect{}.VocabEntry(car) = %+v, %v; want zero entry, false", entry, ok)
 		}
 	})
 }

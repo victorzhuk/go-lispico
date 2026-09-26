@@ -15,7 +15,7 @@ import (
 // #' reads as (function x) only when the Dialect enables it; the default Dialect
 // leaves # non-special, so #'foo fails to read.
 func TestDialect_Reader_FunctionRefGatedByFlag(t *testing.T) {
-	on, err := New(nil, WithDialect(core.FullDialect().WithFunctionRef()))
+	on, err := New(nil, WithDialect(mustDialect(t, spec{FunctionRef: true})))
 	require.NoError(t, err)
 	defer on.Close()
 
@@ -34,7 +34,7 @@ func TestDialect_Reader_FunctionRefGatedByFlag(t *testing.T) {
 
 // #(...) reads as a vector when the Dialect enables it.
 func TestDialect_Reader_ReaderVectorGatedByFlag(t *testing.T) {
-	on, err := New(nil, WithDialect(core.FullDialect().WithReaderVector()))
+	on, err := New(nil, WithDialect(mustDialect(t, spec{ReaderVector: true})))
 	require.NoError(t, err)
 	defer on.Close()
 
@@ -68,7 +68,7 @@ func TestDialect_Reader_BracketLiteralsGatedByFlag(t *testing.T) {
 	_, isMap := got.(*core.HashMap)
 	assert.True(t, isMap, "want {..} map literal, got %T", got)
 
-	off, err := New(nil, WithDialect(core.FullDialect().WithoutBracketLiterals()))
+	off, err := New(nil, WithDialect(mustDialect(t, spec{NoBrackets: true})))
 	require.NoError(t, err)
 	defer off.Close()
 

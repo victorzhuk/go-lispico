@@ -457,11 +457,11 @@ func (e *engineImpl) deliverPluginCallEvent(cb func(PluginCallEvent), event Plug
 // under adapter wrappers, or stripped according to the Dialect's base and
 // vocab.
 //
-// On a FullDialect with a vocab, the operation is purely additive: every
+// On a full-base Dialect with a vocab, the operation is purely additive: every
 // registered GoFunc remains, and the vocab entries either rename a canonical
 // name to a visible name or bind a visible name to a GoFunc adapter.
 //
-// On an EmptyDialect, the vocabulary is an allowlist. Every GoFunc whose name
+// On an empty-base Dialect, the vocabulary is an allowlist. Every GoFunc whose name
 // is not in the vocab is removed from the env, and the vocab entries are then
 // applied. Macros, Lambdas, and any non-GoFunc values are left alone so
 // bootstrap macros survive the allowlist pass. A snapshot of every GoFunc is

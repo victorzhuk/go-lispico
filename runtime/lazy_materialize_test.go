@@ -701,7 +701,7 @@ func (p *sharedTemplatePlugin) Init(env *core.Env) error {
 func TestLazyMaterialize_SecondEngineSkipsInit(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-skip-init", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-skip-init": "if"}})
 	var inits int64
 
 	const engines = 4
@@ -722,7 +722,7 @@ func TestLazyMaterialize_SecondEngineSkipsInit(t *testing.T) {
 func TestLazyMaterialize_SecondEngineSharesClosurePointers(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-shared-ptr", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-shared-ptr": "if"}})
 	var inits int64
 
 	engA, err := New(nil, WithBytecode(), WithDialect(dialect))
@@ -761,7 +761,7 @@ func TestLazyMaterialize_SecondEngineSharesClosurePointers(t *testing.T) {
 func TestLazyMaterialize_FailedInitLeavesLayerIncomplete(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-failed-init", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-failed-init": "if"}})
 	var inits int64
 
 	eng1, err := New(nil, WithBytecode(), WithDialect(dialect))
@@ -791,7 +791,7 @@ func TestLazyMaterialize_FailedInitLeavesLayerIncomplete(t *testing.T) {
 func TestLazyMaterialize_DifferentVersionsGetDistinctLayers(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-distinct-versions", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-distinct-versions": "if"}})
 	var initsV1, initsV2 int64
 
 	eng1, err := New(nil, WithBytecode(), WithDialect(dialect))
@@ -834,7 +834,7 @@ func TestLazyMaterialize_DifferentVersionsGetDistinctLayers(t *testing.T) {
 func TestLazyMaterialize_ConcurrentFirstUseBuildsOnce(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-concurrent-use", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-concurrent-use": "if"}})
 	var inits int64
 
 	const engines = 32
@@ -870,7 +870,7 @@ func TestLazyMaterialize_ConcurrentFirstUseBuildsOnce(t *testing.T) {
 func TestLazyMaterialize_EnumerationIdenticalFirstAndSecondEngine(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-enum-parity", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-enum-parity": "if"}})
 
 	first, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)
@@ -898,7 +898,7 @@ func TestLazyMaterialize_EnumerationIdenticalFirstAndSecondEngine(t *testing.T) 
 func TestLazyMaterialize_ShadowAndDeleteIdenticalFirstAndSecondEngine(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-shadow-delete-parity", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-shadow-delete-parity": "if"}})
 
 	first, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)
@@ -938,7 +938,7 @@ func TestLazyMaterialize_ShadowAndDeleteIdenticalFirstAndSecondEngine(t *testing
 func TestLazyMaterialize_UnloadIdenticalFirstAndSecondEngine(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-unload-parity", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-unload-parity": "if"}})
 
 	first, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)
@@ -985,7 +985,7 @@ func TestLazyMaterialize_UnloadIdenticalFirstAndSecondEngine(t *testing.T) {
 func TestLazyMaterialize_ReloadIdenticalFirstAndSecondEngine(t *testing.T) {
 	t.Parallel()
 
-	dialect := clojure.Dialect().Add("lazy-template-reload-parity", "if")
+	dialect := mustDialect(t, spec{FlatCond: true, Forms: map[string]string{"lazy-template-reload-parity": "if"}})
 
 	first, err := New(nil, WithBytecode(), WithDialect(dialect))
 	require.NoError(t, err)

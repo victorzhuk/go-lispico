@@ -295,7 +295,10 @@ func BenchmarkRead_Representative(b *testing.B) {
 func BenchmarkRead_WithFunctionRef(b *testing.B) {
 	b.ReportAllocs()
 	src := "#'my-fn"
-	d := FullDialect().WithFunctionRef()
+	d, err := NewDialect(spec{FunctionRef: true})
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for range b.N {
 		d.Read(src)
@@ -305,21 +308,27 @@ func BenchmarkRead_WithFunctionRef(b *testing.B) {
 func BenchmarkRead_WithReaderVector(b *testing.B) {
 	b.ReportAllocs()
 	src := "#(1 2 3)"
-	d := FullDialect().WithReaderVector()
+	d, err := NewDialect(spec{ReaderVector: true})
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for range b.N {
 		d.Read(src)
 	}
 }
 
-// BenchmarkRead_BracketLiteralsRejected measures the WithoutBracketLiterals
+// BenchmarkRead_BracketLiteralsRejected measures the NoBrackets
 // branch itself: with the flag off, a bracket character has no fallback
 // meaning — it is always a hard parse error — so an error return is the only
 // way this branch is ever reached.
 func BenchmarkRead_BracketLiteralsRejected(b *testing.B) {
 	b.ReportAllocs()
 	src := "(f [1 2])"
-	d := FullDialect().WithoutBracketLiterals()
+	d, err := NewDialect(spec{NoBrackets: true})
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for range b.N {
 		d.Read(src)

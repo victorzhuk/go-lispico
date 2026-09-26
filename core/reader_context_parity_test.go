@@ -27,8 +27,8 @@ func TestReadWithContextStats_LegacyParity(t *testing.T) {
 		name string
 		d    Dialect
 	}{
-		{"full", FullDialect()},
-		{"reader-syntax", FullDialect().WithReaderVector().WithFunctionRef()},
+		{"full", Dialect{}},
+		{"reader-syntax", mustDialect(t, spec{ReaderVector: true, FunctionRef: true})},
 	}
 
 	fixtures := []struct {

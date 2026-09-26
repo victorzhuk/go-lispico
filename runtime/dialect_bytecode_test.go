@@ -16,7 +16,7 @@ import (
 // that renames do→progn compiles and runs identically to (do 1 2) under the
 // identity dialect (spec scenario).
 func TestDialect_Bytecode_NormalizeRename(t *testing.T) {
-	renamed := core.FullDialect().Rename("do", "progn")
+	renamed := mustDialect(t, spec{Forms: map[string]string{"progn": "do"}, Hide: []string{"do"}})
 	e, err := New(nil, WithBytecode(), WithDialect(renamed))
 	require.NoError(t, err)
 	defer e.Close()
@@ -30,7 +30,7 @@ func TestDialect_Bytecode_NormalizeRename(t *testing.T) {
 // removes a form produces an undefined-form compile error when running on the
 // bytecode VM (spec scenario).
 func TestDialect_Bytecode_RemoveRejected(t *testing.T) {
-	restricted := core.FullDialect().Remove("set!")
+	restricted := mustDialect(t, spec{Hide: []string{"set!"}})
 	e, err := New(nil, WithBytecode(), WithDialect(restricted))
 	require.NoError(t, err)
 	defer e.Close()
@@ -86,7 +86,7 @@ func TestDialect_Bytecode_Clojure_DefaultTruthiness(t *testing.T) {
 // TestDialect_Bytecode_RemoveThenEvalOtherForms verifies that a restricted
 // dialect under bytecode can still evaluate forms it didn't remove.
 func TestDialect_Bytecode_RemoveThenEvalOtherForms(t *testing.T) {
-	restricted := core.FullDialect().Remove("def")
+	restricted := mustDialect(t, spec{Hide: []string{"def"}})
 	e, err := New(nil, WithBytecode(), WithDialect(restricted))
 	require.NoError(t, err)
 	defer e.Close()
@@ -105,7 +105,7 @@ func TestDialect_Bytecode_RemoveThenEvalOtherForms(t *testing.T) {
 // TestDialect_Bytecode_Lisp2_Funcall verifies that the Lisp-2 function cell
 // works through the bytecode path: (funcall (function id) 42) resolves.
 func TestDialect_Bytecode_Lisp2_Funcall(t *testing.T) {
-	lisp2 := core.FullDialect().Lisp2()
+	lisp2 := mustDialect(t, spec{Lisp2: true})
 	e, err := New(nil, WithBytecode(), WithDialect(lisp2))
 	require.NoError(t, err)
 	defer e.Close()
@@ -116,7 +116,7 @@ func TestDialect_Bytecode_Lisp2_Funcall(t *testing.T) {
 }
 
 func TestDialect_Bytecode_UniformTruthiness(t *testing.T) {
-	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect()))
+	e, err := New(nil, WithBytecode(), WithDialect(core.Dialect{}))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -162,7 +162,7 @@ func TestDialect_Lisp2_MacroAcrossEvals(t *testing.T) {
 // TestDialect_Bytecode_EmptyBase verifies that an empty-base dialect with
 // WithBytecode() works: only explicitly added forms compile.
 func TestDialect_Bytecode_EmptyBase(t *testing.T) {
-	empty := core.EmptyDialect().Add("if", "if")
+	empty := mustDialect(t, spec{Base: core.BaseEmpty, Forms: map[string]string{"if": "if"}})
 	e, err := New(nil, WithBytecode(), WithDialect(empty))
 	require.NoError(t, err)
 	defer e.Close()

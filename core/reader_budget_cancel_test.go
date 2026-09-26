@@ -130,7 +130,7 @@ func TestGuardedRead_CancellationAndDeadline(t *testing.T) {
 			base, meter := budgetContext(DefaultMaxReductions)
 			ctx := cancelAtReductions{Context: base, meter: meter, at: tc.at}
 
-			forms, _, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			forms, _, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("read after %d reductions returned %v, want context.Canceled", tc.at, err)
 			}
@@ -161,7 +161,7 @@ func TestGuardedRead_CancellationAndDeadline(t *testing.T) {
 			ctx, _ := budgetContext(DefaultMaxReductions)
 			ctx = WithEvalDeadline(ctx, base.Add(time.Minute))
 
-			forms, _, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			forms, _, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("read past the deadline on clock reading %d returned %v, want context.DeadlineExceeded", tc.readings+1, err)
 			}
@@ -189,12 +189,12 @@ func TestGuardedRead_ChargesEveryScannedByte(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, meter := budgetContext(DefaultMaxReductions)
 
-			forms, stats, err := readContextStats(ctx, FullDialect(), tc.src, 0)
+			forms, stats, err := readContextStats(ctx, Dialect{}, tc.src, 0)
 			if err != nil {
 				t.Fatalf("read failed: %v", err)
 			}
 
-			wantForms, wantStats, wantErr := FullDialect().ReadWithMaxDepthStats(tc.src, 0)
+			wantForms, wantStats, wantErr := Dialect{}.ReadWithMaxDepthStats(tc.src, 0)
 			if wantErr != nil {
 				t.Fatalf("legacy read failed: %v", wantErr)
 			}
@@ -218,7 +218,7 @@ func TestGuardedRead_SynchronizesWithinBound(t *testing.T) {
 	base, meter := budgetContext(DefaultMaxReductions)
 	probe := &reductionProbe{Context: base, meter: meter}
 
-	if _, _, err := readContextStats(probe, FullDialect(), src, 0); err != nil {
+	if _, _, err := readContextStats(probe, Dialect{}, src, 0); err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
 
@@ -250,7 +250,7 @@ func TestGuardedRead_TerminalStateOutranksSyntaxError(t *testing.T) {
 		base, meter := budgetContext(DefaultMaxReductions)
 		ctx := cancelAtReductions{Context: base, meter: meter, at: 0}
 
-		if _, _, err := readContextStats(ctx, FullDialect(), scanFailure, 0); !errors.Is(err, context.Canceled) {
+		if _, _, err := readContextStats(ctx, Dialect{}, scanFailure, 0); !errors.Is(err, context.Canceled) {
 			t.Fatalf("read returned %v, want context.Canceled to outrank the read failure", err)
 		}
 	})
@@ -259,7 +259,7 @@ func TestGuardedRead_TerminalStateOutranksSyntaxError(t *testing.T) {
 		base, meter := budgetContext(DefaultMaxReductions)
 		ctx := cancelAtReductions{Context: base, meter: meter, at: int64(len(scanFailure)) / 2}
 
-		if _, _, err := readContextStats(ctx, FullDialect(), scanFailure, 0); !errors.Is(err, context.Canceled) {
+		if _, _, err := readContextStats(ctx, Dialect{}, scanFailure, 0); !errors.Is(err, context.Canceled) {
 			t.Fatalf("read returned %v, want context.Canceled to outrank the read failure", err)
 		}
 	})
@@ -268,7 +268,7 @@ func TestGuardedRead_TerminalStateOutranksSyntaxError(t *testing.T) {
 		ctx, _ := budgetContext(DefaultMaxReductions)
 		ctx = WithEvalDeadline(ctx, time.Now().Add(-time.Hour))
 
-		if _, _, err := readContextStats(ctx, FullDialect(), scanFailure, 0); !errors.Is(err, context.DeadlineExceeded) {
+		if _, _, err := readContextStats(ctx, Dialect{}, scanFailure, 0); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("read returned %v, want context.DeadlineExceeded to outrank the read failure", err)
 		}
 	})
@@ -276,7 +276,7 @@ func TestGuardedRead_TerminalStateOutranksSyntaxError(t *testing.T) {
 	t.Run("budget/before-a-scan-failure", func(t *testing.T) {
 		ctx, _ := budgetContext(64)
 
-		_, _, err := readContextStats(ctx, FullDialect(), scanFailure, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, scanFailure, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read returned %v (code %q), want a %s to outrank the read failure", err, code, CodeResourceLimit)
 		}
@@ -285,7 +285,7 @@ func TestGuardedRead_TerminalStateOutranksSyntaxError(t *testing.T) {
 	t.Run("budget/before-a-parse-failure", func(t *testing.T) {
 		ctx, _ := budgetContext(64)
 
-		_, _, err := readContextStats(ctx, FullDialect(), parseFailure, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, parseFailure, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read returned %v (code %q), want a %s to outrank the read failure", err, code, CodeResourceLimit)
 		}
@@ -302,7 +302,7 @@ func TestGuardedRead_NumericConversionAdmission(t *testing.T) {
 	t.Run("refuses-a-token-over-a-third-of-the-budget", func(t *testing.T) {
 		ctx, _ := budgetContext(900)
 
-		_, _, err := readContextStats(ctx, FullDialect(), oversized, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, oversized, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read of a %d-byte numeric token returned %v (code %q), want a %s", len(oversized), err, code, CodeResourceLimit)
 		}
@@ -311,7 +311,7 @@ func TestGuardedRead_NumericConversionAdmission(t *testing.T) {
 	t.Run("charges-the-token-length-before-entry", func(t *testing.T) {
 		ctx, meter := budgetContext(DefaultMaxReductions)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), admitted, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, admitted, 0)
 		if err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
@@ -327,11 +327,11 @@ func TestGuardedRead_NumericConversionAdmission(t *testing.T) {
 	t.Run("admits-a-token-within-the-bound", func(t *testing.T) {
 		ctx, _ := budgetContext(DefaultMaxReductions)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), admitted, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, admitted, 0)
 		if err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
-		wantForms, _, wantErr := FullDialect().ReadWithMaxDepthStats(admitted, 0)
+		wantForms, _, wantErr := Dialect{}.ReadWithMaxDepthStats(admitted, 0)
 		if wantErr != nil {
 			t.Fatalf("legacy read failed: %v", wantErr)
 		}

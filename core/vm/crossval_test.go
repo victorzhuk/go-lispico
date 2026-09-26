@@ -19,6 +19,15 @@ import (
 	"github.com/victorzhuk/go-lispico/plugins/stdlib"
 )
 
+type spec = core.DialectSpec
+
+func mustDialect(t *testing.T, s spec) core.Dialect {
+	t.Helper()
+	d, err := core.NewDialect(s)
+	require.NoError(t, err)
+	return d
+}
+
 func newCrossValEnv() *core.Env {
 	env := core.NewEnv(nil)
 	env.Set("+", core.GoFunc{
@@ -446,7 +455,7 @@ func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
 	// §3.1: Clojure flat cond under dialect
 	t.Run("cond clojure flat", func(t *testing.T) {
 		t.Parallel()
-		compareDialect(t, env, core.FullDialect().FlatCond(), "(cond (< 1 2) :yes :else :no)")
+		compareDialect(t, env, mustDialect(t, spec{FlatCond: true}), "(cond (< 1 2) :yes :else :no)")
 	})
 }
 
@@ -1825,8 +1834,8 @@ func TestVM_CachedSiteReflectsRebind(t *testing.T) {
 		name    string
 		dialect core.Dialect
 	}{
-		{name: "lisp1", dialect: core.FullDialect()},
-		{name: "lisp2", dialect: core.FullDialect().Lisp2()},
+		{name: "lisp1", dialect: core.Dialect{}},
+		{name: "lisp2", dialect: mustDialect(t, spec{Lisp2: true})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1865,8 +1874,8 @@ func TestVM_CachedSiteReflectsDelete(t *testing.T) {
 		name    string
 		dialect core.Dialect
 	}{
-		{name: "lisp1", dialect: core.FullDialect()},
-		{name: "lisp2", dialect: core.FullDialect().Lisp2()},
+		{name: "lisp1", dialect: core.Dialect{}},
+		{name: "lisp2", dialect: mustDialect(t, spec{Lisp2: true})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2478,8 +2487,8 @@ func TestVMVsTreeWalker_ClosureCaptureSemantics(t *testing.T) {
 		name string
 		d    core.Dialect
 	}{
-		{"lisp1", core.FullDialect()},
-		{"lisp2", core.FullDialect().Lisp2()},
+		{"lisp1", core.Dialect{}},
+		{"lisp2", mustDialect(t, spec{Lisp2: true})},
 	}
 	for _, cell := range cells {
 		for _, dt := range dialects {

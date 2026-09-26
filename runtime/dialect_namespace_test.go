@@ -14,7 +14,7 @@ import (
 // value cell, defn binds the function cell. Argument position reads the value
 // cell, head position reads the function cell.
 func TestDialect_Lisp2_HeadVsArgumentNamespace(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -27,7 +27,7 @@ func TestDialect_Lisp2_HeadVsArgumentNamespace(t *testing.T) {
 // (function f) is the #'f form: it yields the function-cell binding. funcall
 // applies a function value taken from value position.
 func TestDialect_Lisp2_FuncallAndFunctionRef(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -58,7 +58,7 @@ func TestDialect_Lisp1_FuncallAndFunctionUndefined(t *testing.T) {
 // Under Lisp-2 a macro is an operator, so defmacro binds the function cell and
 // head position dispatches it there.
 func TestDialect_Lisp2_MacroDispatchesFromFunctionCell(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -70,7 +70,7 @@ func TestDialect_Lisp2_MacroDispatchesFromFunctionCell(t *testing.T) {
 // Head-position resolution walks the scope chain, so a function defined in an
 // outer scope is callable from an inner one.
 func TestDialect_Lisp2_FunctionCellWalksScopeChain(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})))
 	require.NoError(t, err)
 	defer e.Close()
 
@@ -83,11 +83,11 @@ func TestDialect_Lisp2_FunctionCellWalksScopeChain(t *testing.T) {
 // at construction. Runtime Lisp-2 support (function cells) is implemented in
 // task 4.3; this test only pins that construction succeeds.
 func TestDialect_Lisp2_ConstructsBytecode(t *testing.T) {
-	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
+	e, err := New(nil, WithBytecode(), WithDialect(mustDialect(t, spec{Lisp2: true})))
 	require.NoError(t, err, "Lisp-2 + bytecode must construct successfully")
 	e.Close()
 
-	e, err = New(nil, WithDialect(core.FullDialect().Lisp2()))
+	e, err = New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})))
 	require.NoError(t, err)
 	defer e.Close()
 	got, err := e.Eval(context.Background(), "lisp2", "(do (defn id [x] x) (funcall (function id) 5))")

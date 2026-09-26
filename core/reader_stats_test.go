@@ -39,7 +39,7 @@ func TestReaderStats_Goldset(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, stats, err := FullDialect().ReadWithMaxDepthStats(string(src), defaultReaderDepth)
+			_, stats, err := Dialect{}.ReadWithMaxDepthStats(string(src), defaultReaderDepth)
 			if err != nil {
 				t.Fatalf("ReadWithMaxDepthStats: %v", err)
 			}
@@ -69,7 +69,7 @@ func TestReaderStats_Bench(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, stats, err := FullDialect().ReadWithMaxDepthStats(tt.src, defaultReaderDepth)
+			_, stats, err := Dialect{}.ReadWithMaxDepthStats(tt.src, defaultReaderDepth)
 			if err != nil {
 				t.Fatalf("ReadWithMaxDepthStats: %v", err)
 			}

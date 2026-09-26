@@ -245,24 +245,19 @@ func TestCL_SpecScenario_ReaderAffordances(t *testing.T) {
 	require.Error(t, err, "[1 2] must fail under CL")
 }
 
-// TestCL_Dialect_Memoized asserts that repeated cl.Dialect() calls are
-// stable and that Fingerprint() on the memoized value skips the SHA-256 hash
-// work an uncached Dialect repeats on every call. Allocation count, not
-// wall-clock, is the observation mechanism: a cache hit returns the
-// already-hashed string, while an uncached Fingerprint() allocates a new
-// hash.Hash and formats its inputs (including sorting the vocabulary keys)
-// every time.
-func TestCL_Dialect_Memoized(t *testing.T) {
-	memoized := cl.Dialect()
-	uncached := core.FullDialect().
-		Lisp2().
-		WithoutBracketLiterals().
-		WithFunctionRef().
-		WithReaderVector().
-		Add("defun", "defn").
-		Rename("set!", "setq").
-		Rename("do", "progn").
-		Vocabulary(map[string]string{
+// TestCL_Dialect_StockFingerprint asserts that cl.Dialect() fingerprints like
+// the equivalent spec-built dialect, stays stable across calls, and reads
+// the stored hash without allocating.
+func TestCL_Dialect_StockFingerprint(t *testing.T) {
+	stock := cl.Dialect()
+	built, err := core.NewDialect(core.DialectSpec{
+		Lisp2:        true,
+		NoBrackets:   true,
+		FunctionRef:  true,
+		ReaderVector: true,
+		Forms:        map[string]string{"defun": "defn", "setq": "set!", "progn": "do"},
+		Hide:         []string{"set!", "do"},
+		Vocab: map[string]string{
 			"car":     "first",
 			"cdr":     "rest",
 			"null":    "nil?",
@@ -273,22 +268,21 @@ func TestCL_Dialect_Memoized(t *testing.T) {
 			"reverse": "reverse",
 			"apply":   "apply",
 			"type":    "type",
-		}).
-		WithAdapter("nth", "cl/nth@1", noopFn("nth")).
-		WithAdapter("mapcar", "cl/mapcar@1", noopFn("mapcar")).
-		WithAdapter("sort", "cl/sort@1", noopFn("sort"))
-	require.Equal(t, memoized.Fingerprint(), uncached.Fingerprint(), "memoized and uncached Fingerprint() must agree")
-	assert.Equal(t, cl.Dialect().Fingerprint(), memoized.Fingerprint(), "repeated cl.Dialect() calls must produce the same fingerprint")
-
-	memoizedAllocs := testing.AllocsPerRun(50, func() {
-		_ = memoized.Fingerprint()
+		},
+		Adapters: map[string]core.Adapter{
+			"nth":    {ID: "cl/nth@1", Value: noopFn("nth")},
+			"mapcar": {ID: "cl/mapcar@1", Value: noopFn("mapcar")},
+			"sort":   {ID: "cl/sort@1", Value: noopFn("sort")},
+		},
 	})
-	uncachedAllocs := testing.AllocsPerRun(50, func() {
-		_ = uncached.Fingerprint()
-	})
+	require.NoError(t, err)
+	require.Equal(t, built.Fingerprint(), stock.Fingerprint(), "stock and spec-built Fingerprint() must agree")
+	assert.Equal(t, cl.Dialect().Fingerprint(), stock.Fingerprint(), "repeated cl.Dialect() calls must produce the same fingerprint")
 
-	t.Logf("memoized Fingerprint(): %.1f allocs/op, uncached Fingerprint(): %.1f allocs/op", memoizedAllocs, uncachedAllocs)
-	assert.Less(t, memoizedAllocs, uncachedAllocs, "Fingerprint() on a memoized Dialect must not redo the SHA-256 hash work")
+	allocs := testing.AllocsPerRun(50, func() {
+		_ = stock.Fingerprint()
+	})
+	assert.Zero(t, allocs, "Fingerprint() must return the stored hash")
 }
 
 // TestCL_ConcurrentEnginesCorpusParity builds engines from cl.Dialect()

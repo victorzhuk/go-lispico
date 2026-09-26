@@ -1203,7 +1203,7 @@ func parseParams(params Vector) (fixed []Symbol, variadic Symbol, err error) {
 // as a slice. It is the identity-dialect reader; callers that run a specific
 // Dialect read through [Dialect.Read].
 func Read(src string) ([]Value, error) {
-	return FullDialect().Read(src)
+	return Dialect{}.Read(src)
 }
 
 // ReadOne parses the first form from src.

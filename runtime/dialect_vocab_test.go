@@ -13,7 +13,7 @@ import (
 )
 
 func TestDialectVocab_RenamedBuiltinResolvesToSharedImpl(t *testing.T) {
-	d := core.FullDialect().Vocabulary(map[string]string{"car": "first"})
+	d := mustDialect(t, spec{Vocab: map[string]string{"car": "first"}})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
@@ -26,11 +26,11 @@ func TestDialectVocab_RenamedBuiltinResolvesToSharedImpl(t *testing.T) {
 }
 
 func TestDialectVocab_EmptyBaseOmitsUnlistedBuiltin(t *testing.T) {
-	d := core.EmptyDialect().
-		Add("if", "if").
-		Add("quote", "quote").
-		Add("def", "def").
-		Vocabulary(map[string]string{"first": "first"})
+	d := mustDialect(t, spec{
+		Base:  core.BaseEmpty,
+		Forms: map[string]string{"if": "if", "quote": "quote", "def": "def"},
+		Vocab: map[string]string{"first": "first"},
+	})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
@@ -54,10 +54,11 @@ func TestDialectVocab_EmptyBaseOmitsUnlistedBuiltin(t *testing.T) {
 // absent from the allowlist. The canonical's GoFunc is not in the env after
 // the allowlist pass, so the rename must use the pre-strip snapshot.
 func TestDialectVocab_EmptyBaseRenameResolvesThroughSnapshot(t *testing.T) {
-	d := core.EmptyDialect().
-		Add("if", "if").
-		Add("quote", "quote").
-		Vocabulary(map[string]string{"car": "first"})
+	d := mustDialect(t, spec{
+		Base:  core.BaseEmpty,
+		Forms: map[string]string{"if": "if", "quote": "quote"},
+		Vocab: map[string]string{"car": "first"},
+	})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
@@ -76,11 +77,11 @@ func TestDialectVocab_EmptyBaseRenameResolvesThroughSnapshot(t *testing.T) {
 // vocabulary that omits it strips the binding, where the former Lisp
 // definition survived the strip.
 func TestDialectVocab_EmptyBaseOmitsGetIn(t *testing.T) {
-	d := core.EmptyDialect().
-		Add("if", "if").
-		Add("quote", "quote").
-		Add("def", "def").
-		Vocabulary(map[string]string{"first": "first"})
+	d := mustDialect(t, spec{
+		Base:  core.BaseEmpty,
+		Forms: map[string]string{"if": "if", "quote": "quote", "def": "def"},
+		Vocab: map[string]string{"first": "first"},
+	})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
@@ -104,16 +105,16 @@ func TestDialectVocab_EmptyBaseOmitsGetIn(t *testing.T) {
 // lookup runs under a vocabulary that omits every name its former Lisp
 // definition needed.
 func TestDialectVocab_EmptyBaseAllowlistedGetInResolvesToSharedBuiltin(t *testing.T) {
-	d := core.EmptyDialect().
-		Add("if", "if").
-		Add("quote", "quote").
-		Add("def", "def").
-		Vocabulary(map[string]string{
+	d := mustDialect(t, spec{
+		Base:  core.BaseEmpty,
+		Forms: map[string]string{"if": "if", "quote": "quote", "def": "def"},
+		Vocab: map[string]string{
 			"first":    "first",
 			"get-in":   "get-in",
 			"hash-map": "hash-map",
 			"list":     "list",
-		})
+		},
+	})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
@@ -146,7 +147,7 @@ func TestDialectVocab_AdapterResolvesToSharedImpl(t *testing.T) {
 		},
 	}
 
-	d := core.FullDialect().WithAdapter("rev-first", "rev-first@1", adapter)
+	d := mustDialect(t, spec{Adapters: map[string]core.Adapter{"rev-first": {ID: "rev-first@1", Value: adapter}}})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()
@@ -169,7 +170,7 @@ func TestDialectVocab_AdapterResolvesToSharedImpl(t *testing.T) {
 }
 
 func TestDialectVocab_ReturnedMapCannotWidenAllowlist(t *testing.T) {
-	d := core.EmptyDialect().Add("if", "if").Vocabulary(map[string]string{"+": "+"})
+	d := mustDialect(t, spec{Base: core.BaseEmpty, Forms: map[string]string{"if": "if"}, Vocab: map[string]string{"+": "+"}})
 	d.Vocab()["first"] = core.VocabEntry{Canonical: "first"}
 
 	e, err := New(nil, WithDialect(d))

@@ -298,7 +298,7 @@ func TestUseFailedVocabularyRestoresOwnedBindings(t *testing.T) {
 	t.Parallel()
 
 	const slotLimit = 16
-	dialect := core.FullDialect().Vocabulary(map[string]string{"vr-visible": "vr-canon"})
+	dialect := mustDialect(t, spec{Vocab: map[string]string{"vr-visible": "vr-canon"}})
 	eng, err := New(nil, WithDialect(dialect), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: slotLimit}))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = eng.Close() })

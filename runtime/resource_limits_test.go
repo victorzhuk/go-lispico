@@ -343,7 +343,7 @@ func TestLimits_RetainedSlotCeilingFailsClosed(t *testing.T) {
 }
 
 func TestLimits_Lisp2BindRollbackOnFuncCellLimit(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -361,7 +361,7 @@ func TestLimits_Lisp2BindRollbackOnFuncCellLimit(t *testing.T) {
 }
 
 func TestLimits_Lisp2LoadScopeBindingRollbackOnFuncCellLimit(t *testing.T) {
-	e, err := New(nil, WithDialect(core.FullDialect().Lisp2()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	e, err := New(nil, WithDialect(mustDialect(t, spec{Lisp2: true})), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 
@@ -380,7 +380,7 @@ func TestLimits_Lisp2LoadScopeBindingRollbackOnFuncCellLimit(t *testing.T) {
 }
 
 func TestLimits_Lisp2LazyMaterializeRollbackOnFuncCellLimit(t *testing.T) {
-	e, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
+	e, err := New(nil, WithBytecode(), WithDialect(mustDialect(t, spec{Lisp2: true})), WithResourceLimits(ResourceLimits{MaxRetainedSlotsPerEnv: 1}))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 	require.NoError(t, e.Use(stdlib.New()))

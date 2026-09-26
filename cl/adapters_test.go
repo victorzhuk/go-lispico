@@ -376,7 +376,7 @@ func TestCLSort_Immutability(t *testing.T) {
 // TestCLAdapters_CanonicalParity: the CL adapters and the canonical stdlib
 // names share one kernel — same inputs through each produce the same result.
 func TestCLAdapters_CanonicalParity(t *testing.T) {
-	canonical, err := runtime.New(nil, runtime.WithDialect(core.FullDialect()))
+	canonical, err := runtime.New(nil, runtime.WithDialect(core.Dialect{}))
 	require.NoError(t, err)
 	defer canonical.Close()
 	require.NoError(t, canonical.Use(stdlib.New()))

@@ -129,8 +129,8 @@ func TestStdlibLazyBootstrap_UsesInstalledOwnerCellFirstTouch(t *testing.T) {
 	}{
 		{axis: "lisp1", d: clojure.Dialect(), funcNS: false, lookupFound: true},
 		{axis: "lisp1", d: clojure.Dialect(), funcNS: true, lookupFound: false},
-		{axis: "lisp2", d: core.FullDialect().Lisp2(), funcNS: false, lookupFound: false},
-		{axis: "lisp2", d: core.FullDialect().Lisp2(), funcNS: true, lookupFound: true},
+		{axis: "lisp2", d: mustDialect(t, spec{Lisp2: true}), funcNS: false, lookupFound: false},
+		{axis: "lisp2", d: mustDialect(t, spec{Lisp2: true}), funcNS: true, lookupFound: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.axis+"_first_touch_"+map[bool]string{false: "value", true: "func"}[tc.funcNS]+"_position", func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestStdlibLazyBootstrap_DivergentOwnerAxis(t *testing.T) {
 	t.Run("lisp2_engine_lisp1_owner_value_cell_only", func(t *testing.T) {
 		t.Parallel()
 
-		eng, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
+		eng, err := New(nil, WithBytecode(), WithDialect(mustDialect(t, spec{Lisp2: true})))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = eng.Close() })
 		ownerEng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
@@ -208,7 +208,7 @@ func TestStdlibLazyBootstrap_DivergentOwnerAxis(t *testing.T) {
 		eng, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = eng.Close() })
-		ownerEng, err := New(nil, WithBytecode(), WithDialect(core.FullDialect().Lisp2()))
+		ownerEng, err := New(nil, WithBytecode(), WithDialect(mustDialect(t, spec{Lisp2: true})))
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = ownerEng.Close() })
 

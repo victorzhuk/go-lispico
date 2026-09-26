@@ -58,14 +58,10 @@ func NewEvaluator() *engine {
 }
 
 // NewEvaluatorWithDialect constructs a tree-walking evaluator whose special
-// forms are the resolved effective table of d. It fails if d references a
-// canonical form absent from the kernel.
+// forms are the resolved effective table of d. A Dialect is validated when
+// NewDialect builds it, so the error is always nil.
 func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
-	forms, err := d.resolve()
-	if err != nil {
-		return nil, err
-	}
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: forms, truthy: d.isTruthy, lisp2: d.isLisp2(), dialect: d}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: d.resolve(), truthy: d.isTruthy, lisp2: d.isLisp2(), dialect: d}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -1286,7 +1282,6 @@ func (e *engine) expandDeepFrom(ctx context.Context, items []Value, env *Env, lo
 	}
 	return NewList(out), nil
 }
-
 
 func (e *engine) expandDeepLet(ctx context.Context, items []Value, env *Env, locals []string, depth int) (Value, error) {
 	if len(items) < 2 {

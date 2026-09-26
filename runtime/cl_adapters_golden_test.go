@@ -21,10 +21,11 @@ import (
 // disables the allowlist strip entirely.
 
 func TestCLAdapters_EmptyBaseNoAdapters(t *testing.T) {
-	d := core.EmptyDialect().
-		Add("if", "if").
-		Add("quote", "quote").
-		Vocabulary(map[string]string{"first": "first"})
+	d := mustDialect(t, spec{
+		Base:  core.BaseEmpty,
+		Forms: map[string]string{"if": "if", "quote": "quote"},
+		Vocab: map[string]string{"first": "first"},
+	})
 	e, err := New(nil, WithDialect(d))
 	require.NoError(t, err)
 	defer e.Close()

@@ -57,7 +57,7 @@ func flatFormBytes(children int) int64 {
 // instead of a node count re-derived by hand in every case.
 func outputBytes(t *testing.T, src string) int64 {
 	t.Helper()
-	_, stats, err := FullDialect().ReadWithMaxDepthStats(src, 0)
+	_, stats, err := Dialect{}.ReadWithMaxDepthStats(src, 0)
 	if err != nil {
 		t.Fatalf("context-free read of %d bytes failed: %v", len(src), err)
 	}
@@ -85,7 +85,7 @@ func readOwnedScratch(ctx context.Context, s *readerScratch, src string) ([]Valu
 	if err := s.budget.checkpoint(); err != nil {
 		return nil, ReaderStats{}, err
 	}
-	return s.read(src, FullDialect().readerFlags(), 0)
+	return s.read(src, Dialect{}.readerFlags(), 0)
 }
 
 func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
@@ -95,7 +95,7 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 	t.Run("wide-flat-form/rejected-before-the-token-slice", func(t *testing.T) {
 		ctx, meter := allocCeilingContext(1024)
 
-		_, _, err := readContextStats(ctx, FullDialect(), wide, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, wide, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read of a %d-token flat form needing %d bytes under a 1024-byte ceiling returned %v (code %q), want a %s",
 				wideTokens, planBytes(wideTokens), err, code, CodeResourceLimit)
@@ -109,7 +109,7 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		src := strings.Repeat("; note about the form\n", 3000) + "(a)"
 		ctx, meter := allocCeilingContext(1024)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), src, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, src, 0)
 		if err != nil {
 			t.Fatalf("read of 4 tokens behind %d bytes of trivia failed: %v", len(src), err)
 		}
@@ -126,7 +126,7 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		src := strings.Repeat("s", symbolBytes)
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), src, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, src, 0)
 		if err != nil {
 			t.Fatalf("read of one %d-byte symbol failed: %v", len(src), err)
 		}
@@ -140,7 +140,7 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		}
 
 		wideCtx, wideMeter := allocCeilingContext(DefaultMaxAllocationBytes)
-		if _, _, err := readContextStats(wideCtx, FullDialect(), strings.Repeat("s", 2*symbolBytes), 0); err != nil {
+		if _, _, err := readContextStats(wideCtx, Dialect{}, strings.Repeat("s", 2*symbolBytes), 0); err != nil {
 			t.Fatalf("read of one %d-byte symbol failed: %v", 2*symbolBytes, err)
 		}
 		if got, want := admittedBytes(wideMeter)-narrow, int64(symbolBytes); got != want {
@@ -152,7 +152,7 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		want := planBytes(6) + flatFormBytes(3) + outputBytes(t, "(a b c)")
 		ctx, meter := allocCeilingContext(want)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), "(a b c)", 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, "(a b c)", 0)
 		if err != nil {
 			t.Fatalf("read under a ceiling of exactly %d bytes failed: %v", want, err)
 		}
@@ -168,7 +168,7 @@ func TestGuardedRead_TokenPlanAdmission(t *testing.T) {
 		want := planBytes(6) + flatFormBytes(3) + outputBytes(t, "(a b c)")
 		ctx, _ := allocCeilingContext(want - 1)
 
-		_, _, err := readContextStats(ctx, FullDialect(), "(a b c)", 0)
+		_, _, err := readContextStats(ctx, Dialect{}, "(a b c)", 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read of a %d-byte plan and construction under a %d-byte ceiling returned %v (code %q), want a %s",
 				want, want-1, err, code, CodeResourceLimit)
@@ -221,13 +221,13 @@ func TestGuardedRead_MalformedSuffixAdmission(t *testing.T) {
 	const malformed = "1.2.3"
 	src := "(a b c) " + malformed
 
-	_, _, legacyErr := FullDialect().ReadWithMaxDepthStats(src, 0)
+	_, _, legacyErr := Dialect{}.ReadWithMaxDepthStats(src, 0)
 	if legacyErr == nil {
 		t.Fatalf("legacy read of %q succeeded, want a read error on the malformed suffix", src)
 	}
 
 	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
-	_, _, err := readContextStats(ctx, FullDialect(), src, 0)
+	_, _, err := readContextStats(ctx, Dialect{}, src, 0)
 	if got, want := readErrorCode(err), readErrorCode(legacyErr); got != want {
 		t.Fatalf("guarded read returned %v (code %q), want the legacy code %q", err, got, want)
 	}
@@ -250,7 +250,7 @@ func TestGuardedRead_FailedConversionKeepsItsNodeCharge(t *testing.T) {
 	)
 
 	ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
-	_, _, err := readContextStats(ctx, FullDialect(), prefix+" "+malformed, 0)
+	_, _, err := readContextStats(ctx, Dialect{}, prefix+" "+malformed, 0)
 	if err == nil {
 		t.Fatalf("read of %q succeeded, want a read error on the malformed suffix", prefix+" "+malformed)
 	}
@@ -268,7 +268,7 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 	t.Run("reserves-the-payload-before-decoding", func(t *testing.T) {
 		ctx, meter := allocCeilingContext(1024)
 
-		_, _, err := readContextStats(ctx, FullDialect(), escaped, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, escaped, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read of a 10001-byte decoded payload under a 1024-byte ceiling returned %v (code %q), want a %s", err, code, CodeResourceLimit)
 		}
@@ -281,7 +281,7 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 		const decoded = "a\nb"
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), `"a\nb"`, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, `"a\nb"`, 0)
 		if err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
@@ -298,7 +298,7 @@ func TestGuardedRead_EscapedPayloadAdmission(t *testing.T) {
 	t.Run("zero-copy-payload-gains-no-copy-charge", func(t *testing.T) {
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), `"ab"`, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, `"ab"`, 0)
 		if err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
@@ -320,7 +320,7 @@ func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 	t.Run("charges-the-temporary-on-success", func(t *testing.T) {
 		ctx, meter := allocCeilingContext(DefaultMaxAllocationBytes)
 
-		forms, _, err := readContextStats(ctx, FullDialect(), src, 0)
+		forms, _, err := readContextStats(ctx, Dialect{}, src, 0)
 		if err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
@@ -335,7 +335,7 @@ func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 	t.Run("exact-ceiling-admits", func(t *testing.T) {
 		ctx, _ := allocCeilingContext(want)
 
-		if _, _, err := readContextStats(ctx, FullDialect(), src, 0); err != nil {
+		if _, _, err := readContextStats(ctx, Dialect{}, src, 0); err != nil {
 			t.Fatalf("read under a ceiling of exactly %d bytes failed: %v", want, err)
 		}
 	})
@@ -343,7 +343,7 @@ func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 	t.Run("one-byte-below-rejects", func(t *testing.T) {
 		ctx, _ := allocCeilingContext(want - 1)
 
-		_, _, err := readContextStats(ctx, FullDialect(), src, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, src, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read needing %d bytes under a %d-byte ceiling returned %v (code %q), want a %s", want, want-1, err, code, CodeResourceLimit)
 		}
@@ -353,7 +353,7 @@ func TestGuardedRead_NumericConversionStorage(t *testing.T) {
 		long := strings.Repeat("9", 400)
 		ctx, _ := allocCeilingContext(1024)
 
-		_, _, err := readContextStats(ctx, FullDialect(), long, 0)
+		_, _, err := readContextStats(ctx, Dialect{}, long, 0)
 		if code := readErrorCode(err); code != CodeResourceLimit {
 			t.Fatalf("read of a %d-digit overflowing number needing %d bytes under a 1024-byte ceiling returned %v (code %q), want a %s before conversion",
 				len(long), conversionBytes(int64(len(long))), err, code, CodeResourceLimit)
@@ -429,7 +429,7 @@ func TestReaderPlanArithmetic_RefusesOverflow(t *testing.T) {
 func TestGuardedRead_InvalidNumberDiagnosticIsBounded(t *testing.T) {
 	tok := strings.Repeat("9", 300)
 
-	_, _, legacyErr := FullDialect().ReadWithMaxDepthStats(tok, 0)
+	_, _, legacyErr := Dialect{}.ReadWithMaxDepthStats(tok, 0)
 	var legacy *LispicoError
 	if !errors.As(legacyErr, &legacy) {
 		t.Fatalf("legacy read returned %v, want a *LispicoError", legacyErr)
@@ -439,7 +439,7 @@ func TestGuardedRead_InvalidNumberDiagnosticIsBounded(t *testing.T) {
 	}
 
 	ctx, _ := allocCeilingContext(DefaultMaxAllocationBytes)
-	_, _, err := readContextStats(ctx, FullDialect(), tok, 0)
+	_, _, err := readContextStats(ctx, Dialect{}, tok, 0)
 	var got *LispicoError
 	if !errors.As(err, &got) {
 		t.Fatalf("guarded read returned %v, want a *LispicoError", err)

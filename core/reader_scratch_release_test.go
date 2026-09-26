@@ -20,7 +20,7 @@ func guardedScratchRead(ctx context.Context, s *readerScratch, src string) ([]Va
 	if err := s.budget.checkpoint(); err != nil {
 		return nil, err
 	}
-	forms, _, err := s.read(src, FullDialect().readerFlags(), 0)
+	forms, _, err := s.read(src, Dialect{}.readerFlags(), 0)
 	return forms, err
 }
 
@@ -259,8 +259,8 @@ func TestGuardedRead_RetainedASTSurvivesScratchReuse(t *testing.T) {
 }
 
 func TestGuardedRead_ConcurrentCrossDialectReads(t *testing.T) {
-	withBrackets := FullDialect()
-	withoutBrackets := FullDialect().WithoutBracketLiterals()
+	withBrackets := Dialect{}
+	withoutBrackets := mustDialect(t, spec{NoBrackets: true})
 	wide := "(" + strings.Repeat("a ", 400) + ")"
 
 	const iterations = 200

@@ -8,17 +8,16 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
-// TestNew_RejectsEmptyAdapterID asserts engine construction refuses a dialect
-// whose adapter entry carries no semantic ID, at New before any plugin load.
-func TestNew_RejectsEmptyAdapterID(t *testing.T) {
+// TestDialect_RejectsEmptyAdapterID asserts NewDialect refuses an adapter
+// that carries no semantic ID, so no engine can be built from it.
+func TestDialect_RejectsEmptyAdapterID(t *testing.T) {
 	noop := core.GoFunc{
 		Name: "x-noop",
 		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
 			return nil, nil
 		},
 	}
-	d := core.FullDialect().WithAdapter("x", "", noop)
-	_, err := New(nil, WithDialect(d))
-	require.Error(t, err, "New must reject a dialect adapter entry whose AdapterID is empty")
+	_, err := core.NewDialect(spec{Adapters: map[string]core.Adapter{"x": {ID: "", Value: noop}}})
+	require.Error(t, err, "NewDialect must reject an adapter whose ID is empty")
 	require.ErrorContains(t, err, "has no semantic ID")
 }

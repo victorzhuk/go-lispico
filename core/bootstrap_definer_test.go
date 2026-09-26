@@ -80,7 +80,7 @@ var bootstrapCorpus = []struct {
 
 func TestDefineBootstrap_AcceptsSingleDefnOrDefmacro(t *testing.T) {
 	ctx := context.Background()
-	eng, err := NewEvaluatorWithDialect(FullDialect())
+	eng, err := NewEvaluatorWithDialect(Dialect{})
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestDefineBootstrap_RejectsNonDefinitionForms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			eng, err := NewEvaluatorWithDialect(FullDialect())
+			eng, err := NewEvaluatorWithDialect(Dialect{})
 			if err != nil {
 				t.Fatalf("engine: %v", err)
 			}
@@ -163,7 +163,7 @@ func TestDefineBootstrap_RejectsBeforeEvaluation(t *testing.T) {
 		"()",
 		`(def x 1)`,
 	}
-	eng, err := NewEvaluatorWithDialect(FullDialect())
+	eng, err := NewEvaluatorWithDialect(Dialect{})
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
@@ -186,11 +186,11 @@ func TestDefineBootstrap_RejectsBeforeEvaluation(t *testing.T) {
 	}
 }
 
-func TestDefineBootstrap_FullKernelDispatchUnderEmptyDialect(t *testing.T) {
+func TestDefineBootstrap_FullKernelDispatchUnderEmptyBase(t *testing.T) {
 	ctx := context.Background()
 	for _, entry := range bootstrapCorpus {
 		t.Run(entry.name, func(t *testing.T) {
-			eng, err := NewEvaluatorWithDialect(EmptyDialect())
+			eng, err := NewEvaluatorWithDialect(mustDialect(t, spec{Base: BaseEmpty}))
 			if err != nil {
 				t.Fatalf("engine: %v", err)
 			}
@@ -202,7 +202,7 @@ func TestDefineBootstrap_FullKernelDispatchUnderEmptyDialect(t *testing.T) {
 				t.Fatalf("read sanity form: %v", err)
 			}
 			if _, err := eng.Eval(ctx, sanity[0], env); err == nil {
-				t.Fatalf("EmptyDialect engine evaluated defmacro; owner limits are not in force")
+				t.Fatalf("empty-base engine evaluated defmacro; owner limits are not in force")
 			}
 
 			if _, err := eng.DefineBootstrap(ctx, entry.source, env); err != nil {
@@ -222,7 +222,7 @@ func TestDefineBootstrap_FullKernelDispatchUnderEmptyDialect(t *testing.T) {
 
 func TestDefineBootstrap_CLBracketSyntaxLoads(t *testing.T) {
 	ctx := context.Background()
-	d := FullDialect().WithoutBracketLiterals()
+	d := mustDialect(t, spec{NoBrackets: true})
 	eng, err := NewEvaluatorWithDialect(d)
 	if err != nil {
 		t.Fatalf("engine: %v", err)
@@ -232,11 +232,11 @@ func TestDefineBootstrap_CLBracketSyntaxLoads(t *testing.T) {
 
 	// Sanity: the owner's own reader flags reject bracket syntax.
 	if _, err := d.Read(src); err == nil {
-		t.Fatalf("owner dialect read bracket source without error; WithoutBracketLiterals is not in force")
+		t.Fatalf("owner dialect read bracket source without error; NoBrackets is not in force")
 	}
 
 	if _, err := eng.DefineBootstrap(ctx, src, env); err != nil {
-		t.Fatalf("DefineBootstrap with bracket params under WithoutBracketLiterals owner: %v", err)
+		t.Fatalf("DefineBootstrap with bracket params under a NoBrackets owner: %v", err)
 	}
 	got, ok := env.Get("w")
 	if !ok {
@@ -250,7 +250,7 @@ func TestDefineBootstrap_CLBracketSyntaxLoads(t *testing.T) {
 
 func TestDefineBootstrap_Lisp2BindsFunctionCellOnly(t *testing.T) {
 	ctx := context.Background()
-	eng, err := NewEvaluatorWithDialect(FullDialect().Lisp2())
+	eng, err := NewEvaluatorWithDialect(mustDialect(t, spec{Lisp2: true}))
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestDefineBootstrap_Lisp2BindsFunctionCellOnly(t *testing.T) {
 
 func TestDefineBootstrap_Lisp1BindsValueCellOnly(t *testing.T) {
 	ctx := context.Background()
-	eng, err := NewEvaluatorWithDialect(FullDialect())
+	eng, err := NewEvaluatorWithDialect(Dialect{})
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestDefineBootstrap_Lisp1BindsValueCellOnly(t *testing.T) {
 
 func TestDefineBootstrap_DoesNotWidenDialectForms(t *testing.T) {
 	ctx := context.Background()
-	eng, err := NewEvaluatorWithDialect(EmptyDialect())
+	eng, err := NewEvaluatorWithDialect(mustDialect(t, spec{Base: BaseEmpty}))
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
