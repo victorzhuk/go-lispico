@@ -137,20 +137,20 @@ func TestNewDialect_SpecMutationDoesNotLeak(t *testing.T) {
 	}
 
 	names := []struct {
-		name               string
-		canonical          string
-		removed, isPresent bool
+		name      string
+		canonical string
+		isPresent bool
 	}{
 		{name: "progn", canonical: "do", isPresent: true},
-		{name: "do", removed: true, isPresent: true},
+		{name: "do"},
 		{name: "if", canonical: "if", isPresent: true},
 		{name: "begin"},
 	}
 	for _, tt := range names {
-		canonical, removed, ok := d.CanonicalName(tt.name)
-		if canonical != tt.canonical || removed != tt.removed || ok != tt.isPresent {
-			t.Errorf("CanonicalName(%q) = (%q, %v, %v) after caller mutation, want (%q, %v, %v)",
-				tt.name, canonical, removed, ok, tt.canonical, tt.removed, tt.isPresent)
+		canonical, ok := d.CanonicalName(tt.name)
+		if canonical != tt.canonical || ok != tt.isPresent {
+			t.Errorf("CanonicalName(%q) = (%q, %v) after caller mutation, want (%q, %v)",
+				tt.name, canonical, ok, tt.canonical, tt.isPresent)
 		}
 	}
 
@@ -162,11 +162,11 @@ func TestNewDialect_SpecMutationDoesNotLeak(t *testing.T) {
 func TestNewDialect_RenameThroughSpec(t *testing.T) {
 	d := mustDialect(t, spec{Forms: map[string]string{"si": "if"}, Hide: []string{"if"}})
 
-	if canonical, removed, ok := d.CanonicalName("si"); canonical != "if" || removed || !ok {
-		t.Errorf(`CanonicalName("si") = (%q, %v, %v), want ("if", false, true)`, canonical, removed, ok)
+	if canonical, ok := d.CanonicalName("si"); canonical != "if" || !ok {
+		t.Errorf(`CanonicalName("si") = (%q, %v), want ("if", true)`, canonical, ok)
 	}
-	if canonical, removed, ok := d.CanonicalName("if"); canonical != "" || !removed || !ok {
-		t.Errorf(`CanonicalName("if") = (%q, %v, %v), want ("", true, true)`, canonical, removed, ok)
+	if canonical, ok := d.CanonicalName("if"); canonical != "" || ok {
+		t.Errorf(`CanonicalName("if") = (%q, %v), want ("", false)`, canonical, ok)
 	}
 
 	e, err := NewEvaluatorWithDialect(d)
@@ -188,8 +188,8 @@ func TestNewDialect_RenameThroughSpec(t *testing.T) {
 func TestNewDialect_RemovalMakesFormUncallable(t *testing.T) {
 	d := mustDialect(t, spec{Hide: []string{"when"}})
 
-	if canonical, removed, ok := d.CanonicalName("when"); canonical != "" || !removed || !ok {
-		t.Errorf(`CanonicalName("when") = (%q, %v, %v), want ("", true, true)`, canonical, removed, ok)
+	if canonical, ok := d.CanonicalName("when"); canonical != "" || ok {
+		t.Errorf(`CanonicalName("when") = (%q, %v), want ("", false)`, canonical, ok)
 	}
 
 	e, err := NewEvaluatorWithDialect(d)
@@ -210,8 +210,8 @@ func TestNewDialect_EmptyBaseExposesOnlySpecifiedForms(t *testing.T) {
 	if !d.IsBaseEmpty() {
 		t.Error("IsBaseEmpty() = false, want true")
 	}
-	if canonical, removed, ok := d.CanonicalName("def"); canonical != "" || removed || ok {
-		t.Errorf(`CanonicalName("def") = (%q, %v, %v), want ("", false, false)`, canonical, removed, ok)
+	if canonical, ok := d.CanonicalName("def"); canonical != "" || ok {
+		t.Errorf(`CanonicalName("def") = (%q, %v), want ("", false)`, canonical, ok)
 	}
 
 	e, err := NewEvaluatorWithDialect(d)
@@ -316,8 +316,8 @@ func TestNewDialect_FrozenAxesAndVocabulary(t *testing.T) {
 
 	t.Run("duplicate hide", func(t *testing.T) {
 		d := mustDialect(t, spec{Hide: []string{"when", "when"}})
-		if canonical, removed, ok := d.CanonicalName("when"); canonical != "" || !removed || !ok {
-			t.Errorf(`CanonicalName("when") = (%q, %v, %v), want ("", true, true)`, canonical, removed, ok)
+		if canonical, ok := d.CanonicalName("when"); canonical != "" || ok {
+			t.Errorf(`CanonicalName("when") = (%q, %v), want ("", false)`, canonical, ok)
 		}
 	})
 }
@@ -330,7 +330,7 @@ func TestNewDialect_AccessorsDoNotAllocate(t *testing.T) {
 		fn   func()
 	}{
 		{name: "Fingerprint", fn: func() { _ = d.Fingerprint() }},
-		{name: "CanonicalName", fn: func() { _, _, _ = d.CanonicalName("setq") }},
+		{name: "CanonicalName", fn: func() { _, _ = d.CanonicalName("setq") }},
 		{name: "IsLisp2", fn: func() { _ = d.IsLisp2() }},
 		{name: "VocabEntry", fn: func() { _, _ = d.VocabEntry("car") }},
 	}

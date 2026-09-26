@@ -238,10 +238,7 @@ func (c *Compiler) compileList(f core.List) error {
 		canonicalName := head.V
 		isSpecial := true
 		if c.dialect != nil {
-			canonical, removed, ok := c.dialect.CanonicalName(head.V)
-			if removed {
-				return compileErrf("compile: undefined form %q", head.V)
-			}
+			canonical, ok := c.dialect.CanonicalName(head.V)
 			if ok {
 				canonicalName = canonical
 			}

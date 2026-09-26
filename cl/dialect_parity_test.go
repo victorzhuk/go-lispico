@@ -14,7 +14,6 @@ import (
 type canonicalGolden struct {
 	name      string
 	canonical string
-	removed   bool
 	ok        bool
 }
 
@@ -30,10 +29,10 @@ func TestCL_StockFormTable(t *testing.T) {
 			{name: "fn", canonical: "fn", ok: true},
 			{name: "let", canonical: "let", ok: true},
 			{name: "let*", canonical: "let*", ok: true},
-			{name: "do", removed: true, ok: true},
+			{name: "do"},
 			{name: "quote", canonical: "quote", ok: true},
 			{name: "quasiquote", canonical: "quasiquote", ok: true},
-			{name: "set!", removed: true, ok: true},
+			{name: "set!"},
 			{name: "when", canonical: "when", ok: true},
 			{name: "cond", canonical: "cond", ok: true},
 			{name: "loop", canonical: "loop", ok: true},
@@ -53,8 +52,8 @@ func TestCL_StockFormTable(t *testing.T) {
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
-				canonical, removed, ok := d.CanonicalName(tc.name)
-				assert.Equal(t, tc, canonicalGolden{name: tc.name, canonical: canonical, removed: removed, ok: ok})
+				canonical, ok := d.CanonicalName(tc.name)
+				assert.Equal(t, tc, canonicalGolden{name: tc.name, canonical: canonical, ok: ok})
 			})
 		}
 	})

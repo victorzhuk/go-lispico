@@ -77,11 +77,11 @@ func TestDialect_ZeroValueEngineIsIdentity(t *testing.T) {
 		"quasiquote", "set!", "when", "cond", "loop", "recur", "try", "catch",
 		"throw", "and", "or", "not",
 	} {
-		canonical, removed, ok := d.CanonicalName(name)
-		assert.True(t, ok && !removed && canonical == name, "CanonicalName(%q) = (%q, %v, %v)", name, canonical, removed, ok)
+		canonical, ok := d.CanonicalName(name)
+		assert.True(t, ok && canonical == name, "CanonicalName(%q) = (%q, %v)", name, canonical, ok)
 	}
 	for _, name := range []string{"defun", "setq", "progn", "funcall", "function"} {
-		_, _, ok := d.CanonicalName(name)
+		_, ok := d.CanonicalName(name)
 		assert.False(t, ok, "CanonicalName(%q) must be unknown", name)
 	}
 }

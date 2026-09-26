@@ -1106,12 +1106,7 @@ func (e *engine) expandDeepList(ctx context.Context, v List, env *Env, locals []
 	canonical := ""
 	special := false
 	if isSym {
-		c, removed, ok := e.dialect.CanonicalName(head.V)
-		if removed {
-			// compileList refuses a removed form outright; leave the shape
-			// alone so the error surfaces from the same place either way.
-			return v, nil
-		}
+		c, ok := e.dialect.CanonicalName(head.V)
 		special = ok
 		canonical = c
 		if !special {

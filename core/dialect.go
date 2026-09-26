@@ -279,7 +279,7 @@ func freeze(spec DialectSpec, hide []string) *dialectState {
 	}
 	for _, name := range hide {
 		delete(st.table, name)
-		st.canon[name] = ""
+		delete(st.canon, name)
 	}
 	for name, canonical := range spec.Forms {
 		st.table[name] = kernel[canonical]
@@ -369,9 +369,6 @@ func (st *dialectState) fingerprint() string {
 	fmt.Fprintf(h, "dialect/2|base=%d|ns=%d|brackets=%d|funcRef=%d|readerVec=%d|cond=%d",
 		st.base, st.ns, st.brackets, st.funcRef, st.readerVec, st.cond)
 	for _, name := range slices.Sorted(maps.Keys(st.canon)) {
-		if st.canon[name] == "" {
-			continue
-		}
 		fmt.Fprint(h, "|f")
 		writeField(h, name)
 		writeField(h, st.canon[name])
@@ -451,15 +448,12 @@ func (d Dialect) VocabEntry(name string) (VocabEntry, bool) {
 // CanonicalName maps a visible special-form name to its canonical kernel name
 // under this Dialect if the name is a known special form (possibly renamed).
 // It returns:
-//   - canonical, false, true if the name is a known special form (possibly renamed)
-//   - "", true, true if the name was removed from this dialect's dispatch table
-//   - "", false, false if the name is not a special form at all in this dialect
-func (d Dialect) CanonicalName(name string) (canonical string, removed bool, ok bool) {
+//   - canonical, true if the name is a known special form (possibly renamed)
+//   - "", false if the name is not special in this dialect, including names
+//     that were removed (hidden) or are not special forms at all
+func (d Dialect) CanonicalName(name string) (canonical string, ok bool) {
 	c, ok := d.state().canon[name]
-	if !ok {
-		return "", false, false
-	}
-	return c, c == "", true
+	return c, ok
 }
 
 // TruthyFunc returns the predicate used by dialect-specific conditional evaluation.

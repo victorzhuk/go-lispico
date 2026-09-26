@@ -15,7 +15,6 @@ import (
 type canonicalGolden struct {
 	name      string
 	canonical string
-	removed   bool
 	ok        bool
 }
 
@@ -37,8 +36,8 @@ func TestClojure_StockFormTable(t *testing.T) {
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
-				canonical, removed, ok := d.CanonicalName(tc.name)
-				assert.Equal(t, tc, canonicalGolden{name: tc.name, canonical: canonical, removed: removed, ok: ok})
+				canonical, ok := d.CanonicalName(tc.name)
+				assert.Equal(t, tc, canonicalGolden{name: tc.name, canonical: canonical, ok: ok})
 			})
 		}
 	})
