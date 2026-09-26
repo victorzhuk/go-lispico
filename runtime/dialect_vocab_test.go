@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -165,4 +166,24 @@ func TestDialectVocab_AdapterResolvesToSharedImpl(t *testing.T) {
 	got, err := e.Eval(context.Background(), "rev", "(rev-first 99 '(10 20 30))")
 	require.NoError(t, err)
 	assert.True(t, core.Int{V: 10}.Equals(got), "adapter must delegate to the shared first implementation")
+}
+
+func TestDialectVocab_ReturnedMapCannotWidenAllowlist(t *testing.T) {
+	d := core.EmptyDialect().Add("if", "if").Vocabulary(map[string]string{"+": "+"})
+	d.Vocab()["first"] = core.VocabEntry{Canonical: "first"}
+
+	e, err := New(nil, WithDialect(d))
+	require.NoError(t, err)
+	defer e.Close()
+	require.NoError(t, e.Use(stdlib.New()))
+
+	_, err = e.Eval(context.Background(), "widen", "(first [1 2])")
+	require.Error(t, err, "first was written only into the map Vocab returned and must stay outside the allowlist")
+	var lerr *core.LispicoError
+	require.True(t, errors.As(err, &lerr), "error %T must be a *core.LispicoError", err)
+	assert.Equal(t, "UndefinedError", lerr.Code)
+
+	got, err := e.Eval(context.Background(), "widen", "(+ 1 2)")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 3}.Equals(got), "(+ 1 2) = %v, want 3", got)
 }

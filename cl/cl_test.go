@@ -145,6 +145,27 @@ func TestCL_VocabMap(t *testing.T) {
 	})
 }
 
+// No engine is built here: while the singleton's vocabulary is mutated, a new
+// engine would publish a poisoned process-wide stdlib template layer.
+func TestCL_VocabMutationDoesNotLeak(t *testing.T) {
+	fp := cl.Dialect().Fingerprint()
+
+	v := cl.Dialect().Vocab()
+	orig, had := v["car"]
+	t.Cleanup(func() {
+		if had {
+			v["car"] = orig
+		} else {
+			delete(v, "car")
+		}
+	})
+	v["car"] = core.VocabEntry{Canonical: "rest"}
+
+	assert.Equal(t, "first", cl.Dialect().Vocab()["car"].Canonical,
+		"a write to the map cl.Dialect().Vocab() returned leaked into the singleton")
+	assert.Equal(t, fp, cl.Dialect().Fingerprint(), "cl.Dialect() fingerprint changed after a vocab write")
+}
+
 // TestCL_SpecScenario_SurfaceForms evaluates the exact scenario from the spec.
 func TestCL_SpecScenario_SurfaceForms(t *testing.T) {
 	e := newEngine(t)

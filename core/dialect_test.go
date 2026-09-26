@@ -279,6 +279,46 @@ func TestDialect_MutationInvalidatesCache(t *testing.T) {
 	})
 }
 
+func TestDialect_VocabReturnsCopy(t *testing.T) {
+	t.Run("vocab set", func(t *testing.T) {
+		d := FullDialect().Vocabulary(map[string]string{"car": "first"})
+		fp := d.Fingerprint()
+
+		v := d.Vocab()
+		v["cdr"] = VocabEntry{Canonical: "rest"}
+		delete(v, "car")
+
+		got := d.Vocab()
+		if len(got) != 1 {
+			t.Fatalf("writes to the returned map leaked into the Dialect: vocab = %v, want only car", got)
+		}
+		if got["car"].Canonical != "first" {
+			t.Fatalf("Vocab()[car].Canonical = %q, want first after deleting car from the returned map", got["car"].Canonical)
+		}
+		if d.Fingerprint() != fp {
+			t.Fatal("Fingerprint changed after writes to the map Vocab returned")
+		}
+	})
+
+	t.Run("vocab nil", func(t *testing.T) {
+		if got := FullDialect().Vocab(); got != nil {
+			t.Fatalf("FullDialect().Vocab() = %v, want nil", got)
+		}
+	})
+
+	t.Run("vocab empty", func(t *testing.T) {
+		d := EmptyDialect().Vocabulary(map[string]string{})
+		v := d.Vocab()
+		if v == nil || len(v) != 0 {
+			t.Fatalf("Vocab() = %#v, want a non-nil empty map", v)
+		}
+		v["first"] = VocabEntry{Canonical: "first"}
+		if got := d.Vocab(); got == nil || len(got) != 0 {
+			t.Fatalf("write to the returned map leaked: next Vocab() = %v, want non-nil and empty", got)
+		}
+	})
+}
+
 func TestDialect_FingerprintStableUnderMemoization(t *testing.T) {
 	corpus := []struct {
 		name       string
