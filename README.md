@@ -85,6 +85,23 @@ dialects ship with the interpreter:
 The default engine uses `cl.Dialect()`. Pass `WithDialect(clojure.Dialect())`
 to opt in to the Clojure surface.
 
+Build a custom dialect with `core.NewDialect(core.DialectSpec)`. The spec is
+plain data: rename or hide special forms, set the namespace and reader axes,
+and rename or adapt builtins:
+
+```go
+restricted, err := core.NewDialect(core.DialectSpec{
+    Base: core.BaseEmpty,
+    Forms: map[string]string{
+        "if": "if",
+        "do": "do",
+    },
+})
+```
+
+`NewDialect` validates and resolves the spec once and returns an immutable
+`core.Dialect`, or an error naming the offending entry and the zero `Dialect`.
+
 ### Common Lisp collections
 
 The CL dialect adapts `nth`, `mapcar`, and `sort` to their Common Lisp

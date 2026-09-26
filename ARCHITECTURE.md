@@ -263,8 +263,8 @@ The names above are the kernel special-form names. Under the default CL dialect 
 
 ### cl/
 
-The Common Lisp dialect package. Exports `Dialect()` which returns a
-non-identity composition over `core.FullDialect` with Lisp-2 name resolution,
+The Common Lisp dialect package. Exports `Dialect()` which builds a
+non-identity `core.Dialect` from a `core.DialectSpec`: Lisp-2 name resolution,
 CL reader flags, and vocabulary-renamed function names. `nil` and `false` are
 falsy under every dialect.
 ```
@@ -274,9 +274,10 @@ cl/
 
 ### clojure/
 
-The Clojure dialect package. Exports `Dialect()` which returns the identity
-dialect (`core.FullDialect`) — Lisp-1, bracket literals enabled, no
-vocabulary map. Compatible with the bytecode VM.
+The Clojure dialect package. Exports `Dialect()` which builds a `core.Dialect`
+from a flat-cond spec: `IsIdentity()` reports true because the cond
+clause-shape axis is excluded from the identity check — Lisp-1, bracket
+literals enabled, no vocabulary map. Compatible with the bytecode VM.
 
 ```
 clojure/

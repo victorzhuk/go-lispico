@@ -19,8 +19,8 @@ active set.
 | Order | Change | Accepted outcome | Capabilities |
 | --- | --- | --- | --- |
 | 1 | [dialect-value-integrity](dialect-value-integrity/proposal.md) | Accessors cannot mutate a shared dialect; fingerprints are collision-free and process-local | dialect |
-| 2 | [dialect-registration-rules](dialect-registration-rules/proposal.md) | One registration rule set for eager and lazy paths; Lisp-2 bridge without vocabulary; host bindings survive; `Use` costs O(its own names) | dialect |
-| 3 | [dialect-declarative-spec](dialect-declarative-spec/proposal.md) | Validated frozen construction from a plain-data spec; builders removed | dialect |
+| 2 | [dialect-declarative-spec](dialect-declarative-spec/proposal.md) | Validated frozen construction from a plain-data spec; builders removed | dialect |
+| 3 | [dialect-registration-rules](dialect-registration-rules/proposal.md) | One registration rule set for eager and lazy paths; Lisp-2 bridge without vocabulary; host bindings survive; `Use` costs O(its own names) | dialect |
 | 4 | [dialect-surface-name-resolution](dialect-surface-name-resolution/proposal.md) | One dispatch source; renamed-away names and `cond` bodies behave the same on both evaluators | dialect |
 | 5 | [dialect-form-enumeration](dialect-form-enumeration/proposal.md) | `Dialect.Forms()` lists the resolved special forms | dialect |
 | 6 | [cl-dialect-surface-cleanup](cl-dialect-surface-cleanup/proposal.md) | No identity vocabulary entries; single stock `DialectSpec`; `clSort` comparison allocations addressed if safe | dialect |
@@ -30,12 +30,14 @@ active set.
 
 - 1 is small and independent of the construction model; it goes first
   because the vocabulary exposure lets a caller widen a policy allowlist.
-- 2 precedes 6: dropping the CL identity entries is safest once eager and lazy
+- 2 (declarative spec) was applied before 3 (registration rules), so 3's tests build
+  dialects with `NewDialect`.
+- 3 precedes 6: dropping the CL identity entries is safest once eager and lazy
   registration share one rule set and agree on canonical flags.
-- 1 and 3 both touch the fingerprint: 1 fixes the field encoding now, 3 moves
+- 1 and 2 both touch the fingerprint: 1 fixes the field encoding now, 2 moves
   the digest onto the resolved configuration and must keep 1's scenarios.
-- 4 stores its reverse dispatch map in 3's frozen state; 5 reads 3's resolved
+- 4 stores its reverse dispatch map in 2's frozen state; 5 reads 2's resolved
   table and returns `[]string` because an invalid Dialect can no longer exist.
-- 6 keeps the CL definition as one `DialectSpec`, so it follows 3.
+- 6 keeps the CL definition as one `DialectSpec`, so it follows 2.
 - 7 touches the compiler and `cl` imports that 4 and 6 also edit; land it last
   to avoid rebasing those.

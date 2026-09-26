@@ -9,18 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `core.NewDialect(core.DialectSpec) (core.Dialect, error)` builds a Dialect
+  from a plain-data spec: it validates, resolves, and fingerprints the spec
+  once and returns a frozen Dialect, or an error and the zero Dialect.
+  `core.DialectSpec` declares the base (`core.BaseFull`/`core.BaseEmpty`),
+  form renames and hides, the namespace and reader axes, and the builtin
+  vocabulary (`Vocab` renames, `Adapters` binding a `core.Adapter{ID, Value}`).
 - `core.Dialect.VocabEntry(name)` looks up one vocabulary entry without copying
   the map.
 
 ### Changed
 
-- `core.Dialect.WithAdapter` keeps the 0.13.0 signature: adapters register as
-  `WithAdapter(name, semanticID, value)` with a non-empty semantic ID that
-  joins the dialect fingerprint.
-- `core.Dialect.Fingerprint` values differ from earlier releases: every string
-  field is length-prefixed, so names that differ only in where `:` or `|` sit
-  no longer collide. The fingerprint is a process-local identity and may change
-  between releases; do not persist it.
+- Dialect construction is refused, not silently accepted: an unknown kernel
+  form, a name both hidden and mapped, a `Hide` name absent from the base
+  (including every `Hide` entry against an empty base), a Lisp-2 spec mapping
+  `funcall`/`function`, an adapter without an ID or a value, or a name in both
+  `Vocab` and `Adapters` all fail at `NewDialect`. Callers must check the
+  error it returns.
+- `core.Dialect.Fingerprint` hashes the resolved configuration — base, axes,
+  form table, whether a vocabulary is configured, vocab entries, adapter IDs
+  — not construction history: two specs that resolve alike fingerprint alike.
+  Values also differ from earlier releases because every string field is now
+  length-prefixed, so names that differ only in where `:` or `|` sit no longer
+  collide. The fingerprint is a process-local identity and may change between
+  releases; do not persist it.
+- `core.Dialect.IsIdentity` is semantic: it reports true for any Dialect that
+  resolves to the full kernel table under canonical names with default axes
+  and no vocabulary, not only for the zero Dialect.
+- `cl.Dialect()` and `clojure.Dialect()` build their stock dialects from
+  static `core.DialectSpec` values instead of a builder chain.
+
+### Removed
+
+- **BREAKING:** `core.FullDialect`, `core.EmptyDialect`, `core.Dialect.Memoized`,
+  and the builder methods `Add`, `Rename`, `Remove`, `Lisp2`, `FlatCond`,
+  `WithoutBracketLiterals`, `WithFunctionRef`, `WithReaderVector`,
+  `Vocabulary`, `WithAdapter` are gone. Build a Dialect with
+  `core.NewDialect(core.DialectSpec{...})` instead:
+
+  | Before | After |
+  | --- | --- |
+  | `core.FullDialect()` | `core.Dialect{}` (the zero value) |
+  | `core.EmptyDialect()` | `core.DialectSpec{Base: core.BaseEmpty}` |
+  | `d.Add(name, canonical)` / `d.Rename(name, canonical)` | `DialectSpec.Forms[name] = canonical` |
+  | `d.Remove(name)` | append `name` to `DialectSpec.Hide` |
+  | `d.Lisp2()` | `DialectSpec.Lisp2 = true` |
+  | `d.FlatCond()` | `DialectSpec.FlatCond = true` |
+  | `d.WithoutBracketLiterals()` | `DialectSpec.NoBrackets = true` |
+  | `d.WithFunctionRef()` | `DialectSpec.FunctionRef = true` |
+  | `d.WithReaderVector()` | `DialectSpec.ReaderVector = true` |
+  | `d.Vocabulary(vocab)` | `DialectSpec.Vocab = vocab` |
+  | `d.WithAdapter(name, id, fn)` | `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}` |
+  | `d.Memoized()` | not needed — `NewDialect` resolves and fingerprints once |
+
+  A spec error the builder chain could not report now surfaces from
+  `NewDialect` itself instead of at `runtime.New`.
 
 ### Fixed
 

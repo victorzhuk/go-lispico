@@ -2,30 +2,37 @@
 
 A dialect is a delta over the kernel form table plus reader flags, a
 vocabulary renaming, and adapters — named `core.Value` bindings with a
-semantic ID. Resolving the delta yields the effective name-to-form table an
-engine dispatches through; the dialect itself is an immutable value, and
-every builder method returns a new `core.Dialect`.
+semantic ID. `core.NewDialect(spec core.DialectSpec)` validates the spec,
+resolves the delta once, and returns a frozen `core.Dialect`: an immutable
+one-pointer value safe to share across goroutines. An invalid spec reports an
+error and the zero `Dialect`; the zero `Dialect` is itself the identity
+dialect (full kernel, canonical names, Lisp-1, no vocabulary).
 
 ## Adapters
 
-`WithAdapter(name, semanticID, value)` binds `value` under `name` and folds
-`semanticID` into the dialect fingerprint. The ID makes adapters with the
-same name but different semantics distinguishable within a process. The
-fingerprint is not persistent and may change between releases.
-The Common Lisp dialect registers its collection adapters under fixed IDs:
+`spec.Adapters[name] = core.Adapter{ID: semanticID, Value: value}` binds
+`value` under `name` and folds `semanticID` into the dialect fingerprint. The
+ID makes adapters with the same name but different semantics distinguishable
+within a process. The fingerprint is not persistent and may change between
+releases. The Common Lisp dialect registers its collection adapters under
+fixed IDs:
 
 ```go
-d := core.FullDialect().
-    Lisp2().
-    WithFunctionRef().
-    WithoutBracketLiterals().
-    WithAdapter("nth", "cl/nth@1", clNth).
-    WithAdapter("mapcar", "cl/mapcar@1", clMapcar).
-    WithAdapter("sort", "cl/sort@1", clSort)
+d, err := core.NewDialect(core.DialectSpec{
+    Lisp2:        true,
+    NoBrackets:   true,
+    FunctionRef:  true,
+    Adapters: map[string]core.Adapter{
+        "nth":    {ID: "cl/nth@1", Value: clNth},
+        "mapcar": {ID: "cl/mapcar@1", Value: clMapcar},
+        "sort":   {ID: "cl/sort@1", Value: clSort},
+    },
+})
 ```
 
-`Memoized()` caches the fingerprint of a fully built dialect; repeated
-`cl.Dialect()` calls share one fingerprint.
+`cl.Dialect()` and `clojure.Dialect()` wrap their spec in `sync.OnceValue`, so
+resolution and fingerprinting run once per process and every caller shares
+the same `core.Dialect` value.
 
 ## CL collection shapes
 

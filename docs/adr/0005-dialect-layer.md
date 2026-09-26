@@ -15,6 +15,23 @@ configurable semantic axis is symbol namespaces (Lisp-1 vs Lisp-2); the
 truthiness hook survives only as the fixed predicate `if`/`when`/`and`/`or`
 consult.
 
+Construction moved from the builder chain to one call: `core.NewDialect(core.DialectSpec)`
+validates, resolves, and fingerprints a plain-data spec in one step and returns
+a frozen `core.Dialect` — one pointer to immutable state — or an error and the
+zero `Dialect`. The zero `Dialect` is the identity dialect: the full kernel
+table under canonical names, Lisp-1, default reader axes, no vocabulary. An
+invalid spec (unknown kernel form, a name both hidden and mapped, a Lisp-2
+spec mapping `funcall`/`function`, an adapter without an ID or a value, a name
+in both `Vocab` and `Adapters`) is refused at `NewDialect`, not discovered at
+`runtime.New`. The fingerprint hashes the resolved configuration — base,
+axes, form table, vocabulary presence, vocab entries, adapter IDs — not how
+the spec built it, so two specs that resolve alike fingerprint alike; `cl` and
+`clojure` build their stock dialects from static `DialectSpec` values.
+`FullDialect`, `EmptyDialect`, `Memoized`, and the builder methods (`Add`,
+`Rename`, `Remove`, `Lisp2`, `FlatCond`, `WithoutBracketLiterals`,
+`WithFunctionRef`, `WithReaderVector`, `Vocabulary`, `WithAdapter`) are
+removed.
+
 ## Consequences
 
 - The package-global `specialForms` map becomes per-Engine dispatch state expressed as canonical kernel forms under neutral names; this is the enabling refactor and lands first.
