@@ -252,11 +252,21 @@ func copyVocab(src map[string]VocabEntry) map[string]VocabEntry {
 	return dst
 }
 
-// Vocab returns the vocabulary map the Dialect was configured with. It is nil
-// for the identity dialect. Each visible name maps to either a canonical
-// shared builtin name (Canonical) or an adapter (Adapter non-nil).
+// Vocab returns a caller-owned copy of the vocabulary map the Dialect was
+// configured with. It is nil for the identity dialect and a non-nil empty map
+// for an empty vocabulary. Each visible name maps to either a canonical shared
+// builtin name (Canonical) or an adapter (Adapter non-nil). Writes to the
+// returned map never reach the Dialect; adapter Values are shared immutable
+// values, not copies.
 func (d Dialect) Vocab() map[string]VocabEntry {
-	return d.vocab
+	return maps.Clone(d.vocab)
+}
+
+// VocabEntry returns the vocabulary entry bound to name, and whether one
+// exists. It does not copy the vocabulary.
+func (d Dialect) VocabEntry(name string) (VocabEntry, bool) {
+	entry, ok := d.vocab[name]
+	return entry, ok
 }
 
 // CanonicalName maps a visible special-form name to its canonical kernel name
