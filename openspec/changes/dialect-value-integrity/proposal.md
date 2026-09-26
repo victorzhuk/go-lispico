@@ -9,7 +9,7 @@ A third issue is a missing contract, not a bug: embedders have stored `Fingerpri
 
 ## What Changes
 
-- `Vocab()` returns a copy; add `VocabEntry(name) (VocabEntry, bool)` for single lookups so runtime callers do not copy per call.
+- `Vocab()` returns a copy (nil stays nil, an empty map stays a non-nil empty map, so the identity-versus-allowlist distinction holds); add `VocabEntry(name) (VocabEntry, bool)` for single lookups without a copy. Runtime callers keep using `Vocab()`: they copy once per plugin load, or once per registered builtin during the lazy template build, which runs once per process per dialect and plugin.
 - Encode every fingerprint field unambiguously (length-prefixed or quoted). Existing fingerprints change; they are in-process keys only.
 - Document and spec `Fingerprint()` as a process-local identity that may change between releases.
 
@@ -25,4 +25,4 @@ None.
 
 ## Impact
 
-`core/dialect.go`, `runtime/engine.go` and `runtime/lazy_template.go` (switch to the lookup where a copy per call would cost), `core/dialect_test.go`, CHANGELOG. Independent of the builder-vs-spec API decision; if `dialect-declarative-spec` lands first, apply these rules to its frozen state.
+`core/dialect.go`, `core/dialect_test.go`, `cl/cl_test.go`, `runtime/dialect_vocab_test.go`, `docs/dialect-layer.md` (its "stable hash across processes" line contradicts the new contract), CHANGELOG. Independent of the builder-vs-spec API decision; if `dialect-declarative-spec` lands first, apply these rules to its frozen state.
