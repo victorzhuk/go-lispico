@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vocabulary (`Vocab` renames, `Adapters` binding a `core.Adapter{ID, Value}`).
 - `core.Dialect.VocabEntry(name)` looks up one vocabulary entry without copying
   the map.
+- `core.VocabBinding` and
+  `core.Dialect.AppendVocabBindings(dst, name, v, canonical)`: the single rule
+  set deciding which value and function cells a plugin registration makes
+  under a Dialect — vocabulary renames and adapters, the empty-base allowlist,
+  the Lisp-2 function-cell mirror. Both eager and lazy registration run it,
+  and core-only embedders can call it.
+- `core.Registration.Names()` lists the value-cell names an operation wrote
+  through its view.
 
 ### Changed
 
@@ -71,6 +79,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `core.Dialect.Vocab` returns a caller-owned copy. Writing to the returned map
   no longer changes the dialect, its fingerprint, the shared `cl.Dialect()`
   value, or the names an engine allows.
+- A Lisp-2 Dialect without a vocabulary now binds plugin builtins into the
+  function cell, so `(json/encode 1)` and, on the eager path, `(+ 1 2)` no
+  longer fail with `UndefinedError`.
+- Host bindings made with `Engine.Bind` survive later `Use`/`ReloadPlugin`
+  calls: an empty-base allowlist no longer deletes them and a vocabulary alias
+  no longer overwrites a host value of the same name.
+- Eager and lazy stdlib registration agree: an identity vocabulary entry keeps
+  its canonical flag on both paths, a rename wins over a plugin's own binding
+  of the visible name whenever the same load registers the canonical
+  (independent of registration order), and a non-function value registered
+  under Lisp-2 no longer gets a function cell on the lazy path.
+- Loading a plugin processes only the names it registers: `Use`/`ReloadPlugin`
+  no longer rewrite or journal unrelated bindings, and a user redefinition of a
+  builtin's function cell is kept. Under `cl.Dialect()` with eager stdlib,
+  `Use(json)` drops from 63 KB / 170 allocs to 34 KB / 47 allocs.
 
 ## [0.14.0] - 2026-09-13
 
