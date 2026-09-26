@@ -534,7 +534,8 @@ func (e *engineImpl) applyVocabulary(env *core.Env, reg *core.Registration) erro
 	written := reg.Names()
 	slices.Sort(written)
 	var scratch [8]core.VocabBinding
-	renames := scratch[:0]
+	var one [4]core.VocabBinding
+	renames, bs := scratch[:0], one[:0]
 	// Own bindings and deletions touch only the written name itself, so they
 	// land in one pass; renames wait until every own binding is in place.
 	for _, name := range written {
@@ -542,14 +543,14 @@ func (e *engineImpl) applyVocabulary(env *core.Env, reg *core.Registration) erro
 		if !ok {
 			continue
 		}
-		start := len(renames)
-		renames = d.AppendVocabBindings(renames, name, v, canon)
-		if len(renames) == start || renames[start].Name != name {
+		bs = d.AppendVocabBindings(bs[:0], name, v, canon)
+		if len(bs) == 0 || bs[0].Name != name {
+			renames = append(renames, bs...)
 			env.Delete(name)
 			continue
 		}
-		b := renames[start]
-		renames = append(renames[:start], renames[start+1:]...)
+		b := bs[0]
+		renames = append(renames, bs[1:]...)
 		if canon != b.Canonical || !v.Equals(b.Value) {
 			if err := setVocabValue(env, b); err != nil {
 				return err
