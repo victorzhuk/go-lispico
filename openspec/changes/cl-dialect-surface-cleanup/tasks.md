@@ -18,4 +18,4 @@
 
 ## 5. Validate
 
-- [ ] 5.1 `go test -timeout 2m ./cl/... ./runtime/...`, `make lint`, `openspec validate cl-dialect-surface-cleanup --strict`.
+- [x] 5.1 `go test -timeout 2m ./cl/... ./runtime/...`, `make lint`, `openspec validate cl-dialect-surface-cleanup --strict`.
