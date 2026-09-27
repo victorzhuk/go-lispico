@@ -15,9 +15,10 @@
 // list-style parameters.
 //
 // Because it carries non-default axes and a vocabulary map, its
-// [core.Dialect.IsIdentity] returns false.  The bytecode VM handles rename
-// normalization ([core.Dialect.CanonicalName]) and all dialect axes, so CL
-// evaluates on the bytecode VM when WithBytecode() is enabled (ADR 0006).
+// [core.Dialect.IsIdentity] returns false. The bytecode VM is the default
+// evaluator (ADR 0013); runtime.WithTreeWalker() is the opt-out. CL
+// evaluates on both, since the VM handles rename normalization
+// ([core.Dialect.CanonicalName]) and all dialect axes.
 package cl
 
 import (
@@ -34,6 +35,10 @@ const (
 	clNthID    = "cl/nth@1"
 	clMapcarID = "cl/mapcar@1"
 	clSortID   = "cl/sort@1"
+
+	// clSortArityFormat is the shared arity-error message for the sort
+	// adapter; both call sites must stay byte-identical.
+	clSortArityFormat = "sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments"
 )
 
 var clNth = sync.OnceValue(func() core.Value {
@@ -53,9 +58,7 @@ var clNth = sync.OnceValue(func() core.Value {
 			if _, isNil := args[1].(core.Nil); isNil {
 				return core.Nil{}, nil
 			}
-			switch args[1].(type) {
-			case core.List:
-			default:
+			if _, isList := args[1].(core.List); !isList {
 				return nil, core.NewTypeError("list or nil", args[1])
 			}
 			val, outcome, err := collections.IndexedAccess(ctx, args[1], idx.V)
@@ -106,7 +109,7 @@ var clSort = sync.OnceValue(func() core.Value {
 		Name: "sort",
 		Fn: func(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 			if len(args) < 2 {
-				return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments", len(args))}
+				return nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf(clSortArityFormat, len(args))}
 			}
 			var keyFn core.Value
 			seenKey := false
@@ -117,7 +120,7 @@ var clSort = sync.OnceValue(func() core.Value {
 				}
 				kw, ok := rest[0].(core.Keyword)
 				if !ok || len(rest) < 2 {
-					return finishAdapter(budget, nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf("sort: expected (sort sequence predicate) or (sort sequence predicate :key key), got %d arguments", len(args))})
+					return finishAdapter(budget, nil, &core.LispicoError{Code: "ArityError", Message: fmt.Sprintf(clSortArityFormat, len(args))})
 				}
 				if kw.V != "key" {
 					return finishAdapter(budget, nil, &core.LispicoError{Code: "EvalError", Message: fmt.Sprintf("sort: unknown keyword %.200v", kw)})
@@ -210,11 +213,11 @@ var clSpec = core.DialectSpec{
 	},
 	Hide: []string{"set!", "do"},
 	Vocab: map[string]string{
-		"car":     "first",
-		"cdr":     "rest",
-		"null":    "nil?",
-		"append":  "concat",
-		"length":  "count",
+		"car":    "first",
+		"cdr":    "rest",
+		"null":   "nil?",
+		"append": "concat",
+		"length": "count",
 	},
 	Adapters: map[string]core.Adapter{
 		"nth":    {ID: clNthID, Value: clNth()},
