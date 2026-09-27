@@ -137,8 +137,12 @@ type dialectState struct {
 	// aliases maps a canonical builtin name to the sorted visible names that
 	// rename it, the name itself excluded.
 	aliases  map[string][]string
-	identity bool
-	fp       string
+	// formNames is the sorted set of visible special-form names, the keys
+	// of table, computed once at freeze. Derived data: Forms hands out a
+	// copy, never this slice.
+	formNames []string
+	identity  bool
+	fp        string
 }
 
 func (d Dialect) state() *dialectState {
@@ -315,6 +319,7 @@ func freeze(spec DialectSpec, hide []string) *dialectState {
 		}
 	}
 
+	st.formNames = slices.Sorted(maps.Keys(st.table))
 	st.identity = st.isIdentity()
 	st.fp = st.fingerprint()
 	return st
@@ -368,6 +373,15 @@ func (st *dialectState) fingerprint() string {
 // shift a field boundary and collide with a different field split.
 func writeField(w io.Writer, s string) {
 	fmt.Fprintf(w, ":%d:%s", len(s), s)
+}
+
+// Forms returns a caller-owned copy of the Dialect's visible special-form
+// names, sorted: the resolved table's keys, so it reflects the base, the
+// Forms renames, the Hide list and the namespace axis, including the Lisp-2
+// intrinsics funcall and function. Writes to the returned slice never reach
+// the Dialect.
+func (d Dialect) Forms() []string {
+	return slices.Clone(d.state().formNames)
 }
 
 // Vocab returns a caller-owned copy of the vocabulary map the Dialect was
