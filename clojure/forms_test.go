@@ -15,6 +15,5 @@ func TestDialect_Forms_CallerMutationDoesNotLeak(t *testing.T) {
 	require.NotEmpty(t, first)
 	want := slices.Clone(first)
 	first[0] = "tampered"
-	first = append(first, "extra")
 	require.Equal(t, want, clojure.Dialect().Forms())
 }
