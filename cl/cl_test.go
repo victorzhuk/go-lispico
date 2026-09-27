@@ -25,15 +25,6 @@ func newEngine(t *testing.T, opts ...runtime.EngineOption) runtime.Engine {
 	return e
 }
 
-func noopFn(name string) core.Value {
-	return core.GoFunc{
-		Name: name,
-		Fn: func(_ context.Context, _ core.Evaluator, _ []core.Value, _ *core.Env) (core.Value, error) {
-			return core.Nil{}, nil
-		},
-	}
-}
-
 // TestCL_IsNotIdentity asserts that the CL dialect is non-identity because of
 // its non-default axes (Lisp-2, CL reader flags).
 func TestCL_IsNotIdentity(t *testing.T) {
@@ -250,31 +241,7 @@ func TestCL_SpecScenario_ReaderAffordances(t *testing.T) {
 // the stored hash without allocating.
 func TestCL_Dialect_StockFingerprint(t *testing.T) {
 	stock := cl.Dialect()
-	built, err := core.NewDialect(core.DialectSpec{
-		Lisp2:        true,
-		NoBrackets:   true,
-		FunctionRef:  true,
-		ReaderVector: true,
-		Forms:        map[string]string{"defun": "defn", "setq": "set!", "progn": "do"},
-		Hide:         []string{"set!", "do"},
-		Vocab: map[string]string{
-			"car":     "first",
-			"cdr":     "rest",
-			"null":    "nil?",
-			"cons":    "cons",
-			"list":    "list",
-			"append":  "concat",
-			"length":  "count",
-			"reverse": "reverse",
-			"apply":   "apply",
-			"type":    "type",
-		},
-		Adapters: map[string]core.Adapter{
-			"nth":    {ID: "cl/nth@1", Value: noopFn("nth")},
-			"mapcar": {ID: "cl/mapcar@1", Value: noopFn("mapcar")},
-			"sort":   {ID: "cl/sort@1", Value: noopFn("sort")},
-		},
-	})
+	built, err := core.NewDialect(cl.CLSpec())
 	require.NoError(t, err)
 	require.Equal(t, built.Fingerprint(), stock.Fingerprint(), "stock and spec-built Fingerprint() must agree")
 	assert.Equal(t, cl.Dialect().Fingerprint(), stock.Fingerprint(), "repeated cl.Dialect() calls must produce the same fingerprint")

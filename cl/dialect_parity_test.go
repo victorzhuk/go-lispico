@@ -59,22 +59,10 @@ func TestCL_StockFormTable(t *testing.T) {
 	})
 
 	t.Run("vocab", func(t *testing.T) {
-		renames := map[string]string{
-			"car":     "first",
-			"cdr":     "rest",
-			"null":    "nil?",
-			"cons":    "cons",
-			"list":    "list",
-			"append":  "concat",
-			"length":  "count",
-			"reverse": "reverse",
-			"apply":   "apply",
-			"type":    "type",
-		}
-		adapters := map[string]string{
-			"nth":    "cl/nth@1",
-			"mapcar": "cl/mapcar@1",
-			"sort":   "cl/sort@1",
+		renames := cl.CLSpec().Vocab
+		adapters := map[string]string{}
+		for name, adapter := range cl.CLSpec().Adapters {
+			adapters[name] = adapter.ID
 		}
 
 		vocab := d.Vocab()

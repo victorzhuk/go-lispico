@@ -198,36 +198,38 @@ var clSort = sync.OnceValue(func() core.Value {
 	}
 })
 
+var clSpec = core.DialectSpec{
+	Lisp2:        true,
+	NoBrackets:   true,
+	FunctionRef:  true,
+	ReaderVector: true,
+	Forms: map[string]string{
+		"defun": "defn",
+		"setq":  "set!",
+		"progn": "do",
+	},
+	Hide: []string{"set!", "do"},
+	Vocab: map[string]string{
+		"car":     "first",
+		"cdr":     "rest",
+		"null":    "nil?",
+		"cons":    "cons",
+		"list":    "list",
+		"append":  "concat",
+		"length":  "count",
+		"reverse": "reverse",
+		"apply":   "apply",
+		"type":    "type",
+	},
+	Adapters: map[string]core.Adapter{
+		"nth":    {ID: clNthID, Value: clNth()},
+		"mapcar": {ID: clMapcarID, Value: clMapcar()},
+		"sort":   {ID: clSortID, Value: clSort()},
+	},
+}
+
 var stockDialect = sync.OnceValue(func() core.Dialect {
-	d, err := core.NewDialect(core.DialectSpec{
-		Lisp2:        true,
-		NoBrackets:   true,
-		FunctionRef:  true,
-		ReaderVector: true,
-		Forms: map[string]string{
-			"defun": "defn",
-			"setq":  "set!",
-			"progn": "do",
-		},
-		Hide: []string{"set!", "do"},
-		Vocab: map[string]string{
-			"car":     "first",
-			"cdr":     "rest",
-			"null":    "nil?",
-			"cons":    "cons",
-			"list":    "list",
-			"append":  "concat",
-			"length":  "count",
-			"reverse": "reverse",
-			"apply":   "apply",
-			"type":    "type",
-		},
-		Adapters: map[string]core.Adapter{
-			"nth":    {ID: clNthID, Value: clNth()},
-			"mapcar": {ID: clMapcarID, Value: clMapcar()},
-			"sort":   {ID: clSortID, Value: clSort()},
-		},
-	})
+	d, err := core.NewDialect(clSpec)
 	if err != nil {
 		panic("cl: stock dialect: " + err.Error())
 	}
