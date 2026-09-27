@@ -13,8 +13,8 @@
 
 ## 4. clSort comparison allocations (measure first)
 
-- [x] 4.1 Record `(sort xs #'<)` bytes/allocs at n=1000 (baseline: about 26.3k allocs, 1.1 MB; half are the per-comparison `[]core.Value{a, b}` args slice).
-- [x] 4.2 Verify no callee keeps `args` past return (GoFunc, Lambda binding, VM closure); only then reuse one two-slot buffer across comparisons and the `:key` calls. If any callee keeps it, drop this section and record why.
+- [x] 4.1 Record `(sort xs #'<)` bytes/allocs at n=1000. End-to-end `Eval` benchmark with fixed-seed permutation: 26,118 allocs/op and 1,108,249 B/op (`go test -timeout 2m -run '^$' -bench '^BenchmarkCLSortComparisonAllocs$' -benchtime 10x -benchmem ./cl/`); this includes reader and evaluator overhead, not isolated comparison allocations.
+- [x] 4.2 Verify no callee keeps `args` past return before reusing a comparison buffer. Reuse dropped: `ChildVariadic` binds rest arguments through `NewList(args[len(params):])`, which retains short slices; caller-supplied GoFuncs can also retain `args`. Reusing the slice would mutate captured arguments.
 
 ## 5. Validate
 
