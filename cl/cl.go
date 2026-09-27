@@ -213,13 +213,8 @@ var clSpec = core.DialectSpec{
 		"car":     "first",
 		"cdr":     "rest",
 		"null":    "nil?",
-		"cons":    "cons",
-		"list":    "list",
 		"append":  "concat",
 		"length":  "count",
-		"reverse": "reverse",
-		"apply":   "apply",
-		"type":    "type",
 	},
 	Adapters: map[string]core.Adapter{
 		"nth":    {ID: clNthID, Value: clNth()},

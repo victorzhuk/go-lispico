@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and no vocabulary, not only for the zero Dialect.
 - `cl.Dialect()` and `clojure.Dialect()` build their stock dialects from
   static `core.DialectSpec` values instead of a builder chain.
+- `clSpec.Vocab` no longer carries the identity names `cons`, `list`,
+  `reverse`, `apply`, and `type`: those builtins bind through the stdlib as
+  before and no longer appear as vocabulary renames. The dialect keeps the
+  five renames (`car`→`first`, `cdr`→`rest`, `null`→`nil?`, `append`→`concat`,
+  `length`→`count`) and the three `nth`/`mapcar`/`sort` adapters. The
+  `cl.Dialect()` fingerprint changes as a result; it is process-local and not
+  persisted.
 
 ### Removed
 
