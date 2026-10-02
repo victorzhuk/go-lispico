@@ -52,6 +52,11 @@ func NewClosure(chunk *Chunk, caps []*cellBox, globals *core.Env) *Closure {
 // Type implements core.Value.
 func (c *Closure) Type() core.Keyword { return core.Keyword{V: "fn"} }
 
+// LispCallable marks *Closure as callable (core.Callable).
+func (c *Closure) LispCallable() {}
+
+var _ core.Callable = (*Closure)(nil)
+
 // String implements core.Value.
 func (c *Closure) String() string { return fmt.Sprintf("#<closure %s>", c.Chunk.Name) }
 

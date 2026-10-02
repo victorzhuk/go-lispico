@@ -6,8 +6,14 @@ type Callable interface {
 	LispCallable()
 }
 
-// IsCallable reports whether the evaluator can call v. The classification
-// of callable kinds lands with the chunk that implements the adapters.
+// IsCallable reports whether the evaluator can call v: true for GoFunc,
+// Lambda, Keyword, any value implementing Callable, and the nil interface
+// is always false.
 func IsCallable(v Value) bool {
-	return false
+	switch v.(type) {
+	case GoFunc, Lambda, Keyword, Callable:
+		return true
+	default:
+		return false
+	}
 }

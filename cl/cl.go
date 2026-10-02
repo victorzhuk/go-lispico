@@ -27,7 +27,6 @@ import (
 	"sync"
 
 	"github.com/victorzhuk/go-lispico/core"
-	"github.com/victorzhuk/go-lispico/core/vm"
 	"github.com/victorzhuk/go-lispico/internal/collections"
 )
 
@@ -96,7 +95,7 @@ var clMapcar = sync.OnceValue(func() core.Value {
 					return nil, core.NewTypeError("list or nil", seq)
 				}
 			}
-			if !isCallable(args[0]) {
+			if !core.IsCallable(args[0]) {
 				return nil, core.NewTypeError("function", args[0])
 			}
 			return collections.MapSequences(ctx, eval, env, args[0], args[1:])
@@ -157,13 +156,13 @@ var clSort = sync.OnceValue(func() core.Value {
 				return nil, err
 			}
 
-			if !isCallable(args[1]) {
+			if !core.IsCallable(args[1]) {
 				return finishAdapter(budget, nil, core.NewTypeError("function", args[1]))
 			}
 			if keyFn != nil {
 				if _, nilKey := keyFn.(core.Nil); nilKey {
 					keyFn = nil
-				} else if !isCallable(keyFn) {
+				} else if !core.IsCallable(keyFn) {
 					return finishAdapter(budget, nil, core.NewTypeError("function", keyFn))
 				}
 			}
@@ -239,12 +238,3 @@ var stockDialect = sync.OnceValue(func() core.Dialect {
 // and fingerprinting run once, on first call, and every caller shares the
 // same resolved dispatch table and hash.
 func Dialect() core.Dialect { return stockDialect() }
-
-func isCallable(v core.Value) bool {
-	switch v.(type) {
-	case core.GoFunc, core.Lambda, core.Keyword, *vm.Closure:
-		return true
-	default:
-		return false
-	}
-}
