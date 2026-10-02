@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and core-only embedders can call it.
 - `core.Registration.Names()` lists the value-cell names an operation wrote
   through its view.
+- `core.Dialect.Forms() []string` returns the sorted names of the Dialect's
+  resolved special-form table, including the Lisp-2 intrinsics `funcall` and
+  `function` when that axis is on, in a fresh slice the caller owns.
 
 ### Changed
 
