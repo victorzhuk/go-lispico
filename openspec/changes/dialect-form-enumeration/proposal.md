@@ -19,4 +19,4 @@ None.
 
 ## Impact
 
-`core/dialect.go`, `core/dialect_test.go`, CHANGELOG. Additive API. Follow-up outside this repo: yagel can derive its special-form group from `clojure.Dialect().Forms()` once released.
+`core/dialect.go`, new test files `core/dialect_forms_test.go` (full-base and empty-base scenarios, package core), `cl/forms_test.go` (renames and Lisp-2 intrinsics scenario, package cl_test), `clojure/forms_test.go` (caller-mutation scenario, package clojure_test), CHANGELOG. Additive API. Follow-up outside this repo: yagel can derive its special-form group from `clojure.Dialect().Forms()` once released.
