@@ -91,9 +91,6 @@ type Chunk struct {
 	// Fused holds the operand/operator descriptors OpFusedNativeOp
 	// instructions index into, one entry per fused instruction.
 	Fused []FusedOp
-	// Truthiness is the dialect's truthiness predicate for conditional opcodes.
-	// When nil, core.IsTruthy (nil+false falsy) is used.
-	Truthiness func(core.Value) bool
 	// sites is the per-instruction global-read cache, built lazily by
 	// EnsureSites once a chunk is known to be reused, and published atomically
 	// so concurrent runs of a shared chunk never race on it. Nil until built —
@@ -176,7 +173,6 @@ func (c *Chunk) CopyTreeFreshSites() *Chunk {
 		NodeCount:    c.NodeCount,
 		Constants:    c.Constants,
 		ConstCharges: c.ConstCharges,
-		Truthiness:   c.Truthiness,
 	}
 	if len(c.SubChunks) > 0 {
 		out.SubChunks = make([]*Chunk, len(c.SubChunks))

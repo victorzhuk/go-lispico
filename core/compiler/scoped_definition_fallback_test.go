@@ -69,7 +69,7 @@ func TestCompilerScopedDefinitionFallback(t *testing.T) {
 		clDialect := cl.Dialect()
 		forms, err := core.Read(`(let [] (defn f (x) x))`)
 		require.NoError(t, err)
-		compileErr := NewCompilerWithDialect("test", &clDialect).Compile(forms[0])
+		compileErr := NewCompilerWithDialect("test", clDialect).Compile(forms[0])
 		var le *core.LispicoError
 		require.ErrorAs(t, compileErr, &le, "%s under CL: want code %s, got %v", `(let [] (defn f (x) x))`, CodeUnsupported, compileErr)
 		assert.Equal(t, CodeUnsupported, le.Code)
@@ -103,7 +103,7 @@ func TestCompilerScopedDefinitionFallback(t *testing.T) {
 			clDialect := cl.Dialect()
 			forms, err := core.Read(`(defn f (x) x)`)
 			require.NoError(t, err)
-			require.NoError(t, NewCompilerWithDialect("test", &clDialect).Compile(forms[0]))
+			require.NoError(t, NewCompilerWithDialect("test", clDialect).Compile(forms[0]))
 		})
 	})
 }
@@ -117,7 +117,7 @@ func TestCompilerDefunScopedDefinitionFallback(t *testing.T) {
 	clDialect := cl.Dialect()
 	forms, err := core.Read(`(defun outer () (def leaked 1))`)
 	require.NoError(t, err)
-	compileErr := NewCompilerWithDialect("test", &clDialect).Compile(forms[0])
+	compileErr := NewCompilerWithDialect("test", clDialect).Compile(forms[0])
 	var le *core.LispicoError
 	require.ErrorAs(t, compileErr, &le, "want code %s, got %v", CodeUnsupported, compileErr)
 	assert.Equal(t, CodeUnsupported, le.Code)

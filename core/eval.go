@@ -40,9 +40,6 @@ type engine struct {
 	// from its Dialect at construction. It is read-only after construction, so
 	// evaluated code cannot change which forms are available.
 	forms map[string]formFn
-	// truthy is the Dialect's falsy rule — the single hook every conditional
-	// special form consults instead of hardcoding IsTruthy.
-	truthy func(Value) bool
 	// lisp2 selects the namespace axis. When true, head symbols resolve against
 	// the environment's function cell and definition forms bind functions there.
 	lisp2 bool
@@ -54,14 +51,14 @@ type engine struct {
 
 // NewEvaluator constructs a tree-walking evaluator running the identity
 func NewEvaluator() *engine {
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: copyKernel(), truthy: IsTruthy}
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: copyKernel()}
 }
 
 // NewEvaluatorWithDialect constructs a tree-walking evaluator whose special
 // forms are the resolved effective table of d. A Dialect is validated when
 // NewDialect builds it, so the error is always nil.
 func NewEvaluatorWithDialect(d Dialect) (*engine, error) {
-	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: d.resolve(), truthy: d.isTruthy, lisp2: d.isLisp2(), dialect: d}, nil
+	return &engine{maxMacroDepth: 100, MaxDepth: 1000, MaxStructuralDepth: DefaultMaxStructuralDepth, forms: d.resolve(), lisp2: d.isLisp2(), dialect: d}, nil
 }
 
 func copyKernel() map[string]formFn {
@@ -1851,7 +1848,7 @@ func evalIf(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 	if err != nil {
 		return nil, err
 	}
-	if e.truthy(cond) {
+	if IsTruthy(cond) {
 		return e.Eval(ctx, args[1], env)
 	}
 	if len(args) == 3 {
@@ -1878,7 +1875,7 @@ func evalCond(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 		if err != nil {
 			return nil, err
 		}
-		if e.truthy(result) {
+		if IsTruthy(result) {
 			return e.evalBody(ctx, clause.Body, env)
 		}
 	}
@@ -1893,7 +1890,7 @@ func evalWhen(ctx context.Context, e *engine, args []Value, env *Env) (Value, er
 	if err != nil {
 		return nil, err
 	}
-	if !e.truthy(cond) {
+	if !IsTruthy(cond) {
 		return Nil{}, nil
 	}
 	return e.evalBody(ctx, args[1:], env)
@@ -2496,7 +2493,7 @@ func evalAnd(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 			return nil, err
 		}
 		last = v
-		if !e.truthy(v) {
+		if !IsTruthy(v) {
 			return v, nil
 		}
 	}
@@ -2514,7 +2511,7 @@ func evalOr(ctx context.Context, e *engine, args []Value, env *Env) (Value, erro
 			return nil, err
 		}
 		last = v
-		if e.truthy(v) {
+		if IsTruthy(v) {
 			return v, nil
 		}
 	}
@@ -2529,7 +2526,7 @@ func evalNot(ctx context.Context, e *engine, args []Value, env *Env) (Value, err
 	if err != nil {
 		return nil, err
 	}
-	return Bool{V: !e.truthy(v)}, nil
+	return Bool{V: !IsTruthy(v)}, nil
 }
 
 // evalFuncall implements the Lisp-2 funcall form: it applies a function value

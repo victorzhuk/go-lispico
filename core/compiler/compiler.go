@@ -36,7 +36,7 @@ type Compiler struct {
 	depth           int
 	parent          *Compiler
 	loops           []loopFrame
-	dialect         *core.Dialect
+	dialect         core.Dialect
 	meter           core.EvalMeter
 	ctx             context.Context
 	err             error
@@ -73,13 +73,13 @@ type local struct {
 
 // NewCompiler creates a Compiler that emits into a new chunk named name.
 func NewCompiler(name string) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name}, maxCompileDepth: core.MaxCompileDepth}
+	return NewCompilerWithDialect(name, core.Dialect{})
 }
 
 // NewCompilerWithDialect creates a Compiler that emits into a new chunk named name
 // with access to the dialect for dialect-dependent compilation.
-func NewCompilerWithDialect(name string, dialect *core.Dialect) *Compiler {
-	return &Compiler{chunk: &vm.Chunk{Name: name, Truthiness: dialect.TruthyFunc()}, dialect: dialect, maxCompileDepth: core.MaxCompileDepth}
+func NewCompilerWithDialect(name string, dialect core.Dialect) *Compiler {
+	return &Compiler{chunk: &vm.Chunk{Name: name}, dialect: dialect, maxCompileDepth: core.MaxCompileDepth}
 }
 
 // Chunk returns the chunk the compiler is emitting into.
@@ -236,14 +236,11 @@ func (c *Compiler) compileList(f core.List) error {
 	head, isSym := items[0].(core.Symbol)
 	if isSym {
 		canonicalName := head.V
-		isSpecial := true
-		if c.dialect != nil {
-			canonical, ok := c.dialect.CanonicalName(head.V)
-			if ok {
-				canonicalName = canonical
-			}
-			isSpecial = ok
+		canonical, ok := c.dialect.CanonicalName(head.V)
+		if ok {
+			canonicalName = canonical
 		}
+		isSpecial := ok
 		if isSpecial {
 			switch canonicalName {
 			case "if":
@@ -400,10 +397,7 @@ func (c *Compiler) compileFn(args []core.Value) error {
 	if len(args) < 2 {
 		return compileErrf("fn requires at least 2 arguments (params body...)")
 	}
-	sub := NewCompiler("<fn>")
-	if c.dialect != nil {
-		sub = NewCompilerWithDialect("<fn>", c.dialect)
-	}
+	sub := NewCompilerWithDialect("<fn>", c.dialect)
 	sub.parent = c
 	sub.meter = c.meter
 	for _, p := range params {
@@ -735,7 +729,7 @@ func (c *Compiler) compileCall(items []core.Value) error {
 		return c.err
 	}
 	// Lisp-2: emit OpGetFunc for the head symbol instead of OpGetGlobal.
-	if c.dialect != nil && c.dialect.IsLisp2() {
+	if c.dialect.IsLisp2() {
 		if sym, ok := items[0].(core.Symbol); ok {
 			c.emit(vm.OpGetFunc, c.chunk.AddConstant(sym))
 		} else {
@@ -775,7 +769,7 @@ func (c *Compiler) compileNativeOp(items []core.Value, op vm.Opcode) error {
 		return err
 	}
 
-	if c.dialect != nil && c.dialect.IsLisp2() {
+	if c.dialect.IsLisp2() {
 		c.emit(vm.OpFreezeNativeFunc, c.chunk.AddConstant(sym))
 	} else {
 		c.emit(vm.OpFreezeNative, c.chunk.AddConstant(sym))
@@ -815,7 +809,7 @@ func (c *Compiler) fuseNativeOp(sym core.Symbol, op vm.Opcode, args []core.Value
 	c.chunk.Fused = append(c.chunk.Fused, vm.FusedOp{
 		Op:    op,
 		Sym:   c.chunk.AddConstant(sym),
-		Func:  c.dialect != nil && c.dialect.IsLisp2(),
+		Func:  c.dialect.IsLisp2(),
 		AKind: aKind,
 		A:     aIdx,
 		BKind: bKind,
@@ -1036,7 +1030,7 @@ func (c *Compiler) compileDefmacro(args []core.Value) error {
 		Body:     args[2:],
 	}
 	op := vm.OpDefMacro
-	if c.dialect != nil && c.dialect.IsLisp2() {
+	if c.dialect.IsLisp2() {
 		op = vm.OpDefMacroFunc
 	}
 	c.emit(op, c.chunk.AddConstant(proto))
@@ -1054,7 +1048,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 	if !ok {
 		return compileErrf("defn: name must be symbol, got %T", args[0])
 	}
-	if c.dialect != nil && c.dialect.IsLisp2() {
+	if c.dialect.IsLisp2() {
 		// Lisp-2: compile fn closure then emit OpSetFunc for the function cell.
 		params, variadic, err := parseParams(args[1])
 		if err != nil {
@@ -1064,10 +1058,7 @@ func (c *Compiler) compileDefn(args []core.Value) error {
 			return unsupportedErr("scoped defn is not supported by the bytecode compiler")
 		}
 		body := args[2:]
-		sub := NewCompiler("<fn>")
-		if c.dialect != nil {
-			sub = NewCompilerWithDialect("<fn>", c.dialect)
-		}
+		sub := NewCompilerWithDialect("<fn>", c.dialect)
 		sub.parent = c
 		sub.meter = c.meter
 		for _, p := range params {
@@ -1168,10 +1159,7 @@ func (c *Compiler) compileCond(args []core.Value) error {
 }
 
 func (c *Compiler) condNormalizer() func([]core.Value) ([]core.CondClause, error) {
-	if c.dialect != nil {
-		return c.dialect.NormalizeCond
-	}
-	return core.Dialect{}.NormalizeCond
+	return c.dialect.NormalizeCond
 }
 
 func (c *Compiler) compileAnd(args []core.Value) error {

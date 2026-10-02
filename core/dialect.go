@@ -450,21 +450,9 @@ func (d Dialect) CanonicalName(name string) (canonical string, ok bool) {
 	return c, ok
 }
 
-// TruthyFunc returns the predicate used by dialect-specific conditional evaluation.
-// Default behavior uses core.IsTruthy (nil and false are falsy).
-func (d Dialect) TruthyFunc() func(Value) bool {
-	return IsTruthy
-}
-
 // IsBaseEmpty reports whether the Dialect starts from an empty base.
 func (d Dialect) IsBaseEmpty() bool {
 	return d.state().base == BaseEmpty
-}
-
-// isTruthy reports whether v is a true value. All dialects treat nil and false
-// as falsy, and every other value as truthy.
-func (d Dialect) isTruthy(v Value) bool {
-	return IsTruthy(v)
 }
 
 // isLisp2 reports whether the Dialect uses a separate function cell. It is the

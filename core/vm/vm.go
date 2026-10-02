@@ -625,13 +625,9 @@ func (vm *VM) reserveLocals(base, locals int) {
 // reloadFrame reads the top frame's state into Run's per-frame dispatch
 // locals after a helper that can push, pop, or replace frames (vm.call,
 // vm.throw) returns. Callers must only call it when vm.frames is non-empty.
-func (vm *VM) reloadFrame() (chunk *Chunk, code []Instruction, ip, base int, env *core.Env, caps []*cellBox, truthy func(core.Value) bool) {
+func (vm *VM) reloadFrame() (chunk *Chunk, code []Instruction, ip, base int, env *core.Env, caps []*cellBox) {
 	frame := &vm.frames[len(vm.frames)-1]
-	truthy = core.IsTruthy
-	if frame.chunk.Truthiness != nil {
-		truthy = frame.chunk.Truthiness
-	}
-	return frame.chunk, frame.chunk.Code, frame.ip, frame.base, frame.env, frame.caps, truthy
+	return frame.chunk, frame.chunk.Code, frame.ip, frame.base, frame.env, frame.caps
 }
 
 func (vm *VM) pushFreeze(depth int, op Opcode, val core.Value) {
@@ -923,7 +919,7 @@ func (vm *VM) Run(ctx context.Context, chunk *Chunk) (core.Value, error) {
 // Callers must have already pushed the frame to execute (and, for a call,
 // its callee + args below it on vm.stack) — see Run and apply.
 func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
-	chunk, code, ip, base, env, caps, truthy := vm.reloadFrame()
+	chunk, code, ip, base, env, caps := vm.reloadFrame()
 	vm.budget = checkInterval
 	vm.flushedBudget = checkInterval
 	vm.pendingAlloc = 0
@@ -1054,7 +1050,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 			vm.push(val)
@@ -1066,7 +1062,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 			// No push. Record the freeze marker (or the head-time value) at the
@@ -1117,14 +1113,14 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, setLexicalError(sym)); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 			if err := owner.SetWithContext(ctx, sym.V, top); err != nil {
 				if retErr := vm.routeRuntimeError(ip, err); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 
@@ -1134,7 +1130,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, setLexicalError(sym)); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 
@@ -1145,7 +1141,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 			vm.push(v)
@@ -1157,7 +1153,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, core.NewUndefinedError(sym.V)); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 			d := len(vm.stack)
@@ -1194,7 +1190,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			if err != nil {
 				return nil, err
 			}
-			if !truthy(top) {
+			if !core.IsTruthy(top) {
 				ip += instr.A()
 			}
 
@@ -1205,7 +1201,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 					return nil, retErr
 				}
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps = vm.reloadFrame()
 
 		case OpTailCall:
 			vm.frames[len(vm.frames)-1].ip = ip
@@ -1214,7 +1210,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 					return nil, retErr
 				}
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps = vm.reloadFrame()
 
 		case OpReturn:
 			result, err := vm.pop()
@@ -1241,7 +1237,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				return result, nil
 			}
 			vm.push(result)
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps = vm.reloadFrame()
 
 		case OpMakeList:
 			n := instr.A()
@@ -1300,7 +1296,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 				if retErr := vm.routeRuntimeError(ip, &catchParityError{err: wrapped, handlerMsg: setErr.Error()}); retErr != nil {
 					return nil, retErr
 				}
-				chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+				chunk, code, ip, base, env, caps = vm.reloadFrame()
 				continue
 			}
 			if err := vm.checkConstructionDepth(hm); err != nil {
@@ -1370,7 +1366,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			if !vm.throw(value) {
 				return nil, newThrowError(value)
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps = vm.reloadFrame()
 
 		case OpAdd, OpSub, OpMul, OpDiv, OpLt, OpGt, OpLe, OpGe, OpEq:
 			vm.frames[len(vm.frames)-1].ip = ip
@@ -1379,7 +1375,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 					return nil, retErr
 				}
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps = vm.reloadFrame()
 
 		case OpFusedNativeOp:
 			vm.frames[len(vm.frames)-1].ip = ip
@@ -1388,7 +1384,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 					return nil, retErr
 				}
 			}
-			chunk, code, ip, base, env, caps, truthy = vm.reloadFrame()
+			chunk, code, ip, base, env, caps = vm.reloadFrame()
 		}
 	}
 }

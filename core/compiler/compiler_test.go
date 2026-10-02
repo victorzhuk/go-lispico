@@ -970,11 +970,11 @@ func TestCompiler_NativeOp_Dialect(t *testing.T) {
 	// Clojure is Lisp-1: the value cell (OpFreezeNative) is the only namespace.
 	cases := []struct {
 		name    string
-		dialect *core.Dialect
+		dialect core.Dialect
 		headOp  vm.Opcode
 	}{
-		{"cl", &clDialect, vm.OpFreezeNativeFunc},
-		{"clojure", &clojureDialect, vm.OpFreezeNative},
+		{"cl", clDialect, vm.OpFreezeNativeFunc},
+		{"clojure", clojureDialect, vm.OpFreezeNative},
 	}
 
 	for _, tc := range cases {
@@ -1019,7 +1019,7 @@ func TestCompiler_NativeOp_Dialect(t *testing.T) {
 // shadow at all — that's covered by crossval instead of an opcode assertion.
 func TestCompiler_NativeOp_DialectShadowedByLet(t *testing.T) {
 	clojureDialect := clojure.Dialect()
-	c := NewCompilerWithDialect("test", &clojureDialect)
+	c := NewCompilerWithDialect("test", clojureDialect)
 	form := core.NewList([]core.Value{
 		core.Symbol{V: "let"},
 		core.NewVector([]core.Value{
@@ -1052,7 +1052,7 @@ func TestCompiler_NativeOp_DialectShadowedByLet(t *testing.T) {
 // concern, proven by crossval, not a compile-time one.
 func TestCompiler_NativeOp_DialectRebindStillNative(t *testing.T) {
 	clDialect := cl.Dialect()
-	c := NewCompilerWithDialect("test", &clDialect)
+	c := NewCompilerWithDialect("test", clDialect)
 	form := core.NewList([]core.Value{
 		core.Symbol{V: "progn"},
 		core.NewList([]core.Value{

@@ -403,7 +403,7 @@ func (be *bytecodeEvaluator) Eval(ctx context.Context, form core.Value, env *cor
 	if err != nil {
 		return nil, fmt.Errorf("macro expand: %w", err)
 	}
-	comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
+	comp := compiler.NewCompilerWithDialect("<eval>", be.dialect)
 	comp.SetEvalMeter(core.EvalMeterFrom(ctx))
 	comp.SetContext(ctx)
 	if err := comp.Compile(expanded); err != nil {
@@ -525,7 +525,7 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 		currentEpoch := be.globals.MacroEpoch()
 		be.flushStaleEpoch(int64(currentEpoch))
 
-		comp := compiler.NewCompilerWithDialect("<eval>", &be.dialect)
+		comp := compiler.NewCompilerWithDialect("<eval>", be.dialect)
 		comp.SetEvalMeter(core.EvalMeterFrom(ctx))
 		comp.SetContext(ctx)
 		if err := comp.Compile(expanded); err != nil {

@@ -402,7 +402,7 @@ func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src strin
 		require.NoError(t, err, "tree-walker eval")
 	}
 
-	comp := compiler.NewCompilerWithDialect("<top>", &dialect)
+	comp := compiler.NewCompilerWithDialect("<top>", dialect)
 	for _, form := range forms {
 		if err := comp.Compile(form); err != nil {
 			t.Fatalf("compile: %v", err)
@@ -1845,7 +1845,7 @@ func TestVM_CachedSiteReflectsRebind(t *testing.T) {
 
 			forms, err := tt.dialect.Read("x")
 			require.NoError(t, err)
-			comp := compiler.NewCompilerWithDialect("<top>", &tt.dialect)
+			comp := compiler.NewCompilerWithDialect("<top>", tt.dialect)
 			for _, form := range forms {
 				require.NoError(t, comp.Compile(form))
 			}
@@ -1885,7 +1885,7 @@ func TestVM_CachedSiteReflectsDelete(t *testing.T) {
 
 			forms, err := tt.dialect.Read("x")
 			require.NoError(t, err)
-			comp := compiler.NewCompilerWithDialect("<top>", &tt.dialect)
+			comp := compiler.NewCompilerWithDialect("<top>", tt.dialect)
 			for _, form := range forms {
 				require.NoError(t, comp.Compile(form))
 			}
@@ -2204,7 +2204,7 @@ func runCaptureCell(t *testing.T, dialect core.Dialect, src string) (treeResult,
 		require.NoError(t, err, "tree-walker eval")
 	}
 
-	comp := compiler.NewCompilerWithDialect("<top>", &dialect)
+	comp := compiler.NewCompilerWithDialect("<top>", dialect)
 	for _, form := range forms {
 		require.NoError(t, comp.Compile(form), "compile")
 	}
@@ -2666,7 +2666,7 @@ func runFusedRebind(t *testing.T, dialect core.Dialect, src, sym string, replace
 		require.NoError(t, err, "tree-walker eval")
 	}
 
-	comp := compiler.NewCompilerWithDialect("<top>", &dialect)
+	comp := compiler.NewCompilerWithDialect("<top>", dialect)
 	for _, form := range forms {
 		require.NoError(t, comp.Compile(form), "compile")
 	}
@@ -2931,7 +2931,7 @@ func TestVMVsTreeWalker_FusedArithmeticOp_DivisionByZero(t *testing.T) {
 			}
 			require.Error(t, treeErr, "tree-walker should error on division by zero")
 
-			comp := compiler.NewCompilerWithDialect("<top>", &tt.dialect)
+			comp := compiler.NewCompilerWithDialect("<top>", tt.dialect)
 			for _, form := range forms {
 				require.NoError(t, comp.Compile(form), "compile")
 			}
