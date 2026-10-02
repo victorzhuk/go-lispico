@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"slices"
 	"sort"
 	"strconv"
 	"sync/atomic"
@@ -222,8 +223,8 @@ func NewList(items []Value) List {
 // items[0] becomes the outermost node's head, items[len-1] the innermost.
 func newListChain(items []Value) *listNode {
 	var node *listNode
-	for i := len(items) - 1; i >= 0; i-- {
-		node = &listNode{head: items[i], tail: node, count: len(items) - i}
+	for i, item := range slices.Backward(items) {
+		node = &listNode{head: item, tail: node, count: len(items) - i}
 	}
 	return node
 }
@@ -233,8 +234,8 @@ func newListChain(items []Value) *listNode {
 // caller admits the cells before the first one is allocated.
 func newGuardedListChain(items []Value, b *readerBudget) (*listNode, error) {
 	var node *listNode
-	for i := len(items) - 1; i >= 0; i-- {
-		node = &listNode{head: items[i], tail: node, count: len(items) - i}
+	for i, item := range slices.Backward(items) {
+		node = &listNode{head: item, tail: node, count: len(items) - i}
 		if (len(items)-i)%readerLinkBatch == 0 {
 			if err := b.checkpoint(); err != nil {
 				return nil, err
