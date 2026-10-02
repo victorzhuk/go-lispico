@@ -8,4 +8,4 @@
 
 ## 3. Validate
 
-- [ ] 3.1 CHANGELOG `[Unreleased]` Added entry; `go test -timeout 2m ./core/... ./cl/... ./clojure/...`, `make lint`, `openspec validate dialect-form-enumeration --strict`.
+- [x] 3.1 CHANGELOG `[Unreleased]` Added entry; `go test -timeout 2m ./core/... ./cl/... ./clojure/...`, `make lint`, `openspec validate dialect-form-enumeration --strict`.
