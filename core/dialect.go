@@ -527,8 +527,7 @@ func (d Dialect) ReadWithContextStats(ctx context.Context, src string, maxDepth 
 // IsIdentity reports whether d is the identity dialect: the full kernel base
 // where every kernel form is callable under its own name and nothing else is,
 // with default namespace and reader axes and no vocabulary. The cond axis does
-// not take part. The bytecode VM dispatches canonical form names directly, so
-// only the identity dialect is safe to run under it.
+// not take part.
 func (d Dialect) IsIdentity() bool {
 	return d.state().identity
 }

@@ -38,7 +38,6 @@ type sourceHash [sha256.Size]byte
 type cacheKey struct {
 	sourceHash sourceHash
 	formIndex  int
-	dialectFP  string
 	macroEpoch int
 }
 
@@ -155,8 +154,7 @@ func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration
 // formIndex — never macroEpoch, which is deliberately excluded: including it
 // would scatter a source's stale-epoch entry into a different stripe than
 // its fresh replacement, so a miss could not find its own stale sibling
-// co-located in the stripe it is about to write. dialectFP is constant per
-// engine and contributes no entropy, so it is excluded too. cacheKey itself
+// co-located in the stripe it is about to write. cacheKey itself
 // stays the exact map lookup key; routing and key equality are separate concerns.
 // IsLisp2 reports whether this evaluator's dialect separates the function cell.
 func (be *bytecodeEvaluator) IsLisp2() bool { return be.dialect.IsLisp2() }
@@ -502,7 +500,6 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 	key := cacheKey{
 		sourceHash: sourceHash,
 		formIndex:  formIndex,
-		dialectFP:  be.dialectFP,
 		macroEpoch: be.globals.MacroEpoch(),
 	}
 

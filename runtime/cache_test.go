@@ -125,19 +125,36 @@ func TestCache_Isolation(t *testing.T) {
 	assert.False(t, r1.Equals(r2), "different sources must produce different results")
 }
 
-// TestCache_DialectSensitivity verifies that dialect identity still participates
-// in cache keys even though truthiness is uniform.
-func TestCache_DialectSensitivity(t *testing.T) {
-	cl, err := New(nil, WithBytecode())
+// TestCache_PerEngineDialectIsolation verifies dialect behavior through the
+// cache with two bytecode engines whose dialects map the same visible name to
+// different kernel forms. Each engine evaluates the same source and returns
+// only its own result on every evaluation; no cache-key identity is asserted.
+func TestCache_PerEngineDialectIsolation(t *testing.T) {
+	ifDialect, err := core.NewDialect(core.DialectSpec{Forms: map[string]string{"pick": "if"}})
 	require.NoError(t, err)
-	defer cl.Close()
-
-	bindBuiltin(t, cl, "+")
-
-	r1, err := cl.Eval(context.Background(), "cl", "(if false :y :n)")
+	whenDialect, err := core.NewDialect(core.DialectSpec{Forms: map[string]string{"pick": "when"}})
 	require.NoError(t, err)
 
-	assert.True(t, core.Keyword{V: "n"}.Equals(r1), "CL: (if false :y :n) => :n")
+	newEngine := func(t *testing.T, d core.Dialect) Engine {
+		t.Helper()
+		e, err := New(nil, WithBytecode(), WithDialect(d))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = e.Close() })
+		return e
+	}
+	ifEngine := newEngine(t, ifDialect)
+	whenEngine := newEngine(t, whenDialect)
+
+	const src = "(pick true 1 2)"
+	for range 2 {
+		ifV, err := ifEngine.Eval(context.Background(), "dialect-if", src)
+		require.NoError(t, err)
+		assert.True(t, core.Int{V: 1}.Equals(ifV), "if dialect: (pick true 1 2) => 1")
+
+		whenV, err := whenEngine.Eval(context.Background(), "dialect-when", src)
+		require.NoError(t, err)
+		assert.True(t, core.Int{V: 2}.Equals(whenV), "when dialect: (pick true 1 2) => 2")
+	}
 }
 
 // TestCache_ConcurrentSafety verifies that concurrent Eval calls on a

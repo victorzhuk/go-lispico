@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `core.Callable` and `core.IsCallable(core.Value) bool`: an embedder can
+  implement its own callable value and ask whether a value is callable
+  without switching on the kernel's concrete types.
 - `core.NewDialect(core.DialectSpec) (core.Dialect, error)` builds a Dialect
   from a plain-data spec: it validates, resolves, and fingerprints the spec
   once and returns a frozen Dialect, or an error and the zero Dialect.
@@ -31,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `compiler.NewCompilerWithDialect(name, dialect)` takes the `core.Dialect`
+  by value and never panics, including on the zero `core.Dialect{}`;
+  `compiler.NewCompiler(name)` remains the default constructor and is
+  exactly `NewCompilerWithDialect(name, core.Dialect{})`.
 - Dialect construction is refused, not silently accepted: an unknown kernel
   form, a name both hidden and mapped, a `Hide` name absent from the base
   (including every `Hide` entry against an empty base), a Lisp-2 spec mapping
@@ -59,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING for embedders:** `core.Dialect.TruthyFunc`, the unexported
+  `core.Dialect.isTruthy`, and `vm.Chunk.Truthiness` are gone. Truthiness is
+  no longer a dialect property or a chunk-level hook: `nil` and `false` are
+  falsy and everything else is truthy in every dialect, and the conditional
+  forms use that fixed rule directly.
+- **BREAKING for embedders:** the bytecode evaluator's per-truthiness-hook
+  dispatch is removed with the hook itself; behavior is unchanged.
+- **BREAKING for embedders:** the compiled-chunk `cacheKey` no longer carries
+  the dialect fingerprint. Chunk caches are already per-engine, so results
+  are unchanged; direct construction of a `cacheKey` (an unexported type) by
+  external code was never possible.
 - **BREAKING:** `core.FullDialect`, `core.EmptyDialect`, `core.Dialect.Memoized`,
   and the builder methods `Add`, `Rename`, `Remove`, `Lisp2`, `FlatCond`,
   `WithoutBracketLiterals`, `WithFunctionRef`, `WithReaderVector`,
