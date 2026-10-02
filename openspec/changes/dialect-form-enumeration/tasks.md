@@ -1,10 +1,10 @@
 ## 1. Contract
 
-- [ ] 1.1 Red tests for every scenario in the spec delta; compile with a signature-only `Forms()` stub, verify named assertion failures, and pass `make lint` before sealing red tests.
+- [x] 1.1 Scenario tests adopted from 4613eec, with the Clojure correction from b8b474f. Historical red evidence is not replayed at this base.
 
 ## 2. Implement
 
-- [ ] 2.1 Replace the stub with `Forms()` over the frozen resolved table (sorted names computed once, copied per call); doc comment names the Lisp-2 intrinsics.
+- [x] 2.1 Frozen-table `Forms()` implementation adopted from a4dc645.
 
 ## 3. Validate
 
