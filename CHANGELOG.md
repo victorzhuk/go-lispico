@@ -9,9 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `core.Callable` and `core.IsCallable(core.Value) bool`: an embedder can
-  implement its own callable value and ask whether a value is callable
-  without switching on the kernel's concrete types.
+- `core.Callable` and `core.IsCallable(core.Value) bool`: callable
+  classification for the evaluator's supported callable kinds — GoFunc,
+  Lambda, Keyword, and the marker the VM closure carries — without
+  switching on the kernel's concrete types. `Callable` is a marker only:
+  implementing it does not add a new invocable kind to the evaluator or
+  the VM's apply dispatch.
 - `core.NewDialect(core.DialectSpec) (core.Dialect, error)` builds a Dialect
   from a plain-data spec: it validates, resolves, and fingerprints the spec
   once and returns a frozen Dialect, or an error and the zero Dialect.
