@@ -138,20 +138,20 @@ var plainErrorAllowlist = []struct {
 
 	// Internal VM state assertions: a violated ResetIncremental invariant is a
 	// kernel defect, not an evaluation failure a host can classify.
-	{file: "core/vm/vm.go", line: 302},
+	{file: "core/vm/vm.go", line: 312},
 	{file: "core/vm/vm.go", line: 307},
 
 	// Wrapping, not origination: %w carries an already-typed inner error or a
 	// terminal sentinel through, so errors.As and errors.Is still reach it.
-	{file: "core/vm/vm.go", line: 878},
-	{file: "core/vm/vm.go", line: 885},
-	{file: "core/vm/vm.go", line: 940},
+	{file: "core/vm/vm.go", line: 879},
+	{file: "core/vm/vm.go", line: 886},
+	{file: "core/vm/vm.go", line: 941},
 
 	// Malformed-bytecode assertions: a constant or subchunk index out of range
 	// means the chunk is corrupt, not that the program failed.
-	{file: "core/vm/chunk.go", line: 305},
-	{file: "core/vm/chunk.go", line: 318},
-	{file: "core/vm/chunk.go", line: 326},
+	{file: "core/vm/chunk.go", line: 301},
+	{file: "core/vm/chunk.go", line: 314},
+	{file: "core/vm/chunk.go", line: 322},
 }
 
 func TestMigratedPackagesConstructOnlyTypedErrors(t *testing.T) {
