@@ -1040,3 +1040,12 @@ literal datum SHALL preserve the tree-walker's construction-charge behavior.
 
 - **WHEN** `()` is evaluated repeatedly on one VM engine, including a cached execution
 - **THEN** every result SHALL remain an empty list with the same value and type as the tree-walker result
+
+### Requirement: Compiler construction never panics
+
+Constructing a compiler SHALL NOT panic for any Dialect value, including the zero value, which SHALL compile as the full kernel with no delta.
+
+#### Scenario: Zero-value dialect
+
+- **WHEN** a compiler is constructed with the zero-value Dialect and compiles `(if true 1 2)`
+- **THEN** compilation SHALL succeed and the chunk SHALL evaluate to `1`

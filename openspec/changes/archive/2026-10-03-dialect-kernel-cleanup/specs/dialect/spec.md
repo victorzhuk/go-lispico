@@ -6,7 +6,7 @@ A Dialect adapter that takes a function argument SHALL accept every value the ev
 
 #### Scenario: VM closure passed to a CL adapter
 
-- **WHEN** a CL Engine on the VM evaluates `(mapcar (lambda (x) (* x 2)) '(1 2))`
+- **WHEN** a CL Engine on the VM evaluates `(mapcar (fn (x) (* x 2)) '(1 2))`
 - **THEN** the result SHALL be `(2 4)`
 
 #### Scenario: Non-callable argument is a type error
