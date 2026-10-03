@@ -181,4 +181,39 @@ func TestCompiler_DialectNestedFunctions(t *testing.T) {
 		c := NewCompilerWithDialect("test", clojure.Dialect())
 		require.NoError(t, c.Compile(form), "clojure cond is flat test/body pairs")
 	})
+
+	t.Run("flat cond selected inside nested fn under clojure", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			test core.Bool
+			want core.Int
+		}{
+			{"falsy test takes else branch", core.Bool{V: false}, core.Int{V: 22}},
+			{"truthy test takes first branch", core.Bool{V: true}, core.Int{V: 11}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				// cond normalization must survive the child compiler a
+				// nested fn builds: the closure body still pairs flat
+				// test/body clauses instead of calling an unknown head.
+				cond := core.NewList([]core.Value{
+					core.Symbol{V: "cond"},
+					tc.test,
+					core.Int{V: 11},
+					core.Keyword{V: "else"},
+					core.Int{V: 22},
+				})
+				fn := core.NewList([]core.Value{
+					core.Symbol{V: "fn"},
+					core.NewList([]core.Value{}),
+					cond,
+				})
+				form := core.NewList([]core.Value{fn})
+				c := NewCompilerWithDialect("test", clojure.Dialect())
+				require.NoError(t, c.Compile(form))
+				require.NoError(t, c.EmitReturn())
+				res := runChunk(t, c.Chunk())
+				require.True(t, tc.want.Equals(res), "expected %s, got %s", tc.want.String(), res.String())
+			})
+		}
+	})
 }
