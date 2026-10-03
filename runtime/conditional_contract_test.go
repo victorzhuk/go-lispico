@@ -151,6 +151,15 @@ func TestDialect_ConditionalTruthinessParity(t *testing.T) {
 					assertValue(t, core.Nil{}, v)
 				})
 
+				t.Run("exhausted-cond", func(t *testing.T) {
+					src := "(cond (nil 11) (false 22))"
+					if dialect.name == "clojure" {
+						src = "(cond nil 11 false 22)"
+					}
+					v, _ := runCase(t, mode.opts, dialect.opts, src, false)
+					assertValue(t, core.Nil{}, v)
+				})
+
 				t.Run("side-effects", func(t *testing.T) {
 					// if records only the selected branch.
 					v, tags := runCase(t, mode.opts, dialect.opts, `(if nil (mark "then" 11) (mark "else" 22))`, true)
