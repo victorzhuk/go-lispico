@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1063,42 +1062,33 @@ func TestDecodeHashMap_Scaling(t *testing.T) {
 		return b.String()
 	}
 
-	timeDecode := func(jsonStr string) time.Duration {
+	buildRaw := func(n int) any {
 		// Build the same decoded intermediate the production decode path
 		// builds (json.Decoder with UseNumber), not a float64 tree.
-		dec := stdjson.NewDecoder(strings.NewReader(jsonStr))
+		dec := stdjson.NewDecoder(strings.NewReader(buildJSON(n)))
 		dec.UseNumber()
 		var raw any
 		if err := dec.Decode(&raw); err != nil {
 			t.Fatal(err)
 		}
-		start := time.Now()
-		_, err := fromJSONValue(raw)
-		if err != nil {
+		return raw
+	}
+
+	raw2000, raw4000 := buildRaw(2000), buildRaw(4000)
+
+	allocs2000 := testing.AllocsPerRun(5, func() {
+		if _, err := fromJSONValue(raw2000); err != nil {
 			t.Fatal(err)
 		}
-		return time.Since(start)
-	}
-
-	samples := 5
-	var best2000, best4000 time.Duration
-
-	for range samples {
-		d := timeDecode(buildJSON(2000))
-		if d < best2000 || best2000 == 0 {
-			best2000 = d
+	})
+	allocs4000 := testing.AllocsPerRun(5, func() {
+		if _, err := fromJSONValue(raw4000); err != nil {
+			t.Fatal(err)
 		}
-	}
+	})
 
-	for range samples {
-		d := timeDecode(buildJSON(4000))
-		if d < best4000 || best4000 == 0 {
-			best4000 = d
-		}
-	}
-
-	ratio := float64(best4000) / float64(best2000)
-	t.Logf("2000 keys: %v, 4000 keys: %v, ratio: %.2f (linear~2, quadratic~4)", best2000, best4000, ratio)
+	ratio := allocs4000 / allocs2000
+	t.Logf("2000 keys: %.0f allocs, 4000 keys: %.0f allocs, ratio: %.2f (linear~2, quadratic~4)", allocs2000, allocs4000, ratio)
 
 	require.Less(t, ratio, 3.0, "decode should scale sub-quadratically")
 }
