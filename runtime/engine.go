@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"math"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -109,17 +108,13 @@ type engineImpl struct {
 // resolved once per dialect so neither New nor Use copies the vocabulary map.
 type vocabShape struct {
 	present  bool
-	adapters []vocabAdapter
-}
-
-// vocabAdapter is one adapter binding of the dialect's vocabulary.
-type vocabAdapter struct {
-	name  string
-	value core.Value
+	adapters []string
 }
 
 // vocabShapes caches vocabShape by dialect fingerprint; a Dialect is
-// immutable, so an entry never goes stale.
+// immutable, so an entry never goes stale. The shape keeps adapter names
+// only: two dialects can share a fingerprint while their adapters carry
+// different values, so each value is resolved from the engine's own dialect.
 var vocabShapes struct {
 	mu   sync.RWMutex
 	byFP map[string]*vocabShape
@@ -138,10 +133,10 @@ func vocabShapeOf(d core.Dialect) *vocabShape {
 	vs = &vocabShape{present: vocab != nil}
 	for name, entry := range vocab {
 		if entry.Adapter != nil {
-			vs.adapters = append(vs.adapters, vocabAdapter{name: name, value: entry.Adapter})
+			vs.adapters = append(vs.adapters, name)
 		}
 	}
-	slices.SortFunc(vs.adapters, func(a, b vocabAdapter) int { return strings.Compare(a.name, b.name) })
+	slices.Sort(vs.adapters)
 
 	vocabShapes.mu.Lock()
 	defer vocabShapes.mu.Unlock()
@@ -587,14 +582,19 @@ func (e *engineImpl) applyVocabulary(env *core.Env, reg *core.Registration) erro
 		}
 	}
 
-	for _, a := range e.vocab.adapters {
-		if !env.HasLive(a.name) {
-			if err := env.Set(a.name, a.value); err != nil {
+	for _, name := range e.vocab.adapters {
+		entry, ok := d.VocabEntry(name)
+		if !ok {
+			continue
+		}
+		value := entry.Adapter
+		if !env.HasLive(name) {
+			if err := env.Set(name, value); err != nil {
 				return err
 			}
 		}
-		if _, isGoFunc := a.value.(core.GoFunc); lisp2 && isGoFunc && !env.HasLiveFunc(a.name) {
-			if err := env.SetFunc(a.name, a.value); err != nil {
+		if _, isGoFunc := value.(core.GoFunc); lisp2 && isGoFunc && !env.HasLiveFunc(name) {
+			if err := env.SetFunc(name, value); err != nil {
 				return err
 			}
 		}
