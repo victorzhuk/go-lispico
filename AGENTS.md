@@ -10,7 +10,7 @@ This file provides guidance to coding agents working in this repository.
 
 **Alpha** — Core functionality is complete. The project includes:
 
-- Core interpreter with 13 types and 22 special forms
+- Core interpreter with 13 types and 21 special forms
 - Bytecode compiler and VM — cross-validated for tree-walker parity; `defmacro`
   nested inside a larger form and `unquote-splicing` fall back to the
   tree-walker, form by form
@@ -41,6 +41,8 @@ core/           # Core interpreter (zero deps)
 ├── registration.go # Registration view + write journal (abort)
 ├── reader.go   # Tokenizer + S-expression parser
 ├── eval.go     # Tree-walking evaluator with TCO
+├── dialect.go  # Dialect construction and name resolution
+├── callable.go # Callable marker + classification
 ├── plugin.go   # Plugin interface + registry
 ├── error.go    # Error types
 ├── compiler/   # Bytecode compiler

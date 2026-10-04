@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `length`→`count`) and the three `nth`/`mapcar`/`sort` adapters. The
   `cl.Dialect()` fingerprint changes as a result; it is process-local and not
   persisted.
+- **Breaking:** `core.Dialect.CanonicalName` returns two results,
+  `(canonical, ok)`, instead of three. Callers that consumed the third result
+  must switch to the `ok` boolean.
+- **Breaking:** `core.Dialect.NormalizeCond` returns `[]core.CondClause`
+  instead of `[]Value`, so callers receive parsed clauses rather than raw
+  values.
 
 ### Removed
 

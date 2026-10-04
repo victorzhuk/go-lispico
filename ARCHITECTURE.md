@@ -37,6 +37,9 @@ core/
 ├── env.go        # Lexical environment chain
 ├── reader.go     # Tokenizer and S-expression parser
 ├── eval.go       # Tree-walking evaluator with TCO
+├── dialect.go    # Dialect construction and name resolution
+├── callable.go   # Callable marker and classification
+├── registration.go # Registration view and write journal
 ├── plugin.go     # Plugin interface and registry
 ├── error.go      # Error types
 ├── compiler/     # Bytecode compiler
@@ -234,7 +237,7 @@ re-enters the body at the same operand height it had at loop entry.
 
 #### Special Forms
 
-22 special forms handled directly by the evaluator:
+21 special forms handled directly by the evaluator:
 
 | Form         | Purpose               |
 | ------------ | --------------------- |
