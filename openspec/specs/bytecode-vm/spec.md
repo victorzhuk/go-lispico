@@ -350,35 +350,6 @@ scope observe one shared binding, before and after the defining frame returns.
 - **WHEN** a closure nested two levels deep references a local of the outermost function
 - **THEN** the reference SHALL read and write the same shared binding at every level, matching the tree-walker
 
-### Requirement: Dialect-axis execution
-
-The VM SHALL honor the Engine's dialect: form names normalized to canonical kernel
-forms before compilation, truthiness decided through the dialect's truthiness rule,
-head-position symbol resolution through the function cell under Lisp-2, and special
-forms with a dialect-owned Form-shape rule (`cond` clause shape first) compiled from
-the same canonical structure the Evaluator dispatches on. Any resolvable dialect
-SHALL be VM-eligible.
-
-#### Scenario: CL dialect runs on the VM
-
-- **WHEN** an Engine is created with the default CL dialect and `WithBytecode()`, and evaluates `(progn (setq x 1) (if nil 2 x))`
-- **THEN** construction SHALL succeed and the result SHALL be `1`, matching the tree-walker
-
-#### Scenario: Truthiness axis honored
-
-- **WHEN** a nil-only-falsy dialect evaluates `(if false 1 2)` under the VM
-- **THEN** the result SHALL be `1`, because `false` is truthy on that axis
-
-#### Scenario: Restricted dialect runs on the VM
-
-- **WHEN** a fail-closed dialect built from the empty base with a form subset runs a program using only its forms under the VM
-- **THEN** the program SHALL evaluate correctly, and forms outside the subset SHALL remain undefined
-
-#### Scenario: Both cond clause shapes compile
-
-- **WHEN** a Clojure-dialect Engine compiles a flat-pair `cond` and a CL-dialect Engine compiles a nested-clause `cond` under `WithBytecode()`
-- **THEN** both SHALL compile from the dialect's canonical clauses and return results equal to the tree-walker's
-
 ### Requirement: Keyword application parity
 
 VM application SHALL support Keyword values as callables with semantics identical
@@ -727,7 +698,7 @@ verify the new instruction's operands before the chunk runs.
 
 ### Requirement: Per-Engine compiled-chunk cache
 
-The runtime SHALL cache compiled chunks per Engine, keyed by source, dialect, and
+The runtime SHALL cache compiled chunks per Engine, keyed by source, form index, and
 macro-definition epoch. A cache hit SHALL skip macro expansion and compilation.
 Macro expansion SHALL therefore be performed at most once per cached chunk, not
 once per evaluation: an expander body is ordinary evaluated code, so re-running
@@ -1049,3 +1020,27 @@ Constructing a compiler SHALL NOT panic for any Dialect value, including the zer
 
 - **WHEN** a compiler is constructed with the zero-value Dialect and compiles `(if true 1 2)`
 - **THEN** compilation SHALL succeed and the chunk SHALL evaluate to `1`
+
+### Requirement: Dialect-driven execution
+
+The VM SHALL honor the Engine's dialect: form names normalized to canonical kernel
+forms before compilation, truthiness decided by the fixed uniform rule, `nil` and `false` falsy,
+head-position symbol resolution through the function cell under Lisp-2, and special
+forms with a dialect-owned Form-shape rule (`cond` clause shape first) compiled from
+the same canonical structure the Evaluator dispatches on. Any resolvable dialect
+SHALL be VM-eligible.
+
+#### Scenario: CL dialect runs on the VM
+
+- **WHEN** an Engine is created with the default CL dialect and `WithBytecode()`, and evaluates `(progn (setq x 1) (if nil 2 x))`
+- **THEN** construction SHALL succeed and the result SHALL be `1`, matching the tree-walker
+
+#### Scenario: Restricted dialect runs on the VM
+
+- **WHEN** a fail-closed dialect built from the empty base with a form subset runs a program using only its forms under the VM
+- **THEN** the program SHALL evaluate correctly, and forms outside the subset SHALL remain undefined
+
+#### Scenario: Both cond clause shapes compile
+
+- **WHEN** a Clojure-dialect Engine compiles a flat-pair `cond` and a CL-dialect Engine compiles a nested-clause `cond` under `WithBytecode()`
+- **THEN** both SHALL compile from the dialect's canonical clauses and return results equal to the tree-walker's
