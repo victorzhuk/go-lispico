@@ -1,6 +1,10 @@
-## MODIFIED Requirements
+## REMOVED Requirements
 
 ### Requirement: Dialect-axis execution
+
+## ADDED Requirements
+
+### Requirement: Dialect-driven execution
 
 The VM SHALL honor the Engine's dialect: form names normalized to canonical kernel
 forms before compilation, truthiness decided by the fixed uniform rule, `nil` and `false` falsy,
@@ -23,6 +27,8 @@ SHALL be VM-eligible.
 
 - **WHEN** a Clojure-dialect Engine compiles a flat-pair `cond` and a CL-dialect Engine compiles a nested-clause `cond` under `WithBytecode()`
 - **THEN** both SHALL compile from the dialect's canonical clauses and return results equal to the tree-walker's
+
+## MODIFIED Requirements
 
 ### Requirement: Per-Engine compiled-chunk cache
 
