@@ -212,6 +212,10 @@ func validateSpec(spec DialectSpec, hide []string) error {
 	forms := slices.Sorted(maps.Keys(spec.Forms))
 	adapters := slices.Sorted(maps.Keys(spec.Adapters))
 
+	if spec.Base != BaseFull && spec.Base != BaseEmpty {
+		return fmt.Errorf("dialect: unknown base %d", spec.Base)
+	}
+
 	if spec.Lisp2 {
 		for _, name := range forms {
 			if name == "funcall" || name == "function" {
