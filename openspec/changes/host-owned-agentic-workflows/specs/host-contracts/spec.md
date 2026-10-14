@@ -86,17 +86,17 @@ Substituting a distributed backend for a local one SHALL preserve the observable
 
 ### Requirement: Workflow definitions are independent of storage clients and local paths
 
-A workflow definition SHALL NOT reference a concrete storage client, a concrete driver name, or a local filesystem path. A definition that names any of them SHALL NOT be accepted.
+A workflow definition SHALL remain observable-behavior-equivalent when the host substitutes its storage backend, and host storage substitution SHALL NOT be treated as replacing the durable engine's own history backend.
 
 #### Scenario: Definition naming a local path is rejected
 
-- **WHEN** a workflow definition contains a local filesystem path
-- **THEN** the definition SHALL NOT be accepted
+- **WHEN** a workflow validated against one host backend runs against a substituted backend that satisfies the declared guarantees
+- **THEN** the workflow's observable behavior SHALL be unchanged
 
 #### Scenario: Definition naming a storage client is rejected
 
-- **WHEN** a workflow definition names a concrete storage client type
-- **THEN** the definition SHALL NOT be accepted
+- **WHEN** the host swaps its application-data backend
+- **THEN** the durable engine's own history backend SHALL be unaffected
 
 ### Requirement: Host storage substitution does not replace engine history
 

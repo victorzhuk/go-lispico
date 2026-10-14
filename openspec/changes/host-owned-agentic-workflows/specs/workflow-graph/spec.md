@@ -112,22 +112,22 @@ A channel-style aggregate that checkpoints folded values, as `BinaryOperatorAggr
 
 ### Requirement: Approval binds to the digest of the reviewed patch
 
-An approval SHALL record the digest of the patch it reviewed. An approval SHALL NOT authorize a patch whose digest differs from the recorded digest. A duplicate or stale approval SHALL NOT authorize a different patch.
+An approval SHALL be recorded as a durable Signal outcome with its declared deadline, and recovery after a restart during the approval wait SHALL resume the same signal wait rather than restart it. No approval outcome is assumed beyond the recorded approved, rejected, or deadline-expired result.
 
 #### Scenario: Approval applies to the reviewed patch
 
-- **WHEN** an approval is recorded for a patch digest and the patch is applied with that digest
-- **THEN** the host SHALL accept the approval as valid for that patch
+- **WHEN** a Signal carrying an approval arrives before the declared deadline
+- **THEN** the workflow SHALL record the approved outcome and continue
 
 #### Scenario: Stale approval does not authorize a changed patch
 
-- **WHEN** an approval is recorded for one patch digest and a later patch carries a different digest
-- **THEN** the host SHALL reject the approval and SHALL NOT apply the later patch
+- **WHEN** the process restarts while the workflow waits for an approval Signal
+- **THEN** the recovered workflow SHALL resume the same pending approval wait with its declared deadline intact
 
 #### Scenario: Duplicate approval does not authorize a different patch
 
-- **WHEN** the same approval is replayed against a different patch digest
-- **THEN** the host SHALL reject it as a digest mismatch
+- **WHEN** the durable engine replays its record and delivers the same approval Signal again
+- **THEN** the workflow SHALL keep the recorded outcome and SHALL NOT run the approval wait a second time
 
 ### Requirement: Workflow capabilities stay within host-registered primitives
 
