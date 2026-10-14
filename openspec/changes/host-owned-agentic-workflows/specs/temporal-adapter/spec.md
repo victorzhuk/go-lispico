@@ -16,7 +16,7 @@ Temporal SHALL be the first approved adapter target. The graph contracts the ada
 
 ### Requirement: Model and tool calls run as Activities
 
-Every model call and every tool call SHALL run as an Activity. Workflow code and the graph interpretation SHALL be deterministic and free of side effects. A workflow function SHALL NOT call a model, a tool, a clock, a random source, or a host-registered primitive directly.
+Every model call and every tool call SHALL run as an Activity. Workflow code, graph interpretation, and Lisp graph construction SHALL be deterministic and free of side effects. A workflow function SHALL NOT call a model, a tool, a clock, a random source, or a host-registered primitive directly, and graph definition SHALL NOT read a clock, generate randomness, or call a model.
 
 #### Scenario: Model call runs as an Activity
 
@@ -27,6 +27,11 @@ Every model call and every tool call SHALL run as an Activity. Workflow code and
 
 - **WHEN** workflow code reads a clock or a random source
 - **THEN** the adapter SHALL refuse that workflow code
+
+#### Scenario: Prohibited effect during graph definition is refused
+
+- **WHEN** Lisp graph definition reads a clock, generates randomness, or calls a model
+- **THEN** the adapter SHALL reject the graph definition before any node executes
 
 ### Requirement: Human approval is a durable Signal with an explicit deadline outcome
 
@@ -77,12 +82,12 @@ An external effect whose outcome is unknown SHALL NOT be covered by an engine pr
 
 ### Requirement: No engine exactly-once guarantee is assumed or promised
 
-The system SHALL NOT assume or promise an engine exactly-once guarantee. Documentation, host code, and host-facing messages SHALL state that ambiguous outcomes are resolved by host idempotency or reconciliation, not by an engine claim.
+The system SHALL NOT assume or promise an engine exactly-once guarantee. Exactly-once SHALL NOT be claimed as derived from the engine; a claim of exactly-once grounded in host-provided idempotency is not an engine claim. Documentation, host code, and host-facing messages SHALL state that ambiguous outcomes are resolved by host idempotency or reconciliation, not by an engine claim.
 
-#### Scenario: No exactly-once claim in host-facing text
+#### Scenario: No engine-derived exactly-once claim in host-facing text
 
 - **WHEN** host documentation describes effect delivery
-- **THEN** it SHALL NOT state that effects happen exactly once
+- **THEN** it SHALL NOT claim exactly-once as a guarantee derived from the engine
 
 #### Scenario: Unknown outcome is reconciled
 

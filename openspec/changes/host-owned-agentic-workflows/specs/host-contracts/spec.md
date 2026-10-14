@@ -29,7 +29,7 @@ A workflow that makes an ambiguous external effect SHALL declare a receipt contr
 
 ### Requirement: Each contract declares its guarantees
 
-Each persistence contract SHALL declare: atomicity of idempotency-key reservation, concurrency and ownership with a lease plus scanner cleanup of in-flight markers, ordering scope, partition or shard key, and retention horizon. A contract that omits one of these declarations SHALL NOT be accepted as a host contract.
+Each persistence contract SHALL declare: atomicity of idempotency-key reservation, concurrency and ownership with a single owner at a time held by a lease plus scanner cleanup of in-flight markers, ordering scope, partition or shard key, and retention horizon. Each contract SHALL declare exclusive ownership within its ownership scope: a second owner SHALL NOT hold the same scope while a lease on it remains valid. A contract that omits one of these declarations SHALL NOT be accepted as a host contract.
 
 #### Scenario: Undeclared guarantee is rejected
 
@@ -45,6 +45,11 @@ Each persistence contract SHALL declare: atomicity of idempotency-key reservatio
 
 - **WHEN** a marker left in flight by a failed holder outlives its lease
 - **THEN** the scanner SHALL reclaim that marker
+
+#### Scenario: Concurrent holder is refused while a lease is valid
+
+- **WHEN** a holder owns a scope under a valid lease and a second owner attempts to claim the same scope
+- **THEN** the second owner SHALL be refused until the lease expires or is released
 
 #### Scenario: Ordering scope is bounded by the declaration
 
@@ -86,17 +91,22 @@ Substituting a distributed backend for a local one SHALL preserve the observable
 
 ### Requirement: Workflow definitions are independent of storage clients and local paths
 
-A workflow definition SHALL remain observable-behavior-equivalent when the host substitutes its storage backend, and host storage substitution SHALL NOT be treated as replacing the durable engine's own history backend.
+A workflow definition SHALL NOT reference a concrete storage client, a concrete storage backend type, or a local filesystem path. Definitions address host contracts only, so the same definition is admissible against any host backend that satisfies the declared guarantees, and host storage substitution SHALL NOT be treated as replacing the durable engine's own history backend.
 
 #### Scenario: Definition naming a local path is rejected
 
-- **WHEN** a workflow validated against one host backend runs against a substituted backend that satisfies the declared guarantees
-- **THEN** the workflow's observable behavior SHALL be unchanged
+- **WHEN** a workflow definition references a local filesystem path
+- **THEN** validation SHALL reject the definition before execution
 
 #### Scenario: Definition naming a storage client is rejected
 
-- **WHEN** the host swaps its application-data backend
-- **THEN** the durable engine's own history backend SHALL be unaffected
+- **WHEN** a workflow definition references a concrete storage client or backend type
+- **THEN** validation SHALL reject the definition before execution
+
+#### Scenario: Contract-addressed definition admits backend substitution
+
+- **WHEN** a workflow validated against one host backend runs against a substituted backend that satisfies the declared guarantees
+- **THEN** the workflow's observable behavior SHALL be unchanged
 
 ### Requirement: Host storage substitution does not replace engine history
 

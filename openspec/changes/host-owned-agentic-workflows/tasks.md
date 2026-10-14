@@ -3,7 +3,7 @@
 - [x] 1.1 Draft `specs/workflow-graph/spec.md`: validation rejects invalid structure, missing loop bounds, and unsupported adapter capabilities before execution.
 - [x] 1.2 Draft independent branch advance and declared-join semantics; state that no global superstep barrier is required.
 - [x] 1.3 Draft bounded loop requirements: declared iteration and step bounds hold after recovery, and repeated activations carry distinct iteration identities.
-- [x] 1.4 Draft patch-bound approval requirements: approval binds to the digest of the reviewed patch, and duplicate or stale approval authorizes nothing.
+- [x] 1.4 Draft patch-bound approval requirements: approval binds to the digest of the reviewed patch, and duplicate or stale approval authorizes nothing. — Digest recording, matching-digest authorization, and changed-digest rejection scenarios restored in `specs/workflow-graph/spec.md`.
 - [ ] 1.5 Check every scenario against `docs/adr/0014-host-owned-workflow-boundary.md` and `docs/adr/0015-independent-branches-bounded-loops.md`.
 
 ## 2. Host contracts spec
@@ -11,7 +11,7 @@
 - [x] 2.1 Draft `specs/host-contracts/spec.md`: narrow consumer-owned contracts for application data, execution history, and optional effect receipts.
 - [x] 2.2 Draft the declared guarantees per contract: idempotency-key reservation atomicity, concurrency and ownership with lease plus scanner cleanup, ordering scope, partition key, retention horizon.
 - [x] 2.3 Draft backend conformance: a sharded or distributed backend satisfies the declared guarantees or rejects the configuration; unsupported guarantees never degrade silently.
-- [x] 2.4 Draft substitution requirements: local-to-distributed preserves observable behavior, definitions stay free of storage clients and local paths, and engine history stays engine-owned.
+- [x] 2.4 Draft substitution requirements: local-to-distributed preserves observable behavior, definitions stay free of storage clients and local paths, and engine history stays engine-owned. — Storage-independent definition constraint with local-path and storage-client rejection scenarios restored in `specs/host-contracts/spec.md`.
 - [ ] 2.5 Check every scenario against `docs/adr/0016-segregated-persistence-contracts.md`.
 
 ## 3. Temporal adapter spec

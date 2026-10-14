@@ -11,7 +11,7 @@ The system SHALL validate a Lisp-produced workflow graph and reject an invalid g
 
 #### Scenario: Valid graph passes validation
 
-- **WHEN** a graph declares an entry node, reachable nodes, a join with at least one declared dependency, and a cycle with a declared iteration limit
+- **WHEN** a graph declares an entry node, reachable nodes, joins that declare every dependency the graph implies between their incoming branches, a cycle declared as a bounded loop with a declared iteration limit whose activations carry distinct iteration identities, and node capabilities that the selected adapter provides
 - **THEN** validation SHALL succeed
 
 ### Requirement: A join declares every dependency it waits on
@@ -96,38 +96,45 @@ Repeated activations of the same node SHALL carry distinct iteration identities 
 - **WHEN** the same node activates more than once within one execution
 - **THEN** each activation SHALL carry a distinct iteration identity
 
-### Requirement: A checkpointing loop aggregate carries folded state into recovery
+### Requirement: A replayed activation is tolerated after recovery
 
-A channel-style aggregate that checkpoints folded values, as `BinaryOperatorAggregate` does in [langgraph](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/channels/binop.py), SHALL carry that folded state into the recovered execution rather than restarting from an empty value.
-
-#### Scenario: Folded state survives recovery
-
-- **WHEN** a loop aggregates values with a checkpointing aggregate and the workflow recovers mid-loop
-- **THEN** the recovered execution SHALL continue from the checkpointed folded value
+The host SHALL tolerate a node activation the durable engine delivers more than once from its own record after a restart, and SHALL NOT persist an interpreter stack across the wait.
 
 #### Scenario: Replayed activation is tolerated after recovery
 
 - **WHEN** the durable engine replays its own record after a restart and delivers the same node activation to the host a second time
 - **THEN** the host SHALL tolerate the repeated activation and SHALL NOT persist an interpreter stack across the wait
 
+_Informative note (non-normative): research observation, not a host obligation. A channel-style aggregate that checkpoints folded values, as `BinaryOperatorAggregate` does in [langgraph](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/channels/binop.py), carries that folded state into the recovered execution rather than restarting from an empty value._
+
 ### Requirement: Approval binds to the digest of the reviewed patch
 
-An approval SHALL be recorded as a durable Signal outcome with its declared deadline, and recovery after a restart during the approval wait SHALL resume the same signal wait rather than restart it. No approval outcome is assumed beyond the recorded approved, rejected, or deadline-expired result.
+An approval SHALL record the digest of the patch it reviews together with its declared deadline outcome. An approval SHALL authorize only the patch whose digest matches the recorded digest; a patch whose digest differs SHALL be rejected and SHALL NOT be applied. No approval outcome is assumed beyond the recorded approved, rejected, or deadline-expired result. The approval contract stays engine-neutral; the engine-specific signal mapping lives in the temporal-adapter delta.
 
-#### Scenario: Approval applies to the reviewed patch
+#### Scenario: Approval records the reviewed digest
 
-- **WHEN** a Signal carrying an approval arrives before the declared deadline
-- **THEN** the workflow SHALL record the approved outcome and continue
+- **WHEN** an approval arrives before its declared deadline
+- **THEN** the workflow SHALL record the approved outcome together with the digest of the reviewed patch
 
-#### Scenario: Stale approval does not authorize a changed patch
+#### Scenario: Matching digest authorizes the patch
 
-- **WHEN** the process restarts while the workflow waits for an approval Signal
+- **WHEN** the patch presented for application carries the digest recorded with the approval
+- **THEN** the workflow SHALL apply the patch and continue
+
+#### Scenario: Changed digest is rejected
+
+- **WHEN** the patch presented for application carries a digest that differs from the recorded approval digest
+- **THEN** the workflow SHALL reject the approval for that patch and SHALL NOT apply it
+
+#### Scenario: Approval wait survives a restart
+
+- **WHEN** the process restarts while the workflow waits for an approval
 - **THEN** the recovered workflow SHALL resume the same pending approval wait with its declared deadline intact
 
 #### Scenario: Duplicate approval does not authorize a different patch
 
-- **WHEN** the durable engine replays its record and delivers the same approval Signal again
-- **THEN** the workflow SHALL keep the recorded outcome and SHALL NOT run the approval wait a second time
+- **WHEN** the durable engine replays its record and delivers the same approval again
+- **THEN** the workflow SHALL keep the recorded outcome and digest and SHALL NOT run the approval wait a second time
 
 ### Requirement: Workflow capabilities stay within host-registered primitives
 
@@ -138,29 +145,8 @@ A workflow node SHALL reach the outside world only through a primitive the host 
 - **WHEN** a workflow node requests a capability the host did not register
 - **THEN** the host SHALL refuse the call and the workflow SHALL NOT perform the effect
 
-### Requirement: A workflow capability adds no MCP transport
+_Informative note (non-normative): research correction, not a host obligation. The MCP transports specification defines stdio and Streamable HTTP as the standard transports ([transports specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports))._
 
-The workflow capability SHALL NOT add a new transport. MCP standard transports are stdio and Streamable HTTP only ([transports specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)), so a workflow capability SHALL NOT require another MCP transport.
+_Informative note (non-normative): research correction, not a host obligation. The CEL language definition states no blanket linear-time guarantee for expression evaluation ([CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md))._
 
-#### Scenario: Non-standard transport is refused
-
-- **WHEN** a workflow declares an MCP transport other than stdio or Streamable HTTP
-- **THEN** the host SHALL reject the declaration
-
-### Requirement: A workflow promises no evaluation-time bound
-
-A workflow SHALL NOT promise linear-time evaluation of its expressions; the CEL language definition states no blanket linear-time guarantee ([CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)).
-
-#### Scenario: No linear-time promise is claimed
-
-- **WHEN** a workflow capability documents the evaluation cost of its expressions
-- **THEN** the documentation SHALL NOT claim a linear-time guarantee
-
-### Requirement: Network-management draft error codes are not base MCP codes
-
-Error codes defined by a network-management extension draft SHALL NOT be treated as base MCP codes ([draft-zw-opsawg-mcp-network-mgmt-00](https://www.ietf.org/archive/id/draft-zw-opsawg-mcp-network-mgmt-00.html)).
-
-#### Scenario: Draft error code is not a base MCP code
-
-- **WHEN** a workflow capability reports an error defined only by the network-management extension draft
-- **THEN** the host SHALL NOT present it as a base MCP error code
+_Informative note (non-normative): research correction, not a host obligation. Error codes defined by the network-management extension draft are not base MCP codes ([draft-zw-opsawg-mcp-network-mgmt-00](https://www.ietf.org/archive/id/draft-zw-opsawg-mcp-network-mgmt-00.html))._
