@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -304,13 +307,18 @@ func (p *Plugin) runTimeout(ctx context.Context, eval core.Evaluator, args []cor
 	return core.String{V: response}, nil
 }
 
+// buildPromptWithContext renders agent context entries ahead of the task
+// prompt. Context keys and values are untrusted data and must never be
+// treated as instructions: each is JSON string encoded so no entry can
+// introduce a line break or forge a "Task:" header.
 func buildPromptWithContext(prompt string, ctxMap *core.HashMap) string {
-	var ctxStr string
+	entries := make([]string, 0)
 	ctxMap.Each(func(k, v core.Value) {
-		ctxStr += fmt.Sprintf("%s: %s\n", k.String(), v.String())
+		entries = append(entries, strconv.Quote(k.String())+": "+strconv.Quote(v.String()))
 	})
+	sort.Strings(entries)
 
-	return fmt.Sprintf("Context:\n%s\n\nTask:\n%s", ctxStr, prompt)
+	return fmt.Sprintf("Context:\n%s\n\nTask:\n%s", strings.Join(entries, "\n"), prompt)
 }
 
 func (p *Plugin) list(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
