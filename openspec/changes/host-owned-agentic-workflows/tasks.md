@@ -27,5 +27,5 @@
 
 - [ ] 4.1 Verify every normative claim in the three specs traces to a decision in ADRs 0014, 0015, 0016, or 0017, and drop or weaken any claim that does not.
 - [ ] 4.2 Verify the research corrections carry their primary-source URLs wherever the corrected claim would otherwise read as a requirement.
-- [ ] 4.3 Verify `proposal.md` lists the four parent ADRs and records the `## ADDED Requirements` deviation.
-- [ ] 4.4 Confirm the change adds no production code and leaves the root `go.mod` baseline untouched.
+- [x] 4.3 Verify `proposal.md` lists the four parent ADRs and records the `## ADDED Requirements` deviation. — Confirmed: `## What Changes` lists ADRs 0014-0017 and states the ADDED-only delta rationale for the three new capability specs.
+- [x] 4.4 Confirm the change adds no production code and leaves the root `go.mod` baseline untouched. — Confirmed: `git diff --stat e965c274..HEAD` shows no paths outside `openspec/changes/host-owned-agentic-workflows/` and no `go.mod`/`go.sum` change; `git status --short` is clean before this edit.

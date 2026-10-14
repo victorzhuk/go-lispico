@@ -22,6 +22,8 @@ Parent decisions:
 - `docs/adr/0016-segregated-persistence-contracts.md`
 - `docs/adr/0017-temporal-first-adapter.md`
 
+This change implements the decisions recorded in those four ADRs; the spec deltas express them as `## ADDED Requirements` because all three capabilities are new.
+
 Deviation from the default template: this change introduces three NEW capability specs (`workflow-graph`, `host-contracts`, `temporal-adapter`). The deltas therefore use `## ADDED Requirements` for the whole delta rather than mirroring `openspec/specs/agent-plugin/spec.md`, whose placeholder scenario cannot define workflow acceptance.
 
 Research corrections carried into the specs: MCP standard transports are stdio and Streamable HTTP only ([transports specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)); no blanket CEL linear-time guarantee exists ([CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)); `BinaryOperatorAggregate` checkpoints folded values ([langgraph binop channel](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/channels/binop.py)); network-management draft error codes are not base MCP codes ([draft-zw-opsawg-mcp-network-mgmt-00](https://www.ietf.org/archive/id/draft-zw-opsawg-mcp-network-mgmt-00.html)).
