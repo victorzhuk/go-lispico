@@ -52,24 +52,36 @@ A join node SHALL wait until every branch it declares as a dependency has delive
 - **WHEN** a join declares a dependency whose branch has not delivered
 - **THEN** the join SHALL remain blocked
 
-### Requirement: Loops stop at their declared bound, including after recovery
+### Requirement: Loops stop at their declared bound
 
-A declared loop SHALL stop at its configured iteration or step bound. The bound SHALL hold after recovery from a restart or a fault as well as during uninterrupted execution. A loop with no declared bound SHALL NOT be executable. Repeated activations of the same node SHALL carry distinct iteration identities so a recovered execution never confuses one activation with another. A channel-style aggregate that checkpoints folded values, as `BinaryOperatorAggregate` does in [langgraph](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/channels/binop.py), carries that folded state into the recovered execution rather than restarting from an empty value.
+A declared loop SHALL stop at its configured iteration or step bound. A loop with no declared bound SHALL NOT be executable.
 
 #### Scenario: Loop stops at its bound
 
 - **WHEN** a loop declares an iteration limit of three and its body would otherwise continue
 - **THEN** execution SHALL stop after three iterations
 
+### Requirement: The loop bound holds after recovery
+
+The declared iteration or step bound SHALL hold after recovery from a restart or a fault as it does during uninterrupted execution.
+
 #### Scenario: Bound holds after recovery
 
 - **WHEN** a loop is interrupted before its declared iteration limit and the workflow recovers
 - **THEN** the recovered execution SHALL stop at the same declared iteration limit rather than restarting the count
 
+### Requirement: Repeated loop activations keep distinct iteration identities
+
+Repeated activations of the same node SHALL carry distinct iteration identities so a recovered execution never confuses one activation with another.
+
 #### Scenario: Repeated activations keep distinct identities
 
 - **WHEN** the same node activates more than once within one execution
 - **THEN** each activation SHALL carry a distinct iteration identity
+
+### Requirement: A checkpointing loop aggregate carries folded state into recovery
+
+A channel-style aggregate that checkpoints folded values, as `BinaryOperatorAggregate` does in [langgraph](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/channels/binop.py), SHALL carry that folded state into the recovered execution rather than restarting from an empty value.
 
 #### Scenario: Folded state survives recovery
 
@@ -97,14 +109,36 @@ An approval SHALL record the digest of the patch it reviewed. An approval SHALL 
 
 ### Requirement: Workflow capabilities stay within host-registered primitives
 
-A workflow node SHALL reach the outside world only through a primitive the host registered behind the host permission layer. The workflow capability SHALL NOT add a new transport. MCP standard transports are stdio and Streamable HTTP only ([transports specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)), so a workflow capability SHALL NOT require another MCP transport. A workflow SHALL NOT promise linear-time evaluation of its expressions; the CEL language definition states no blanket linear-time guarantee ([CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)). Error codes defined by a network-management extension draft are not base MCP codes and SHALL NOT be treated as such ([draft-zw-opsawg-mcp-network-mgmt-00](https://www.ietf.org/archive/id/draft-zw-opsawg-mcp-network-mgmt-00.html)).
+A workflow node SHALL reach the outside world only through a primitive the host registered behind the host permission layer.
 
 #### Scenario: Unregistered primitive is refused
 
 - **WHEN** a workflow node requests a capability the host did not register
 - **THEN** the host SHALL refuse the call and the workflow SHALL NOT perform the effect
 
+### Requirement: A workflow capability adds no MCP transport
+
+The workflow capability SHALL NOT add a new transport. MCP standard transports are stdio and Streamable HTTP only ([transports specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)), so a workflow capability SHALL NOT require another MCP transport.
+
 #### Scenario: Non-standard transport is refused
 
 - **WHEN** a workflow declares an MCP transport other than stdio or Streamable HTTP
 - **THEN** the host SHALL reject the declaration
+
+### Requirement: A workflow promises no evaluation-time bound
+
+A workflow SHALL NOT promise linear-time evaluation of its expressions; the CEL language definition states no blanket linear-time guarantee ([CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)).
+
+#### Scenario: No linear-time promise is claimed
+
+- **WHEN** a workflow capability documents the evaluation cost of its expressions
+- **THEN** the documentation SHALL NOT claim a linear-time guarantee
+
+### Requirement: Network-management draft error codes are not base MCP codes
+
+Error codes defined by a network-management extension draft SHALL NOT be treated as base MCP codes ([draft-zw-opsawg-mcp-network-mgmt-00](https://www.ietf.org/archive/id/draft-zw-opsawg-mcp-network-mgmt-00.html)).
+
+#### Scenario: Draft error code is not a base MCP code
+
+- **WHEN** a workflow capability reports an error defined only by the network-management extension draft
+- **THEN** the host SHALL NOT present it as a base MCP error code
