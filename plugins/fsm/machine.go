@@ -24,81 +24,100 @@ func (sm *StateMachine) Initial() State {
 }
 
 func (sm *StateMachine) Transition(event Event, ctx map[string]any) (TransitionResult, error) {
+	if !sm.inTransition.CompareAndSwap(false, true) {
+		return TransitionResult{}, fmt.Errorf("fsm: transition already in progress on machine %s", sm.id)
+	}
+	defer sm.inTransition.Store(false)
+
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	cfg, ok := sm.states[sm.current]
 	if !ok {
+		sm.mu.Unlock()
 		return TransitionResult{}, fmt.Errorf("invalid current state: %s", sm.current)
 	}
 
 	trans, ok := cfg.On[event]
 	if !ok {
-		return TransitionResult{
+		res := TransitionResult{
 			State: sm.current,
 			From:  sm.current,
 			To:    sm.current,
 			Valid: false,
 			Error: fmt.Sprintf("event %s not valid in state %s", event, sm.current),
-		}, nil
+		}
+		sm.mu.Unlock()
+		return res, nil
 	}
 
 	from := sm.current
 	sm.current = trans.Target
+	sm.mu.Unlock()
 
 	return TransitionResult{
-		State: sm.current,
-		From:  from,
-		To:    sm.current,
-		Valid: true,
+		State:     trans.Target,
+		From:      from,
+		To:        trans.Target,
+		Valid:     true,
+		Committed: true,
 	}, nil
 }
 
-// TransitionWithEval holds sm.mu across the guard/action Lambda invocations, so
-// a guard or action must not call back into this machine (e.g. fsm/transition on
-// the same id) — the mutex is not reentrant and would deadlock.
+// TransitionWithEval evaluates the guard and the action with sm.mu released, so
+// a guard or action may call back into the machine (fsm/current-state, and even
+// fsm/transition on other machines). Re-entrant transitions on the same machine
+// are refused via the inTransition flag instead of deadlocking.
 func (sm *StateMachine) TransitionWithEval(goCtx context.Context, event Event, transCtx map[string]any, eval core.Evaluator, env *core.Env) (TransitionResult, error) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	if !sm.inTransition.CompareAndSwap(false, true) {
+		return TransitionResult{}, fmt.Errorf("fsm: transition already in progress on machine %s", sm.id)
+	}
+	defer sm.inTransition.Store(false)
 
+	sm.mu.Lock()
 	cfg, ok := sm.states[sm.current]
 	if !ok {
+		sm.mu.Unlock()
 		return TransitionResult{}, fmt.Errorf("invalid current state: %s", sm.current)
 	}
 
 	trans, ok := cfg.On[event]
 	if !ok {
-		return TransitionResult{
+		res := TransitionResult{
 			State: sm.current,
 			From:  sm.current,
 			To:    sm.current,
 			Valid: false,
 			Error: fmt.Sprintf("event %s not valid in state %s", event, sm.current),
-		}, nil
+		}
+		sm.mu.Unlock()
+		return res, nil
 	}
+
+	from := sm.current
+	sm.mu.Unlock()
 
 	if trans.Guard != nil {
 		if guard, ok := trans.Guard.(core.Lambda); ok {
 			args := []core.Value{
-				core.Keyword{V: string(sm.current)},
+				core.Keyword{V: string(from)},
 				core.Keyword{V: string(trans.Target)},
 				core.Keyword{V: string(event)},
 			}
 			result, err := eval.Apply(goCtx, guard, args, env)
 			if err != nil {
 				return TransitionResult{
-					State: sm.current,
-					From:  sm.current,
-					To:    sm.current,
+					State: from,
+					From:  from,
+					To:    from,
 					Valid: false,
 					Error: fmt.Sprintf("guard error: %s", err),
 				}, nil
 			}
 			if !isTruthy(result) {
 				return TransitionResult{
-					State: sm.current,
-					From:  sm.current,
-					To:    sm.current,
+					State: from,
+					From:  from,
+					To:    from,
 					Valid: false,
 					Error: "guard returned false",
 				}, nil
@@ -106,8 +125,13 @@ func (sm *StateMachine) TransitionWithEval(goCtx context.Context, event Event, t
 		}
 	}
 
-	from := sm.current
+	sm.mu.Lock()
+	if sm.current != from {
+		sm.mu.Unlock()
+		return TransitionResult{Error: "state changed during guard evaluation"}, nil
+	}
 	sm.current = trans.Target
+	sm.mu.Unlock()
 
 	if trans.Action != nil {
 		if action, ok := trans.Action.(core.Lambda); ok {
@@ -116,15 +140,25 @@ func (sm *StateMachine) TransitionWithEval(goCtx context.Context, event Event, t
 				core.Keyword{V: string(trans.Target)},
 				core.Keyword{V: string(event)},
 			}
-			_, _ = eval.Apply(goCtx, action, args, env)
+			if _, err := eval.Apply(goCtx, action, args, env); err != nil {
+				return TransitionResult{
+					State:     trans.Target,
+					From:      from,
+					To:        trans.Target,
+					Valid:     false,
+					Committed: true,
+					Error:     "action: " + err.Error(),
+				}, nil
+			}
 		}
 	}
 
 	return TransitionResult{
-		State: sm.current,
-		From:  from,
-		To:    sm.current,
-		Valid: true,
+		State:     trans.Target,
+		From:      from,
+		To:        trans.Target,
+		Valid:     true,
+		Committed: true,
 	}, nil
 }
 
@@ -151,11 +185,17 @@ func (sm *StateMachine) CanTransition(event Event) bool {
 	return ok
 }
 
-func (sm *StateMachine) Reset() State {
+func (sm *StateMachine) Reset() (State, error) {
+	if !sm.inTransition.CompareAndSwap(false, true) {
+		return State(""), fmt.Errorf("fsm: transition already in progress on machine %s", sm.id)
+	}
+	defer sm.inTransition.Store(false)
+
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.current = sm.initial
-	return sm.current
+	current := sm.current
+	sm.mu.Unlock()
+	return current, nil
 }
 
 func (sm *StateMachine) Reachable(fromState State) []State {
@@ -184,7 +224,7 @@ func (sm *StateMachine) addCallback(l core.Lambda, eval core.Evaluator, env *cor
 	sm.callbacks = append(sm.callbacks, callback{lambda: l, eval: eval, env: env})
 }
 
-func (sm *StateMachine) notify(ctx context.Context, ev StateEvent) {
+func (sm *StateMachine) notify(ctx context.Context, ev StateEvent) error {
 	sm.mu.RLock()
 	cbs := make([]callback, len(sm.callbacks))
 	copy(cbs, sm.callbacks)
@@ -196,9 +236,13 @@ func (sm *StateMachine) notify(ctx context.Context, ev StateEvent) {
 		core.Keyword{V: string(ev.To)},
 	}
 
+	var firstErr error
 	for _, cb := range cbs {
-		_, _ = cb.eval.Apply(ctx, cb.lambda, args, cb.env)
+		if _, err := cb.eval.Apply(ctx, cb.lambda, args, cb.env); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("callback: %s", err)
+		}
 	}
+	return firstErr
 }
 
 func (sm *StateMachine) Serialize() ([]byte, error) {
@@ -216,6 +260,11 @@ func (sm *StateMachine) Serialize() ([]byte, error) {
 }
 
 func (sm *StateMachine) Deserialize(data []byte) error {
+	if !sm.inTransition.CompareAndSwap(false, true) {
+		return fmt.Errorf("fsm: transition already in progress on machine %s", sm.id)
+	}
+	defer sm.inTransition.Store(false)
+
 	var state PersistentState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return err
@@ -223,6 +272,21 @@ func (sm *StateMachine) Deserialize(data []byte) error {
 
 	if state.Version != 1 {
 		return fmt.Errorf("unsupported state version: %d", state.Version)
+	}
+
+	if state.MachineID != sm.id {
+		return fmt.Errorf("snapshot machine id %q does not match %q", state.MachineID, sm.id)
+	}
+
+	if state.Current == "" {
+		return fmt.Errorf("snapshot carries no current state")
+	}
+
+	sm.mu.RLock()
+	_, ok := sm.states[State(state.Current)]
+	sm.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown state %q in snapshot", state.Current)
 	}
 
 	sm.mu.Lock()

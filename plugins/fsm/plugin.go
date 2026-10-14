@@ -89,6 +89,16 @@ func (p *Plugin) createMachine(id string, def *core.HashMap) (*StateMachine, err
 		current: "",
 	}
 
+	var defKeyErr error
+	def.Each(func(k, _ core.Value) {
+		if _, ok := k.(core.Keyword); !ok && defKeyErr == nil {
+			defKeyErr = fmt.Errorf("definition key must be a keyword")
+		}
+	})
+	if defKeyErr != nil {
+		return nil, defKeyErr
+	}
+
 	if initVal, ok := def.Get(core.Keyword{V: "initial"}); ok {
 		if initKw, ok := initVal.(core.Keyword); ok {
 			sm.initial = State(initKw.V)
@@ -99,60 +109,113 @@ func (p *Plugin) createMachine(id string, def *core.HashMap) (*StateMachine, err
 	}
 
 	if statesVal, ok := def.Get(core.Keyword{V: "states"}); ok {
-		if statesMap, ok := statesVal.(*core.HashMap); ok {
-			statesMap.Each(func(stateKey, stateVal core.Value) {
-				stateKw, ok := stateKey.(core.Keyword)
-				if !ok {
-					return
-				}
+		statesMap, ok := statesVal.(*core.HashMap)
+		if !ok {
+			return nil, fmt.Errorf("states must be a map")
+		}
 
-				state := State(stateKw.V)
-				cfg := &StateConfig{
-					On: make(map[Event]Transition),
-				}
+		var defErr error
+		statesMap.Each(func(stateKey, stateVal core.Value) {
+			if defErr != nil {
+				return
+			}
+			stateKw, ok := stateKey.(core.Keyword)
+			if !ok {
+				defErr = fmt.Errorf("state key must be a keyword")
+				return
+			}
 
-				if stateDef, ok := stateVal.(*core.HashMap); ok {
-					if onVal, ok := stateDef.Get(core.Keyword{V: "on"}); ok {
-						if onMap, ok := onVal.(*core.HashMap); ok {
-							onMap.Each(func(eventKey, targetVal core.Value) {
-								eventKw, ok := eventKey.(core.Keyword)
-								if !ok {
-									return
-								}
+			state := State(stateKw.V)
+			cfg := &StateConfig{
+				On: make(map[Event]Transition),
+			}
 
-								event := Event(eventKw.V)
-								var target State
-								var guard, action core.Value
-
-								switch t := targetVal.(type) {
-								case core.Keyword:
-									target = State(t.V)
-								case *core.HashMap:
-									if tv, ok := t.Get(core.Keyword{V: "target"}); ok {
-										if tkw, ok := tv.(core.Keyword); ok {
-											target = State(tkw.V)
-										}
-									}
-									if g, ok := t.Get(core.Keyword{V: "guard"}); ok {
-										guard = g
-									}
-									if a, ok := t.Get(core.Keyword{V: "action"}); ok {
-										action = a
-									}
-								}
-
-								cfg.On[event] = Transition{
-									Target: target,
-									Guard:  guard,
-									Action: action,
-								}
-							})
+			if stateDef, ok := stateVal.(*core.HashMap); ok {
+				if onVal, ok := stateDef.Get(core.Keyword{V: "on"}); ok {
+					onMap, ok := onVal.(*core.HashMap)
+					if !ok {
+						defErr = fmt.Errorf("on must be a map")
+						return
+					}
+					var onErr error
+					onMap.Each(func(eventKey, targetVal core.Value) {
+						if onErr != nil {
+							return
 						}
+						eventKw, ok := eventKey.(core.Keyword)
+						if !ok {
+							onErr = fmt.Errorf("definition key must be a keyword")
+							return
+						}
+
+						event := Event(eventKw.V)
+						var target State
+						var guard, action core.Value
+
+						switch t := targetVal.(type) {
+						case core.Keyword:
+							target = State(t.V)
+						case *core.HashMap:
+							if tv, ok := t.Get(core.Keyword{V: "target"}); ok {
+								if tkw, ok := tv.(core.Keyword); ok {
+									target = State(tkw.V)
+								}
+							}
+							if g, ok := t.Get(core.Keyword{V: "guard"}); ok {
+								if _, isNil := g.(core.Nil); !isNil && g != nil {
+									if _, ok := g.(core.Lambda); !ok {
+										onErr = fmt.Errorf("guard must be a function")
+										return
+									}
+									guard = g
+								}
+							}
+							if a, ok := t.Get(core.Keyword{V: "action"}); ok {
+								if _, isNil := a.(core.Nil); !isNil && a != nil {
+									if _, ok := a.(core.Lambda); !ok {
+										onErr = fmt.Errorf("action must be a function")
+										return
+									}
+									action = a
+								}
+							}
+						}
+
+						cfg.On[event] = Transition{
+							Target: target,
+							Guard:  guard,
+							Action: action,
+						}
+					})
+					if onErr != nil {
+						defErr = onErr
 					}
 				}
+			}
 
+			if defErr == nil {
 				sm.states[state] = cfg
-			})
+			}
+		})
+		if defErr != nil {
+			return nil, defErr
+		}
+	}
+
+	if len(sm.states) == 0 {
+		return nil, fmt.Errorf("state machine %q declares no states", id)
+	}
+	if sm.initial == "" {
+		return nil, fmt.Errorf("state machine %q declares no initial state", id)
+	}
+	if _, ok := sm.states[sm.initial]; !ok {
+		return nil, fmt.Errorf("initial state %q is not declared", sm.initial)
+	}
+	for _, cfg := range sm.states {
+		for _, trans := range cfg.On {
+			if _, ok := sm.states[trans.Target]; !ok {
+				return nil, fmt.Errorf("transition target %q is not a declared state", trans.Target)
+			}
 		}
 	}
 
@@ -207,7 +270,13 @@ func (p *Plugin) transition(ctx context.Context, eval core.Evaluator, args []cor
 			At:        time.Now(),
 			Context:   transCtx,
 		}
-		p.broadcast(ctx, ev)
+		if err := p.broadcast(ctx, ev); err != nil {
+			if result.Error != "" {
+				result.Error = result.Error + "; " + err.Error()
+			} else {
+				result.Error = err.Error()
+			}
+		}
 	}
 
 	resMap := core.NewHashMap()
@@ -286,7 +355,11 @@ func (p *Plugin) reset(ctx context.Context, eval core.Evaluator, args []core.Val
 		return nil, fmt.Errorf("fsm/reset: unknown machine %s", kw.V)
 	}
 
-	return core.Keyword{V: string(sm.Reset())}, nil
+	state, err := sm.Reset()
+	if err != nil {
+		return nil, fmt.Errorf("fsm/reset: %w", err)
+	}
+	return core.Keyword{V: string(state)}, nil
 }
 
 func (p *Plugin) onTransition(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -372,9 +445,9 @@ func (p *Plugin) stateMachine(ctx context.Context, eval core.Evaluator, args []c
 	}
 
 	m := core.NewHashMap()
-	m, _, _ = m.Assoc(core.Keyword{V: "id"}, core.String{V: sm.id})
-	m, _, _ = m.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: string(sm.initial)})
-	m, _, _ = m.Assoc(core.Keyword{V: "current"}, core.Keyword{V: string(sm.current)})
+	m, _, _ = m.Assoc(core.Keyword{V: "id"}, core.String{V: sm.ID()})
+	m, _, _ = m.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: string(sm.Initial())})
+	m, _, _ = m.Assoc(core.Keyword{V: "current"}, core.Keyword{V: string(sm.Current())})
 
 	return m, nil
 }
@@ -395,7 +468,7 @@ func (p *Plugin) list(ctx context.Context, eval core.Evaluator, args []core.Valu
 	return core.NewList(ids), nil
 }
 
-func (p *Plugin) broadcast(ctx context.Context, ev StateEvent) {
+func (p *Plugin) broadcast(ctx context.Context, ev StateEvent) error {
 	select {
 	case p.events <- ev:
 	default:
@@ -406,8 +479,9 @@ func (p *Plugin) broadcast(ctx context.Context, ev StateEvent) {
 	p.mu.RUnlock()
 
 	if ok {
-		sm.notify(ctx, ev)
+		return sm.notify(ctx, ev)
 	}
+	return nil
 }
 
 func (p *Plugin) Events() <-chan StateEvent {

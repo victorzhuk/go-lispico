@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -126,7 +127,8 @@ func TestStateMachine_Reset(t *testing.T) {
 		},
 	}
 
-	resetState := sm.Reset()
+	resetState, resetErr := sm.Reset()
+	require.NoError(t, resetErr)
 	assert.Equal(t, State("pending"), resetState)
 	assert.Equal(t, State("pending"), sm.Current())
 }
@@ -194,6 +196,10 @@ func TestStateMachine_Serialize_Deserialize(t *testing.T) {
 		id:      "test",
 		initial: State("pending"),
 		current: State("pending"),
+		states: map[State]*StateConfig{
+			"pending":   {On: map[Event]Transition{}},
+			"confirmed": {On: map[Event]Transition{}},
+		},
 	}
 
 	err = sm2.Deserialize(data)
@@ -432,6 +438,10 @@ func TestPlugin_Valid(t *testing.T) {
 	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
 	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+
 	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
@@ -500,6 +510,14 @@ func TestPlugin_Reachable(t *testing.T) {
 	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
 	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
 
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+
+	cancelledState := core.NewHashMap()
+	cancelledState, _, _ = cancelledState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "cancelled"}, cancelledState)
+
 	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
@@ -559,7 +577,12 @@ func TestPlugin_List(t *testing.T) {
 
 	def := core.NewHashMap()
 	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
-	def, _, _ = def.Assoc(core.Keyword{V: "states"}, core.NewHashMap())
+
+	states := core.NewHashMap()
+	pendingState := core.NewHashMap()
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
 	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
 	require.NoError(t, err)
@@ -671,6 +694,478 @@ func TestPlugin_Create_Errors(t *testing.T) {
 
 	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test"}, core.String{V: "not-map"}}, env)
 	assert.Error(t, err)
+
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test"}, core.NewHashMap()}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares no states")
+
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, core.NewHashMap())
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares no states")
+
+	states := core.NewHashMap()
+	pendingState := core.NewHashMap()
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	def = core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares no initial state")
+
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test"}, def}, env)
+	assert.NoError(t, err)
+
+	def = core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "missing"})
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test2"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `initial state "missing" is not declared`)
+
+	states = core.NewHashMap()
+	pendingState = core.NewHashMap()
+	pendingOn := core.NewHashMap()
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "go"}, core.Keyword{V: "nowhere"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	def = core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test3"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `transition target "nowhere" is not a declared state`)
+
+	def = core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	states = core.NewHashMap()
+	pendingState = core.NewHashMap()
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	confirmedState2 := core.NewHashMap()
+	confirmedState2, _, _ = confirmedState2.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState2)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	def, _, _ = def.Assoc(core.String{V: "bogus"}, core.Keyword{V: "extra"})
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test4"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "definition key must be a keyword")
+
+	states = core.NewHashMap()
+	pendingState = core.NewHashMap()
+	pendingOn = core.NewHashMap()
+	transitionDef := core.NewHashMap()
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "confirmed"})
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "guard"}, core.String{V: "not-a-fn"})
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, transitionDef)
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	def = core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+	_, err = p.create(ctx, eval, []core.Value{core.Keyword{V: "test5"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "guard must be a function")
+}
+
+func actionErrorStateMachine(t *testing.T) (*StateMachine, *core.Env, core.Evaluator) {
+	t.Helper()
+	env := core.NewEnv(nil)
+	action := core.Lambda{
+		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "ev"}},
+		Body: []core.Value{
+			core.NewList([]core.Value{
+				core.Symbol{V: "throw"},
+				core.String{V: "boom"},
+			}),
+		},
+		Env: env,
+	}
+	sm := &StateMachine{
+		id:      "order",
+		initial: State("pending"),
+		current: State("pending"),
+		states: map[State]*StateConfig{
+			"pending": {
+				On: map[Event]Transition{
+					"confirm": {Target: "confirmed", Action: action},
+				},
+			},
+			"confirmed": {On: map[Event]Transition{}},
+		},
+	}
+	return sm, env, core.NewEvaluator()
+}
+
+func TestStateMachine_ActionError_ReportsNotValid(t *testing.T) {
+	sm, env, eval := actionErrorStateMachine(t)
+	ctx := context.Background()
+
+	result, err := sm.TransitionWithEval(ctx, Event("confirm"), nil, eval, env)
+	require.NoError(t, err)
+	assert.False(t, result.Valid)
+	assert.True(t, result.Committed)
+	assert.Equal(t, State("confirmed"), result.State)
+	assert.Equal(t, State("pending"), result.From)
+	assert.Equal(t, State("confirmed"), result.To)
+	assert.Contains(t, result.Error, "action:")
+	assert.Equal(t, State("confirmed"), sm.Current())
+}
+
+func TestPlugin_ActionError_NoBroadcast(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	eval := core.NewEvaluator()
+	ctx := context.Background()
+
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+
+	states := core.NewHashMap()
+	pendingState := core.NewHashMap()
+	pendingOn := core.NewHashMap()
+	failingAction := core.Lambda{
+		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "ev"}},
+		Body:   []core.Value{core.Symbol{V: "undefined-var"}},
+		Env:    env,
+	}
+	transitionDef := core.NewHashMap()
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "confirmed"})
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "action"}, failingAction)
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, transitionDef)
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+
+	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
+	require.NoError(t, err)
+
+	res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: "order"}, core.Keyword{V: "confirm"}}, env)
+	require.NoError(t, err)
+	m, ok := res.(*core.HashMap)
+	require.True(t, ok)
+	valid, ok := m.Get(core.Keyword{V: "valid"})
+	require.True(t, ok)
+	assert.Equal(t, core.Bool{V: false}, valid)
+	errVal, ok := m.Get(core.Keyword{V: "error"})
+	require.True(t, ok)
+	assert.Contains(t, errVal.String(), "action:")
+	stateVal, ok := m.Get(core.Keyword{V: "state"})
+	require.True(t, ok)
+	assert.Equal(t, core.Keyword{V: "confirmed"}, stateVal)
+	assert.Len(t, p.Events(), 0)
+}
+
+func TestStateMachine_Guard_May_QueryOwnMachine(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	eval := core.NewEvaluator()
+	ctx := context.Background()
+
+	guard := core.Lambda{
+		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "ev"}},
+		Body: []core.Value{
+			core.NewList([]core.Value{
+				core.GoFunc{Name: "fsm/current-state", Fn: p.currentState},
+				core.Keyword{V: "watched"},
+			}),
+		},
+		Env: env,
+	}
+
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "idle"})
+
+	states := core.NewHashMap()
+	idleState := core.NewHashMap()
+	idleOn := core.NewHashMap()
+	transitionDef := core.NewHashMap()
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "done"})
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "guard"}, guard)
+	idleOn, _, _ = idleOn.Assoc(core.Keyword{V: "finish"}, transitionDef)
+	idleState, _, _ = idleState.Assoc(core.Keyword{V: "on"}, idleOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "idle"}, idleState)
+	doneState := core.NewHashMap()
+	doneState, _, _ = doneState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "done"}, doneState)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+
+	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "watched"}, def}, env)
+	require.NoError(t, err)
+
+	res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: "watched"}, core.Keyword{V: "finish"}}, env)
+	require.NoError(t, err)
+	m, ok := res.(*core.HashMap)
+	require.True(t, ok)
+	valid, ok := m.Get(core.Keyword{V: "valid"})
+	require.True(t, ok)
+	assert.Equal(t, core.Bool{V: true}, valid)
+
+	current, err := p.currentState(ctx, eval, []core.Value{core.Keyword{V: "watched"}}, env)
+	require.NoError(t, err)
+	assert.Equal(t, core.Keyword{V: "done"}, current)
+}
+
+func TestStateMachine_RecursiveTransition_Rejected(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	eval := core.NewEvaluator()
+	ctx := context.Background()
+
+	guard := core.Lambda{
+		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "ev"}},
+		Body: []core.Value{
+			core.NewList([]core.Value{
+				core.GoFunc{Name: "fsm/transition", Fn: p.transition},
+				core.Keyword{V: "loop"},
+				core.Keyword{V: "tick"},
+			}),
+		},
+		Env: env,
+	}
+
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "idle"})
+
+	states := core.NewHashMap()
+	idleState := core.NewHashMap()
+	idleOn := core.NewHashMap()
+	transitionDef := core.NewHashMap()
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "done"})
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "guard"}, guard)
+	idleOn, _, _ = idleOn.Assoc(core.Keyword{V: "finish"}, transitionDef)
+	idleState, _, _ = idleState.Assoc(core.Keyword{V: "on"}, idleOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "idle"}, idleState)
+	doneState := core.NewHashMap()
+	doneState, _, _ = doneState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "done"}, doneState)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+
+	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "loop"}, def}, env)
+	require.NoError(t, err)
+
+	res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: "loop"}, core.Keyword{V: "finish"}}, env)
+	require.NoError(t, err)
+	m, ok := res.(*core.HashMap)
+	require.True(t, ok)
+	valid, _ := m.Get(core.Keyword{V: "valid"})
+	assert.Equal(t, core.Bool{V: false}, valid)
+	errVal, ok := m.Get(core.Keyword{V: "error"})
+	require.True(t, ok)
+	assert.Contains(t, errVal.String(), "already in progress")
+}
+
+func TestStateMachine_Deserialize_RejectsForeignAndUnknownState(t *testing.T) {
+	newSM := func() *StateMachine {
+		return &StateMachine{
+			id:      "mine",
+			initial: State("pending"),
+			current: State("pending"),
+			states: map[State]*StateConfig{
+				"pending":   {On: map[Event]Transition{}},
+				"confirmed": {On: map[Event]Transition{}},
+			},
+		}
+	}
+
+	foreign, _ := json.Marshal(PersistentState{Version: 1, MachineID: "other", Current: "confirmed"})
+	sm := newSM()
+	err := sm.Deserialize(foreign)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match")
+	assert.Equal(t, State("pending"), sm.Current())
+
+	noCurrent, _ := json.Marshal(PersistentState{Version: 1, MachineID: "mine", Current: ""})
+	sm = newSM()
+	err = sm.Deserialize(noCurrent)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "carries no current state")
+	assert.Equal(t, State("pending"), sm.Current())
+
+	unknown, _ := json.Marshal(PersistentState{Version: 1, MachineID: "mine", Current: "ghost"})
+	sm = newSM()
+	err = sm.Deserialize(unknown)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown state")
+	assert.Equal(t, State("pending"), sm.Current())
+}
+
+func evalForm(t *testing.T, env *core.Env, eval core.Evaluator, src string) core.Value {
+	t.Helper()
+	forms, err := core.Read(src)
+	require.NoError(t, err)
+	require.Len(t, forms, 1)
+	v, err := eval.Eval(context.Background(), forms[0], env)
+	require.NoError(t, err)
+	return v
+}
+
+func TestPlugin_LispSmoke(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+	eval := core.NewEvaluator()
+
+	evalForm(t, env, eval, `(fsm/create :smoke {:initial :s1 :states {:s1 {:on {:go :s2}} :s2 {:on {:back :s1}}}})`)
+
+	res := evalForm(t, env, eval, `(fsm/transition :smoke :go)`)
+	m, ok := res.(*core.HashMap)
+	require.True(t, ok)
+	valid, _ := m.Get(core.Keyword{V: "valid"})
+	assert.Equal(t, core.Bool{V: true}, valid)
+
+	current := evalForm(t, env, eval, `(fsm/current-state :smoke)`)
+	assert.Equal(t, core.Keyword{V: "s2"}, current)
+
+	evalForm(t, env, eval, `(fsm/create :guardy {:initial :s1 :states {:s1 {:on {:go {:target :s2 :guard (fn [from to ev] (fsm/current-state :guardy))}}} :s2 {:on {}}}})`)
+
+	res = evalForm(t, env, eval, `(fsm/transition :guardy :go)`)
+	m, ok = res.(*core.HashMap)
+	require.True(t, ok)
+	valid, _ = m.Get(core.Keyword{V: "valid"})
+	assert.Equal(t, core.Bool{V: true}, valid)
+
+	current = evalForm(t, env, eval, `(fsm/current-state :guardy)`)
+	assert.Equal(t, core.Keyword{V: "s2"}, current)
+
+	evalForm(t, env, eval, `(fsm/create :boom {:initial :s1 :states {:s1 {:on {:go {:target :s2 :action (fn [from to ev] (throw "boom"))}}} :s2 {:on {}}}})`)
+
+	res = evalForm(t, env, eval, `(fsm/transition :boom :go)`)
+	m, ok = res.(*core.HashMap)
+	require.True(t, ok)
+	valid, _ = m.Get(core.Keyword{V: "valid"})
+	assert.Equal(t, core.Bool{V: false}, valid)
+	errVal, _ := m.Get(core.Keyword{V: "error"})
+	assert.Contains(t, errVal.String(), "action:")
+
+	current = evalForm(t, env, eval, `(fsm/current-state :boom)`)
+	assert.Equal(t, core.Keyword{V: "s2"}, current)
+}
+
+func TestPlugin_Create_NilGuardActionAccepted(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	eval := core.NewEvaluator()
+	ctx := context.Background()
+
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+
+	states := core.NewHashMap()
+	pendingState := core.NewHashMap()
+	pendingOn := core.NewHashMap()
+	transitionDef := core.NewHashMap()
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "target"}, core.Keyword{V: "confirmed"})
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "guard"}, core.Nil{})
+	transitionDef, _, _ = transitionDef.Assoc(core.Keyword{V: "action"}, core.Nil{})
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, transitionDef)
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+
+	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
+	require.NoError(t, err)
+
+	_, err = p.transition(ctx, eval, []core.Value{core.Keyword{V: "order"}, core.Keyword{V: "confirm"}}, env)
+	require.NoError(t, err)
+
+	current, err := p.currentState(ctx, eval, []core.Value{core.Keyword{V: "order"}}, env)
+	require.NoError(t, err)
+	assert.Equal(t, core.Keyword{V: "confirmed"}, current)
+}
+
+func TestPlugin_CallbackFailure_Surfaces(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	eval := core.NewEvaluator()
+	ctx := context.Background()
+
+	env.Set("second-ran", core.Bool{V: false})
+
+	failing := core.Lambda{
+		Params: []core.Symbol{{V: "mid"}, {V: "from"}, {V: "to"}},
+		Body: []core.Value{
+			core.NewList([]core.Value{
+				core.Symbol{V: "throw"},
+				core.String{V: "cb-boom"},
+			}),
+		},
+		Env: env,
+	}
+	second := core.Lambda{
+		Params: []core.Symbol{{V: "mid"}, {V: "from"}, {V: "to"}},
+		Body: []core.Value{
+			core.NewList([]core.Value{
+				core.Symbol{V: "set!"},
+				core.Symbol{V: "second-ran"},
+				core.Bool{V: true},
+			}),
+		},
+		Env: env,
+	}
+
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "pending"})
+
+	states := core.NewHashMap()
+	pendingState := core.NewHashMap()
+	pendingOn := core.NewHashMap()
+	pendingOn, _, _ = pendingOn.Assoc(core.Keyword{V: "confirm"}, core.Keyword{V: "confirmed"})
+	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
+	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+
+	_, err := p.create(ctx, eval, []core.Value{core.Keyword{V: "order"}, def}, env)
+	require.NoError(t, err)
+
+	_, err = p.onTransition(ctx, eval, []core.Value{core.Keyword{V: "order"}, failing}, env)
+	require.NoError(t, err)
+	_, err = p.onTransition(ctx, eval, []core.Value{core.Keyword{V: "order"}, second}, env)
+	require.NoError(t, err)
+
+	res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: "order"}, core.Keyword{V: "confirm"}}, env)
+	require.NoError(t, err)
+	m, ok := res.(*core.HashMap)
+	require.True(t, ok)
+	valid, _ := m.Get(core.Keyword{V: "valid"})
+	assert.Equal(t, core.Bool{V: true}, valid)
+	errVal, ok := m.Get(core.Keyword{V: "error"})
+	require.True(t, ok)
+	assert.Contains(t, errVal.String(), "callback:")
+
+	ran, ok := env.Get("second-ran")
+	require.True(t, ok)
+	assert.Equal(t, core.Bool{V: true}, ran)
+
+	current, err := p.currentState(ctx, eval, []core.Value{core.Keyword{V: "order"}}, env)
+	require.NoError(t, err)
+	assert.Equal(t, core.Keyword{V: "confirmed"}, current)
 }
 
 func TestPlugin_Valid_Errors(t *testing.T) {
@@ -816,6 +1311,10 @@ func TestPlugin_Transition_WithGuardError(t *testing.T) {
 	}
 	pendingState, _, _ = pendingState.Assoc(core.Keyword{V: "on"}, pendingOn)
 	states, _, _ = states.Assoc(core.Keyword{V: "pending"}, pendingState)
+
+	confirmedState := core.NewHashMap()
+	confirmedState, _, _ = confirmedState.Assoc(core.Keyword{V: "on"}, core.NewHashMap())
+	states, _, _ = states.Assoc(core.Keyword{V: "confirmed"}, confirmedState)
 
 	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
 
@@ -969,6 +1468,8 @@ func TestStateMachine_Concurrent_Transitions(t *testing.T) {
 	var wg sync.WaitGroup
 	errCount := int32(0)
 	successCount := int32(0)
+	resetErrCount := int32(0)
+	resetOKCount := int32(0)
 
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
@@ -977,18 +1478,38 @@ func TestStateMachine_Concurrent_Transitions(t *testing.T) {
 			for j := 0; j < 10; j++ {
 				result, err := sm.Transition(Event("start"), nil)
 				if err != nil {
-					atomic.AddInt32(&errCount, 1)
-				} else if result.Valid {
+					if !strings.Contains(err.Error(), "already in progress") {
+						atomic.AddInt32(&errCount, 1)
+					}
+				} else if result.Valid && result.Committed {
 					atomic.AddInt32(&successCount, 1)
+					assert.Equal(t, State("running"), result.State)
 				}
-				sm.Reset()
+				if _, resetErr := sm.Reset(); resetErr != nil {
+					if !strings.Contains(resetErr.Error(), "already in progress") {
+						atomic.AddInt32(&resetErrCount, 1)
+					}
+				} else {
+					atomic.AddInt32(&resetOKCount, 1)
+				}
 			}
 		}()
 	}
 
 	wg.Wait()
 	assert.Equal(t, int32(0), errCount)
+	assert.Equal(t, int32(0), resetErrCount)
 	assert.Greater(t, successCount, int32(0))
+	assert.Greater(t, resetOKCount, int32(0))
+
+	resetState, resetErr := sm.Reset()
+	require.NoError(t, resetErr)
+	assert.Equal(t, State("idle"), resetState)
+
+	result, err := sm.Transition(Event("start"), nil)
+	require.NoError(t, err)
+	assert.True(t, result.Valid)
+	assert.Equal(t, State("running"), sm.Current())
 }
 
 func TestStateMachine_Concurrent_Serialize(t *testing.T) {
@@ -1009,17 +1530,24 @@ func TestStateMachine_Concurrent_Serialize(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make([]error, 0)
 	var mu sync.Mutex
+	var successCount int32
+	var resetOKCount int32
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			if idx%2 == 0 {
-				_, err := sm.Transition(Event("confirm"), nil)
+				result, err := sm.Transition(Event("confirm"), nil)
 				if err != nil {
-					mu.Lock()
-					errors = append(errors, err)
-					mu.Unlock()
+					if !strings.Contains(err.Error(), "already in progress") {
+						mu.Lock()
+						errors = append(errors, err)
+						mu.Unlock()
+					}
+				} else if result.Valid && result.Committed {
+					atomic.AddInt32(&successCount, 1)
+					assert.Equal(t, State("confirmed"), result.State)
 				}
 			} else {
 				_, err := sm.Serialize()
@@ -1029,12 +1557,31 @@ func TestStateMachine_Concurrent_Serialize(t *testing.T) {
 					mu.Unlock()
 				}
 			}
-			sm.Reset()
+			if _, resetErr := sm.Reset(); resetErr != nil {
+				if !strings.Contains(resetErr.Error(), "already in progress") {
+					mu.Lock()
+					errors = append(errors, resetErr)
+					mu.Unlock()
+				}
+			} else {
+				atomic.AddInt32(&resetOKCount, 1)
+			}
 		}(i)
 	}
 
 	wg.Wait()
 	assert.Empty(t, errors)
+	assert.Greater(t, atomic.LoadInt32(&successCount), int32(0))
+	assert.Greater(t, atomic.LoadInt32(&resetOKCount), int32(0))
+
+	resetState, resetErr := sm.Reset()
+	require.NoError(t, resetErr)
+	assert.Equal(t, State("pending"), resetState)
+
+	result, err := sm.Transition(Event("confirm"), nil)
+	require.NoError(t, err)
+	assert.True(t, result.Valid)
+	assert.Equal(t, State("confirmed"), sm.Current())
 }
 
 func TestPlugin_Concurrent_MultipleMachines(t *testing.T) {
@@ -1068,22 +1615,62 @@ func TestPlugin_Concurrent_MultipleMachines(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCount := int32(0)
+	resetErrCount := int32(0)
+	resetOKCount := int32(0)
+	var perMu sync.Mutex
+	perMachine := make(map[string]int)
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			machineID := fmt.Sprintf("machine-%d", idx%5)
-			_, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: machineID}, core.Keyword{V: "confirm"}}, env)
+			res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: machineID}, core.Keyword{V: "confirm"}}, env)
 			if err != nil {
-				atomic.AddInt32(&errCount, 1)
+				if !strings.Contains(err.Error(), "already in progress") {
+					atomic.AddInt32(&errCount, 1)
+				}
+			} else if m, ok := res.(*core.HashMap); ok {
+				if v, ok := m.Get(core.Keyword{V: "valid"}); ok && v == (core.Bool{V: true}) {
+					perMu.Lock()
+					perMachine[machineID]++
+					perMu.Unlock()
+				}
 			}
-			p.reset(ctx, eval, []core.Value{core.Keyword{V: machineID}}, env)
+			_, resetErr := p.reset(ctx, eval, []core.Value{core.Keyword{V: machineID}}, env)
+			if resetErr != nil {
+				if !strings.Contains(resetErr.Error(), "already in progress") {
+					atomic.AddInt32(&resetErrCount, 1)
+				}
+			} else {
+				atomic.AddInt32(&resetOKCount, 1)
+			}
 		}(i)
 	}
 
 	wg.Wait()
 	assert.Equal(t, int32(0), errCount)
+	assert.Equal(t, int32(0), resetErrCount)
+	assert.Greater(t, atomic.LoadInt32(&resetOKCount), int32(0))
+	for i := range 5 {
+		id := fmt.Sprintf("machine-%d", i)
+		assert.Greater(t, perMachine[id], 0, "machine %s should complete at least one transition", id)
+	}
+
+	for i := range 5 {
+		id := fmt.Sprintf("machine-%d", i)
+		_, resetErr := p.reset(ctx, eval, []core.Value{core.Keyword{V: id}}, env)
+		require.NoError(t, resetErr)
+		res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: id}, core.Keyword{V: "confirm"}}, env)
+		require.NoError(t, err)
+		m, ok := res.(*core.HashMap)
+		require.True(t, ok)
+		if v, ok := m.Get(core.Keyword{V: "valid"}); ok {
+			assert.Equal(t, core.Bool{V: true}, v)
+		} else {
+			t.Fatalf("machine %s transition returned no :valid key", id)
+		}
+	}
 }
 
 func TestStateMachine_FullLifecycle(t *testing.T) {
@@ -1144,7 +1731,8 @@ func TestStateMachine_FullLifecycle(t *testing.T) {
 
 	assert.False(t, sm.CanTransition(Event("ship")))
 
-	resetState := sm.Reset()
+	resetState, resetErr := sm.Reset()
+	require.NoError(t, resetErr)
 	assert.Equal(t, State("pending"), resetState)
 	assert.Equal(t, State("pending"), sm.Current())
 }

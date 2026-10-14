@@ -2,6 +2,7 @@ package fsm
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -22,12 +23,13 @@ type callback struct {
 }
 
 type StateMachine struct {
-	mu        sync.RWMutex
-	id        string
-	initial   State
-	current   State
-	states    map[State]*StateConfig
-	callbacks []callback
+	mu           sync.RWMutex
+	inTransition atomic.Bool
+	id           string
+	initial      State
+	current      State
+	states       map[State]*StateConfig
+	callbacks    []callback
 }
 
 type StateConfig struct {
@@ -60,5 +62,8 @@ type TransitionResult struct {
 	From  State
 	To    State
 	Valid bool
-	Error string
+	// Committed reports whether the machine's state was moved, even when the
+	// action failed after the commit.
+	Committed bool
+	Error     string
 }
