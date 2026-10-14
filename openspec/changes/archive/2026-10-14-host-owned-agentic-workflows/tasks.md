@@ -4,7 +4,7 @@
 - [x] 1.2 Draft independent branch advance and declared-join semantics; state that no global superstep barrier is required.
 - [x] 1.3 Draft bounded loop requirements: declared iteration and step bounds hold after recovery, and repeated activations carry distinct iteration identities.
 - [x] 1.4 Draft patch-bound approval requirements: approval binds to the digest of the reviewed patch, and duplicate or stale approval authorizes nothing. — Digest recording, matching-digest authorization, and changed-digest rejection scenarios restored in `specs/workflow-graph/spec.md`.
-- [ ] 1.5 Check every scenario against `docs/adr/0014-host-owned-workflow-boundary.md` and `docs/adr/0015-independent-branches-bounded-loops.md`.
+- [x] 1.5 Check every scenario against `docs/adr/0014-host-owned-workflow-boundary.md` and `docs/adr/0015-independent-branches-bounded-loops.md`.
 
 ## 2. Host contracts spec
 
@@ -12,7 +12,7 @@
 - [x] 2.2 Draft the declared guarantees per contract: idempotency-key reservation atomicity, concurrency and ownership with lease plus scanner cleanup, ordering scope, partition key, retention horizon.
 - [x] 2.3 Draft backend conformance: a sharded or distributed backend satisfies the declared guarantees or rejects the configuration; unsupported guarantees never degrade silently.
 - [x] 2.4 Draft substitution requirements: local-to-distributed preserves observable behavior, definitions stay free of storage clients and local paths, and engine history stays engine-owned. — Storage-independent definition constraint with local-path and storage-client rejection scenarios restored in `specs/host-contracts/spec.md`.
-- [ ] 2.5 Check every scenario against `docs/adr/0016-segregated-persistence-contracts.md`.
+- [x] 2.5 Check every scenario against `docs/adr/0016-segregated-persistence-contracts.md`.
 
 ## 3. Temporal adapter spec
 
@@ -21,11 +21,11 @@
 - [x] 3.3 Draft durable approval signals with an explicit deadline outcome.
 - [x] 3.4 Draft restart-during-approval and unknown-outcome scenarios: no unsafe blind retry of a patch.
 - [x] 3.5 State that no engine exactly-once guarantee is assumed or promised.
-- [ ] 3.6 Check every scenario against `docs/adr/0017-temporal-first-adapter.md`.
+- [x] 3.6 Check every scenario against `docs/adr/0017-temporal-first-adapter.md`.
 
 ## 4. Cross-check deltas against ADR 0014-0017
 
-- [ ] 4.1 Verify every normative claim in the three specs traces to a decision in ADRs 0014, 0015, 0016, or 0017, and drop or weaken any claim that does not.
-- [ ] 4.2 Verify the research corrections carry their primary-source URLs wherever the corrected claim would otherwise read as a requirement.
+- [x] 4.1 Verify every normative claim in the three specs traces to a decision in ADRs 0014, 0015, 0016, or 0017, and drop or weaken any claim that does not.
+- [x] 4.2 Verify the research corrections carry their primary-source URLs wherever the corrected claim would otherwise read as a requirement.
 - [x] 4.3 Verify `proposal.md` lists the four parent ADRs and records the `## ADDED Requirements` deviation. — Confirmed: `## What Changes` lists ADRs 0014-0017 and states the ADDED-only delta rationale for the three new capability specs.
 - [x] 4.4 Confirm the change adds no production code and leaves the root `go.mod` baseline untouched. — Confirmed: `git diff --stat e965c274..HEAD` shows no paths outside `openspec/changes/host-owned-agentic-workflows/` and no `go.mod`/`go.sum` change; `git status --short` is clean before this edit.
