@@ -2,32 +2,44 @@
 
 ### Requirement: A workflow graph is validated before execution
 
-The system SHALL validate a Lisp-produced workflow graph and reject it before any node executes. Validation SHALL reject: a graph with no entry node, a node with no reachable path from the entry node, an edge referencing an unknown node, a join declaring no dependencies, a join that names fewer dependencies than the graph implies, a cycle that is not declared as a bounded loop, a bounded loop without a declared iteration or step limit, a loop whose activations cannot be given distinct iteration identities, and a node requiring a capability the selected adapter does not provide.
+The system SHALL validate a Lisp-produced workflow graph and reject an invalid graph before any node executes.
 
 #### Scenario: Invalid structure is rejected before any node runs
 
 - **WHEN** a graph declares an edge whose target node does not exist
 - **THEN** validation SHALL return an error and no node SHALL execute
 
-#### Scenario: Missing loop bound is rejected
-
-- **WHEN** a graph declares a cycle that carries no iteration limit and no step limit
-- **THEN** validation SHALL return an error and no node SHALL execute
-
-#### Scenario: Unsupported adapter capability is rejected
-
-- **WHEN** a graph declares a node that requires a capability the selected adapter does not provide
-- **THEN** validation SHALL return an error naming the missing capability
-
 #### Scenario: Valid graph passes validation
 
 - **WHEN** a graph declares an entry node, reachable nodes, a join with at least one declared dependency, and a cycle with a declared iteration limit
 - **THEN** validation SHALL succeed
 
+### Requirement: A join declares every dependency it waits on
+
+Validation SHALL reject a join declaring no dependencies and a join that names fewer dependencies than the graph implies.
+
 #### Scenario: Under-declared join is rejected before execution
 
 - **WHEN** a join names fewer dependencies than the graph implies between its incoming branches
 - **THEN** validation SHALL return an error and no node SHALL execute
+
+### Requirement: A cycle is declared as a bounded loop
+
+Validation SHALL reject a cycle that is not declared as a bounded loop, a bounded loop without a declared iteration or step limit, and a loop whose activations cannot be given distinct iteration identities.
+
+#### Scenario: Missing loop bound is rejected
+
+- **WHEN** a graph declares a cycle that carries no iteration limit and no step limit
+- **THEN** validation SHALL return an error and no node SHALL execute
+
+### Requirement: A required capability is provided by the selected adapter
+
+Validation SHALL reject a node requiring a capability the selected adapter does not provide.
+
+#### Scenario: Unsupported adapter capability is rejected
+
+- **WHEN** a graph declares a node that requires a capability the selected adapter does not provide
+- **THEN** validation SHALL return an error naming the missing capability
 
 ### Requirement: Branches advance independently
 

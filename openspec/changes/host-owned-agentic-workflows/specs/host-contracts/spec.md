@@ -2,17 +2,25 @@
 
 ### Requirement: Persistence contracts are separated by consumer concern
 
-The host SHALL define separate narrow persistence contracts per consumer: one for application-data operations, one for execution-history operations, and one for optional effect receipts. A combined generic storage interface SHALL NOT be required, and no consumer SHALL be required to implement a method it does not use. A workflow that makes an ambiguous external effect SHALL declare a receipt contract, and one that makes no ambiguous external effect SHALL NOT be required to declare one. Adding a persistence concern SHALL add a new contract, not widen an existing interface.
+The host SHALL define separate narrow persistence contracts per consumer: one for application-data operations, one for execution-history operations, and one for optional effect receipts.
 
 #### Scenario: Each consumer implements only its own contract
 
 - **WHEN** a host registers an application-data store that provides no execution-history operations
 - **THEN** the store SHALL satisfy the application-data contract and SHALL NOT be required to implement the execution-history contract
 
+### Requirement: No combined storage interface is imposed
+
+A combined generic storage interface SHALL NOT be required, and no consumer SHALL be required to implement a method it does not use. Adding a persistence concern SHALL add a new contract, not widen an existing interface.
+
 #### Scenario: No generic storage interface is imposed
 
 - **WHEN** host contracts are declared
 - **THEN** each SHALL expose only the operations its own consumer needs
+
+### Requirement: A receipt contract is declared only for ambiguous external effects
+
+A workflow that makes an ambiguous external effect SHALL declare a receipt contract, and one that makes no ambiguous external effect SHALL NOT be required to declare one.
 
 #### Scenario: Receipt contract is declared only for ambiguous effects
 

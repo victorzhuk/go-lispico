@@ -63,22 +63,17 @@ A restart of the host or the worker while the workflow waits for approval SHALL 
 
 ### Requirement: Ambiguous external effects require host idempotency or reconciliation
 
-An external effect whose outcome is unknown SHALL require host idempotency or host reconciliation before any retry. A failure around patch execution SHALL NOT trigger an unsafe blind retry when the outcome is unknown. A retry SHALL occur only when the host established the effect did not happen, or when reconciliation determined it did.
+An external effect whose outcome is unknown SHALL NOT be covered by an engine promise. The host SHALL provide idempotency or reconciliation for such an effect. An exactly-once delivery SHALL NOT be claimed from the engine.
 
 #### Scenario: Unknown patch outcome is not blind-retried
 
 - **WHEN** patch execution fails and the host cannot determine whether the patch was applied
-- **THEN** the host SHALL reconcile or query before retrying, and SHALL NOT retry the patch blindly
+- **THEN** the host SHALL reconcile or apply its idempotency rule before any retry, and SHALL NOT retry the patch blindly
 
-#### Scenario: Known-absent effect is retried
+#### Scenario: Ambiguous effect surfaces as unknown outcome plus reconciliation
 
-- **WHEN** the host established the effect did not happen
-- **THEN** the host SHALL retry under its declared idempotency or reconciliation rule
-
-#### Scenario: Idempotency key protects the effect
-
-- **WHEN** a retried effect carries the same idempotency key as the first attempt
-- **THEN** the effect SHALL occur at most once as observed by the host's contract
+- **WHEN** an external effect has an unknown outcome
+- **THEN** the effect SHALL surface as an unknown outcome plus host idempotency or reconciliation, never as a silent retry that may double-apply
 
 ### Requirement: No engine exactly-once guarantee is assumed or promised
 
