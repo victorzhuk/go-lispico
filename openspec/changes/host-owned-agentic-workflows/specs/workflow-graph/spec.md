@@ -118,7 +118,7 @@ An approval SHALL record the digest of the patch it reviews together with its de
 
 #### Scenario: Matching digest authorizes the patch
 
-- **WHEN** the patch presented for application carries the digest recorded with the approval
+- **WHEN** the patch presented for application carries the digest recorded with the approval, and the recorded approval outcome is approved rather than rejected or deadline-expired
 - **THEN** the workflow SHALL apply the patch and continue
 
 #### Scenario: Changed digest is rejected

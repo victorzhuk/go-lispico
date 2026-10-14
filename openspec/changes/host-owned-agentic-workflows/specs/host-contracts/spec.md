@@ -62,7 +62,7 @@ Each contract SHALL declare exclusive ownership within its ownership scope: a si
 
 ### Requirement: A contract that omits a declaration is rejected
 
-A contract that omits one of these declarations SHALL NOT be accepted as a host contract.
+A contract that omits a declaration required by "Each contract declares its declared guarantee set" or "A contract declares exclusive ownership of its scope" SHALL NOT be accepted as a host contract.
 
 #### Scenario: Omitted declaration is rejected
 
