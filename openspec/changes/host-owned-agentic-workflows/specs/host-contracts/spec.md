@@ -27,34 +27,47 @@ A workflow that makes an ambiguous external effect SHALL declare a receipt contr
 - **WHEN** a workflow makes no ambiguous external effect and declares no receipt contract
 - **THEN** the host SHALL accept the workflow without a receipt contract
 
-### Requirement: Each contract declares its guarantees
+### Requirement: Each contract declares its declared guarantee set
 
-Each persistence contract SHALL declare: atomicity of idempotency-key reservation, concurrency and ownership with a single owner at a time held by a lease plus scanner cleanup of in-flight markers, ordering scope, partition or shard key, and retention horizon. Each contract SHALL declare exclusive ownership within its ownership scope: a second owner SHALL NOT hold the same scope while a lease on it remains valid. A contract that omits one of these declarations SHALL NOT be accepted as a host contract.
-
-#### Scenario: Undeclared guarantee is rejected
-
-- **WHEN** a proposed contract omits its retention horizon
-- **THEN** the contract SHALL NOT be accepted as a host contract
+Each persistence contract SHALL declare: atomicity of idempotency-key reservation, concurrency and ownership, ordering scope, partition or shard key, and retention horizon.
 
 #### Scenario: Idempotency reservation is atomic
 
 - **WHEN** two concurrent requests reserve the same idempotency key
 - **THEN** exactly one reservation SHALL succeed and the other SHALL observe the existing reservation
 
-#### Scenario: In-flight markers are reclaimed
+#### Scenario: Ordering scope is bounded by the declaration
 
-- **WHEN** a marker left in flight by a failed holder outlives its lease
-- **THEN** the scanner SHALL reclaim that marker
+- **WHEN** a contract declares ordering within a partition key only
+- **THEN** the host SHALL NOT rely on ordering across partition keys
+
+### Requirement: A contract declares exclusive ownership of its scope
+
+Each contract SHALL declare exclusive ownership within its ownership scope: a single owner at a time held by a lease plus scanner cleanup of in-flight markers. A second owner SHALL NOT hold the same scope while a lease on it remains valid.
 
 #### Scenario: Concurrent holder is refused while a lease is valid
 
 - **WHEN** a holder owns a scope under a valid lease and a second owner attempts to claim the same scope
 - **THEN** the second owner SHALL be refused until the lease expires or is released
 
-#### Scenario: Ordering scope is bounded by the declaration
+#### Scenario: Ownership is exclusive while a lease is valid
 
-- **WHEN** a contract declares ordering within a partition key only
-- **THEN** the host SHALL NOT rely on ordering across partition keys
+- **WHEN** a lease on an ownership scope remains valid
+- **THEN** no second owner SHALL hold that scope
+
+#### Scenario: Sweeper reclaims in-flight markers of a crashed owner
+
+- **WHEN** a marker left in flight by a failed holder outlives its lease
+- **THEN** the scanner SHALL reclaim that marker
+
+### Requirement: A contract that omits a declaration is rejected
+
+A contract that omits one of these declarations SHALL NOT be accepted as a host contract.
+
+#### Scenario: Omitted declaration is rejected
+
+- **WHEN** a proposed contract omits its retention horizon
+- **THEN** the contract SHALL NOT be accepted as a host contract
 
 ### Requirement: A backend satisfies the declared guarantees or rejects the configuration
 
