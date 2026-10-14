@@ -2,7 +2,7 @@
 
 ### Requirement: A workflow graph is validated before execution
 
-The system SHALL validate a Lisp-produced workflow graph and reject it before any node executes. Validation SHALL reject: a graph with no entry node, a node with no reachable path from the entry node, an edge referencing an unknown node, a join declaring no dependencies, a cycle that is not declared as a bounded loop, a bounded loop without a declared iteration or step limit, and a node requiring a capability the selected adapter does not provide.
+The system SHALL validate a Lisp-produced workflow graph and reject it before any node executes. Validation SHALL reject: a graph with no entry node, a node with no reachable path from the entry node, an edge referencing an unknown node, a join declaring no dependencies, a join that names fewer dependencies than the graph implies, a cycle that is not declared as a bounded loop, a bounded loop without a declared iteration or step limit, a loop whose activations cannot be given distinct iteration identities, and a node requiring a capability the selected adapter does not provide.
 
 #### Scenario: Invalid structure is rejected before any node runs
 
@@ -23,6 +23,11 @@ The system SHALL validate a Lisp-produced workflow graph and reject it before an
 
 - **WHEN** a graph declares an entry node, reachable nodes, a join with at least one declared dependency, and a cycle with a declared iteration limit
 - **THEN** validation SHALL succeed
+
+#### Scenario: Under-declared join is rejected before execution
+
+- **WHEN** a join names fewer dependencies than the graph implies between its incoming branches
+- **THEN** validation SHALL return an error and no node SHALL execute
 
 ### Requirement: Branches advance independently
 
@@ -87,6 +92,11 @@ A channel-style aggregate that checkpoints folded values, as `BinaryOperatorAggr
 
 - **WHEN** a loop aggregates values with a checkpointing aggregate and the workflow recovers mid-loop
 - **THEN** the recovered execution SHALL continue from the checkpointed folded value
+
+#### Scenario: Replayed activation is tolerated after recovery
+
+- **WHEN** the durable engine replays its own record after a restart and delivers the same node activation to the host a second time
+- **THEN** the host SHALL tolerate the repeated activation and SHALL NOT persist an interpreter stack across the wait
 
 ### Requirement: Approval binds to the digest of the reviewed patch
 
