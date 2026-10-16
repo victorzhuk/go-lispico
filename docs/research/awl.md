@@ -261,6 +261,8 @@ runtimeSubstrate:
       \- failed-recoverable  
       \- failed-terminal  
     completionBoundary: "completed"
+    # completionBoundary names completed as the terminal success state.
+    # Reach completionBoundary only when every declared stage has reached a terminal state.
 
 operationalBudgets:  
   maxSteps: 25  
@@ -276,6 +278,9 @@ operationalBudgets:
     # A budget breach between the plan and update phases resolves before the run leaves that superstep.
     # The run leaves the breached superstep with no partial set of channel updates applied.
     # The run then executes the declared breach action and emits the declared breach event.
+    # terminate-cleanly lands the run in failed-terminal.
+    # terminate-cleanly allows already committed channel updates to remain and forbids pending channel updates from the breached superstep.
+    # terminate-cleanly allows the lifecycle transition from the current nonterminal state to failed-terminal and forbids transitions to completed or to further execution.
 
 stateGraphChannels:  
   pregelExecutionSemantics:  
