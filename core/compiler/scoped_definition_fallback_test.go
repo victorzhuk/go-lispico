@@ -51,6 +51,19 @@ func TestCompilerScopedDefinitionFallback(t *testing.T) {
 		}
 	})
 
+	t.Run("scoped def after closed scope refused", func(t *testing.T) {
+		for _, tc := range []struct{ name, src string }{
+			{"def after let body", `(defn f [] (let [x 1] x) (def leaked 1))`},
+			{"def after let* body", `(defn f [] (let* [x 1] x) (def leaked 1))`},
+			{"def after loop body", `(defn f [] (loop [i 0] (recur (inc i))) (def leaked 1))`},
+			{"def after try body", `(defn f2 [] (try (throw (quote e)) (catch e nil)) (def leaked2 1))`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				mustUnsupported(t, tc.src)
+			})
+		}
+	})
+
 	t.Run("scoped defn refused", func(t *testing.T) {
 		for _, tc := range []struct{ name, src string }{
 			{"defn in let", `(let [] (defn f (x) x))`},

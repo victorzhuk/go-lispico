@@ -105,13 +105,17 @@ func (sm *StateMachine) TransitionWithEval(goCtx context.Context, event Event, t
 			}
 			result, err := eval.Apply(goCtx, guard, args, env)
 			if err != nil {
-				return TransitionResult{
+				res := TransitionResult{
 					State: from,
 					From:  from,
 					To:    from,
 					Valid: false,
 					Error: fmt.Sprintf("guard error: %s", err),
-				}, nil
+				}
+				if core.IsTerminalEvalError(err) {
+					return res, fmt.Errorf("fsm: guard: %w", err)
+				}
+				return res, nil
 			}
 			if !isTruthy(result) {
 				return TransitionResult{
@@ -141,14 +145,18 @@ func (sm *StateMachine) TransitionWithEval(goCtx context.Context, event Event, t
 				core.Keyword{V: string(event)},
 			}
 			if _, err := eval.Apply(goCtx, action, args, env); err != nil {
-				return TransitionResult{
+				res := TransitionResult{
 					State:     trans.Target,
 					From:      from,
 					To:        trans.Target,
 					Valid:     false,
 					Committed: true,
 					Error:     "action: " + err.Error(),
-				}, nil
+				}
+				if core.IsTerminalEvalError(err) {
+					return res, fmt.Errorf("fsm: action: %w", err)
+				}
+				return res, nil
 			}
 		}
 	}

@@ -156,11 +156,15 @@ func (e *engineImpl) Use(p core.Plugin) error {
 }
 
 // loadPlugin runs p.Init and the vocabulary pass through the registration's
-// view inside one accounted evaluation and returns the root names they added.
-// It publishes nothing: the caller settles the registration and the engine
-// state. On failure the abort's removals are decided before settlement, so a
-// failed operation never charges the meter for cells the rollback removes;
-// the caller's abortPlugin still unwinds the journal after FinishEval.
+// view inside one accounted evaluation and returns the journal-attributed
+// root names whose live cells the operation still owns and that the pre-load
+// baseline did not hold, so a plugin never acquires unload ownership of a
+// name the host wrote while its Init was in flight. It publishes nothing:
+// the caller settles the registration and the engine state. On failure the
+// abort's removals are decided before settlement, so a failed operation never
+// charges the meter for cells the rollback removes; the caller's abortPlugin
+// still unwinds the journal after FinishEval. A panic out of Init takes the
+// same unwind and keeps propagating.
 func (e *engineImpl) loadPlugin(p core.Plugin, reg *core.Registration, name, version string) (added map[string]struct{}, err error) {
 	before := e.snapshotBindings()
 	env := reg.Env()
@@ -170,6 +174,14 @@ func (e *engineImpl) loadPlugin(p core.Plugin, reg *core.Registration, name, ver
 		return nil, err
 	}
 	reg.BindPendingEval(ctx)
+	panicked := false
+	defer func() {
+		// Registered first so it runs last: the journal unwinds only after
+		// FinishEval has settled, matching the returned-error path.
+		if panicked {
+			e.abortPlugin(reg, name)
+		}
+	}()
 	defer func() {
 		if finishErr := core.FinishEval(ctx, top); finishErr != nil && err == nil {
 			added, err = nil, finishErr
@@ -181,7 +193,21 @@ func (e *engineImpl) loadPlugin(p core.Plugin, reg *core.Registration, name, ver
 			reg.DropPendingCharges()
 		}
 	}()
-	defer e.lazyMaterializer.fence()
+	defer func() {
+		e.lazyMaterializer.fence()
+		// Collected after the fence: an admitted view materialization may
+		// still be finishing, and the fence waits for exactly those writes.
+		if err == nil {
+			added = diff(reg.BindingNames(), before)
+		}
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("init plugin %s: panic: %v", name, r)
+			panicked = true
+			panic(r)
+		}
+	}()
 
 	if initErr := e.initPlugin(p, env, name, version); initErr != nil {
 		return nil, fmt.Errorf("init plugin %s: %w", name, initErr)
@@ -189,7 +215,7 @@ func (e *engineImpl) loadPlugin(p core.Plugin, reg *core.Registration, name, ver
 	if vocabErr := e.applyVocabulary(env, reg); vocabErr != nil {
 		return nil, fmt.Errorf("apply vocabulary for plugin %s: %w", name, vocabErr)
 	}
-	return diff(e.snapshotBindings(), before), nil
+	return nil, nil
 }
 
 // publishPlugin stores p in the registry unless the host edited its entry

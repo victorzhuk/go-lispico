@@ -1373,3 +1373,27 @@ func TestMacroRebindIsIdentical(t *testing.T) {
 		})
 	}
 }
+
+// TestMacroExpandDeepBindingForms pins the chunk-cache pre-pass contract:
+// macro calls in let/let*/loop binding values must be expanded so the
+// bytecode path never compiles an unexpanded macro call.
+func TestMacroExpandDeepBindingForms(t *testing.T) {
+	env := newCoreEnv()
+	evalStr(t, env, "(defmacro m [x] `(* 2 ~x))")
+
+	for _, tc := range []struct{ src, want string }{
+		{"(let [y (m 3)] y)", "(let [y (* 2 3)] y)"},
+		{"(let* [y (m 3)] y)", "(let* [y (* 2 3)] y)"},
+		{"(loop [y (m 3)] y)", "(loop [y (* 2 3)] y)"},
+	} {
+		form := readForm(t, tc.src)
+		expanded, err := NewEvaluator().MacroExpandDeep(context.Background(), form, env)
+		if err != nil {
+			t.Fatalf("%s: MacroExpandDeep: %v", tc.src, err)
+		}
+		want := readForm(t, tc.want)
+		if !expanded.Equals(want) {
+			t.Errorf("%s: expansion = %v, want %v", tc.src, expanded, want)
+		}
+	}
+}

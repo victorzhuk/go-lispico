@@ -5,8 +5,10 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -525,4 +527,127 @@ func TestFileWatcher_ScanNonexistentDirectory(t *testing.T) {
 	w.ctx = context.Background()
 
 	w.scan()
+}
+
+// TestWatch_ReentrantShutdown drives the shipped Watch path end to end:
+// watchLoop -> scan -> reloadFile -> Eval -> host GoFunc that shuts the
+// engine down from inside evaluation. Each case runs in a subprocess so a
+// self-joining Stop surfaces as a bounded child failure instead of stalling
+// the suite.
+func TestWatch_ReentrantShutdown(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"Stop/bytecode", "stop-bytecode"},
+		{"Stop/tree-walker", "stop-tree-walker"},
+		{"Close/bytecode", "close-bytecode"},
+		{"Close/tree-walker", "close-tree-walker"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			exe, err := os.Executable()
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, exe,
+				"-test.run=^TestWatch_ReentrantShutdown_Child$",
+				"-test.timeout=4s",
+			)
+			cmd.Env = append(os.Environ(),
+				"LISPICO_WATCH_CASE="+tc.id,
+				"TMPDIR=/var/tmp/lispico-audit",
+			)
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("watcher shutdown hung: parent deadline exceeded; child output:\n%s", out)
+			}
+			require.NoError(t, err, "child output:\n%s", out)
+		})
+	}
+}
+
+func TestWatch_ReentrantShutdown_Child(t *testing.T) {
+	id := os.Getenv("LISPICO_WATCH_CASE")
+	if id == "" {
+		t.Skip("harness child; driven by TestWatch_ReentrantShutdown")
+	}
+
+	bytecode := strings.HasSuffix(id, "bytecode")
+	action := "stop"
+	if strings.HasPrefix(id, "close") {
+		action = "close"
+	}
+
+	opts := []EngineOption{WithBytecode()}
+	if !bytecode {
+		opts = []EngineOption{WithTreeWalker()}
+	}
+	eng, err := New(nil, opts...)
+	require.NoError(t, err)
+
+	shutdown := func() error {
+		if action == "close" {
+			return eng.Close()
+		}
+		return eng.Stop()
+	}
+
+	done := make(chan struct{})
+	var shutErr error
+	require.NoError(t, eng.Bind("shutdown", core.GoFunc{
+		Name: "shutdown",
+		Fn: func(context.Context, core.Evaluator, []core.Value, *core.Env) (core.Value, error) {
+			shutErr = shutdown()
+			close(done)
+			return core.Nil{}, nil
+		},
+	}))
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "case.lisp"), []byte("(shutdown)\n"), 0o644))
+
+	require.NoError(t, eng.Watch(context.Background(), dir))
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("watcher shutdown hung")
+	}
+	require.NoError(t, shutErr)
+	require.NoError(t, eng.Close())
+}
+
+// TestWatch_ReentrantShutdown_Control is the positive control: the identical
+// watch scenario without a shutdown callback must reload and Stop must return
+// nil, so a hung case above cannot be blamed on the harness itself.
+func TestWatch_ReentrantShutdown_Control(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "probe.lisp"), []byte("(def control-marker 1)\n"), 0o644))
+
+	eng, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	require.NoError(t, eng.Watch(context.Background(), dir))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := eng.RootEnv().Get("control-marker"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("watcher never reloaded probe file")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.NoError(t, eng.Stop())
 }

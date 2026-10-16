@@ -2710,3 +2710,69 @@ func TestVM_FuncSite_ConcurrentSetFuncStormRace(t *testing.T) {
 
 	assert.Equal(t, int64(0), badResults.Load(), "reader observed a value that was never written")
 }
+
+func TestReset_ClearsStaleSlotReferences(t *testing.T) {
+	vm := New(core.NewEnv(nil))
+	chunk := &Chunk{
+		Name: "reset-retention",
+		Code: []Instruction{
+			Encode(OpConst, 0),
+			Encode(OpReturn, 0),
+		},
+		Constants: []core.Value{core.Int{V: 42}},
+		MaxStack:  4,
+	}
+
+	if _, err := vm.Run(context.Background(), chunk); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The run above leaves values and frame state in the backing arrays;
+	// fabricate the two slices a plain call may not populate.
+	vm.handlers = append(vm.handlers, handler{addr: 1, frameDepth: 1, stackDepth: 1, freezeDepth: 1, structDepth: 1})
+	vm.pushFreeze(1, OpSetupTry, core.Int{V: 7})
+
+	caps := struct{ stack, frames, handlers, freeze int }{
+		cap(vm.stack), cap(vm.frames), cap(vm.handlers), cap(vm.freezeStack),
+	}
+	if caps.stack == 0 || caps.frames == 0 || caps.handlers == 0 || caps.freeze == 0 {
+		t.Fatalf("expected populated backing arrays, got caps %+v", caps)
+	}
+
+	vm.Reset()
+
+	if cap(vm.stack) != caps.stack || cap(vm.frames) != caps.frames ||
+		cap(vm.handlers) != caps.handlers || cap(vm.freezeStack) != caps.freeze {
+		t.Fatalf("Reset must retain backing-array capacity: got stack %d/%d frames %d/%d handlers %d/%d freeze %d/%d",
+			cap(vm.stack), caps.stack, cap(vm.frames), caps.frames,
+			cap(vm.handlers), caps.handlers, cap(vm.freezeStack), caps.freeze)
+	}
+	for i, v := range vm.stack[:caps.stack] {
+		if v != nil {
+			t.Errorf("stale stack slot %d still holds %v", i, v)
+		}
+	}
+	for i, f := range vm.frames[:caps.frames] {
+		if f.chunk != nil || f.env != nil {
+			t.Errorf("stale frame slot %d still holds %+v", i, f)
+		}
+	}
+	for i, h := range vm.handlers[:caps.handlers] {
+		if h != (handler{}) {
+			t.Errorf("stale handler slot %d still holds %+v", i, h)
+		}
+	}
+	for i, fr := range vm.freezeStack[:caps.freeze] {
+		if fr.val != nil {
+			t.Errorf("stale freezeStack slot %d still holds %v", i, fr.val)
+		}
+	}
+
+	// Control: Reset leaves the VM usable for the next call.
+	result, err := vm.Run(context.Background(), chunk)
+	if err != nil {
+		t.Fatalf("reuse after Reset failed: %v", err)
+	}
+	if !result.Equals(core.Int{V: 42}) {
+		t.Errorf("reuse after Reset: expected 42, got %v", result)
+	}
+}

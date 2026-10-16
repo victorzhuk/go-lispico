@@ -1,7 +1,14 @@
 # workflow-graph Specification
 
 ## Purpose
-TBD - created by archiving change host-owned-agentic-workflows. Update Purpose after archive.
+Define how a workflow graph is validated and executed: node and branch shape,
+bounded loops, fan-in joins, budget breaches, and taint propagation across
+checkpoints. These requirements are forward design: no package in this repository
+implements a workflow engine. The boundary is proposed in
+`docs/adr/0015-independent-branches-bounded-loops.md` and
+`docs/adr/0018-host-enforcement-boundary.md`, both `status: proposed`. Read a
+requirement here as the engine contract a future host owes, not as a capability
+the shipped kernel provides.
 
 ## Requirements
 

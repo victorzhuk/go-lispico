@@ -10,6 +10,11 @@ import (
 	"github.com/victorzhuk/go-lispico/core"
 )
 
+// maxReadFileBytes bounds a single io/read-file result. The plugin config
+// has no size limit knob, so this is a package constant: without it a
+// script forces unbounded host reads outside the allocation meter.
+const maxReadFileBytes int64 = 1 << 20
+
 func (p *Plugin) readFile(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return nil, fmt.Errorf("io/read-file: %w", ctx.Err())
@@ -28,18 +33,34 @@ func (p *Plugin) readFile(ctx context.Context, eval core.Evaluator, args []core.
 		return nil, fmt.Errorf("io/read-file: %w", err)
 	}
 
-	file, err := os.Open(path)
+	file, err := p.sandbox.openFileWithin(path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("io/read-file: open %s: %w", pathArg.V, err)
 	}
 	defer func() { _ = file.Close() }()
 
-	content, err := io.ReadAll(file)
+	body, err := io.ReadAll(io.LimitReader(file, maxReadFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("io/read-file: read %s: %w", pathArg.V, err)
 	}
+	if int64(len(body)) > maxReadFileBytes {
+		return nil, core.NewResourceLimitError(fmt.Sprintf("io/read-file: %s exceeds max read size of %d bytes", pathArg.V, maxReadFileBytes))
+	}
+	if err := chargeReadBytes(ctx, int64(len(body))); err != nil {
+		return nil, err
+	}
 
-	return core.String{V: string(content)}, nil
+	return core.String{V: string(body)}, nil
+}
+
+// chargeReadBytes is the sole permitted call shape for the result-size
+// charge: the ChargeGoFuncResultBytes call itself must sit in return
+// position, so it lives in this wrapper rather than at the read site.
+func chargeReadBytes(ctx context.Context, n int64) error {
+	if ctx == nil {
+		return nil
+	}
+	return core.ChargeGoFuncResultBytes(ctx, n)
 }
 
 func (p *Plugin) writeFile(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -65,13 +86,19 @@ func (p *Plugin) writeFile(ctx context.Context, eval core.Evaluator, args []core
 		return nil, fmt.Errorf("io/write-file: %w", err)
 	}
 
-	dir := dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("io/write-file: create dir %s: %w", dir, err)
+	if err := p.sandbox.mkdirAllWithin(path, 0755); err != nil {
+		return nil, fmt.Errorf("io/write-file: create dir %s: %w", dir(path), err)
 	}
 
-	err = os.WriteFile(path, []byte(contentArg.V), 0644)
+	file, err := p.sandbox.openFileWithin(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
+		return nil, fmt.Errorf("io/write-file: write %s: %w", pathArg.V, err)
+	}
+	if _, err := file.Write([]byte(contentArg.V)); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("io/write-file: write %s: %w", pathArg.V, err)
+	}
+	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("io/write-file: write %s: %w", pathArg.V, err)
 	}
 

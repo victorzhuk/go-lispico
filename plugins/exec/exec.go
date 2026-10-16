@@ -1,3 +1,9 @@
+// Package exec spawns external programs with an explicit argv chosen by the
+// Lisp author. The caller selects both the program and every argument, so
+// there is no untrusted interpolation and no privilege boundary inside this
+// plugin. No shell is involved: metacharacters such as ;, &&, $(...) or
+// backticks travel as literal bytes. An argument the target program parses
+// as an option is the caller's own choice, not an injected one.
 package exec
 
 import (

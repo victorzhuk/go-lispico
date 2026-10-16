@@ -115,6 +115,65 @@ the benchstat-`~` blind spot noted above, which these allowances do not
 close — that gap applies to the latency axis and remains open. No cell's
 tier changes.
 
+## Known coverage gaps: thresholds stated here and NOT enforced
+
+Both gaps below are current, known, and unexercised. Neither is a defect in
+the gate's machinery; each is a threshold or a coverage claim that no
+committed fixture can reach today. Adding the missing fixtures is DEFERRED,
+not rejected — the gate's own guard blocks the straightforward fix, and
+amending that guard immediately before a release, with a hosted
+re-baseline behind it, is the wrong moment. Neither gap changes a tier, a
+threshold, or an exit code.
+
+### The concurrent tier's 5% throughput threshold is configured but unexercised
+
+`internal/perfgate/tiers.json` configures 12 engine-sensitive cells, 14
+data-dominated cells, and 1 startup cell. It configures zero concurrent
+cells. The concurrent threshold stated above — distinct Rule closures on one
+Engine, within 5% throughput, bytes and allocation count non-increasing,
+race detector clean in the separate untimed run — is therefore not enforced
+by any run, and cannot be. A candidate that regresses concurrent throughput
+by far more than 5% passes this gate today.
+
+The straightforward fix, adding a concurrent cell and its workload, is
+blocked by the coverage guard in
+`internal/perfgate/bytes_allowance_spread_test.go:39-48`: it requires
+historical profile samples for EVERY configured cell, including cells whose
+`bytesAllowanceBOp` is a stated `0`, and setting an allowance to `0` does not
+avoid the assertion. The pinned profile is `profile-30637802780`
+(`internal/perfgate/perfgate_test.go:705-706`), a capture taken in the past,
+so it cannot contain a cell introduced after it. Adding any new gold-set
+cell, concurrent or otherwise, therefore makes
+`TestBytesAllowancesAreJustifiedBySpread` fail with `cell %q has no B/op
+samples in %s`.
+
+### Common Lisp, the shipped default dialect, has no workload coverage
+
+`internal/goldset/goldset.go:37-43` pins `runtime.WithDialect(clojure.Dialect())`
+for every fixture. Only `stdlib` and `json` ship in `cmd/lispico`, so the
+dialect a consumer actually gets with no option is Common Lisp. A green
+workload gate therefore cannot establish non-regression for the shipped
+default, including its Lisp-2 function resolution, where an operator and a
+variable live in separate namespaces. A regression in that resolution would
+not fail this gate today.
+
+The same guard blocks the fixture-side fix: a new Common Lisp cell is a new
+configured cell, so it hits the historical-sample assertion above for the
+same reason and needs the same amendment.
+
+### Follow-up requires both, in this order
+
+1. Amend the coverage guard so the historical-sample requirement applies to
+   cells that carry a nonzero `bytesAllowanceBOp`, rather than to every
+   configured cell. A cell stating `0` is bounded by the exact
+   non-increasing bound itself and needs no spread evidence to justify a
+   number it does not state.
+2. Then add the concurrent cell and the Common Lisp cells, and re-baseline
+   at the next hosted gate run. A new cell lands in first-authorization mode
+   against the repository's existing baseline-selection policy, and the
+   baseline profile is re-captured then; until that run, these thresholds
+   remain unexercised.
+
 ## Consequences
 
 - Passing the gate ends VM-specific optimization; batched cancellation checks plus a cross-engine step budget, resolved-binding cells, and tagged slots all wait for a failing gate cell or another measured consumer need.

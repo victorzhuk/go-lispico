@@ -365,6 +365,15 @@ Domain-specific plugins extend functionality. Each plugin:
 - May have external dependencies
 - Registers functions in a namespace
 
+Plugins own the I/O surface exposed to Lisp code: every callable that touches a
+file, directory, process, network, or the environment is registered by a plugin
+package. The boundary is not "the repository performs no I/O" — `runtime.EvalFile`
+and `runtime.LoadDir` read files themselves (`runtime/eval.go:785-808`), the
+runtime settles evaluation state and flushes retained capacity on every return
+path (`runtime/eval.go:695-770`), and `runtime.Watch` observes the filesystem for
+hot reload. What the runtime owns is composing the call, settling, and
+flushing; what it delegates is the primitive itself.
+
 The pure-computation plugins (`stdlib`, `json`) are the actively developed
 surface; the world-touching plugins are frozen — security and correctness
 fixes only (see `docs/adr/0004-kernel-first-mission.md`).

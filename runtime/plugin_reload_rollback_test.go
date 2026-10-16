@@ -300,3 +300,97 @@ func TestUnloadPluginKeepsLastWriterOwnership(t *testing.T) {
 	require.NoError(t, eng.UnloadPlugin("rr-b"))
 	rrWantAbsent(t, root, "rr-b-only")
 }
+
+func TestUseUnloadKeepsConcurrentHostBindings(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+
+	const name = "rr-concurrent"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	p := &rrPlugin{name: name, version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("d3/plugin-value", core.Int{V: 7}); err != nil {
+			return err
+		}
+		if err := env.SetFunc("d3/plugin-function", rrConst("d3/plugin-function", core.Int{V: 8})); err != nil {
+			return err
+		}
+		close(entered)
+		select {
+		case <-release:
+		case <-time.After(rrWatchdog):
+			return errors.New("barrier release timed out")
+		}
+		return nil
+	}}
+	done := make(chan error, 1)
+	go func() { done <- eng.Use(p) }()
+
+	select {
+	case <-entered:
+	case <-time.After(rrWatchdog):
+		t.Fatal("timed out waiting for Init entry")
+	}
+	hostErr := root.Set("d3/host-binding", core.Int{V: 42})
+	close(release)
+
+	select {
+	case err = <-done:
+	case <-time.After(rrWatchdog):
+		t.Fatal("timed out waiting for Use to return")
+	}
+	require.NoError(t, hostErr)
+	require.NoError(t, err)
+
+	require.NoError(t, eng.UnloadPlugin(name))
+	rrWantAbsent(t, root, "d3/plugin-value")
+	rrWantAbsent(t, root, "d3/plugin-function")
+	rrWantInt(t, root, "d3/host-binding", 42)
+	rrWantEval(t, eng, "d3/host-binding", "42")
+}
+
+func TestUsePanickedInitRollsBackAndAllowsRetry(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	root := eng.RootEnv()
+
+	const name = "rr-panic"
+	panicking := &rrPlugin{name: name, version: "1.0.0", init: func(env *core.Env) error {
+		if err := env.Set("d3/panic-binding", core.Int{V: 1}); err != nil {
+			return err
+		}
+		panic("rr init panicked")
+	}}
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_ = eng.Use(panicking)
+	}()
+	select {
+	case r := <-panicked:
+		require.Equal(t, "rr init panicked", r)
+	case <-time.After(rrWatchdog):
+		t.Fatal("timed out waiting for Use to unwind")
+	}
+
+	rrWantAbsent(t, root, "d3/panic-binding")
+	if _, ok := eng.Registry().Get(name); ok {
+		t.Error("panicked Init left a registry entry")
+	}
+	assert.Equal(t, 0, eng.Stats().ActivePlugins, "panicked Init changed ActivePlugins")
+
+	retry := &rrPlugin{name: name, version: "2.0.0", init: func(env *core.Env) error {
+		return env.Set("d3/retry-binding", core.Int{V: 5})
+	}}
+	require.NoError(t, eng.Use(retry))
+	rrWantInt(t, root, "d3/retry-binding", 5)
+	require.NoError(t, eng.UnloadPlugin(name))
+	rrWantAbsent(t, root, "d3/retry-binding")
+}

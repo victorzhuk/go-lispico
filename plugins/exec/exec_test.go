@@ -3,6 +3,7 @@ package exec
 import (
 	"context"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -634,4 +635,51 @@ func TestExec_EnvIsolation(t *testing.T) {
 		opts, _, _ = opts.Assoc(core.Keyword{V: "inherit-env"}, core.Bool{V: true})
 		assert.Equal(t, "leaked\n", stdoutOf(opts))
 	})
+}
+
+// TestExec_Run_ArgvLiteralNoShell pins the plugin's actual safety property:
+// argv is passed verbatim to the spawned binary. A shell would interpret
+// metacharacters like ;, &&, $(...) or backticks; their literal arrival in
+// the child's output proves no shell sits between the plugin and the program.
+func TestExec_Run_ArgvLiteralNoShell(t *testing.T) {
+	if _, err := exec.LookPath("/bin/echo"); err != nil {
+		t.Skip("/bin/echo not available on this platform")
+	}
+
+	argv := []string{
+		"a;b",
+		"c && d",
+		"$(whoami)",
+		"`id`",
+		"it's \"quoted\"",
+		"line1\nline2",
+		"-n",
+		"--flag=value",
+	}
+
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	cmdArgs := make([]core.Value, len(argv))
+	for i, a := range argv {
+		cmdArgs[i] = core.String{V: a}
+	}
+	args := []core.Value{
+		core.String{V: "/bin/echo"},
+		core.NewVector(cmdArgs),
+	}
+	result, err := p.run(context.Background(), nil, args, env)
+	require.NoError(t, err)
+
+	hm, ok := result.(*core.HashMap)
+	require.True(t, ok)
+
+	stdout, _ := hm.Get(core.Keyword{V: "stdout"})
+	// One echo process printed every argument verbatim, including entries
+	// that a shell would have split, substituted, or executed.
+	assert.Equal(t, strings.Join(argv, " ")+"\n", stdout.(core.String).V)
+
+	exit, _ := hm.Get(core.Keyword{V: "exit"})
+	assert.Equal(t, int64(0), exit.(core.Int).V)
 }

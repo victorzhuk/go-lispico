@@ -419,21 +419,6 @@ func collectionBuiltins() []core.GoFunc {
 					base = core.NewList(nil)
 				}
 				switch c := base.(type) {
-				case core.List:
-					// conj prepends args[1:] onto c in order — equivalent to
-					// consing them on one at a time starting from the last, so
-					// c's own backing is extended, never copied.
-					res := c
-					var bytes int64
-					for i := len(args) - 1; i >= 1; i-- {
-						var b int64
-						res, b = res.Cons(args[i])
-						bytes += b
-					}
-					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[1:]...); err != nil {
-						return nil, err
-					}
-					return res, nil
 				case *core.HashMap:
 					if len(args) != 3 {
 						return nil, arityErrorf("conj on map requires key and value")
@@ -463,6 +448,31 @@ func collectionBuiltins() []core.GoFunc {
 						}
 					}
 					res, bytes := c.Conj(args[1:]...)
+					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[1:]...); err != nil {
+						return finishBuiltin(budget, nil, err)
+					}
+					return finishBuiltin(budget, res, nil)
+				case core.List:
+					// conj prepends args[1:] onto c in order — equivalent to
+					// consing them on one at a time starting from the last, so
+					// c's own backing is extended, never copied. One Cons per
+					// argument: the loop steps the work budget so a long
+					// variadic call hits the budget's sync point mid-build like
+					// the Vector arm, instead of allocating unmetered and only
+					// paying for the result afterwards. This arm stays last so
+					// its budget is settled by every exit before any
+					// non-budgeted arm can follow it.
+					budget := core.NewBuiltinWorkBudget(ctx)
+					res := c
+					var bytes int64
+					for i := len(args) - 1; i >= 1; i-- {
+						if err := budget.Step(); err != nil {
+							return finishBuiltin(budget, nil, err)
+						}
+						var b int64
+						res, b = res.Cons(args[i])
+						bytes += b
+					}
 					if err := chargeConsResult(ctx, eval, "conj", res, bytes, args[1:]...); err != nil {
 						return finishBuiltin(budget, nil, err)
 					}

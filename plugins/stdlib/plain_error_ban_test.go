@@ -138,14 +138,14 @@ var plainErrorAllowlist = []struct {
 
 	// Internal VM state assertions: a violated ResetIncremental invariant is a
 	// kernel defect, not an evaluation failure a host can classify.
-	{file: "core/vm/vm.go", line: 312},
-	{file: "core/vm/vm.go", line: 307},
+	{file: "core/vm/vm.go", line: 319},
+	{file: "core/vm/vm.go", line: 314},
 
 	// Wrapping, not origination: %w carries an already-typed inner error or a
 	// terminal sentinel through, so errors.As and errors.Is still reach it.
-	{file: "core/vm/vm.go", line: 879},
+	{file: "core/vm/vm.go", line: 893},
 	{file: "core/vm/vm.go", line: 886},
-	{file: "core/vm/vm.go", line: 941},
+	{file: "core/vm/vm.go", line: 948},
 
 	// Malformed-bytecode assertions: a constant or subchunk index out of range
 	// means the chunk is corrupt, not that the program failed.

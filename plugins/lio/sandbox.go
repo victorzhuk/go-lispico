@@ -28,6 +28,9 @@ type Sandbox struct {
 	cfg        Config
 	denyRegex  *regexp.Regexp
 	rootDirAbs string
+	// root pins the root directory inode so opens through it cannot
+	// follow a symlink swapped after validation.
+	root *os.Root
 }
 
 func NewSandbox(cfg Config) (*Sandbox, error) {
@@ -55,6 +58,11 @@ func NewSandbox(cfg Config) (*Sandbox, error) {
 			return nil, fmt.Errorf("resolve root dir: %w", err)
 		}
 		s.rootDirAbs = root
+		pinned, err := os.OpenRoot(root)
+		if err != nil {
+			return nil, fmt.Errorf("open root dir: %w", err)
+		}
+		s.root = pinned
 	} else if cfg.Mode == ModeStrict {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -65,9 +73,57 @@ func NewSandbox(cfg Config) (*Sandbox, error) {
 			return nil, fmt.Errorf("resolve working directory: %w", err)
 		}
 		s.rootDirAbs = root
+		pinned, err := os.OpenRoot(root)
+		if err != nil {
+			return nil, fmt.Errorf("open root dir: %w", err)
+		}
+		s.root = pinned
 	}
 
 	return s, nil
+}
+
+// openFileWithin opens a validated path. When a pinned root exists, the
+// open goes through it so containment is enforced by the open syscall
+// itself: a symlink swapped after Validate cannot escape. Paths outside
+// the root are only reachable in relaxed mode via an explicit allowlist
+// entry, and fall back to the plain open there.
+func (s *Sandbox) openFileWithin(validated string, flag int, perm os.FileMode) (*os.File, error) {
+	if s.root == nil || (s.cfg.Mode != ModeStrict && !withinRoot(validated, s.rootDirAbs)) {
+		return os.OpenFile(validated, flag, perm)
+	}
+	rel, err := filepath.Rel(s.rootDirAbs, validated)
+	if err != nil {
+		return nil, err
+	}
+	return s.root.OpenFile(rel, flag, perm)
+}
+
+func (s *Sandbox) mkdirAllWithin(validated string, perm os.FileMode) error {
+	dir := filepath.Dir(validated)
+	if s.root == nil || (s.cfg.Mode != ModeStrict && !withinRoot(dir, s.rootDirAbs)) {
+		return os.MkdirAll(dir, perm)
+	}
+	rel, err := filepath.Rel(s.rootDirAbs, dir)
+	if err != nil {
+		return err
+	}
+	// os.Root.MkdirAll needs go1.25; go.mod declares go1.24.
+	cur := ""
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == "" {
+			continue
+		}
+		if cur == "" {
+			cur = part
+		} else {
+			cur += string(os.PathSeparator) + part
+		}
+		if err := s.root.Mkdir(cur, perm); err != nil && !os.IsExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Sandbox) Validate(path string, write bool) (string, error) {

@@ -672,7 +672,7 @@ var WorkPhases = []WorkPhase{
 		File:        "plugins/stdlib/collections.go",
 		Func:        "collectionBuiltins",
 		PhaseLabel:  "list cons walk",
-		Disposition: "none-bounded-dispatch",
+		Disposition: "budgeted",
 	},
 	{
 		Families:    []string{"collection"},

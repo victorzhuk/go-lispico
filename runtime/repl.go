@@ -19,16 +19,22 @@ func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 		fmt.Fprint(w, "lispico> ")
 
 		line, err := rd.ReadString('\n')
-		if err == io.EOF {
-			fmt.Fprintln(w)
-			return nil
-		}
-		if err != nil {
+		atEOF := err == io.EOF
+		if err != nil && !atEOF {
 			return fmt.Errorf("read: %w", err)
+		}
+
+		// EOF carries one last line's bytes; the closing newline goes out
+		// exactly once whether that line is empty or complete.
+		if atEOF {
+			fmt.Fprintln(w)
 		}
 
 		line = strings.TrimSpace(line)
 		if line == "" {
+			if atEOF {
+				return nil
+			}
 			continue
 		}
 
@@ -41,8 +47,11 @@ func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 			fmt.Fprint(w, "       ")
 			cont, err := rd.ReadString('\n')
 			if err == io.EOF {
-				fmt.Fprintln(w)
-				return nil
+				input += "\n" + strings.TrimSpace(cont)
+				if !IsBalanced(input) {
+					return nil
+				}
+				break
 			}
 			if err != nil {
 				return fmt.Errorf("read: %w", err)
@@ -57,10 +66,13 @@ func (e *engineImpl) REPL(r io.Reader, w io.Writer) error {
 		result, err := e.Eval(ctx, "repl", input)
 		if err != nil {
 			fmt.Fprintf(w, "Error: %v\n", err)
-			continue
+		} else {
+			fmt.Fprintln(w, result.String())
 		}
 
-		fmt.Fprintln(w, result.String())
+		if atEOF {
+			return nil
+		}
 	}
 }
 

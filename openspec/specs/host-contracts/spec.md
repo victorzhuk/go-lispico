@@ -1,7 +1,14 @@
 # host-contracts Specification
 
 ## Purpose
-TBD - created by archiving change host-owned-agentic-workflows. Update Purpose after archive.
+Document the persistence, capability, taint, and budget contracts an embedding
+host is expected to enforce on its own behalf. These requirements are forward
+design: no package in this repository implements them. The boundary they describe
+is proposed in `docs/adr/0014-host-owned-workflow-boundary.md`,
+`docs/adr/0016-segregated-persistence-contracts.md`, and
+`docs/adr/0018-host-enforcement-boundary.md`, each of which is
+`status: proposed`. Read a requirement here as a contract the host owes, not as a
+capability the shipped kernel provides.
 
 ## Requirements
 

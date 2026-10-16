@@ -265,14 +265,21 @@ func (vm *VM) reset() {
 // instance can be reused for a new evaluation. It does not change the
 // VM's configuration (globals, max depth, evaluator).
 func (vm *VM) Reset() {
+	// Stale slots must not keep operand and frame object graphs reachable
+	// after a failed or pinned call returns; clear in place to retain the
+	// backing arrays.
+	clear(vm.stack[:cap(vm.stack)])
 	vm.stack = vm.stack[:0]
+	clear(vm.frames[:cap(vm.frames)])
 	vm.frames = vm.frames[:0]
+	clear(vm.handlers[:cap(vm.handlers)])
 	vm.handlers = vm.handlers[:0]
 	vm.depth = 0
 	vm.structDepth = &vm.ownStructDepth
 	vm.structDepthVal = 0
 	vm.callDepth = &vm.ownCallDepth
 	vm.callDepthVal = 0
+	clear(vm.freezeStack[:cap(vm.freezeStack)])
 	vm.freezeStack = vm.freezeStack[:0]
 	vm.deadline = time.Time{}
 	vm.timeout = 0

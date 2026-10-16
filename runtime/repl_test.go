@@ -296,3 +296,49 @@ func TestREPL_TrailingCommentDoesNotBlock(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, output.String(), "3")
 }
+
+// TestREPL_FinalLineWithoutTrailingNewline proves a complete final expression
+// that ends exactly at EOF is still evaluated and counted.
+func TestREPL_FinalLineWithoutTrailingNewline(t *testing.T) {
+	input := "42"
+	output := &bytes.Buffer{}
+
+	eng, err := New(nil)
+	require.NoError(t, err)
+
+	err = eng.REPL(strings.NewReader(input), output)
+	assert.NoError(t, err)
+	assert.Contains(t, output.String(), "42")
+	assert.Equal(t, int64(1), eng.Stats().TotalEvals,
+		"the final expression must be evaluated exactly once")
+}
+
+// TestREPL_FinalContinuationLineWithoutTrailingNewline proves a multi-line
+// form whose last continuation line ends at EOF is completed and evaluated.
+func TestREPL_FinalContinuationLineWithoutTrailingNewline(t *testing.T) {
+	input := "(do\n  1\n  2)"
+	output := &bytes.Buffer{}
+
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+
+	err = eng.REPL(strings.NewReader(input), output)
+	assert.NoError(t, err)
+	assert.Contains(t, output.String(), "2")
+}
+
+// TestREPL_IncompleteFormAtEOF pins the chosen EOF semantics: an unbalanced
+// form abandoned at EOF terminates the session cleanly without evaluating it.
+func TestREPL_IncompleteFormAtEOF(t *testing.T) {
+	input := "(do\n  1"
+	output := &bytes.Buffer{}
+
+	eng, err := New(nil, WithDialect(clojure.Dialect()))
+	require.NoError(t, err)
+
+	err = eng.REPL(strings.NewReader(input), output)
+	assert.NoError(t, err)
+	assert.NotContains(t, output.String(), "Error:")
+	assert.Equal(t, int64(0), eng.Stats().TotalEvals,
+		"an incomplete form at EOF must not be evaluated")
+}

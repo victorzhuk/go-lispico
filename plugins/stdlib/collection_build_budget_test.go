@@ -420,3 +420,35 @@ func TestMerge_RespectsCollectionLimit(t *testing.T) {
 	requireResourceLimit(t, err)
 	require.ErrorContains(t, err, "merge length 3 exceeds collection limit 2")
 }
+
+// TestConj_ListChargesPerElementWork: variadic conj onto a List builds one
+// Cons per argument, so the construction loop must step the work budget the
+// same way the Vector arm does: a long call under a ceiling below one batch
+// ends terminally instead of completing unmetered. The within-budget arm pins
+// the prepend order so charging the loop cannot reorder the result.
+func TestConj_ListChargesPerElementWork(t *testing.T) {
+	env := setupEnv(t)
+	fn := collectionGoFunc(t, env, "conj")
+
+	base := core.NewList(cbInts(cbUnitCount))
+	args := append([]core.Value{base}, cbInts(cbUnitCount)...)
+
+	ctx := core.WithEvalResourceLimits(t.Context(), 100, 1<<30)
+	_, err := fn.Fn(ctx, nil, args, env)
+	requireResourceLimit(t, err)
+	require.Truef(t, core.IsTerminalEvalError(err),
+		"conj over a %d-element variadic tail under a 100-reduction ceiling must fail terminally, got %v", cbUnitCount, err)
+
+	res, err := fn.Fn(t.Context(), core.NewEvaluator(), []core.Value{
+		core.NewList([]core.Value{core.Int{V: 1}, core.Int{V: 2}}),
+		core.Int{V: 3}, core.Int{V: 4}, core.Int{V: 5},
+	}, env)
+	require.NoError(t, err)
+	list, ok := res.(core.List)
+	require.Truef(t, ok, "conj onto a List must return a List, got %T", res)
+	got := make([]int64, 0, list.Len())
+	for _, v := range list.ToSlice() {
+		got = append(got, v.(core.Int).V)
+	}
+	require.Equal(t, []int64{3, 4, 5, 1, 2}, got)
+}

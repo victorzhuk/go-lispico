@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/victorzhuk/go-lispico/core"
 
 	"context"
@@ -214,4 +215,56 @@ func TestEngine_Stats_TracksErrors(t *testing.T) {
 	stats := eng.Stats()
 	assert.Equal(t, int64(1), stats.TotalEvals)
 	assert.Equal(t, int64(1), stats.TotalErrors)
+}
+
+func statsOverflowName(i int) string {
+	return "overflow-" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26)) + "!"
+}
+
+// TestStats_OverflowKeepsLiveCountersConnected proves a flush-on-overflow does
+// not detach the counters already cached by warm Engine.Call entries, Fn, and
+// PinnedFn handles: post-flush calls through every cached path must still be
+// visible in Snapshot while the counter map stays bounded.
+func TestStats_OverflowKeepsLiveCountersConnected(t *testing.T) {
+	t.Parallel()
+
+	eng, err := New(nil, WithBytecode())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+	ctx := t.Context()
+
+	_, err = eng.Eval(ctx, "def-id", "(defun id (x) x)")
+	require.NoError(t, err)
+	fn, err := eng.Func("id")
+	require.NoError(t, err)
+	pinned := fn.Pin()
+	require.NotNil(t, pinned)
+
+	// Warm every path: the call-cache entry, the Fn handle, the PinnedFn handle.
+	_, err = eng.Call(ctx, "id", core.Int{V: 1})
+	require.NoError(t, err)
+	_, err = fn.Call(ctx, core.Int{V: 2})
+	require.NoError(t, err)
+	_, err = pinned.Call(ctx, core.Int{V: 3})
+	require.NoError(t, err)
+
+	// Distinct undefined names push the counter map past its bound and force a flush.
+	for i := range maxCallCacheEntries + 10 {
+		_, err := eng.Call(ctx, statsOverflowName(i))
+		require.Error(t, err)
+	}
+
+	before := eng.Stats().PluginCallCounts["id"]
+	_, err = eng.Call(ctx, "id", core.Int{V: 4})
+	require.NoError(t, err)
+	_, err = fn.Call(ctx, core.Int{V: 5})
+	require.NoError(t, err)
+	_, err = pinned.Call(ctx, core.Int{V: 6})
+	require.NoError(t, err)
+	after := eng.Stats().PluginCallCounts["id"]
+
+	assert.Equal(t, before+3, after,
+		"calls via warm Engine.Call, Fn, and PinnedFn must remain visible after a counter flush")
+	assert.LessOrEqual(t, len(eng.Stats().PluginCallCounts), maxCallCacheEntries,
+		"counter map must stay bounded across overflows")
 }

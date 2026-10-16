@@ -805,6 +805,48 @@ func parsePinnedVerdicts(t *testing.T, data string) map[string]Verdict {
 	return verdicts
 }
 
+func TestMissingCandidateCells(t *testing.T) {
+	t.Parallel()
+
+	tiers := map[string]CellTier{
+		"Goldset/route-decision": {Tier: TierEngineSensitive},
+		"Goldset/rule-load":      {Tier: TierStartup},
+		"GoldsetParse/guard-nil": {Tier: TierDataDominated},
+	}
+
+	t.Run("empty candidate misses every configured cell", func(t *testing.T) {
+		t.Parallel()
+
+		missing := MissingCandidateCells(tiers, nil)
+		assert.Equal(t, []string{
+			"Goldset/route-decision",
+			"Goldset/rule-load",
+			"GoldsetParse/guard-nil",
+		}, missing)
+	})
+
+	t.Run("procs suffix does not hide a measured cell", func(t *testing.T) {
+		t.Parallel()
+
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": {AllocsPerOp: []float64{2}},
+			"Goldset/rule-load-2":      {AllocsPerOp: []float64{2}},
+			"GoldsetParse/guard-nil-2": {AllocsPerOp: []float64{2}},
+		}
+		assert.Empty(t, MissingCandidateCells(tiers, candidate))
+	})
+
+	t.Run("one missing cell is named alone", func(t *testing.T) {
+		t.Parallel()
+
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": {AllocsPerOp: []float64{2}},
+			"Goldset/rule-load-2":      {AllocsPerOp: []float64{2}},
+		}
+		assert.Equal(t, []string{"GoldsetParse/guard-nil"}, MissingCandidateCells(tiers, candidate))
+	})
+}
+
 func parseVerdict(t *testing.T, s string) Verdict {
 	t.Helper()
 

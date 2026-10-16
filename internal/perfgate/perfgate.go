@@ -9,6 +9,7 @@ package perfgate
 import (
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -329,6 +330,29 @@ func joinReasons(first, second string) string {
 		return first
 	}
 	return first + "; " + second
+}
+
+// MissingCandidateCells lists configured cells the candidate run never
+// measured, in tier-config order-independent sorted order. The gate's cell
+// loop is otherwise driven by the candidate alone: a cell absent from the
+// candidate run simply never enters it, so a partial or empty run could exit
+// 0 having evaluated nothing. A missing candidate figure is not a NEW cell in
+// the first-authorization sense — tiers.json already commits a tier for it,
+// and a rerun regenerates the same corpus — so the caller rejects it instead
+// of treating it as a first release.
+func MissingCandidateCells(tiers map[string]CellTier, candidate map[string]SampleMetrics) []string {
+	seen := make(map[string]bool, len(candidate))
+	for name := range candidate {
+		seen[TrimProcsSuffix(name)] = true
+	}
+	var missing []string
+	for name := range tiers {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 // nonIncreasing enforces ADR 0008's "allocation count non-increasing" and

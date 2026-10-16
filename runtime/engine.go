@@ -46,9 +46,11 @@ type Engine interface {
 	ListPlugins() []PluginStatus
 	// Watch starts watching a directory for file changes.
 	Watch(ctx context.Context, dir string) error
-	// Stop stops the watcher.
+	// Stop requests watcher cancellation. It is idempotent and does not wait
+	// for an in-flight reload or host Go function to return.
 	Stop() error
-	// Close releases resources.
+	// Close requests watcher cancellation and synchronously flushes the
+	// bytecode cache. Watcher cleanup completes after in-flight work returns.
 	Close() error
 	// REPL starts an interactive REPL.
 	REPL(r io.Reader, w io.Writer) error

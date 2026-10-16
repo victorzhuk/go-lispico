@@ -62,6 +62,44 @@ func TestRun_ConfigErrorExitsThree(t *testing.T) {
 	assert.Equal(t, 3, code, "configuration error must exit 3, not the needs-rerun 2; stderr: %s", stderr.String())
 }
 
+// TestRun_EmptyCandidateExitsThree pins the gate's floor: a candidate run
+// with no benchmark samples at all is evidence of nothing, and evaluating an
+// empty cell set reaches the pass branch without ever comparing a figure.
+// The pair is cross-runner so the swapped benchstat stays unreached: the
+// inventory comparison must reject the candidate before any statistics run.
+func TestRun_EmptyCandidateExitsThree(t *testing.T) {
+	emptyCandidate := keepingCells(t, filepath.Join(crossRunnerBaselineDir, "bench-vm.txt"), "BenchmarkNone/")
+
+	code, _, stderr := runGate(t,
+		"-old", filepath.Join(pinnedProfileDir, "bench-vm.txt"),
+		"-candidate", emptyCandidate,
+		"-mode", "non-regression")
+
+	assert.Equal(t, 3, code, "an empty candidate must never authorize a release; stderr: %s", stderr)
+	assert.Contains(t, stderr, "Goldset/route-decision",
+		"the diagnostic must name the configured cells the candidate never measured: %s", stderr)
+}
+
+// TestRun_CandidateMissingOneCellFailsGate covers a candidate that measured
+// all but one configured cell. The unmeasured cell simply never enters the
+// cell loop, so nothing fails it -- the inventory comparison is the only step
+// that can notice. A missing candidate measurement is not a new baseline
+// cell: tiers.json already commits a tier for it, and a rerun regenerates the
+// same corpus, so the cell fails outright instead of collapsing the way a
+// genuinely new cell does.
+func TestRun_CandidateMissingOneCellFailsGate(t *testing.T) {
+	partial := droppingCells(t, filepath.Join(pinnedProfileDir, "bench-vm.txt"), "BenchmarkGoldset/route-decision")
+
+	code, stdout, stderr := runGate(t,
+		"-old", filepath.Join(crossRunnerBaselineDir, "bench-vm.txt"),
+		"-candidate", partial,
+		"-mode", "non-regression")
+
+	assert.Equal(t, 1, code, "a cell the tier config demands that the candidate never measured must fail the gate; stderr: %s", stderr)
+	assert.Contains(t, stdout, "Goldset/route-decision: FAIL (no candidate figure for this cell)",
+		"the report must name the missing cell as a candidate-evidence failure: %s", stdout)
+}
+
 func swapBenchstat(t *testing.T, fn func(oldPath, newPath string) ([]byte, error)) {
 	t.Helper()
 
@@ -191,17 +229,57 @@ func TestCrossRunner_AllocsEnforcedBytesInconclusive(t *testing.T) {
 // TestCrossRunner_CleanRunExitsZero is the release the narrowing exists to let
 // through: a cross-runner pair whose allocation counts all held, with only the
 // two machine-dependent axes left undecided. Nothing there is a rerun's to
-// resolve, so every cell collapses and the gate authorizes the release.
+// resolve, so every cell collapses and the gate authorizes the release. The
+// candidate must still carry every configured cell: the committed Intel
+// profile's identity, stamped onto the complete AMD run, gives a known
+// different runner without dropping any cell from the inventory.
 func TestCrossRunner_CleanRunExitsZero(t *testing.T) {
-	amdRun := filepath.Join(pinnedProfileDir, "bench-vm.txt")
-	intelParseRun := keepingCells(t, filepath.Join(crossRunnerBaselineDir, "bench-vm.txt"), "BenchmarkGoldsetParse/")
+	intelFile := filepath.Join(crossRunnerBaselineDir, "bench-vm.txt")
+	intelCPU, err := func() (string, error) {
+		f, err := os.Open(intelFile)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = f.Close() }()
+		id, err := perfgate.ReadRunnerIdentity(f)
+		if err != nil {
+			return "", err
+		}
+		return id.CPU, nil
+	}()
+	require.NoError(t, err)
+	cleanCandidate := withCPULines(t, filepath.Join(pinnedProfileDir, "bench-vm.txt"), intelCPU)
+	require.NotEqual(t, intelCPU, identityOf(t, filepath.Join(pinnedProfileDir, "bench-vm.txt")))
 
-	code, stdout, stderr := runGate(t, "-old", amdRun, "-candidate", intelParseRun, "-mode", "non-regression")
+	code, stdout, stderr := runGate(t, "-old", filepath.Join(pinnedProfileDir, "bench-vm.txt"), "-candidate", cleanCandidate, "-mode", "non-regression")
 
 	parseCells := cellsWithPrefix(t, candidateCells(t), "GoldsetParse/", 13)
 	assert.Equal(t, uniformVerdicts(parseCells, "INCONCLUSIVE"), verdictsFor(t, stdout, parseCells),
 		"the reader cells hold their allocation counts, so only the undecided axes are left")
 	assert.Equal(t, 0, code, "a cross-runner run whose allocation counts all held authorizes the release; stderr: %s", stderr)
+}
+
+// withCPULines copies a committed raw bench file into the test's temp dir with
+// its cpu: lines replaced by the given cpu value, keeping every benchmark line
+// verbatim. The committed corpora are never edited.
+func withCPULines(t *testing.T, path, cpu string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "cpu:") {
+			kept = append(kept, "cpu: "+cpu)
+			continue
+		}
+		kept = append(kept, line)
+	}
+
+	out := filepath.Join(t.TempDir(), "bench-recpu.txt")
+	require.NoError(t, os.WriteFile(out, []byte(strings.Join(kept, "\n")), 0o644))
+	return out
 }
 
 // TestCrossRunner_UnknownIdentityIsNotAMatch feeds a baseline whose preamble
@@ -372,6 +450,29 @@ func keepingCells(t *testing.T, path, prefix string) string {
 	}
 
 	out := filepath.Join(t.TempDir(), "bench-filtered.txt")
+	require.NoError(t, os.WriteFile(out, []byte(strings.Join(kept, "\n")), 0o644))
+	return out
+}
+
+// droppingCells copies a committed raw bench file into the test's temp dir
+// with the benchmark result lines under prefix removed, preamble kept: the
+// filtered file keeps a known runner identity. The committed corpora are
+// never edited.
+func droppingCells(t *testing.T, path, prefix string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "Benchmark") && strings.HasPrefix(line, prefix) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+
+	out := filepath.Join(t.TempDir(), "bench-dropped.txt")
 	require.NoError(t, os.WriteFile(out, []byte(strings.Join(kept, "\n")), 0o644))
 	return out
 }

@@ -84,23 +84,25 @@ func (s *Stats) recordEval(dur time.Duration, err error) {
 	}
 }
 
-// counterFor resolves a name's call counter, flushing every counter when a
-// new name would take the map past maxCallCacheEntries. Names are
-// caller-supplied (every Engine.Call on an undefined name creates one), so
-// the same flush-on-overflow bound the call cache uses keeps a spammer from
-// growing Stats without limit; a flush resets counts, a reporting event, not
-// a correctness one.
+// counterFor resolves a name's call counter. The map never holds more than
+// maxCallCacheEntries names; at the bound an overflow resets every counter's
+// value to zero in place instead of deleting entries, so counters already
+// cached by Fn, PinnedFn, and warm Engine.Call entries stay connected to
+// Snapshot — a flush is a reporting reset, not a detachment. Names past the
+// bound resolve to orphan counters whose counts are not reported, which is
+// what stops caller-supplied name spam from growing Stats without limit.
 func (s *Stats) counterFor(name string) *atomic.Int64 {
 	if v, ok := s.pluginCallCnts.Load(name); ok {
 		return v.(*atomic.Int64)
 	}
 	actual, loaded := s.pluginCallCnts.LoadOrStore(name, new(atomic.Int64))
 	if !loaded && s.callCntSize.Add(1) > maxCallCacheEntries {
-		s.pluginCallCnts.Range(func(k, _ any) bool {
-			s.pluginCallCnts.Delete(k)
+		s.pluginCallCnts.Delete(name)
+		s.callCntSize.Add(-1)
+		s.pluginCallCnts.Range(func(_, v any) bool {
+			v.(*atomic.Int64).Store(0)
 			return true
 		})
-		s.callCntSize.Store(0)
 	}
 	return actual.(*atomic.Int64)
 }

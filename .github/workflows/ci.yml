@@ -19,7 +19,43 @@ jobs:
           cache: true
       - run: go build ./...
       - run: go vet ./...
+      # golangci-lint's configured linters do not include gofmt, so formatting
+      # drift reached HEAD unnoticed. `gofmt -l` prints one path per dirty
+      # file; the list is the failure message.
+      - name: Check formatting
+        run: |
+          unformatted=$(git ls-files -z '*.go' | xargs -0 -r gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt reported unformatted files:" >&2
+            echo "$unformatted" >&2
+            echo "Run 'gofmt -w .' and commit the result." >&2
+            exit 1
+          fi
       - run: go test -race -count=1 ./...
+
+  # go.mod declares go 1.24.0. The test job above and the release gate both
+  # select 1.27, so nothing else here exercises the declared floor: a change
+  # that compiles on 1.27 but not on 1.24 would reach a release unnoticed.
+  # This job runs the same build/vet/test set on 1.24.0, without -race, which
+  # is the axis the floor is about.
+  # One exception: internal/goldset's TestGoldsetVMAllocations asserts exact
+  # equality against allocation counts captured through testing.AllocsPerRun,
+  # and those pins are measured under the CI toolchain. They are not portable
+  # to the declared floor, and the 1.24 runtime reports different counts, so
+  # this lane skips that test and covers compilation, vet, and the
+  # version-stable tests. The pins stay enforced by the 1.27 test job above
+  # and by the release consumer gate.
+  go-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.0"
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -count=1 -skip '^TestGoldsetVMAllocations$' ./...
 
   lint:
     runs-on: ubuntu-latest

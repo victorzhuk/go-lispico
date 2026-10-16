@@ -120,3 +120,30 @@ func TestRuntimeScopedDefinitionParity(t *testing.T) {
 		}
 	}
 }
+
+// TestRuntimeScopedDefinitionAfterNestedForm_NoGlobalLeak pins the
+// consumer-visible effect of a def placed after a closed nested scope in a
+// function body: calling the function must not leave the def's name in the
+// root environment under either evaluator mode. The tree-walker already
+// refuses via CodeUnsupported fallback; the bytecode compiler must reach the
+// same refusal instead of emitting OpSetGlobal.
+func TestRuntimeScopedDefinitionAfterNestedForm_NoGlobalLeak(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range goldenEvaluatorModes {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+
+			eng := newGoldenEngine(t, clojure.Dialect(), true, mode.opts...)
+			ctx := context.Background()
+
+			_, err := eng.Eval(ctx, "def", `(defn f [] (let [x 1] x) (def leaked 1))`)
+			require.NoErrorf(t, err, "defining f must succeed")
+			_, err = eng.Eval(ctx, "call", `(f)`)
+			require.NoErrorf(t, err, "calling f must succeed")
+
+			_, ok := eng.RootEnv().Get("leaked")
+			assert.Falsef(t, ok, "leaked must not be visible in RootEnv after (f) under %s", mode.name)
+		})
+	}
+}

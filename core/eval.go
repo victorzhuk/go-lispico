@@ -1279,7 +1279,7 @@ func (e *engine) expandDeepLet(ctx context.Context, items []Value, env *Env, loc
 	if len(items) < 2 {
 		return NewList(items), nil
 	}
-	bindings, err := NormalizeBindings("let", items[0])
+	bindings, err := NormalizeBindings("let", items[1])
 	if err != nil {
 		return NewList(items), nil
 	}
@@ -1297,15 +1297,15 @@ func (e *engine) expandDeepLet(ctx context.Context, items []Value, env *Env, loc
 		inner = append(append([]string{}, inner...), b.Name.V)
 		names = append(names, b.Name.V)
 	}
-	body := make([]Value, 0, len(items)-1)
-	for _, f := range items[1:] {
+	body := make([]Value, 0, len(items)-2)
+	for _, f := range items[2:] {
 		x, err := e.expandDeep(ctx, f, env, append(append([]string{}, locals...), names...), depth+1)
 		if err != nil {
 			return nil, err
 		}
 		body = append(body, x)
 	}
-	return NewList(append([]Value{items[0], rebuildBindings(items[0], flat)}, body...)), nil
+	return NewList(append([]Value{items[0], rebuildBindings(items[1], flat)}, body...)), nil
 }
 
 // expandDeepLoop walks loop bindings in the enclosing scope (initializers
@@ -1315,7 +1315,7 @@ func (e *engine) expandDeepLoop(ctx context.Context, items []Value, env *Env, lo
 	if len(items) < 2 {
 		return NewList(items), nil
 	}
-	bindings, err := NormalizeBindings("loop", items[0])
+	bindings, err := NormalizeBindings("loop", items[1])
 	if err != nil {
 		return NewList(items), nil
 	}
@@ -1329,22 +1329,26 @@ func (e *engine) expandDeepLoop(ctx context.Context, items []Value, env *Env, lo
 		flat = append(flat, b.Name, x)
 		names = append(names, b.Name.V)
 	}
-	body := make([]Value, 0, len(items)-1)
-	for _, f := range items[1:] {
+	body := make([]Value, 0, len(items)-2)
+	for _, f := range items[2:] {
 		x, err := e.expandDeep(ctx, f, env, append(append([]string{}, locals...), names...), depth+1)
 		if err != nil {
 			return nil, err
 		}
 		body = append(body, x)
 	}
-	return NewList(append([]Value{items[0], rebuildBindings(items[0], flat)}, body...)), nil
+	return NewList(append([]Value{items[0], rebuildBindings(items[1], flat)}, body...)), nil
 }
 
 func rebuildBindings(original Value, flat []Value) Value {
 	if _, isVec := original.(Vector); isVec {
 		return NewVector(flat)
 	}
-	return NewList(flat)
+	pairs := make([]Value, 0, len(flat)/2)
+	for i := 0; i < len(flat); i += 2 {
+		pairs = append(pairs, NewList(flat[i:i+2]))
+	}
+	return NewList(pairs)
 }
 
 // expandDeepTry walks the body forms and the catch handler, binding the

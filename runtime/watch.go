@@ -37,17 +37,28 @@ func (w *fileWatcher) Start(ctx context.Context) {
 	go w.watchLoop()
 }
 
+// Stop requests cancellation but never joins the watchLoop goroutine: that
+// goroutine may be inside Eval running a host GoFunc that itself calls
+// Stop/Close, so waiting here would join our own goroutine and deadlock.
+// The goroutine owns its own exit and wg.Done accounting.
 func (w *fileWatcher) Stop() {
 	if w.cancel != nil {
 		w.cancel()
 	}
-	w.wg.Wait()
 }
 
 func (w *fileWatcher) watchLoop() {
 	defer w.wg.Done()
 
+	if w.ctx.Err() != nil {
+		return
+	}
+
 	w.scan()
+
+	if w.ctx.Err() != nil {
+		return
+	}
 
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
@@ -57,12 +68,19 @@ func (w *fileWatcher) watchLoop() {
 		case <-w.ctx.Done():
 			return
 		case <-ticker.C:
+			if w.ctx.Err() != nil {
+				return
+			}
 			w.scan()
 		}
 	}
 }
 
 func (w *fileWatcher) scan() {
+	if w.ctx.Err() != nil {
+		return
+	}
+
 	entries, err := os.ReadDir(w.dir)
 	if err != nil {
 		w.engine.logger.Error("scan directory", "dir", w.dir, "error", err)
@@ -70,6 +88,9 @@ func (w *fileWatcher) scan() {
 	}
 
 	for _, entry := range entries {
+		if w.ctx.Err() != nil {
+			return
+		}
 		if entry.IsDir() {
 			continue
 		}
@@ -128,6 +149,9 @@ func (w *fileWatcher) reloadFile(path string) {
 	}()
 
 	for _, form := range forms {
+		if ctx.Err() != nil {
+			return
+		}
 		_, err := w.engine.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
 			w.engine.logger.Error("eval form in file", "path", path, "error", err)
@@ -139,6 +163,9 @@ func (w *fileWatcher) reloadFile(path string) {
 		return
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
 	if err := childEnv.MergeInto(w.engine.rootEnv); err != nil {
 		w.engine.logger.Error("merge file env", "path", path, "error", err)
 		return

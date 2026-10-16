@@ -1,5 +1,10 @@
 # Profiling baseline
 
+**Historical capture, not a current baseline.** The figures below were measured
+at commit `5255b25` (2026-07-25). HEAD has moved well past that commit, and
+nothing here has been re-measured since, so no number here describes the current
+tree. Re-capture with `make profile` before citing any of it as current.
+
 Captured 2026-07-25 at commit `5255b25`, via `make profile` / `make profile-report`
 (`Makefile`). Fixed parameters: `GOMAXPROCS=2`, `BENCHTIME=200ms` — the same values
 the release gate uses (`.github/workflows/release.yml`), so this baseline is

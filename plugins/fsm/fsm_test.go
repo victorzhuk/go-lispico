@@ -775,6 +775,22 @@ func TestPlugin_Create_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "guard must be a function")
 }
 
+func TestPlugin_Create_RejectsNonMapState(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	states := core.NewHashMap()
+	states, _, _ = states.Assoc(core.Keyword{V: "ready"}, core.Int{V: 17})
+	def := core.NewHashMap()
+	def, _, _ = def.Assoc(core.Keyword{V: "initial"}, core.Keyword{V: "ready"})
+	def, _, _ = def.Assoc(core.Keyword{V: "states"}, states)
+
+	_, err := p.create(context.Background(), core.NewEvaluator(), []core.Value{core.Keyword{V: "m"}, def}, env)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `state "ready" must be a map`)
+}
+
 func actionErrorStateMachine(t *testing.T) (*StateMachine, *core.Env, core.Evaluator) {
 	t.Helper()
 	env := core.NewEnv(nil)
@@ -1352,6 +1368,78 @@ func TestStateMachine_TransitionWithEval_GuardError(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, result.Valid)
 	assert.Contains(t, result.Error, "guard error")
+}
+
+func TestStateMachine_TerminalGuardError_SurfacesError(t *testing.T) {
+	env := core.NewEnv(nil)
+
+	guardLambda := core.Lambda{
+		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "event"}},
+		Body:   []core.Value{core.Bool{V: true}},
+		Env:    env,
+	}
+
+	sm := &StateMachine{
+		id:      "test",
+		initial: State("pending"),
+		current: State("pending"),
+		states: map[State]*StateConfig{
+			"pending": {
+				On: map[Event]Transition{
+					"confirm": {Target: "confirmed", Guard: guardLambda},
+				},
+			},
+			"confirmed": {On: map[Event]Transition{}},
+		},
+	}
+
+	eval := core.NewEvaluator()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := sm.TransitionWithEval(ctx, Event("confirm"), nil, eval, env)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.False(t, result.Valid)
+	assert.False(t, result.Committed)
+	assert.Equal(t, State("pending"), result.State)
+	assert.Equal(t, State("pending"), sm.Current())
+}
+
+func TestStateMachine_TerminalActionError_Committed(t *testing.T) {
+	env := core.NewEnv(nil)
+
+	actionLambda := core.Lambda{
+		Params: []core.Symbol{{V: "from"}, {V: "to"}, {V: "event"}},
+		Body:   []core.Value{core.Bool{V: true}},
+		Env:    env,
+	}
+
+	sm := &StateMachine{
+		id:      "test",
+		initial: State("pending"),
+		current: State("pending"),
+		states: map[State]*StateConfig{
+			"pending": {
+				On: map[Event]Transition{
+					"confirm": {Target: "confirmed", Action: actionLambda},
+				},
+			},
+			"confirmed": {On: map[Event]Transition{}},
+		},
+	}
+
+	eval := core.NewEvaluator()
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+
+	result, err := sm.TransitionWithEval(ctx, Event("confirm"), nil, eval, env)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.False(t, result.Valid)
+	assert.True(t, result.Committed)
+	assert.Equal(t, State("confirmed"), result.State)
+	assert.Equal(t, State("confirmed"), sm.Current())
 }
 
 func TestStateMachine_Serialize_Version(t *testing.T) {

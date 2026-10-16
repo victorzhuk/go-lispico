@@ -37,10 +37,10 @@ func TestSurfaceNameCondParity(t *testing.T) {
 	// identical under both evaluator paths. The empty-base dialect needs no
 	// stdlib: tests and bodies are self-evaluating.
 	dialects := []struct {
-		name    string
-		d       core.Dialect
-		stdlib  bool
-		rows    []struct {
+		name   string
+		d      core.Dialect
+		stdlib bool
+		rows   []struct {
 			name string
 			src  string
 			want core.Value

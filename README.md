@@ -13,7 +13,7 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
 
 - **Bytecode VM** (default) — compiled execution with per-form tree-walker fallback
 - **Tree-walking evaluator** with `loop`/`recur` tail-call optimization for fallback path
-- **Hot-reload** via `eng.Watch(ctx, dir)`
+- **Hot-reload** via `eng.Watch(ctx, dir)` — `Stop`/`Close` request cancellation and return immediately; watcher cleanup finishes after any in-flight reload or host call returns
 - **Plugin system** for extending functionality
 
 ## Quick Start

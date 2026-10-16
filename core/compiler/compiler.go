@@ -462,8 +462,9 @@ func (c *Compiler) compileLet(args []core.Value) error {
 	base := len(c.locals)
 	// Bindings evaluate inside the let scope too: a def in an initializer
 	// binds the enclosing scope under the tree-walker, not the root.
+	prev := c.inScopeDef
 	c.inScopeDef = true
-	defer func() { c.inScopeDef = false }()
+	defer func() { c.inScopeDef = prev }()
 	for _, binding := range bindings {
 		if err := c.Compile(binding.Value); err != nil {
 			return err
@@ -496,8 +497,9 @@ func (c *Compiler) compileLetStar(args []core.Value) error {
 	base := len(c.locals)
 	// Bindings evaluate inside the let* scope too: a def in an initializer
 	// binds the enclosing scope under the tree-walker, not the root.
+	prev := c.inScopeDef
 	c.inScopeDef = true
-	defer func() { c.inScopeDef = false }()
+	defer func() { c.inScopeDef = prev }()
 	for _, binding := range bindings {
 		if err := c.Compile(binding.Value); err != nil {
 			return err
@@ -608,9 +610,10 @@ func (c *Compiler) compileLoop(args []core.Value) error {
 	}
 	startIP := len(c.chunk.Code)
 	c.loops = append(c.loops, loopFrame{start: startIP, slots: slots, tryDepth: c.tryDepth})
+	prev := c.inScopeDef
 	c.inScopeDef = true
 	err = c.compileDo(args[1:])
-	c.inScopeDef = false
+	c.inScopeDef = prev
 	if err != nil {
 		return err
 	}
@@ -699,9 +702,10 @@ func (c *Compiler) compileTry(args []core.Value) error {
 	c.addLocal(errSym.V)
 	c.emitBind(catchSlot)
 	c.emit(vm.OpPop, 0)
+	prev := c.inScopeDef
 	c.inScopeDef = true
 	err := c.compileDo(items[bodyStart:])
-	c.inScopeDef = false
+	c.inScopeDef = prev
 	if err != nil {
 		return err
 	}

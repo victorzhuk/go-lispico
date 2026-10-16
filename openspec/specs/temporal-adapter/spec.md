@@ -1,7 +1,12 @@
 # temporal-adapter Specification
 
 ## Purpose
-TBD - created by archiving change host-owned-agentic-workflows. Update Purpose after archive.
+Define the engine-neutral durable-workflow contract and Temporal as its first
+adapter target. These requirements are forward design: no package in this
+repository implements a Temporal adapter or any workflow host. The boundary is
+proposed in `docs/adr/0017-temporal-first-adapter.md`, which is
+`status: proposed`. Read a requirement here as the adapter contract a future
+host owes, not as a capability the shipped kernel provides.
 
 ## Requirements
 

@@ -110,6 +110,37 @@ func (r *Registration) Names() []string {
 	return names
 }
 
+// BindingNames returns the names whose live root cell is still the one this
+// registration last wrote, at that write's version — the registration's
+// journal-attributed live bindings. Unlike Names it covers both namespaces,
+// deduplicates, never materializes a lazy binding, and returns nil when
+// nothing qualifies or the registration has ended.
+func (r *Registration) BindingNames() []string {
+	r.root.mu.RLock()
+	defer r.root.mu.RUnlock()
+	if len(r.entries) == 0 {
+		return nil
+	}
+	var names []string
+	seen := make(map[string]struct{}, len(r.entries))
+	for key, ent := range r.entries {
+		cells := r.root.vars
+		if key.fn {
+			cells = r.root.funcs
+		}
+		cell := cells[key.name]
+		if cell == nil || cell != ent.last || cell.Version() != ent.lastVer || cell.v == nil {
+			continue
+		}
+		if _, dup := seen[key.name]; dup {
+			continue
+		}
+		seen[key.name] = struct{}{}
+		names = append(names, key.name)
+	}
+	return names
+}
+
 // Abort rolls back the operation's writes and ends the registration. A key is
 // restored only while the operation still owns it: its map cell is the op's
 // last written cell at the version that write left. A key a foreign write

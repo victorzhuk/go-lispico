@@ -136,7 +136,7 @@ type dialectState struct {
 	vocab map[string]VocabEntry
 	// aliases maps a canonical builtin name to the sorted visible names that
 	// rename it, the name itself excluded.
-	aliases  map[string][]string
+	aliases map[string][]string
 	// formNames is the sorted set of visible special-form names, the keys
 	// of table, computed once at freeze. Derived data: Forms hands out a
 	// copy, never this slice.

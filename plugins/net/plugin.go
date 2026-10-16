@@ -17,6 +17,9 @@ type Plugin struct {
 func New() *Plugin {
 	return &Plugin{
 		client: &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,

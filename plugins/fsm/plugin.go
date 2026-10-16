@@ -191,6 +191,9 @@ func (p *Plugin) createMachine(id string, def *core.HashMap) (*StateMachine, err
 						defErr = onErr
 					}
 				}
+			} else {
+				defErr = fmt.Errorf("state %q must be a map", state)
+				return
 			}
 
 			if defErr == nil {

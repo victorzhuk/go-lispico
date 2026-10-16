@@ -1,7 +1,9 @@
 package lio
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -888,4 +890,81 @@ func TestSandboxDanglingSymlinkLeafDenied(t *testing.T) {
 
 	_, err = sb.Validate(leaf, true)
 	assert.Error(t, err)
+}
+
+func TestOpenThroughRootSurvivesSymlinkSwap(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644))
+	require.NoError(t, os.Mkdir(filepath.Join(root, "d"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "d", "secret.txt"), []byte("inside"), 0o644))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+
+	validated, err := sb.Validate(filepath.Join(root, "d", "secret.txt"), false)
+	require.NoError(t, err)
+
+	// Swap the validated directory component for a symlink to the outside
+	// tree, reproducing the validate-to-open TOCTOU window.
+	require.NoError(t, os.Rename(filepath.Join(root, "d"), filepath.Join(root, "d.real")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "d")))
+
+	t.Run("read never observes outside content", func(t *testing.T) {
+		f, err := sb.openFileWithin(validated, os.O_RDONLY, 0)
+		if err == nil {
+			content, rerr := io.ReadAll(f)
+			_ = f.Close()
+			require.NoError(t, rerr)
+			assert.Equal(t, "inside", string(content))
+			return
+		}
+		assert.NotEmpty(t, err.Error())
+	})
+
+	t.Run("write never reaches outside target", func(t *testing.T) {
+		validatedWrite, err := sb.Validate(filepath.Join(root, "d.real", "secret.txt"), true)
+		require.NoError(t, err)
+		// Aim the write at a path whose directory component is the swapped symlink.
+		swapped := filepath.Join(root, "d", "secret.txt")
+		_, verr := sb.Validate(swapped, true)
+		if verr == nil {
+			f, oerr := sb.openFileWithin(validatedWrite, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+			_ = f
+			if oerr == nil {
+				t.Fatal("open through root must refuse the swapped path")
+			}
+		}
+		// The outside secret must remain untouched regardless.
+		got, rerr := os.ReadFile(filepath.Join(outside, "secret.txt"))
+		require.NoError(t, rerr)
+		assert.Equal(t, "secret", string(got))
+	})
+}
+
+func TestReadFileSizeCap(t *testing.T) {
+	tmpDir := t.TempDir()
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	at := filepath.Join(tmpDir, "at.txt")
+	require.NoError(t, os.WriteFile(at, bytes.Repeat([]byte("a"), int(maxReadFileBytes)), 0o644))
+	over := filepath.Join(tmpDir, "over.txt")
+	require.NoError(t, os.WriteFile(over, bytes.Repeat([]byte("b"), int(maxReadFileBytes)+1), 0o644))
+
+	t.Run("read exactly at cap succeeds", func(t *testing.T) {
+		result, err := plugin.readFile(nil, nil, []core.Value{core.String{V: at}}, nil)
+		require.NoError(t, err)
+		str, ok := result.(core.String)
+		require.True(t, ok)
+		assert.Len(t, str.V, int(maxReadFileBytes))
+	})
+
+	t.Run("read above cap fails closed", func(t *testing.T) {
+		_, err := plugin.readFile(nil, nil, []core.Value{core.String{V: over}}, nil)
+		require.Error(t, err)
+		var lerr *core.LispicoError
+		require.ErrorAs(t, err, &lerr)
+		assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+	})
 }

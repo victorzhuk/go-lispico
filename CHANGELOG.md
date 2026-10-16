@@ -5,7 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.16.0] - 2026-10-16
+
+### Added
+
+- CI gained a `Check formatting` step (`gofmt -l` over the tracked Go files,
+  failing with the list of dirty paths) and a `go-floor` job that runs
+  `go build`, `go vet`, and `go test` on Go 1.24.0, the version `go.mod`
+  declares. Nothing else in the workflow exercised the declared floor: the
+  test job and the release gate both select 1.27. The floor lane skips
+  `TestGoldsetVMAllocations`: it asserts exact equality against allocation
+  counts measured under the CI toolchain, and those pins are not portable to
+  the declared floor. The pins remain enforced by the 1.27 test job and by
+  the release consumer gate.
+
+### Changed
+
+- `Engine.Stop` now only requests watcher cancellation; it no longer waits
+  for an in-flight reload or host Go function to return. `Engine.Close`
+  keeps its synchronous bytecode-cache flush, and watcher cleanup completes
+  once the in-flight work returns. Embedders that relied on `Stop` blocking
+  until the watcher goroutine had exited must synchronize another way.
+- `plugins/net` exports `net.ErrTransport`, a sentinel wrapped by every
+  request-level transport failure, so a Go caller can classify a failure
+  with `errors.Is` without matching the message text.
+
+### Fixed
+
+- Bytecode compiler: a nested `let`, `let*`, `loop`, or `try` cleared the
+  scoped-definition flag instead of restoring the enclosing value, so a later
+  `def` or `defn` in the same function body compiled to a global store and a
+  function-local binding leaked into the global namespace under the bytecode
+  evaluator while the tree-walker scoped it correctly.
+- Macro expansion: the deep pre-pass read the binding vector of a `let`,
+  `let*`, or `loop` at the wrong offset and rebuilt the bindings as a flat
+  sequence, so a macro used in a binding value was left unexpanded and the
+  bytecode evaluator tried to call the macro value itself.
+- Runtime: a plugin could acquire unload ownership of a root binding the host
+  wrote while the plugin's `Init` was in flight, so unloading the plugin
+  deleted a host binding. Ownership is now taken from the registration
+  journal through `core.Registration.BindingNames`, which reports the names
+  whose live root cell is still the one that registration wrote.
+- Runtime: a host that recovered a panic out of a plugin's `Init` was left
+  with an engine whose registration had not been unwound. The unwind now
+  runs on that path too.
+- Runtime: a watched file whose code reached a host Go function calling
+  `Engine.Stop` or `Engine.Close` deadlocked permanently, because shutdown
+  joined the very goroutine executing it. Shutdown is cancellation-only.
+- Runtime: statistics-counter overflow deleted every cached counter, so
+  `Fn`, `PinnedFn`, and warm `Engine.Call` entries already holding one fell
+  out of `Stats.Snapshot`. Counters now reset in place at the bound, so live
+  handles stay connected.
+- Runtime: `Engine.REPL` discarded a complete final expression that arrived
+  without a trailing newline.
+- Runtime: an in-flight first-touch lookup could reinstall a stdlib binding
+  after its deletion or plugin unload, because the selection ran before the
+  per-name lock. The lookup now revalidates the tombstone and the active
+  plugin version under that lock.
+- Release gate: the consumer performance gate could exit 0 having measured
+  nothing, because no step compared the configured tier inventory against the
+  observed cells and the cell loop is driven by the candidate alone. An empty
+  candidate run now exits with the not-comparable status naming every
+  unmeasured cell, and a cell the tier config demands that the candidate
+  never measured fails instead of passing unmentioned.
+- FSM plugin: a guard or action failure that was a cancellation, a deadline
+  expiry, or a resource-limit error was flattened into the result's `Error`
+  string, so a Go caller could not identify it with `errors.Is`/`errors.As`.
+  Terminal failures now surface through the returned error, still reporting
+  the state that was committed.
+- FSM plugin: a state definition whose value was not a map was registered as a
+  state with no transitions instead of being refused. `fsm/create` now reports
+  `state "<name>" must be a map`.
+- stdlib: the variadic `conj` list and nil arms built one `Cons` per argument
+  with no per-element work budgeting or cancellation check, so a long call
+  under a low reduction ceiling allocated unmetered. The loop now steps the
+  work budget like the vector arm, and the result order is unchanged.
+- lio plugin: `io/read-file` and `io/write-file` opened an already-resolved
+  path, so a symlink swapped between validation and open escaped the sandbox
+  root. Both now open through a pinned `os.Root`. Reads were also unbounded
+  and uncharged: they are now capped at 1 MiB per call and their bytes are
+  charged to the result meter.
+- net plugin: outbound requests followed redirects by default, on both the
+  shared client and the per-call timeout client. A failed request's error
+  also carried the full URL, including query-string secrets.
 
 ## [0.15.0] - 2026-10-04
 
@@ -1510,7 +1592,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.15.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/victorzhuk/go-lispico/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/victorzhuk/go-lispico/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/victorzhuk/go-lispico/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/victorzhuk/go-lispico/compare/v0.12.0...v0.13.0

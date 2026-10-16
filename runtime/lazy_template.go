@@ -481,13 +481,14 @@ func (m *stdlibLazyMaterializer) LookupAndMaterialize(env *core.Env, name string
 
 	for _, key := range m.activeKeys() {
 		if entry, ok := stdlibLazyTemplateRegistry.entryFor(key, name); ok {
-			return m.materializeOne(env, key.pluginName, entry, funcNS)
+			return m.materializeOne(env, key, entry, funcNS)
 		}
 	}
 	return nil, false, false
 }
 
-func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string, entry *stdlibTemplateEntry, funcNS bool) (core.Value, bool, bool) {
+func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, key stdlibTemplateKey, entry *stdlibTemplateEntry, funcNS bool) (core.Value, bool, bool) {
+	pluginName := key.pluginName
 	// Per-name mutex: concurrent first-touch of one name serializes (the
 	// loser observes the installed binding), disjoint names proceed in
 	// parallel, and no global lock is held across env writes or execution.
@@ -495,12 +496,18 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, pluginName string
 	nameMu.Lock()
 	defer nameMu.Unlock()
 
-	// Only the open operation's view materializes through itself, and only
-	// until fence closes it; the root, any other view, and a late view lookup
-	// install straight into the root, unattributed.
+	// Revalidate under the name lock: the selection this lookup performed ran
+	// before the lock, so a deletion or an unload completing in the window
+	// must not be resurrected by a stale install.
 	m.state.mu.Lock()
 	_, live := m.state.installed[entry.name]
+	_, dead := m.state.tombstoned[entry.name]
+	stale := m.state.active[key.pluginName] != key.pluginVersion
 	op := m.opFor(env)
+	if dead || stale {
+		m.state.mu.Unlock()
+		return nil, false, false
+	}
 	if op == nil {
 		env = m.engine.rootEnv
 	} else {
@@ -857,7 +864,7 @@ func (m *stdlibLazyMaterializer) ForceAll(env *core.Env) {
 			if dead || live {
 				continue
 			}
-			m.materializeOne(env, key.pluginName, entry, false)
+			m.materializeOne(env, key, entry, false)
 		}
 	}
 }

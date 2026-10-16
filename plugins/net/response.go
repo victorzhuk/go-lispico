@@ -3,14 +3,20 @@ package net
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
+
+// ErrTransport marks a request-level transport failure without carrying the
+// raw *url.Error, whose message embeds the full URL including query secrets.
+var ErrTransport = errors.New("transport failure")
 
 // maxResponseBytes caps how much of a response body doRequest reads, so a
 // malicious or misbehaving server cannot exhaust memory via an unbounded
@@ -23,6 +29,9 @@ func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.Ha
 	if opts != nil {
 		if timeoutMs, ok := extractInt(opts, "timeout"); ok && timeoutMs > 0 {
 			client = &http.Client{
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
 				Timeout: time.Duration(timeoutMs) * time.Millisecond,
 				Transport: &http.Transport{
 					MaxIdleConns:        100,
@@ -37,6 +46,14 @@ func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.Ha
 
 	resp, err := client.Do(req)
 	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			safe := urlErr.URL
+			if u, perr := url.Parse(safe); perr == nil {
+				safe = u.Scheme + "://" + u.Host
+			}
+			return nil, fmt.Errorf("http: request failed: %s %s: %w", urlErr.Op, safe, ErrTransport)
+		}
 		return nil, fmt.Errorf("http: request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()

@@ -601,3 +601,69 @@ func TestPlugin_ExistingContentTypeNotOverridden(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, int64(200), status.(core.Int).V)
 }
+
+func TestPlugin_RedirectNotFollowed(t *testing.T) {
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("leaked"))
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/elsewhere", http.StatusFound)
+	}))
+	defer source.Close()
+
+	p := New()
+	result, err := p.get(context.Background(), nil, []core.Value{core.String{V: source.URL + "/start?token=abc"}}, nil)
+	require.NoError(t, err)
+
+	resultMap, ok := result.(*core.HashMap)
+	require.True(t, ok, "result should be HashMap")
+	status, ok := resultMap.Get(core.Keyword{V: "status"})
+	require.True(t, ok)
+	assert.Equal(t, int64(http.StatusFound), status.(core.Int).V)
+	assert.Zero(t, targetHits, "redirect target must not be requested")
+}
+
+func TestPlugin_ErrorRedactsURL(t *testing.T) {
+	p := New()
+	_, err := p.get(context.Background(), nil, []core.Value{core.String{V: "http://127.0.0.1:1/secret/path?token=SECRET"}}, nil)
+	require.Error(t, err)
+
+	msg := err.Error()
+	assert.NotContains(t, msg, "SECRET")
+	assert.NotContains(t, msg, "/secret/path")
+	assert.NotContains(t, msg, "token=")
+	assert.Contains(t, msg, "http://127.0.0.1:1")
+}
+
+func TestPlugin_RedirectNotFollowedWithTimeout(t *testing.T) {
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusMovedPermanently)
+	}))
+	defer source.Close()
+
+	p := New()
+	opts := core.NewHashMap()
+	opts, _, _ = opts.Assoc(core.Keyword{V: "timeout"}, core.Int{V: 1000})
+
+	result, err := p.get(context.Background(), nil, []core.Value{core.String{V: source.URL}, opts}, nil)
+	require.NoError(t, err)
+
+	resultMap, ok := result.(*core.HashMap)
+	require.True(t, ok, "result should be HashMap")
+	status, ok := resultMap.Get(core.Keyword{V: "status"})
+	require.True(t, ok)
+	assert.Equal(t, int64(http.StatusMovedPermanently), status.(core.Int).V)
+	assert.Zero(t, targetHits, "redirect target must not be requested via timeout clone")
+}

@@ -191,6 +191,16 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 	if err != nil {
 		return exitNotComparable, err
 	}
+	// The candidate drives the cell loop, so a run that skipped configured
+	// cells would let them exit unevaluated. An empty run is evidence the
+	// gate cannot use at all — a rerun regenerates the same corpus, so this
+	// is not a cell a doubled benchtime could produce. A partial run keeps
+	// evaluating its real cells; the missing ones are failed per cell below.
+	if len(newMetrics) == 0 {
+		missing := perfgate.MissingCandidateCells(tiers, newMetrics)
+		return exitNotComparable, fmt.Errorf("candidate run has no benchmark samples; all %d configured cells are unmeasured: %s",
+			len(missing), strings.Join(missing, ", "))
+	}
 
 	// The identity comparison comes before benchstat, not after it: benchstat
 	// declines to pair two runs from different machines and that refusal
@@ -239,6 +249,16 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 			continue
 		}
 		cell.BytesAllowanceBOp = ct.BytesAllowanceBOp
+
+		if _, hasCandidate := newMetrics[name]; !hasCandidate {
+			// A missing candidate measurement is not a new cell: tiers.json
+			// already commits a tier for it, and a rerun regenerates the same
+			// corpus, so it fails instead of taking the first-authorization
+			// collapse a missing baseline figure takes below.
+			fmt.Fprintf(&report, "%s: FAIL (no candidate figure for this cell)\n", name)
+			anyFail = true
+			continue
+		}
 
 		baseline, hasBaseline := oldMetrics[name]
 		if !hasBaseline {
@@ -289,6 +309,18 @@ func evaluate(stdout io.Writer, oldPath, newPath, tiersPath, outPath string, mod
 		} else {
 			fmt.Fprintf(&report, "%s: %s\n", name, verdict)
 		}
+	}
+
+	// A cell the tier config demands that the comparison never saw — skipped
+	// by benchstat, or absent from a cross-runner candidate — would otherwise
+	// leave the loop unmentioned and the gate pass on partial evidence.
+	observed := make(map[string]perfgate.SampleMetrics, len(cells))
+	for name := range cells {
+		observed[name] = perfgate.SampleMetrics{}
+	}
+	for _, name := range perfgate.MissingCandidateCells(tiers, observed) {
+		fmt.Fprintf(&report, "%s: FAIL (no candidate figure for this cell)\n", name)
+		anyFail = true
 	}
 
 	if outPath == "" {

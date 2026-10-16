@@ -16,6 +16,10 @@ test:
 
 test-unit: test
 
+# CI pins golangci-lint v2.13 on go 1.27 (.github/workflows/ci.yml); older
+# versions bundle a type-checker that predates go 1.27 and fail on this tree.
+# A local run uses whatever `golangci-lint` is on PATH, so check
+# `golangci-lint version` against v2.13 before trusting a local result.
 lint:
 	golangci-lint run
 
