@@ -46,3 +46,41 @@ A network capability SHALL declare its allowed hosts. A request to a host outsid
 
 - **WHEN** a workflow requests a host inside the declared allowlist
 - **THEN** the capability SHALL permit the request under its declared controls
+
+### Requirement: Untrusted input does not combine with secrets and outbound mutation
+
+A stage SHALL declare whether it accepts untrusted input, whether it has secret access, and whether it allows outbound state change. Validation SHALL reject a stage that declares all three at once.
+
+#### Scenario: Three-capability combination is rejected
+
+- **WHEN** a stage declares untrusted input, secret access, and outbound state change together
+- **THEN** validation SHALL reject the stage before execution
+
+#### Scenario: Untrusted stage without the other two is admitted
+
+- **WHEN** a stage declares untrusted input and neither secret access nor outbound state change
+- **THEN** validation SHALL admit the stage
+
+#### Scenario: Secret-holding stage is admitted
+
+- **WHEN** a stage declares secret access, accepts no untrusted input, and allows no outbound state change
+- **THEN** validation SHALL admit the stage
+
+### Requirement: A tainted value stays tainted across persistence and replay
+
+A value derived from untrusted input SHALL carry a taint label in the state channel that holds it. The label SHALL survive checkpoint, restart, and replay. Labels of merged values SHALL combine so that aggregation cannot launder a tainted input into a trusted value. Clearing a label SHALL require an explicit declared decontamination gate and SHALL NOT happen implicitly.
+
+#### Scenario: Taint survives a restart
+
+- **WHEN** a workflow checkpoints a state channel holding a tainted value and the host restarts
+- **THEN** the value SHALL still carry its taint label after recovery
+
+#### Scenario: Aggregation does not launder taint
+
+- **WHEN** a tainted value and a trusted value are merged into one channel
+- **THEN** the merged value SHALL be tainted
+
+#### Scenario: Taint is cleared only through the declared gate
+
+- **WHEN** a value is tainted and no decontamination gate has run for it
+- **THEN** the host SHALL keep the value tainted
