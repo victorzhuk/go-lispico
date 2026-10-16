@@ -12,11 +12,11 @@
 | :---- | :---- | :---- | :---- |
 | **Temporal** | Детерминированное воспроизведение истории событий (History-based replay)5 | Детерминированный Workflow-код \+ вынесенные Activities, таймеры, сигналы и очереди задач5 | Код оркестрации не может обращаться к системным часам или ГСЧ; ключи идемпотентности выводятся из workflow\_id \+ activity\_id \[cite: 1, 5\] |
 | **Restate** | Виртуальные объекты и журналирование вызовов (Journal-based exactly-once)5 | Обертка ctx.run(), встроенное K/V-состояние, отложенные колбэки awakeables, компенсации через TerminalError \[cite: 6, 7\] | Строгая сериализация вызовов по ключу объекта; детерминированные хелперы ctx.rand.uuidv4(), ctx.rand.random() и ctx.date.now() \[cite: 5, 7\] |
-| **Inngest** | Мемоизация шагов (Step memoization) и чекпоинтинг без полного реплея5 | step.run() для атомарных работ, step.invoke() для субагентов, step.sendEvent() для асинхронных событий4 | Индивидуальный бюджет повторов на каждый шаг (экономия GPU при сбое последующих стадий); окно дедупликации событий 24 часа4 |
+| **Inngest** | Мемоизация шагов (Step memoization) и чекпоинтинг без полного реплея5 | step.run() для атомарных работ, step.invoke() для субагентов, step.sendEvent() для асинхронных событий4 | Индивидуальный бюджет повторов на каждый шаг (экономия GPU при сбое последующих стадий); Provider event deduplication is separate from the local workflow-lifetime receipt retention policy. |
 | **LangGraph** | Пошаговый чекпоинтинг супершагов по алгоритму Pregel (BSP)6 | Узлы PregelNode, каналы (LastValue, BinaryOperatorAggregate, DeltaChannel), Command(resume=...) \[cite: 8, 10\] | Запись сырых обновлений на каждом супершаге; материализация состояния через чистые функции-редьюсеры при чтении6 |
 | **CNCF Serverless Workflow 1.0** | Декларативный платформонезависимый DSL (эталонный рантайм Synapse на базе Garnet)11 | Задачи Call, Do, Fork, Try/Catch, Emit, декларативная корреляция событий correlate \[cite: 11, 13, 14\] | Встроенное версионирование процессов на лету, автоматическая корреляция событий и обязательные Lifecycle Events11 |
 
-Причинно-следственный анализ эксплуатации этих систем вскрывает критическую проблему долгоживущих агентов: встроенные окна дедупликации событий у облачных оркестраторов (например, 24-часовое окно в Inngest) недостаточны для процессов, длящихся неделями, таких как онбординг клиентов, мониторинг цен или согласование контрактов3. Следовательно, переписанная спецификация обязана внедрить собственный слой долговечных квитанций (durable receipt layer) на уровне инструментов4. Каждая операция с побочными эффектами трактуется как команда с составным детерминированным ключом идемпотентности, включающим шесть обязательных атрибутов: session\_id, message\_id, step\_id, tool\_name, normalized\_target и normalized\_parameters4. Перед выполнением внешний адаптер резервирует этот ключ; при успехе он сохраняет структурированную квитанцию, при повторном вызове возвращает сохраненный результат без повторного выполнения действия, а при частичном сбое или таймауте переводит шаг в явно классифицируемое состояние (planned, running, completed, pending, unknown или needs\_human\_inspection) вместо возврата неструктурированного текстового наблюдения1.  
+Причинно-следственный анализ эксплуатации этих систем вскрывает критическую проблему долгоживущих агентов: дедупликация событий у облачных оркестраторов является гарантией провайдера и не покрывает процессы, длящиеся неделями, такие как онбординг клиентов, мониторинг цен или согласование контрактов3. Следовательно, переписанная спецификация обязана внедрить собственный слой долговечных квитанций (durable receipt layer) на уровне инструментов4. Local receipt retention is workflow-lifetime-persistent across workflow waits, restarts, and replay, as a local policy declared under [ADR 0016](../adr/0016-segregated-persistence-contracts.md), not an Inngest provider guarantee. Каждая операция с побочными эффектами трактуется как команда с составным детерминированным ключом идемпотентности, включающим шесть обязательных атрибутов: session\_id, message\_id, step\_id, tool\_name, normalized\_target и normalized\_parameters4. Перед выполнением внешний адаптер резервирует этот ключ; при успехе он сохраняет структурированную квитанцию, при повторном вызове возвращает сохраненный результат без повторного выполнения действия, а при частичном сбое или таймауте переводит шаг в явно классифицируемое состояние (planned, running, completed, pending, unknown или needs\_human\_inspection) вместо возврата неструктурированного текстового наблюдения1.  
 Аналогично, обработка каждого входящего пользовательского сообщения в спецификации формализуется как долговечный процесс из одиннадцати дискретных фаз: received, queued, dispatched, in-flight, model-processing, tool-processing, awaiting-human, responding, completed, failed-recoverable и failed-terminal4. Это устраняет классическую ошибку потери данных, когда подтверждение доставки сообщения в транспортную шину или терминальную сессию (tmux) ошибочно принимается за завершение обработки агентом, а временные маркеры активности удаляются до фактического формирования ответа4. Вместо этого маркеры в полете (in-flight markers) преобразуются в долговечные записи шагов с явными правилами владения и очистки сканером восстановления4. Дополнительно рантайм обязан жестко контролировать бюджеты шагов, токенов, времени выполнения и стоимости (maxSteps, wallclock, cost), аварийно завершая процесс с генерацией системного события agent.task.budget\_exceeded при превышении лимитов2.
 
 ## **2\. Семантика графового исполнения: модель Pregel (BSP), каналы состояния и чистые редьюсеры**
@@ -233,7 +233,13 @@ runtimeSubstrate:
     partitionKey: "\${ .session.session\_id }"  
     deterministicHelpers:  
       uuidGenerator: "ctx.rand.uuidv4"  
-      clockSource: "ctx.date.now"  
+    clockSource: "ctx.date.now"  
+    snapshotFrequency: "every completed superstep"  
+    # Rotate execution history at snapshotFrequency completed supersteps.
+    # Preserve every state item declared as carried forward across rotation.
+    historyRotation:
+      dropCompletedSuperstepEntriesOlderThanRotationHorizon: true  
+      preservedState: "items declared as carriedForward"  
   messageLifecycle:  
     mandatoryStates:  
       \- received  
@@ -354,6 +360,7 @@ idempotencyAndReceipts:
     \- "unknown"  
     \- "needs\_human\_inspection"  
   retentionHorizon: "workflow-lifetime-persistent"
+  retentionContract: "../adr/0016-segregated-persistence-contracts.md"
 
 securityAndInformationFlowControl:  
   threeCapabilityRuleInvariant: "\!(stage.untrustedInput && stage.secretAccess && stage.outboundStateChange)"  
