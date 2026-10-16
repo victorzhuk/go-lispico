@@ -145,3 +145,22 @@ A join SHALL declare how it treats a failed branch. A failed branch SHALL fill i
 
 - **WHEN** a join declaring fail-on-branch-error has a failed slot
 - **THEN** the join SHALL fail rather than release
+
+### Requirement: Correlation declares cardinality and deadline precedence
+
+A correlation SHALL declare its cardinality, its deadline, and which outcome takes precedence when the deadline expires before the correlation completes. A correlation that declares no cardinality SHALL be treated as awaiting exactly one event.
+
+#### Scenario: Deadline fires before cardinality is met
+
+- **WHEN** a correlation declared to await three events receives two before its deadline
+- **THEN** the correlation SHALL take the outcome its declaration gives the deadline
+
+#### Scenario: Cardinality is met before the deadline
+
+- **WHEN** a correlation declared to await three events receives three before its deadline
+- **THEN** the correlation SHALL complete and its deadline SHALL NOT fire
+
+#### Scenario: Absent cardinality means one event
+
+- **WHEN** a correlation declares no cardinality
+- **THEN** the host SHALL treat it as awaiting exactly one event
