@@ -84,3 +84,31 @@ A value derived from untrusted input SHALL carry a taint label in the state chan
 
 - **WHEN** a value is tainted and no decontamination gate has run for it
 - **THEN** the host SHALL keep the value tainted
+
+### Requirement: Every workflow declares operational budgets
+
+A workflow SHALL declare a maximum step count, a maximum token count, a maximum wallclock, a maximum cost, and a concurrency cap. Validation SHALL reject a workflow that omits any of them.
+
+#### Scenario: Workflow without a step budget is rejected
+
+- **WHEN** a workflow declares no maximum step count
+- **THEN** validation SHALL reject the workflow before execution
+
+#### Scenario: Workflow without a concurrency cap is rejected
+
+- **WHEN** a workflow declares its other budgets without a concurrency cap
+- **THEN** validation SHALL reject the workflow
+
+### Requirement: A budget breach has a declared landing state
+
+A workflow SHALL declare what happens when a budget is exceeded. A breach SHALL emit its declared event, SHALL leave the run in a declared state, and SHALL NOT leave a superstep partially applied. A breach that falls between the plan phase and the update phase of one superstep SHALL be resolved before the run leaves that superstep.
+
+#### Scenario: Breach emits its event and lands in a declared state
+
+- **WHEN** a workflow exceeds its declared maximum cost
+- **THEN** the host SHALL emit the declared breach event and place the run in the state the workflow declared
+
+#### Scenario: No partially applied superstep survives a breach
+
+- **WHEN** a budget is exceeded while a superstep is between its plan and update phases
+- **THEN** the run SHALL NOT leave that superstep with a partial set of channel updates applied
