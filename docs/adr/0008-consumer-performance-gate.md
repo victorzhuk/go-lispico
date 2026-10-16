@@ -117,62 +117,99 @@ tier changes.
 
 ## Known coverage gaps: thresholds stated here and NOT enforced
 
-Both gaps below are current, known, and unexercised. Neither is a defect in
-the gate's machinery; each is a threshold or a coverage claim that no
-committed fixture can reach today. Adding the missing fixtures is DEFERRED,
-not rejected — the gate's own guard blocks the straightforward fix, and
-amending that guard immediately before a release, with a hosted
-re-baseline behind it, is the wrong moment. Neither gap changes a tier, a
-threshold, or an exit code.
+Both gaps below are current, known, and unexercised. Both are gaps in the
+timed workload corpus, not in correctness coverage: correctness goldens for
+Common Lisp and for distinct-closure sharing of one engine exist and pass
+today. Neither is a defect in the gate's machinery; each is a threshold or a
+coverage claim that no committed timed fixture can reach. Adding the missing
+timed fixtures is DEFERRED, not rejected. The gate's own guards block the
+straightforward fix, and the evidence that would unblock it is a hosted
+capture, not an edit. Neither gap changes a tier, a threshold, or an exit
+code.
 
 ### The concurrent tier's 5% throughput threshold is configured but unexercised
 
 `internal/perfgate/tiers.json` configures 12 engine-sensitive cells, 14
 data-dominated cells, and 1 startup cell. It configures zero concurrent
-cells. The concurrent threshold stated above — distinct Rule closures on one
+cells. The concurrent threshold stated above (distinct Rule closures on one
 Engine, within 5% throughput, bytes and allocation count non-increasing,
-race detector clean in the separate untimed run — is therefore not enforced
+race detector clean in the separate untimed run) is therefore not enforced
 by any run, and cannot be. A candidate that regresses concurrent throughput
-by far more than 5% passes this gate today.
+by far more than 5% passes this gate today. Every gold-set benchmark family
+currently runs serially, so no timed cell measures shared-engine contention.
 
-The straightforward fix, adding a concurrent cell and its workload, is
-blocked by the coverage guard in
-`internal/perfgate/bytes_allowance_spread_test.go:39-48`: it requires
-historical profile samples for EVERY configured cell, including cells whose
-`bytesAllowanceBOp` is a stated `0`, and setting an allowance to `0` does not
-avoid the assertion. The pinned profile is `profile-30637802780`
-(`internal/perfgate/perfgate_test.go:705-706`), a capture taken in the past,
-so it cannot contain a cell introduced after it. Adding any new gold-set
-cell, concurrent or otherwise, therefore makes
-`TestBytesAllowancesAreJustifiedBySpread` fail with `cell %q has no B/op
-samples in %s`.
-
-### Common Lisp, the shipped default dialect, has no workload coverage
+### Common Lisp, the shipped default dialect, has no timed workload coverage
 
 `internal/goldset/goldset.go:37-43` pins `runtime.WithDialect(clojure.Dialect())`
-for every fixture. Only `stdlib` and `json` ship in `cmd/lispico`, so the
-dialect a consumer actually gets with no option is Common Lisp. A green
-workload gate therefore cannot establish non-regression for the shipped
-default, including its Lisp-2 function resolution, where an operator and a
-variable live in separate namespaces. A regression in that resolution would
-not fail this gate today.
+for every fixture, so the timed corpus constructs the Clojure dialect. Only
+`stdlib` and `json` ship in `cmd/lispico`, so the dialect a consumer actually
+gets with no option is Common Lisp. A green workload gate therefore cannot
+establish non-regression for the shipped default, including its Lisp-2
+function resolution, where an operator and a variable live in separate
+namespaces. A regression in that resolution would not fail this gate today.
 
-The same guard blocks the fixture-side fix: a new Common Lisp cell is a new
-configured cell, so it hits the historical-sample assertion above for the
-same reason and needs the same amendment.
+### Two independent guards block the straightforward fix
 
-### Follow-up requires both, in this order
+1. The spread-justification guard,
+   `TestBytesAllowancesAreJustifiedBySpread` in
+   `internal/perfgate/bytes_allowance_spread_test.go:39-48`, requires
+   historical profile samples for EVERY configured cell before it inspects
+   the cell's stated allowance, including cells whose `bytesAllowanceBOp` is
+   a stated `0`; setting an allowance to `0` does not avoid the assertion.
+   The pinned profile is `profile-30637802780`
+   (`internal/perfgate/perfgate_test.go:705-706`), a capture taken in the
+   past, so it cannot contain a cell introduced after it. Any new gold-set
+   cell, concurrent or Common Lisp or otherwise, therefore makes that test
+   fail with `cell %q has no B/op samples in %s`.
+2. The classification-inventory guard, `TestPinnedProfile` at
+   `internal/perfgate/perfgate_test.go:705-781`, requires exact inventory
+   equality between the selected classification profile, the committed tiers,
+   and the verdicts. A new configured cell fails that guard whatever its
+   allowance says.
 
-1. Amend the coverage guard so the historical-sample requirement applies to
-   cells that carry a nonzero `bytesAllowanceBOp`, rather than to every
-   configured cell. A cell stating `0` is bounded by the exact
+Restricting the spread-justification requirement to explicit-zero cells, as
+described next, removes the first blocker only. It does not authorize a new
+tier or a new profile, and it is not by itself a reason to commit expanded
+tiers.
+
+### What a new cell would actually do to gate runs
+
+`ResolveGateMode` selects one mode for the entire run, from whether a stored
+baseline was found, and the workflow supplies a single reference dataset. Mode
+selection is a property of the run, not of a cell, so a new cell does not
+automatically receive first authorization on an ordinary non-regression run.
+Absent from the stored release baseline, such a cell reaches the
+missing-baseline branch of `cmd/perfgate/main.go:253-279`, is reported
+`INCONCLUSIVE`, and receives no metric comparison at all on that path,
+including no allocation-count comparison. First authorization compares the
+current Evaluator against the current VM, and only when a whole run has no
+downloaded baseline at all.
+
+A cross-runner run is governed by the partial-evidence policy stated above:
+latency and allocated bytes stay undecided, allocation-count non-increase is
+still enforced for common cells, and correctness plus race checks remain
+workflow prerequisites. An exit of zero there is authorization under
+comparable axes, never a latency or allocated-bytes non-regression proof.
+
+### Remaining prerequisites for closing either gap
+
+1. Amend the spread-justification guard so the historical-sample requirement
+   applies to cells that carry a nonzero `bytesAllowanceBOp`, rather than to
+   every configured cell. A cell stating `0` is bounded by the exact
    non-increasing bound itself and needs no spread evidence to justify a
-   number it does not state.
-2. Then add the concurrent cell and the Common Lisp cells, and re-baseline
-   at the next hosted gate run. A new cell lands in first-authorization mode
-   against the repository's existing baseline-selection policy, and the
-   baseline profile is re-captured then; until that run, these thresholds
-   remain unexercised.
+   number it does not state. This corrects an overconstraint; it grants no
+   coverage and no new authorization.
+2. Capture fresh hosted classification evidence for the new cells, through a
+   dedicated Evaluator/VM classification run, which is a separate step from
+   ordinary release-baseline collection against the previous release's VM.
+3. Commit the expanded tiers together with the matching selected profile,
+   its provenance, its digests, the derived profile files, and the verdicts
+   that `TestPinnedProfile` compares. Existing historical raw captures stay
+   verbatim; they cannot measure a cell introduced later and are evidence for
+   the cells they already cover.
+4. Then add the concurrent timed cell and the Common Lisp timed cells and
+   re-baseline at a hosted gate run. Until a run measures them, these
+   thresholds remain unexercised.
 
 ## Consequences
 
