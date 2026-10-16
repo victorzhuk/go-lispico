@@ -112,3 +112,36 @@ A workflow SHALL declare what happens when a budget is exceeded. A breach SHALL 
 
 - **WHEN** a budget is exceeded while a superstep is between its plan and update phases
 - **THEN** the run SHALL NOT leave that superstep with a partial set of channel updates applied
+
+### Requirement: Execution history is bounded by rotation
+
+A long-lived workflow SHALL rotate its execution history at a declared snapshot frequency and SHALL carry forward the state it declares as preserved across rotation. The host SHALL refuse unbounded growth of an execution history.
+
+#### Scenario: History rotation preserves carried state
+
+- **WHEN** a workflow's history reaches its declared rotation point
+- **THEN** the host SHALL rotate the history and preserve the state the workflow declared as carried forward
+
+#### Scenario: Unbounded history is refused
+
+- **WHEN** a workflow declares no history bound and runs past the host's history ceiling
+- **THEN** the host SHALL refuse further growth rather than continue expanding the history
+
+### Requirement: A declared join releases on partial failure under its declared policy
+
+A join SHALL declare how it treats a failed branch. A failed branch SHALL fill its slot as failed, and the join SHALL either release with the collected results or fail, per its declared policy. A failed branch SHALL NOT discard the results of branches that completed.
+
+#### Scenario: Completed siblings survive a failed branch
+
+- **WHEN** one branch of a declared join fails while another branch completes
+- **THEN** the join SHALL retain the completed branch's result
+
+#### Scenario: Join releases under its declared policy
+
+- **WHEN** a join declaring release-with-partial-results has one failed slot and one filled slot
+- **THEN** the join SHALL release with the filled slot's result and the failed slot marked failed
+
+#### Scenario: Join fails under its declared policy
+
+- **WHEN** a join declaring fail-on-branch-error has a failed slot
+- **THEN** the join SHALL fail rather than release
