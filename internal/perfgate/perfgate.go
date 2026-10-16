@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -164,11 +165,11 @@ func Evaluate(cell CellComparison, tier Tier, mode Mode) Result {
 		if !cell.RaceClean {
 			return Result{Verdict: VerdictFail, Reason: "race detector run was not clean for this cell"}
 		}
-		// Stays two-sided in both modes: this tier's timed metric may be a
-		// throughput figure, where larger is better, so a one-sided check
-		// cannot be written without first fixing the sign convention. Doing
-		// that is pointless while no cell is classified concurrent.
-		return evaluateWithinTolerance(cell, nonRegressionTolerancePct)
+		// Lower sec/op is faster: the timed metric is aggregate wall-clock
+		// throughput, so the one-sided bound is the reciprocal of a 5%
+		// throughput regression (candidate <= baseline / 0.95).
+		cell.Latency.DeltaPct = deltaPct(cell.Latency.Old, cell.Latency.New)
+		return evaluateNonRegression(cell, 100.0*5.0/95.0)
 	case TierStartup:
 		return evaluateStartup(cell, mode)
 	default:
@@ -353,6 +354,46 @@ func MissingCandidateCells(tiers map[string]CellTier, candidate map[string]Sampl
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// IncompleteCandidateMetrics lists configured cells whose candidate evidence
+// lacks a required sample, one entry per cell in sorted order. A cell absent
+// from the candidate reports all three units missing; a present cell reports
+// each unit with zero samples. A measured zero still counts as evidence:
+// only an absent sample is missing, so a genuine 0 B/op cell passes.
+func IncompleteCandidateMetrics(tiers map[string]CellTier, candidate map[string]SampleMetrics) []string {
+	samples := make(map[string]SampleMetrics, len(candidate))
+	for name, m := range candidate {
+		samples[TrimProcsSuffix(name)] = m
+	}
+
+	names := make([]string, 0, len(tiers))
+	for name := range tiers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var incomplete []string
+	for _, name := range names {
+		var missing []string
+		if m, ok := samples[name]; ok {
+			if m.LatencyN == 0 {
+				missing = append(missing, "sec/op")
+			}
+			if len(m.BytesPerOp) == 0 {
+				missing = append(missing, "B/op")
+			}
+			if len(m.AllocsPerOp) == 0 {
+				missing = append(missing, "allocs/op")
+			}
+		} else {
+			missing = []string{"sec/op", "B/op", "allocs/op"}
+		}
+		if len(missing) > 0 {
+			incomplete = append(incomplete, fmt.Sprintf("%s (missing candidate samples): FAIL missing %s", name, strings.Join(missing, ", ")))
+		}
+	}
+	return incomplete
 }
 
 // nonIncreasing enforces ADR 0008's "allocation count non-increasing" and

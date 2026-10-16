@@ -15,6 +15,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}`. No
   adapter-related spec field changed since.
 
+### Fixed
+
+- The release performance gate now rejects incomplete metric evidence on
+  both arms before any cell verdict. Candidate side: a configured cell that
+  is absent from the candidate run, or that reports no timed, `B/op`, or
+  `allocs/op` samples, exits 3 before benchstat runs or the missing-baseline
+  branch is reached. Baseline side: a configured cell the stored baseline
+  did measure but whose allocation samples are absent is refused with exit 3
+  before benchstat runs and before any verdict, naming the cell and the
+  missing units, instead of reading as a zero median and a silent
+  improvement. When the two runs share a runner, benchstat is now given only
+  the exact benchmark names both runs measured, so a cell present only in the
+  candidate no longer aborts the whole run; it keeps its own inconclusive
+  missing-baseline line. A paired cell whose timing arrives with no samples
+  exits 3 rather than passing on an insignificant result. A run in which no
+  cell was actually compared against the baseline no longer passes the
+  aggregate gate; it also exits 3. A measured zero counts as evidence and is
+  unaffected.
+
 ## [0.16.1] - 2026-10-16
 
 The consumer gate of 0.16.0 failed, so it stored no performance baseline.

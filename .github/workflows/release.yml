@@ -13,7 +13,13 @@
 name: Release consumer gate
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      classification_only:
+        description: Capture classification evidence without a release verdict or baseline writes
+        type: boolean
+        required: false
+        default: false
   # A release trigger only fires after the release is already public --
   # Actions has no pre-publish hook -- so this can never block a release.
   # What it does: record post-hoc regression evidence against the published
@@ -71,6 +77,7 @@ env:
 jobs:
   consumer-gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,6 +115,7 @@ jobs:
       # it cannot be classified.
       - name: Determine gate mode
         id: gate-mode
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.classification_only }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -158,12 +166,14 @@ jobs:
       # 2.1: correctness leg, untimed -- every gold-set fixture under both
       # execution modes against its golden; any failure fails the release.
       - name: Gold set under both execution modes
-        run: go test ./internal/goldset/ -count=1
+        id: goldset
+        run: timeout 180s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -count=1
 
       # 2.1: untimed, never combined with -bench (ADR 0008: race runs are
       # separate and untimed).
       - name: Race suite
-        run: go test -race -count=1 ./...
+        id: race
+        run: timeout 900s go test -race -timeout 10m -p 2 -parallel 2 -count=1 ./...
 
       # 3.1: paired release run -- Evaluator and VM samples interleaved per
       # iteration in one hosted job, fixed GOMAXPROCS and benchtime,
@@ -171,6 +181,7 @@ jobs:
       # across the two output files so benchstat pairs them. Never combined
       # with -race.
       - name: Paired Evaluator/VM benchmark run
+        id: paired
         env:
           GOMAXPROCS: ${{ env.GOMAXPROCS }}
         run: |
@@ -178,6 +189,122 @@ jobs:
             GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-evaluator.txt
             GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-vm.txt
           done
+
+      - name: Render classification comparison CSV
+        id: classification_csv
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: timeout 180s go run golang.org/x/perf/cmd/benchstat@v0.0.0-20260709024250-82a0b07e230d -format csv bench-evaluator.txt bench-vm.txt > benchstat.csv
+
+      # Diagnostic CPU/allocation profiles for the new hot cells. Instrumented
+      # timing never lands in bench-evaluator.txt or bench-vm.txt; only the
+      # classification-profiles/ tree carries these samples.
+      - name: Prepare classification profile directory
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: mkdir -p classification-profiles
+
+      - name: Profile function-cells-cl eval
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: |
+          mkdir -p classification-profiles/function-cells-cl-eval
+          GOMAXPROCS=2 GOLDSET_MODE=eval timeout 300s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -run '^$' -bench '^BenchmarkGoldsetCL$/^function-cells$' -benchtime=200ms -count=10 -benchmem -cpuprofile=classification-profiles/function-cells-cl-eval/cpu.prof -memprofile=classification-profiles/function-cells-cl-eval/mem.prof -o classification-profiles/function-cells-cl-eval/goldset.test | tee classification-profiles/function-cells-cl-eval/bench.txt
+
+      - name: Profile function-cells-cl vm
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: |
+          mkdir -p classification-profiles/function-cells-cl-vm
+          GOMAXPROCS=2 GOLDSET_MODE=vm timeout 300s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -run '^$' -bench '^BenchmarkGoldsetCL$/^function-cells$' -benchtime=200ms -count=10 -benchmem -cpuprofile=classification-profiles/function-cells-cl-vm/cpu.prof -memprofile=classification-profiles/function-cells-cl-vm/mem.prof -o classification-profiles/function-cells-cl-vm/goldset.test | tee classification-profiles/function-cells-cl-vm/bench.txt
+
+      - name: Profile list-adapters-cl eval
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: |
+          mkdir -p classification-profiles/list-adapters-cl-eval
+          GOMAXPROCS=2 GOLDSET_MODE=eval timeout 300s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -run '^$' -bench '^BenchmarkGoldsetCL$/^list-adapters$' -benchtime=200ms -count=10 -benchmem -cpuprofile=classification-profiles/list-adapters-cl-eval/cpu.prof -memprofile=classification-profiles/list-adapters-cl-eval/mem.prof -o classification-profiles/list-adapters-cl-eval/goldset.test | tee classification-profiles/list-adapters-cl-eval/bench.txt
+
+      - name: Profile list-adapters-cl vm
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: |
+          mkdir -p classification-profiles/list-adapters-cl-vm
+          GOMAXPROCS=2 GOLDSET_MODE=vm timeout 300s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -run '^$' -bench '^BenchmarkGoldsetCL$/^list-adapters$' -benchtime=200ms -count=10 -benchmem -cpuprofile=classification-profiles/list-adapters-cl-vm/cpu.prof -memprofile=classification-profiles/list-adapters-cl-vm/mem.prof -o classification-profiles/list-adapters-cl-vm/goldset.test | tee classification-profiles/list-adapters-cl-vm/bench.txt
+
+      - name: Profile distinct-closures-concurrent eval
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: |
+          mkdir -p classification-profiles/distinct-closures-concurrent-eval
+          GOMAXPROCS=2 GOLDSET_MODE=eval timeout 300s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -run '^$' -bench '^BenchmarkGoldsetConcurrent$/^distinct-closures$' -benchtime=200ms -count=10 -benchmem -cpuprofile=classification-profiles/distinct-closures-concurrent-eval/cpu.prof -memprofile=classification-profiles/distinct-closures-concurrent-eval/mem.prof -o classification-profiles/distinct-closures-concurrent-eval/goldset.test | tee classification-profiles/distinct-closures-concurrent-eval/bench.txt
+
+      - name: Profile distinct-closures-concurrent vm
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        run: |
+          mkdir -p classification-profiles/distinct-closures-concurrent-vm
+          GOMAXPROCS=2 GOLDSET_MODE=vm timeout 300s go test -timeout 2m -p 2 -parallel 2 ./internal/goldset/ -run '^$' -bench '^BenchmarkGoldsetConcurrent$/^distinct-closures$' -benchtime=200ms -count=10 -benchmem -cpuprofile=classification-profiles/distinct-closures-concurrent-vm/cpu.prof -memprofile=classification-profiles/distinct-closures-concurrent-vm/mem.prof -o classification-profiles/distinct-closures-concurrent-vm/goldset.test | tee classification-profiles/distinct-closures-concurrent-vm/bench.txt
+
+      - name: Render profile reports
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        timeout-minutes: 2
+        run: |
+          for d in classification-profiles/*/; do
+            go tool pprof -top -cum -nodecount=20 "$d/goldset.test" "$d/cpu.prof" > "$d/cpu-top.txt"
+            go tool pprof -top -nodecount=20 -alloc_space "$d/goldset.test" "$d/mem.prof" > "$d/alloc-top.txt"
+          done
+
+      - name: Record classification provenance
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        env:
+          STEP_GOLDSET: ${{ steps.goldset.outcome }}
+          STEP_RACE: ${{ steps.race.outcome }}
+          STEP_PAIRED: ${{ steps.paired.outcome }}
+          STEP_CSV: ${{ steps.classification_csv.outcome }}
+        run: |
+          head_sha=$(git rev-parse HEAD)
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "checkout HEAD $head_sha does not match GITHUB_SHA $GITHUB_SHA" >&2
+            exit 1
+          fi
+          go_version=$(go version)
+          sha256_of() {
+            if [ -f "$1" ]; then sha256sum "$1" | awk '{print $1}'; else echo "null"; fi
+          }
+          python3 - "$head_sha" "$go_version" <<'PYEOF'
+          import datetime, hashlib, json, os, sys
+
+          head_sha, go_version = sys.argv[1], sys.argv[2]
+
+          def sha256_of(path):
+              if not os.path.exists(path):
+                  return None
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  h.update(f.read())
+              return h.hexdigest()
+
+          manifest = {
+              "runID": os.environ.get("GITHUB_RUN_ID"),
+              "runAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "0")),
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "workflow": os.environ.get("GITHUB_WORKFLOW"),
+              "event": os.environ.get("GITHUB_EVENT_NAME"),
+              "ref": os.environ.get("GITHUB_REF"),
+              "headSHA": head_sha,
+              "capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "goVersion": go_version,
+              "runnerImage": os.environ.get("ImageOS"),
+              "runnerImageVersion": os.environ.get("ImageVersion"),
+              "gomaxprocs": int(os.environ.get("GOMAXPROCS", "0")),
+              "benchtime": os.environ.get("BENCHTIME"),
+              "benchCount": int(os.environ.get("BENCH_COUNT", "0")),
+              "classificationOnly": True,
+              "correctnessPassed": os.environ.get("STEP_GOLDSET") == "success",
+              "racePassed": os.environ.get("STEP_RACE") == "success",
+              "captureCompleted": os.environ.get("STEP_PAIRED") == "success",
+              "comparisonRendered": os.environ.get("STEP_CSV") == "success",
+              "benchstatVersion": "v0.0.0-20260709024250-82a0b07e230d",
+              "evaluatorSHA256": sha256_of("bench-evaluator.txt"),
+              "vmSHA256": sha256_of("bench-vm.txt"),
+          }
+          with open("capture.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PYEOF
 
       # 3.2/3.3: benchstat comparison against committed Hot-cell tiers (ADR
       # 0008 "Thresholds"), via internal/perfgate. First authorization pairs
@@ -190,6 +317,7 @@ jobs:
       # from aborting before the output line is written.
       - name: Evaluate performance gate
         id: perfgate
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.classification_only }}
         run: |
           mode="${{ steps.gate-mode.outputs.mode }}"
           old="bench-evaluator.txt"
@@ -197,7 +325,8 @@ jobs:
           code=0
           bin/perfgate \
             -old "$old" \
-            -candidate bench-vm.txt \
+            -evaluator bench-evaluator.txt \
+            -race-clean=true \
             -tiers internal/perfgate/tiers.json \
             -mode "$mode" \
             -out verdict.txt || code=$?
@@ -210,7 +339,7 @@ jobs:
       # unproven, non-regression claims pass unrefuted. Only runs when the
       # first attempt actually produced an inconclusive cell.
       - name: Rerun paired benchmark at doubled benchtime
-        if: steps.perfgate.outputs.exit_code == '2'
+        if: ${{ !inputs.classification_only && steps.perfgate.outputs.exit_code == '2' }}
         env:
           GOMAXPROCS: ${{ env.GOMAXPROCS }}
         run: |
@@ -223,7 +352,7 @@ jobs:
 
       - name: Resolve inconclusive cells after rerun
         id: perfgate-rerun
-        if: steps.perfgate.outputs.exit_code == '2'
+        if: ${{ !inputs.classification_only && steps.perfgate.outputs.exit_code == '2' }}
         run: |
           mode="${{ steps.perfgate.outputs.mode }}"
           old="bench-evaluator.txt"
@@ -231,7 +360,8 @@ jobs:
           code=0
           bin/perfgate \
             -old "$old" \
-            -candidate bench-vm.txt \
+            -evaluator bench-evaluator.txt \
+            -race-clean=true \
             -tiers internal/perfgate/tiers.json \
             -mode "$mode" \
             -rerun \
@@ -239,6 +369,7 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Enforce performance gate verdict
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.classification_only }}
         run: |
           if [ "${{ steps.perfgate.outputs.exit_code }}" = "2" ]; then
             test "${{ steps.perfgate-rerun.outputs.exit_code }}" = "0"
@@ -259,7 +390,7 @@ jobs:
       # resolved mode: a dispatch that resolves first-authorization would
       # otherwise publish a baseline.
       - name: Store VM baseline on the authorized release
-        if: github.event_name == 'release'
+        if: ${{ github.event_name == 'release' && !inputs.classification_only }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -269,7 +400,7 @@ jobs:
       # evidence, even when the job fails. baseline-vm.txt is present only on
       # post-authorization releases.
       - name: Upload release evidence
-        if: always()
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || !inputs.classification_only) }}
         uses: actions/upload-artifact@v4
         with:
           name: consumer-gate-evidence
@@ -279,3 +410,16 @@ jobs:
             baseline-vm.txt
             verdict.txt
           if-no-files-found: warn
+
+      - name: Upload classification evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.classification_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: consumer-gate-classification
+          path: |
+            bench-evaluator.txt
+            bench-vm.txt
+            benchstat.csv
+            capture.json
+            classification-profiles/
+          if-no-files-found: error

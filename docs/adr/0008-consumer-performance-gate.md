@@ -179,8 +179,9 @@ baseline was found, and the workflow supplies a single reference dataset. Mode
 selection is a property of the run, not of a cell, so a new cell does not
 automatically receive first authorization on an ordinary non-regression run.
 Absent from the stored release baseline, such a cell reaches the
-missing-baseline branch of `cmd/perfgate/main.go:253-279`, is reported
-`INCONCLUSIVE`, and receives no metric comparison at all on that path,
+missing-baseline branch of `cmd/perfgate/main.go:288-297`, is reported
+`INCONCLUSIVE` on its own report line with the reason `(no baseline figure
+for this cell)`, and receives no metric comparison at all on that path,
 including no allocation-count comparison. First authorization compares the
 current Evaluator against the current VM, and only when a whole run has no
 downloaded baseline at all.
@@ -190,6 +191,52 @@ latency and allocated bytes stay undecided, allocation-count non-increase is
 still enforced for common cells, and correctness plus race checks remain
 workflow prerequisites. An exit of zero there is authorization under
 comparable axes, never a latency or allocated-bytes non-regression proof.
+
+Candidate evidence itself is preflight-checked before any verdict: every
+configured cell must carry timed, `B/op`, and `allocs/op` samples in the
+candidate run. A cell absent from the candidate and a cell that timed but
+skipped a metric are both rejected with exit 3 before benchstat runs, before
+the missing-baseline branch, and before any cell verdict; a measured zero is
+evidence, not an absence.
+
+Baseline evidence is checked on the same footing, and the two absences are
+distinct. A configured cell the stored baseline never measured is not a
+failure and not a zero: it takes the missing-baseline branch above, is
+reported `INCONCLUSIVE` on its own line, and is not counted as a comparison.
+A configured cell the stored baseline *did* measure but whose allocation
+samples are absent is refused with exit 3 before benchstat runs and before
+any verdict is formed, naming the cell and every absent unit in the error
+`compare samples for cell %q: missing allocation samples: ITEM[, ITEM...]`,
+where the items are the literals `baseline B/op`, `baseline allocs/op`,
+`candidate B/op`, and `candidate allocs/op`. Without that refusal an absent
+sample set would read as a zero median and a silent improvement against a
+real baseline. The candidate preflight above runs first, so a cell whose both
+arms are incomplete is reported through the candidate diagnostic rather than
+this one.
+
+On the same runner, benchstat pairs only the exact raw benchmark names
+present in both runs, processor suffix included. A cell measured by the
+candidate alone is filtered out of the paired run instead of reaching
+statistics, so it keeps its own missing-baseline `INCONCLUSIVE` line rather
+than aborting the run, and a cell the baseline alone measured is dropped from
+the comparison the same way. A common cell whose paired result carries no
+latency figure, or a zero sample count, is refused with exit 3 as `cell %q:
+missing paired sec/op comparison`: benchstat's `~` would otherwise let it
+read as an insignificant pass on no evidence. A run in which no cell reached
+an actual metric comparison -- for example a candidate whose every configured
+cell is missing from the stored baseline -- prints its per-cell report and
+then exits 3 with `no comparison was performed` on stderr instead of passing
+on aggregate evidence that compared nothing.
+
+One delta token needs a second reading. The pinned benchstat renders a
+zero-baseline percentage change as `?`, because the ratio has no finite
+form. `parseMetricRow` (`internal/perfgate/parse.go:118-153`) accepts that
+token only when the parsed old value is zero: a positive candidate becomes a
+positive-infinite delta marked significant, matching what the sample
+comparison already means for a zero-to-positive move, and an equal zero
+becomes no change and is not significant. Any other `?`, and any other
+unparseable delta, still returns `parse delta %q` and exits 3. The token is
+narrow: nothing else about strict parsing moves.
 
 ### Remaining prerequisites for closing either gap
 

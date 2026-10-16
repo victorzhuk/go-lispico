@@ -126,3 +126,58 @@ func TestResolveGateMode_FailureNeverSelectsFirstAuthorization(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveCellMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		runMode     Mode
+		hasBaseline bool
+		wantMode    Mode
+	}{
+		{
+			name:        "first authorization stays first authorization with a baseline",
+			runMode:     ModeFirstAuthorization,
+			hasBaseline: true,
+			wantMode:    ModeFirstAuthorization,
+		},
+		{
+			name:        "first authorization stays first authorization without a baseline",
+			runMode:     ModeFirstAuthorization,
+			hasBaseline: false,
+			wantMode:    ModeFirstAuthorization,
+		},
+		{
+			name:        "non-regression with a stored baseline stays non-regression",
+			runMode:     ModeNonRegression,
+			hasBaseline: true,
+			wantMode:    ModeNonRegression,
+		},
+		{
+			name:        "a cell absent from the stored baseline becomes first authorization",
+			runMode:     ModeNonRegression,
+			hasBaseline: false,
+			wantMode:    ModeFirstAuthorization,
+		},
+		{
+			name:        "the zero mode fails closed",
+			runMode:     ModeUnknown,
+			hasBaseline: true,
+			wantMode:    ModeUnknown,
+		},
+		{
+			name:        "an unsupported mode fails closed",
+			runMode:     Mode(99),
+			hasBaseline: false,
+			wantMode:    ModeUnknown,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.wantMode, ResolveCellMode(tt.runMode, tt.hasBaseline))
+		})
+	}
+}

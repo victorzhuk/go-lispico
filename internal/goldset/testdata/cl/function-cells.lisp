@@ -1,0 +1,6 @@
+(def cl-adjust 10)
+(defun cl-adjust (x) (+ x 1))
+(let ((cl-adjust 40))
+  (list (cl-adjust cl-adjust)
+        (funcall #'cl-adjust 1)
+        cl-adjust))

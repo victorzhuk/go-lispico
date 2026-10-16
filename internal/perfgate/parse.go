@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -127,7 +128,15 @@ func parseMetricRow(row []string) (MetricResult, error) {
 
 	deltaStr := row[5]
 	m := MetricResult{Old: old, New: newVal}
-	if deltaStr == "~" {
+	if deltaStr == "?" && old == 0 {
+		// benchstat emits "?" when the baseline is zero: no percentage
+		// exists. Mirror deltaPct semantics: zero-to-positive is +Inf
+		// (significant), zero-to-zero stays 0 (not significant).
+		if newVal > 0 {
+			m.DeltaPct = math.Inf(1)
+			m.Significant = true
+		}
+	} else if deltaStr == "~" {
 		// benchstat "~" sets DeltaPct=0 uniformly for sec/op, B/op, and
 		// allocs/op alike, but perfgate.go's nonIncreasing() treats byte/alloc
 		// counts as exact with no significance gate — so a non-significant

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -847,6 +848,89 @@ func TestMissingCandidateCells(t *testing.T) {
 	})
 }
 
+func TestIncompleteCandidateMetrics(t *testing.T) {
+	t.Parallel()
+
+	tiers := map[string]CellTier{
+		"Goldset/route-decision": {Tier: "data-dominated"},
+		"Goldset/rule-load":      {Tier: "startup"},
+	}
+	complete := SampleMetrics{LatencyN: 2, BytesPerOp: []float64{48}, AllocsPerOp: []float64{3}}
+
+	t.Run("fully complete cells are not named", func(t *testing.T) {
+		t.Parallel()
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": complete,
+			"Goldset/rule-load-2":      complete,
+		}
+		assert.Empty(t, IncompleteCandidateMetrics(tiers, candidate))
+	})
+
+	t.Run("measured zeros are complete evidence", func(t *testing.T) {
+		t.Parallel()
+		zero := SampleMetrics{LatencyN: 1, BytesPerOp: []float64{0}, AllocsPerOp: []float64{0}}
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": zero,
+			"Goldset/rule-load-2":      complete,
+		}
+		assert.Empty(t, IncompleteCandidateMetrics(tiers, candidate))
+	})
+
+	t.Run("zero timed samples are named alone", func(t *testing.T) {
+		t.Parallel()
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": {BytesPerOp: []float64{48}, AllocsPerOp: []float64{3}},
+			"Goldset/rule-load-2":      complete,
+		}
+		assert.Equal(t,
+			[]string{"Goldset/route-decision (missing candidate samples): FAIL missing sec/op"},
+			IncompleteCandidateMetrics(tiers, candidate))
+	})
+
+	t.Run("no bytes samples are named alone", func(t *testing.T) {
+		t.Parallel()
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": {LatencyN: 2, AllocsPerOp: []float64{3}},
+			"Goldset/rule-load-2":      complete,
+		}
+		assert.Equal(t,
+			[]string{"Goldset/route-decision (missing candidate samples): FAIL missing B/op"},
+			IncompleteCandidateMetrics(tiers, candidate))
+	})
+
+	t.Run("no allocation samples are named alone", func(t *testing.T) {
+		t.Parallel()
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": {LatencyN: 2, BytesPerOp: []float64{48}},
+			"Goldset/rule-load-2":      complete,
+		}
+		assert.Equal(t,
+			[]string{"Goldset/route-decision (missing candidate samples): FAIL missing allocs/op"},
+			IncompleteCandidateMetrics(tiers, candidate))
+	})
+
+	t.Run("a configured cell absent from the candidate reports all three units", func(t *testing.T) {
+		t.Parallel()
+		candidate := map[string]SampleMetrics{"Goldset/route-decision-2": complete}
+		assert.Equal(t,
+			[]string{"Goldset/rule-load (missing candidate samples): FAIL missing sec/op, B/op, allocs/op"},
+			IncompleteCandidateMetrics(tiers, candidate))
+	})
+
+	t.Run("entries are sorted by cell name", func(t *testing.T) {
+		t.Parallel()
+		candidate := map[string]SampleMetrics{
+			"Goldset/route-decision-2": {LatencyN: 2, BytesPerOp: []float64{48}},
+		}
+		assert.Equal(t,
+			[]string{
+				"Goldset/route-decision (missing candidate samples): FAIL missing allocs/op",
+				"Goldset/rule-load (missing candidate samples): FAIL missing sec/op, B/op, allocs/op",
+			},
+			IncompleteCandidateMetrics(tiers, candidate))
+	})
+}
+
 func parseVerdict(t *testing.T, s string) Verdict {
 	t.Helper()
 
@@ -860,5 +944,153 @@ func parseVerdict(t *testing.T, s string) Verdict {
 	default:
 		t.Fatalf("unknown verdict %q", s)
 		return VerdictUnknown
+	}
+}
+
+// concurrentCell builds a TierConcurrent comparison whose timing regressed by
+// roughly the displayed bucket deltaPct, with flat bytes and allocations. The
+// caller overrides Latency.Old/New and Significant to pin the numeric rule.
+func concurrentCell(old, new float64, significant bool) CellComparison {
+	return CellComparison{
+		Latency: MetricResult{Old: old, New: new, DeltaPct: deltaPct(old, new), Significant: significant, N: 10},
+		Bytes:   MetricResult{Old: 64, New: 64, DeltaPct: 0, Significant: true, N: 10},
+		Allocs:  MetricResult{Old: 2, New: 2, DeltaPct: 0, Significant: true, N: 10},
+		// Timing controls carry a clean race attestation; the race-evidence
+		// test flips this explicitly.
+		RaceClean:         true,
+		BytesAllowanceBOp: 0,
+	}
+}
+
+func TestEvaluate_Concurrent_ThroughputBound(t *testing.T) {
+	t.Parallel()
+
+	// The throughput rule is one-sided and reciprocal: candidate sec/op fails
+	// only past baseline/0.95, i.e. deltaPct(old, new) > 100*5/95 (~5.2632%).
+	// Both candidates here display the same rounded 5.26 bucket, but only the
+	// one past the reciprocal bound may fail. Assertions read verdicts, never
+	// the displayed DeltaPct.
+	tests := []struct {
+		name    string
+		old     float64
+		new     float64
+		verdict Verdict
+	}{
+		{"below bound passes", 95000, 99999, VerdictPass},
+		{"past reciprocal bound fails", 95000, 100001, VerdictFail},
+	}
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		for _, tc := range tests {
+			t.Run(modeName(mode)+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				cell := concurrentCell(tc.old, tc.new, true)
+				cell.Latency.DeltaPct = 5.26
+				res := Evaluate(cell, TierConcurrent, mode)
+				assert.Equal(t, tc.verdict, res.Verdict, "old=%v new=%v got %s", tc.old, tc.new, res.Reason)
+			})
+		}
+	}
+}
+
+func TestEvaluate_Concurrent_InclusiveBoundaryAndImprovement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		old     float64
+		new     float64
+		verdict Verdict
+	}{
+		// 95 * 100 == 100 * 95: the boundary itself is inclusive.
+		{"inclusive boundary passes", 95, 100, VerdictPass},
+		// A faster candidate is never a concurrent regression.
+		{"large improvement passes", 95000, 76000, VerdictPass},
+	}
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		for _, tc := range tests {
+			t.Run(modeName(mode)+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				res := Evaluate(concurrentCell(tc.old, tc.new, true), TierConcurrent, mode)
+				assert.Equal(t, tc.verdict, res.Verdict, "old=%v new=%v got %s", tc.old, tc.new, res.Reason)
+			})
+		}
+	}
+}
+
+func TestEvaluate_Concurrent_SignificancePreserved(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		t.Run(modeName(mode), func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("non-significant above-bound stays inconclusive", func(t *testing.T) {
+				t.Parallel()
+
+				cell := concurrentCell(95000, 100010, false)
+				res := Evaluate(cell, TierConcurrent, mode)
+				assert.Equal(t, VerdictInconclusive, res.Verdict, "got %s", res.Reason)
+			})
+			t.Run("allocation growth fails before significance", func(t *testing.T) {
+				t.Parallel()
+
+				cell := concurrentCell(95000, 100010, false)
+				cell.Allocs = MetricResult{Old: 2, New: 3, DeltaPct: 50, Significant: false, N: 10}
+				res := Evaluate(cell, TierConcurrent, mode)
+				assert.Equal(t, VerdictFail, res.Verdict, "got %s", res.Reason)
+			})
+		})
+	}
+}
+
+func TestEvaluate_Concurrent_ZeroBaseline(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		t.Run(modeName(mode), func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("significant growth from zero fails", func(t *testing.T) {
+				t.Parallel()
+
+				cell := concurrentCell(0, 8000, true)
+				res := Evaluate(cell, TierConcurrent, mode)
+				assert.Equal(t, VerdictFail, res.Verdict, "got %s", res.Reason)
+				assert.Contains(t, res.Reason, "+Inf", "zero-baseline regression must report +Inf delta")
+			})
+			t.Run("zero to zero is not significant and not NaN", func(t *testing.T) {
+				t.Parallel()
+
+				// deltaPct guards the zero baseline: 0 -> 0 must stay 0, never
+				// NaN, and an unchanged zero delta is not significant.
+				d := deltaPct(0, 0)
+				assert.False(t, math.IsNaN(d), "deltaPct(0, 0) = %v", d)
+				assert.Zero(t, d)
+
+				cell := concurrentCell(0, 0, false)
+				res := Evaluate(cell, TierConcurrent, mode)
+				assert.Equal(t, VerdictInconclusive, res.Verdict, "got %s", res.Reason)
+			})
+		})
+	}
+}
+
+func TestEvaluate_Concurrent_RaceEvidencePrecedesTiming(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range []Mode{ModeFirstAuthorization, ModeNonRegression} {
+		t.Run(modeName(mode), func(t *testing.T) {
+			t.Parallel()
+
+			// Same timing as the large-improvement passing control: without a
+			// clean race attestation the cell still fails, closed-door.
+			cell := concurrentCell(95000, 76000, true)
+			cell.RaceClean = false
+			res := Evaluate(cell, TierConcurrent, mode)
+			assert.Equal(t, VerdictFail, res.Verdict)
+			assert.Contains(t, res.Reason, "race detector run was not clean")
+		})
 	}
 }

@@ -40,7 +40,13 @@ var Modes = []Mode{ModeEvaluator, ModeVM}
 // process (once, never restored: the suite is fully parallel, so a
 // per-engine toggle would race sibling constructions).
 func NewEngine(mode Mode) (runtime.Engine, error) {
-	opts := []runtime.EngineOption{runtime.WithDialect(clojure.Dialect())}
+	return newEngine(mode, clojure.Dialect())
+}
+
+// newEngine builds an engine for an arbitrary dialect with the same mode
+// selection, lazy-binding behavior, and stdlib loading as NewEngine.
+func newEngine(mode Mode, dialect core.Dialect) (runtime.Engine, error) {
+	opts := []runtime.EngineOption{runtime.WithDialect(dialect)}
 	switch mode {
 	case ModeEvaluator:
 		opts = append(opts, runtime.WithTreeWalker())
@@ -75,12 +81,18 @@ type Fixture struct {
 // pair. A .lisp file without a .golden is an error: an unasserted fixture
 // must not silently pass the gate.
 func Fixtures() ([]Fixture, error) {
-	paths, err := filepath.Glob(filepath.Join("testdata", "*.lisp"))
+	return fixtures("testdata")
+}
+
+// fixtures loads every <dir>/<name>.lisp with its <dir>/<name>.golden pair,
+// same missing-golden-is-an-error discipline as Fixtures().
+func fixtures(dir string) ([]Fixture, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.lisp"))
 	if err != nil {
 		return nil, err
 	}
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("goldset: no fixtures in testdata")
+		return nil, fmt.Errorf("goldset: no fixtures in %s", dir)
 	}
 	fixtures := make([]Fixture, 0, len(paths))
 	for _, p := range paths {
@@ -89,7 +101,7 @@ func Fixtures() ([]Fixture, error) {
 			return nil, err
 		}
 		name := strings.TrimSuffix(filepath.Base(p), ".lisp")
-		golden, err := os.ReadFile(filepath.Join("testdata", name+".golden"))
+		golden, err := os.ReadFile(filepath.Join(dir, name+".golden"))
 		if err != nil {
 			return nil, fmt.Errorf("goldset: fixture %q has no golden: %w", name, err)
 		}

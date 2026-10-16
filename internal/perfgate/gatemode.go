@@ -54,3 +54,21 @@ func ResolveGateMode(lookup BaselineLookup) (Mode, BaselineOutcome, error) {
 		return ModeFirstAuthorization, BaselineAbsent, nil
 	}
 }
+
+// ResolveCellMode picks the effective mode for one configured cell. A cell
+// whose exact raw name is missing from the stored baseline is a first
+// authorization even when the run resolved non-regression; any mode the gate
+// does not recognize stays ModeUnknown.
+func ResolveCellMode(runMode Mode, hasBaseline bool) Mode {
+	switch runMode {
+	case ModeFirstAuthorization:
+		return ModeFirstAuthorization
+	case ModeNonRegression:
+		if hasBaseline {
+			return ModeNonRegression
+		}
+		return ModeFirstAuthorization
+	default:
+		return ModeUnknown
+	}
+}

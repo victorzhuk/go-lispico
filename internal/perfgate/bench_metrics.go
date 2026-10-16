@@ -17,6 +17,9 @@ type SampleMetrics struct {
 	Name        string
 	BytesPerOp  []float64
 	AllocsPerOp []float64
+	// LatencyN counts parsed timed samples (ns/op or sec/op). The timing
+	// values themselves stay with benchstat; only their presence is carried.
+	LatencyN int
 }
 
 // MedianBytesPerOp is the figure a cell's bytes verdict is judged on. It must
@@ -67,17 +70,20 @@ func ReadBenchmarkMetrics(r io.Reader) (map[string]SampleMetrics, error) {
 		m.Name = name
 		for i := 2; i+1 < len(fields); i += 2 {
 			unit := fields[i+1]
-			if unit != "B/op" && unit != "allocs/op" {
+			if unit != "B/op" && unit != "allocs/op" && unit != "ns/op" && unit != "sec/op" {
 				continue
 			}
 			value, err := strconv.ParseFloat(fields[i], 64)
 			if err != nil {
 				return nil, fmt.Errorf("perfgate: cell %q: parse %s value %q: %w", name, unit, fields[i], err)
 			}
-			if unit == "B/op" {
+			switch unit {
+			case "B/op":
 				m.BytesPerOp = append(m.BytesPerOp, value)
-			} else {
+			case "allocs/op":
 				m.AllocsPerOp = append(m.AllocsPerOp, value)
+			default:
+				m.LatencyN++
 			}
 		}
 		metrics[name] = m
@@ -89,14 +95,33 @@ func ReadBenchmarkMetrics(r io.Reader) (map[string]SampleMetrics, error) {
 }
 
 // CompareSamples derives one cell's bytes and allocs comparison from the
-// baseline and candidate sample sets. Byte and allocation counts are exact, so
-// every derived result is significant; a zero DeltaPct on a moved median would
-// pass nonIncreasing unconditionally. A zero baseline median yields +Inf on a
-// positive candidate rather than a division by zero.
-func CompareSamples(baseline, candidate SampleMetrics) (bytes, allocs MetricResult) {
+// baseline and candidate sample sets. An absent sample set would read as a
+// zero median and a silent improvement, so missing allocation evidence is
+// refused before any median is calculated; a measured [0] is valid evidence.
+// Byte and allocation counts are exact, so every derived result is
+// significant; a zero DeltaPct on a moved median would pass nonIncreasing
+// unconditionally. A zero baseline median yields +Inf on a positive candidate
+// rather than a division by zero.
+func CompareSamples(baseline, candidate SampleMetrics) (bytes, allocs MetricResult, err error) {
+	var missing []string
+	if len(baseline.BytesPerOp) == 0 {
+		missing = append(missing, "baseline B/op")
+	}
+	if len(baseline.AllocsPerOp) == 0 {
+		missing = append(missing, "baseline allocs/op")
+	}
+	if len(candidate.BytesPerOp) == 0 {
+		missing = append(missing, "candidate B/op")
+	}
+	if len(candidate.AllocsPerOp) == 0 {
+		missing = append(missing, "candidate allocs/op")
+	}
+	if len(missing) > 0 {
+		return MetricResult{}, MetricResult{}, fmt.Errorf("missing allocation samples: %s", strings.Join(missing, ", "))
+	}
 	bytes = compareMedians(baseline.MedianBytesPerOp(), candidate.MedianBytesPerOp(), len(candidate.BytesPerOp))
 	allocs = compareMedians(baseline.MedianAllocsPerOp(), candidate.MedianAllocsPerOp(), len(candidate.AllocsPerOp))
-	return bytes, allocs
+	return bytes, allocs, nil
 }
 
 func compareMedians(oldMedian, newMedian float64, n int) MetricResult {
