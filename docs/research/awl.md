@@ -39,6 +39,8 @@
 
 Глубокий анализ внутренней механики LangGraph выявляет важнейший архитектурный закон: **редьюсер выполняется в момент реконструкции (материализации) состояния, а не в момент записи**8. В персистентное хранилище чекпоинтов сериализуются не итоговые свернутые значения, а сырые пошаговые записи (writes), тогда как функция-редьюсер вызывается только тогда, когда значение материализуется — при следующем чтении, при запуске акторов следующего супершага или при воспроизведении истории (time-travel / replay)8. Из этого следуют жесткие требования к спецификации состояния: редьюсер обязан быть детерминированной чистой функцией от (state, writes), поскольку любые побочные эффекты, обращения к генераторам случайных чисел (uuid.uuid4()) или системным часам (datetime.now()) внутри редьюсера будут выполняться заново при каждой реконструкции чекпоинта, порождая расходящиеся состояния при каждом повторе8. Более того, категорически запрещено полагаться на мутацию входных записей на месте внутри редьюсера: если редьюсер мутирует входящий объект записи (например, присваивает отсутствующий id сообщению внутри функции слияния), эта мутация существует только в эфемерном реконструированном значении в памяти, тогда как в сохраненном чекпоинте запись остается в исходной форме без id, что приведет к потере идентичности при следующей материализации8. Следовательно, все уникальные идентификаторы элементов и стабильные метаданные должны генерироваться детерминированно на стороне источника (upstream) внутри самого узла-актора до отправки значения в канал7.
 
+Breach semantics follow the same superstep barrier. A budget breach between the plan and update phases resolves before the run leaves that superstep. The run leaves the breached superstep with no partial set of channel updates applied. The run then executes the declared breach action and emits the declared breach event.
+
 ## **3\. Стандартизация контекста и инструментария: Model Context Protocol (MCP) и двухканальная обработка ошибок**
 
 Для устранения фрагментации интеграций между языковыми моделями и внешними системами переписанная спецификация принимает стандарт **Model Context Protocol (MCP)** (редакция спецификации 2026-07-28) в качестве единого протокола взаимодействия с инструментами и данными19. Архитектура MCP строго разделяет участников на три уровня: **MCP Host** (хост-приложение или агентный рантайм, владеющий сессией LLM, контекстным окном, политиками безопасности и диалогами согласия пользователя), **MCP Client** (протокольный компонент внутри хоста, поддерживающий изолированное соединение строго 1:1 с конкретным сервером) и **MCP Server** (независимый процесс, предоставляющий доменные возможности через локальный поток stdio, удаленный HTTP с SSE, WebSockets или защищенный транспорт TLS-over-TCP с ALPN-протоколом mcp)22. Строгое соотношение 1:1 между клиентом и сервером гарантирует, что разрыв соединения или компрометация одного сервера не нарушает работу остальных подключений хоста и предотвращает утечку контекста или разрешений между сервисами22.  
@@ -106,6 +108,9 @@ Clojure
      ::mcp-tool-name \[:re \#"^\[A-Za-z0-9\_.-\]{1,128}\$"\]  
      ::cel-expression \[:string {:min 1 :description "Non-Turing-complete CEL AST expression"}\]  
      ::taint-level \[:enum :trusted :untrusted\]  
+     ;; Write the taint label into the checkpoint alongside its value and restore both on reconstruction and replay.
+     ;; A merged value keeps the strongest taint label of its inputs.
+     ;; Only an explicitly declared decontamination gate can clear a taint label.
      ::lifecycle-state \[:enum :received :queued :dispatched :in-flight  
                         :model-processing :tool-processing :awaiting-human  
                         :responding :completed :failed-recoverable :failed-terminal\]
@@ -268,6 +273,9 @@ operationalBudgets:
   breachPolicy:  
     action: "terminate-cleanly"  
     emitEvent: "agent.task.budget\_exceeded"
+    # A budget breach between the plan and update phases resolves before the run leaves that superstep.
+    # The run leaves the breached superstep with no partial set of channel updates applied.
+    # The run then executes the declared breach action and emits the declared breach event.
 
 stateGraphChannels:  
   pregelExecutionSemantics:  
@@ -391,6 +399,9 @@ securityAndInformationFlowControl:
       allowedHosts:  
         \- "api.internal.enterprise.example"  
         \- "mcp.registry.enterprise.example"
+    # Write the taint label into the checkpoint alongside its value and restore both on reconstruction and replay.
+    # A merged value keeps the strongest taint label of its inputs.
+    # Only an explicitly declared decontamination gate can clear a taint label.
 
 do:  
   \- ingestAndTaintAnalyze:  
