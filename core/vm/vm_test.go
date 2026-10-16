@@ -796,7 +796,7 @@ func TestVM_Reset(t *testing.T) {
 
 	vm.push(core.Int{V: 1})
 	vm.push(core.Int{V: 2})
-	vm.reset()
+	vm.Reset()
 
 	if vm.stackSize() != 0 {
 		t.Errorf("expected empty stack after reset, got %d", vm.stackSize())

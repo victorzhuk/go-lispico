@@ -134,7 +134,7 @@ type VM struct {
 	// reentryCtx is the ctx adopted for re-entrant GoFunc/Lambda calls once
 	// one occurs, so repeated callbacks within a run share one evalState
 	// instead of adopting afresh each time. Unlike budget it survives across
-	// runs — reset/Reset/ResetIncremental no longer clear it — because
+	// runs — Reset/ResetIncremental no longer clear it — because
 	// reentrantCtx reuses and rearms it in place when the outer ctx matches,
 	// which is where the per-call wrapper allocation this field exists to
 	// avoid would otherwise land. runGen is what makes that safe: see runGen
@@ -142,7 +142,7 @@ type VM struct {
 	reentryCtx context.Context
 	// runGen counts top-level runs on this VM instance: bumped once, at the
 	// end of every top-level Run/ApplyPooled that leaves reentryCtx non-nil
-	// (see bumpRunGenIfWrapped). reset/Reset/ResetIncremental do NOT bump it
+	// (see bumpRunGenIfWrapped). Reset/ResetIncremental do NOT bump it
 	// — any wrapper still set at that point was already invalidated by the
 	// exit bump of the run that built or last rearmed it, and every wrapper
 	// build happens strictly inside the dynamic extent of a Run/ApplyPooled
@@ -237,29 +237,6 @@ func (vm *VM) bumpRunGenIfWrapped() {
 
 func (vm *VM) stackSize() int  { return len(vm.stack) }
 func (vm *VM) frameCount() int { return len(vm.frames) }
-func (vm *VM) reset() {
-	vm.stack = vm.stack[:0]
-	vm.frames = vm.frames[:0]
-	vm.handlers = vm.handlers[:0]
-	vm.depth = 0
-	vm.structDepth = &vm.ownStructDepth
-	vm.structDepthVal = 0
-	vm.callDepth = &vm.ownCallDepth
-	vm.callDepthVal = 0
-	vm.freezeStack = vm.freezeStack[:0]
-	vm.deadline = time.Time{}
-	vm.timeout = 0
-	vm.deadlineArmed = false
-	vm.deadlineClockPolls = 0
-	vm.meter = core.EvalMeter{}
-	vm.maxReductions = 0
-	vm.maxAllocBytes = 0
-	vm.reductions = 0
-	vm.allocBytes = 0
-	vm.budget = 0
-	vm.flushedBudget = 0
-	vm.pendingAlloc = 0
-}
 
 // Reset clears the VM state (stacks, frames, handlers, depth) so the
 // instance can be reused for a new evaluation. It does not change the
