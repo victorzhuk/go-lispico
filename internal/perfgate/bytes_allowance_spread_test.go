@@ -26,6 +26,37 @@ const longerBenchtimeProfileDir = "testdata/profile-30630796967"
 // between-engine offset licensed by ADR 0008 and three named hosted runs.
 const bytesAllowanceExemptCell = "Goldset/guard-nil"
 
+// validateBytesAllowance is the per-cell bytes-allowance decision, extracted
+// so synthetic cases can exercise the same order the guard applies: a stated
+// allowance comes first, then validity, then the explicit-zero case that
+// needs no historical evidence, then the licensed exception, then the
+// measured-spread bound.
+func validateBytesAllowance(name string, allowance float64, stated bool, spread map[string]float64) error {
+	if !stated {
+		if measured, ok := spread[name]; ok {
+			return fmt.Errorf("%s: states no allowance, measured spread %g B/op", name, measured)
+		}
+		return fmt.Errorf("%s: states no allowance", name)
+	}
+	if allowance < 0 {
+		return fmt.Errorf("%s: states an invalid negative allowance of %g B/op", name, allowance)
+	}
+	if allowance == 0 {
+		return nil
+	}
+	if name == bytesAllowanceExemptCell {
+		return nil
+	}
+	measured, ok := spread[name]
+	if !ok {
+		return fmt.Errorf("%s: states %g B/op with no B/op samples in the spread profile", name, allowance)
+	}
+	if allowance > measured {
+		return fmt.Errorf("%s: states %g B/op against a measured spread of %g B/op", name, allowance, measured)
+	}
+	return nil
+}
+
 // TestBytesAllowancesAreJustifiedBySpread bounds every stated bytes allowance
 // by the within-run B/op spread the gate's own benchtime measures. The bound
 // is what makes an allowance structurally unable to admit a regression: a
@@ -41,24 +72,135 @@ func TestBytesAllowancesAreJustifiedBySpread(t *testing.T) {
 
 	var unjustified []string
 	for name := range file.Cells {
-		if name == bytesAllowanceExemptCell {
-			continue
-		}
-		measured, ok := spread[name]
-		require.True(t, ok, "cell %q has no B/op samples in %s", name, pinnedProfileDir)
-
 		stated, ok := file.BytesAllowanceBOp[name]
-		switch {
-		case !ok:
-			unjustified = append(unjustified, fmt.Sprintf("%s: states no allowance, measured spread %g B/op", name, measured))
-		case stated > measured:
-			unjustified = append(unjustified, fmt.Sprintf("%s: states %g B/op against a measured spread of %g B/op", name, stated, measured))
+		if err := validateBytesAllowance(name, stated, ok, spread); err != nil {
+			unjustified = append(unjustified, err.Error())
 		}
 	}
 	sort.Strings(unjustified)
 
 	assert.Empty(t, unjustified,
 		"every bytes allowance must be sized from the within-run spread profile-%s measures on that cell", pinnedProfileRunID)
+}
+
+// TestBytesAllowanceValidation pins the per-cell decision order of
+// validateBytesAllowance: an explicit zero is headroom-free and needs no
+// historical sample, while every positive allowance still needs a spread
+// entry at least as large.
+func TestBytesAllowanceValidation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		cell      string
+		allowance float64
+		stated    bool
+		spread    map[string]float64
+		wantErr   bool
+	}{
+		{
+			name:      "UnmeasuredExplicitZeroSucceeds",
+			cell:      "Perf/new-cell",
+			allowance: 0,
+			stated:    true,
+			spread:    map[string]float64{"Perf/other": 8},
+			wantErr:   false,
+		},
+		{
+			name:      "MeasuredExplicitZeroSucceeds",
+			cell:      "Perf/zeroed",
+			allowance: 0,
+			stated:    true,
+			spread:    map[string]float64{"Perf/zeroed": 16},
+			wantErr:   false,
+		},
+		{
+			name:      "OmittedAllowanceFails",
+			cell:      "Perf/omitted",
+			allowance: 0,
+			stated:    false,
+			spread:    map[string]float64{"Perf/omitted": 8},
+			wantErr:   true,
+		},
+		{
+			name:      "OmittedAllowanceWithoutSpreadFails",
+			cell:      "Perf/omitted",
+			allowance: 0,
+			stated:    false,
+			spread:    map[string]float64{"Perf/other": 8},
+			wantErr:   true,
+		},
+		{
+			name:      "NegativeAllowanceFails",
+			cell:      "Perf/negative",
+			allowance: -1,
+			stated:    true,
+			spread:    map[string]float64{"Perf/negative": 8},
+			wantErr:   true,
+		},
+		{
+			name:      "PositiveWithoutSpreadFails",
+			cell:      "Perf/unmeasured",
+			allowance: 4,
+			stated:    true,
+			spread:    map[string]float64{"Perf/other": 8},
+			wantErr:   true,
+		},
+		{
+			name:      "PositiveAboveSpreadFails",
+			cell:      "Perf/wide",
+			allowance: 9,
+			stated:    true,
+			spread:    map[string]float64{"Perf/wide": 8},
+			wantErr:   true,
+		},
+		{
+			name:      "PositiveEqualToSpreadSucceeds",
+			cell:      "Perf/exact",
+			allowance: 8,
+			stated:    true,
+			spread:    map[string]float64{"Perf/exact": 8},
+			wantErr:   false,
+		},
+		{
+			name:      "PositiveBelowSpreadSucceeds",
+			cell:      "Perf/tight",
+			allowance: 4,
+			stated:    true,
+			spread:    map[string]float64{"Perf/tight": 8},
+			wantErr:   false,
+		},
+		{
+			name:      "PositiveAgainstZeroSpreadFails",
+			cell:      "Perf/flat",
+			allowance: 1,
+			stated:    true,
+			spread:    map[string]float64{"Perf/flat": 0},
+			wantErr:   true,
+		},
+		{
+			name:      "ExemptCellSucceeds",
+			cell:      bytesAllowanceExemptCell,
+			allowance: 4,
+			stated:    true,
+			spread:    map[string]float64{bytesAllowanceExemptCell: 0},
+			wantErr:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateBytesAllowance(tc.cell, tc.allowance, tc.stated, tc.spread)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.cell)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // TestTierConfig_EveryCellStatesAnAllowance requires the allowance to be
