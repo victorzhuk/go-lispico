@@ -556,13 +556,17 @@ func TestWatch_ReentrantShutdown(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
+			// The child re-executes this binary; its TempDir must live in a
+			// directory this test created, not a host-specific scratch path.
+			tmp := t.TempDir()
+
 			cmd := exec.CommandContext(ctx, exe,
 				"-test.run=^TestWatch_ReentrantShutdown_Child$",
 				"-test.timeout=4s",
 			)
 			cmd.Env = append(os.Environ(),
 				"LISPICO_WATCH_CASE="+tc.id,
-				"TMPDIR=/var/tmp/lispico-audit",
+				"TMPDIR="+tmp,
 			)
 			out, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {

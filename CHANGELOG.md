@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The builder-to-spec migration table published with 0.15.0 remains the
+  current guide for replacing the fluent builder with a plain
+  `core.DialectSpec`: for example `d.WithAdapter(name, id, fn)` maps to
+  `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}`. No
+  adapter-related spec field changed since.
+
+## [0.16.1] - 2026-10-16
+
+The consumer gate of 0.16.0 failed, so it stored no performance baseline.
+The next release therefore gates against the baseline stored by v0.15.0.
+0.16.1 repairs the test and CI gates only; it carries no product defect fix.
+
+### Fixed
+
+- Runtime: the watcher-shutdown subprocess test handed the child process an
+  absolute scratch path that exists only on one development machine, so the
+  child could not create its temporary directory on a clean CI runner. The
+  subprocess now derives its temporary directory at run time.
+- `internal/collections` asserted an absolute allocation delta inside
+  `-race` builds, where the race detector's own allocations inflate the
+  measured bytes: the same revision passed and failed that assertion on
+  consecutive runs. The bound now follows the existing `internal/goldset`
+  precedent and is not evaluated under `-race`. The work-budget and ordering
+  assertions in that test still run in every lane.
+
+### Changed
+
+- The changelog's `[Unreleased]` section is restored. The 0.16.0 cut renamed
+  the heading without leaving a replacement, and the repository's
+  documentation test requires that section to exist.
+- CI's lint pin moves to golangci-lint `v2.14.0`. `v2.13` decodes Go export
+  data at most version 4 while the runner's Go 1.27.x emits version 5, so
+  typecheck failed on files 0.16.0 never touched. The Makefile comment names
+  the same version.
+
 ## [0.16.0] - 2026-10-16
 
 ### Added
@@ -1592,7 +1631,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.16.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/victorzhuk/go-lispico/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/victorzhuk/go-lispico/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/victorzhuk/go-lispico/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/victorzhuk/go-lispico/compare/v0.13.0...v0.14.0

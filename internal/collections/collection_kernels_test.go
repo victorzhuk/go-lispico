@@ -411,8 +411,10 @@ func TestMapSequences_LongFirstNilNoEagerCopy(t *testing.T) {
 		if !ok || lst.Len() != 0 {
 			t.Fatalf("expected empty core.List result, got %T", res)
 		}
-		if delta := after.TotalAlloc - before.TotalAlloc; delta >= 4096 {
-			t.Fatalf("expected allocation under 4096 bytes, got %d", delta)
+		if !raceEnabled {
+			if delta := after.TotalAlloc - before.TotalAlloc; delta >= 4096 {
+				t.Fatalf("expected allocation under 4096 bytes, got %d", delta)
+			}
 		}
 	})
 
@@ -433,8 +435,10 @@ func TestMapSequences_LongFirstNilNoEagerCopy(t *testing.T) {
 		if !ok || lst.Len() != 1 {
 			t.Fatalf("expected 1-element core.List result, got %T", res)
 		}
-		if delta := after.TotalAlloc - before.TotalAlloc; delta >= 4096 {
-			t.Fatalf("expected allocation under 4096 bytes, got %d", delta)
+		if !raceEnabled {
+			if delta := after.TotalAlloc - before.TotalAlloc; delta >= 4096 {
+				t.Fatalf("expected allocation under 4096 bytes, got %d", delta)
+			}
 		}
 
 		ev = &scriptedEval{returns: []core.Value{core.Int{V: 0}}}

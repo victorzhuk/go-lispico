@@ -64,9 +64,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
-      # v2.12 bundles a type-checker that predates go 1.27 and fails to import
-      # math/rand/v2 from the toolchain's own source, so it must move with the
-      # go-version above.
+      # v2.13's type-checker decodes export data at most version 4, while the
+      # runner's go 1.27.x toolchain now emits version 5, so typecheck fails on
+      # files the release never touched. v2.14.0 is built with go 1.27 and is
+      # the version verified locally; the pin must move with the go-version.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13
+          version: v2.14.0
