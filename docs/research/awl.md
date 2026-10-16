@@ -239,8 +239,8 @@ runtimeSubstrate:
     mode: "virtual-object-journal"  
     partitionKey: "\${ .session.session\_id }"  
     deterministicHelpers:  
-      uuidGenerator: "ctx.rand.uuidv4"  
-    clockSource: "ctx.date.now"  
+      uuidGenerator: "ctx.rand.uuidv4"
+      clockSource: "ctx.date.now"
     snapshotFrequency: "every completed superstep"  
     # Rotate execution history at snapshotFrequency completed supersteps.
     # Preserve every state item declared as carried forward across rotation.
