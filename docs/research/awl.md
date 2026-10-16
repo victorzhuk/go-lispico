@@ -34,7 +34,7 @@
 | **DeltaChannel** | Редьюсер-канал для часто обновляемых и растущих структур данных, исключающий повторную сериализацию всего накопленного массива на каждом шаге8 | Хранит в блобе чекпоинта только маркер-сентинел и инкрементальную дельту шага; реконструирует состояние проигрыванием предков с параметром snapshot\_frequency для ограничения латентности чтения8 | Длинные истории диалогов и объемные журналы наблюдений в долгоживущих потоках8 |
 | **Topic** | Настраиваемая шина PubSub между акторами; может очищаться на каждом шаге или аккумулировать/дедуплицировать значения (accumulate=True)8 | Сериализует активную очередь сообщений текущего/накопленного цикла8 | Внутренняя очередь задач \_\_pregel\_tasks (пакеты Send), широковещательные события8 |
 | **EphemeralValue** | Хранит значение, полученное исключительно на непосредственно предшествующем шаге, и автоматически очищается после чтения10 | Живет ровно один раунд супершага10 | Входной триггер \_\_start\_\_, временные буферы вычислений между соседними шагами10 |
-| **NamedBarrierValue** / **LastValueAfterFinish** | Барьер синхронизации (ожидает получения всех именованных входов перед открытием чтения) либо отложенная выдача после вызова finish() \[cite: 17\] | Сохраняет статус заполнения именованных слотов барьера до момента срабатывания17 | Строгая синхронизация схождения (fan-in) асинхронных параллельных ветвей17 |
+| **NamedBarrierValue** / **LastValueAfterFinish** | Барьер синхронизации (ожидает получения всех именованных входов перед открытием чтения) либо отложенная выдача после вызова finish() \[cite: 17\] | Сохраняет статус заполнения именованных слотов барьера до момента срабатывания17 | Строгая синхронизация схождения (fan-in) асинхронных параллельных ветвей17. A failed branch fills its own requiredNames slot with a failure marker. The barrier opens only when every requiredNames slot contains a value or a failure marker. Persist each failure marker with the barrier fill state so restart reconstructs the same barrier. The declared release policy then releases the filled results or fails the run without discarding completed siblings. |
 | **Context** | Управляет жизненным циклом внешнего контекстного менеджера (setup/teardown)15 | Не сериализует сетевые дескрипторы; пересоздает ресурс при инициализации рантайма15 | Пулы соединений (например, Context(httpx.Client)) и сессии БД15 |
 
 Глубокий анализ внутренней механики LangGraph выявляет важнейший архитектурный закон: **редьюсер выполняется в момент реконструкции (материализации) состояния, а не в момент записи**8. В персистентное хранилище чекпоинтов сериализуются не итоговые свернутые значения, а сырые пошаговые записи (writes), тогда как функция-редьюсер вызывается только тогда, когда значение материализуется — при следующем чтении, при запуске акторов следующего супершага или при воспроизведении истории (time-travel / replay)8. Из этого следуют жесткие требования к спецификации состояния: редьюсер обязан быть детерминированной чистой функцией от (state, writes), поскольку любые побочные эффекты, обращения к генераторам случайных чисел (uuid.uuid4()) или системным часам (datetime.now()) внутри редьюсера будут выполняться заново при каждой реконструкции чекпоинта, порождая расходящиеся состояния при каждом повторе8. Более того, категорически запрещено полагаться на мутацию входных записей на месте внутри редьюсера: если редьюсер мутирует входящий объект записи (например, присваивает отсутствующий id сообщению внутри функции слияния), эта мутация существует только в эфемерном реконструированном значении в памяти, тогда как в сохраненном чекпоинте запись остается в исходной форме без id, что приведет к потере идентичности при следующей материализации8. Следовательно, все уникальные идентификаторы элементов и стабильные метаданные должны генерироваться детерминированно на стороне источника (upstream) внутри самого узла-актора до отправки значения в канал7.
@@ -213,6 +213,8 @@ Clojure
     \[:mcp-tools \[:vector {:min 1} ::mcp-tool-binding\]\]  
     \[:routing-rules \[:map-of keyword? ::cel-expression\]\]\]\])
 
+Между схемой и манифестом зафиксируем семантику корреляции событий: Each correlation declares the cardinality it awaits and its deadline. An absent cardinality means exactly one event. If the deadline expires before the awaited count is reached, the declared deadline outcome wins over correlation completion. If the awaited count is reached before the deadline, correlation completes and its deadline does not fire.
+
 ### **5.4. Эталонный манифест переписанной спецификации (contract.yaml)**
 
 Ниже представлен полный нормативный манифест contract.yaml, объединяющий синтаксис CNCF Serverless Workflow 1.0, семантику каналов Pregel, журналирование шагов долговечного исполнения, протокольные контракты MCP 2026-07-28 и эшелонированную защиту песочницы4:
@@ -295,6 +297,11 @@ stateGraphChannels:
     syncGate:  
       type: "NamedBarrierValue"  
       requiredNames: \["static\_analysis\_branch", "dependency\_audit\_branch"\]
+      # Fan-in semantics of the barrier:
+      # A failed branch fills its own requiredNames slot with a failure marker.
+      # The barrier opens only when every requiredNames slot contains a value or a failure marker.
+      # Persist each failure marker with the barrier fill state so restart reconstructs the same barrier.
+      # The declared release policy then releases the filled results or fails the run without discarding completed siblings.
 
 mcpProtocolContract:  
   protocolVersion: "2026-07-28"  
@@ -425,6 +432,11 @@ do:
                 approvalRequestId:  
                   from: "\${ .data.approvalRequestId }"  
                   expect: "\${ .context.pendingApprovalId }"
+          # Correlation cardinality and deadline semantics:
+          # Each correlation declares the cardinality it awaits and its deadline.
+          # An absent cardinality means exactly one event.
+          # If the deadline expires before the awaited count is reached, the declared deadline outcome wins over correlation completion.
+          # If the awaited count is reached before the deadline, correlation completes and its deadline does not fire.
 
   \- applyAtomicRemediation:  
       stageIsolationPool: "pool-trusted-mutation"  
