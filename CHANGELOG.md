@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Five new gold-set timed cells measure what the gate corpus previously did
+  not: Common Lisp through a CL engine (`GoldsetCL/function-cells`,
+  `GoldsetCL/list-adapters`), the CL reader alone
+  (`GoldsetCLParse/function-cells`, `GoldsetCLParse/list-adapters`), and two
+  distinct closures sharing one engine (`GoldsetConcurrent/distinct-closures`).
+  They are correctness and capture inputs only. No tier is assigned to them
+  and no hosted classification run has measured them, so none is promoted and
+  the expanded gate is not claimed to pass.
+
 ### Changed
 
 - The builder-to-spec migration table published with 0.15.0 remains the
@@ -26,13 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before benchstat runs and before any verdict, naming the cell and the
   missing units, instead of reading as a zero median and a silent
   improvement. When the two runs share a runner, benchstat is now given only
-  the exact benchmark names both runs measured, so a cell present only in the
-  candidate no longer aborts the whole run; it keeps its own inconclusive
-  missing-baseline line. A paired cell whose timing arrives with no samples
+  the exact benchmark names both arms of one reference group measured, so a
+  cell measured by one arm alone no longer aborts the whole run. A configured
+  cell the stored VM baseline does not contain is no longer left inconclusive:
+  in non-regression it is a first authorization against the current Evaluator,
+  supplied by the new `-evaluator` flag, and its report line names that
+  reference (`mode=first-authorization reference=evaluator`). Required
+  supplemental evidence that is absent refuses the gate with exit 3 rather than
+  reading as a silent pass. A stored baseline that is present always wins for a
+  cell, including when its evidence is incomplete or the two arms are
+  incomparable. A paired cell whose timing arrives with no samples
   exits 3 rather than passing on an insignificant result. A run in which no
   cell was actually compared against the baseline no longer passes the
   aggregate gate; it also exits 3. A measured zero counts as evidence and is
   unaffected.
+- The concurrent tier's timed bound is now stated as what it measures. The
+  figure is aggregate `sec/op`, where lower is faster, so the 5% throughput
+  bound is the reciprocal `candidate sec/op <= reference sec/op / 0.95`
+  rather than a two-sided band. Concurrent evaluation also requires explicit
+  clean-race evidence (`-race-clean=true`); an unset flag fails the tier
+  closed.
 
 ## [0.16.1] - 2026-10-16
 

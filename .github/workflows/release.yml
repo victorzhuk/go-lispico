@@ -325,6 +325,7 @@ jobs:
           code=0
           bin/perfgate \
             -old "$old" \
+            -candidate bench-vm.txt \
             -evaluator bench-evaluator.txt \
             -race-clean=true \
             -tiers internal/perfgate/tiers.json \
@@ -360,6 +361,7 @@ jobs:
           code=0
           bin/perfgate \
             -old "$old" \
+            -candidate bench-vm.txt \
             -evaluator bench-evaluator.txt \
             -race-clean=true \
             -tiers internal/perfgate/tiers.json \

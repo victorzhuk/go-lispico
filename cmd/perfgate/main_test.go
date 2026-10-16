@@ -1530,3 +1530,145 @@ func TestRun_CurrentEvaluatorMissingTimingExitsThree(t *testing.T) {
 	_, err := os.Stat(outPath)
 	assert.True(t, os.IsNotExist(err), "no report may be written for a refused preflight")
 }
+
+// TestPairedBenchstat_SelectedGroupFiltersFiles pins the selected-group path:
+// a partial selection forces filtered copies carrying only the selected rows,
+// one-sided candidate rows never reach statistics, the originals stay
+// byte-identical, and the temporary directory is removed on failure too.
+func TestPairedBenchstat_SelectedGroupFiltersFiles(t *testing.T) {
+	preamble := "goos: linux\r\ngoarch: amd64\r\npkg: github.com/victorzhuk/go-lispico/internal/goldset\r\ncpu: fixture-runner-a\r\n"
+	rowA := "BenchmarkGoldset/cell-a-2  100  5000 ns/op  48 B/op  3 allocs/op\r\n"
+	rowB := "BenchmarkGoldset/cell-b-2  100  6000 ns/op  64 B/op  4 allocs/op\r\n"
+	rowC := "BenchmarkGoldset/candidate-only-2  100  7000 ns/op  80 B/op  5 allocs/op\r\n"
+	oldBytes := []byte(preamble + rowA + rowB)
+	newBytes := []byte(preamble + rowA + rowB + rowC)
+	wantFiltered := []byte(preamble + rowB)
+
+	oldPath := filepath.Join(t.TempDir(), "old.txt")
+	newPath := filepath.Join(t.TempDir(), "candidate.txt")
+	require.NoError(t, os.WriteFile(oldPath, oldBytes, 0o644))
+	require.NoError(t, os.WriteFile(newPath, newBytes, 0o644))
+
+	oldMetrics := map[string]perfgate.SampleMetrics{
+		"Goldset/cell-a-2": {Name: "Goldset/cell-a-2"},
+		"Goldset/cell-b-2": {Name: "Goldset/cell-b-2"},
+	}
+	newMetrics := map[string]perfgate.SampleMetrics{
+		"Goldset/cell-a-2":         {Name: "Goldset/cell-a-2"},
+		"Goldset/cell-b-2":         {Name: "Goldset/cell-b-2"},
+		"Goldset/candidate-only-2": {Name: "Goldset/candidate-only-2"},
+	}
+	selected := map[string]bool{"Goldset/cell-b-2": true}
+	pairedCSV := []byte("goos: linux\ngoarch: amd64\npkg: x\ncpu: fixture-runner-a\n" +
+		",old.txt,,,new.txt,,\n,sec/op,CI,sec/op,CI,vs base,P\n" +
+		"Goldset/cell-b-2,6e-06,1%,6e-06,1%,+0.00%,p=0.500 n=10\n")
+
+	t.Run("selected group only", func(t *testing.T) {
+		var gotOld, gotNew, filteredOld, filteredNew string
+		swapBenchstat(t, func(oldArg, newArg string) ([]byte, error) {
+			gotOld, gotNew = oldArg, newArg
+			// The temporary files exist only while benchstat runs; read
+			// them here, before pairedBenchstat removes the directory.
+			oldData, err := os.ReadFile(oldArg)
+			require.NoError(t, err)
+			newData, err := os.ReadFile(newArg)
+			require.NoError(t, err)
+			filteredOld, filteredNew = string(oldData), string(newData)
+			return pairedCSV, nil
+		})
+
+		parsed, err := pairedBenchstat(oldPath, newPath, oldMetrics, newMetrics, selected)
+		require.NoError(t, err)
+		assert.Contains(t, parsed, "Goldset/cell-b-2", "the selected cell must be paired")
+
+		assert.NotEqual(t, oldPath, gotOld, "a partial selection must filter through new paths")
+		assert.NotEqual(t, newPath, gotNew, "a partial selection must filter through new paths")
+		assert.Equal(t, string(wantFiltered), filteredOld,
+			"the old copy keeps metadata verbatim and only the selected B row")
+		assert.Equal(t, string(wantFiltered), filteredNew,
+			"the candidate copy drops the unselected A row and the one-sided candidate-only row")
+		assert.NoDirExists(t, filepath.Dir(gotOld), "the temporary directory must be removed on success")
+
+		afterOld, err := os.ReadFile(oldPath)
+		require.NoError(t, err)
+		afterNew, err := os.ReadFile(newPath)
+		require.NoError(t, err)
+		assert.Equal(t, string(oldBytes), string(afterOld), "the original old file is byte-identical")
+		assert.Equal(t, string(newBytes), string(afterNew), "the original candidate file is byte-identical")
+	})
+
+	t.Run("benchstat failure", func(t *testing.T) {
+		var gotOld string
+		swapBenchstat(t, func(oldArg, _ string) ([]byte, error) {
+			gotOld = oldArg
+			return nil, errors.New("injected benchstat failure")
+		})
+
+		_, err := pairedBenchstat(oldPath, newPath, oldMetrics, newMetrics, selected)
+		assert.Error(t, err, "a benchstat failure must propagate")
+		assert.NoDirExists(t, filepath.Dir(gotOld), "the temporary directory must be removed on failure")
+	})
+}
+
+// TestPairedBenchstat_EmptySelectionRunsNoStatistics pins that a non-nil but
+// empty selection selects nothing: benchstat never runs and the result is an
+// empty comparison map without error.
+func TestPairedBenchstat_EmptySelectionRunsNoStatistics(t *testing.T) {
+	body := repeatLine("BenchmarkGoldset/cell-a-2  100  5000 ns/op  48 B/op  3 allocs/op") +
+		repeatLine("BenchmarkGoldset/cell-b-2  100  6000 ns/op  64 B/op  4 allocs/op")
+	oldPath := writeBenchFile(t, "fixture-runner-a", body)
+	newPath := writeBenchFile(t, "fixture-runner-a", body)
+	oldMetrics := map[string]perfgate.SampleMetrics{
+		"Goldset/cell-a-2": {Name: "Goldset/cell-a-2"},
+		"Goldset/cell-b-2": {Name: "Goldset/cell-b-2"},
+	}
+	newMetrics := map[string]perfgate.SampleMetrics{
+		"Goldset/cell-a-2": {Name: "Goldset/cell-a-2"},
+		"Goldset/cell-b-2": {Name: "Goldset/cell-b-2"},
+	}
+
+	swapBenchstat(t, func(_, _ string) ([]byte, error) {
+		assert.Fail(t, "benchstat ran despite an empty selection")
+		return nil, errors.New("benchstat must not run")
+	})
+
+	parsed, err := pairedBenchstat(oldPath, newPath, oldMetrics, newMetrics, map[string]bool{})
+	require.NoError(t, err, "an empty selection is a settled empty result, not an error")
+	assert.Empty(t, parsed, "no cell may be compared under an empty selection")
+}
+
+// TestPairedBenchstat_CompleteSelectionUsesOriginalPaths pins the fast path
+// for an explicit selection: when the selection covers both complete
+// inventories exactly, benchstat reads the original files.
+func TestPairedBenchstat_CompleteSelectionUsesOriginalPaths(t *testing.T) {
+	body := repeatLine("BenchmarkGoldset/cell-a-2  100  5000 ns/op  48 B/op  3 allocs/op") +
+		repeatLine("BenchmarkGoldset/cell-b-2  100  6000 ns/op  64 B/op  4 allocs/op")
+	oldPath := writeBenchFile(t, "fixture-runner-a", body)
+	newPath := writeBenchFile(t, "fixture-runner-a", body)
+	oldMetrics := map[string]perfgate.SampleMetrics{
+		"Goldset/cell-a-2": {Name: "Goldset/cell-a-2"},
+		"Goldset/cell-b-2": {Name: "Goldset/cell-b-2"},
+	}
+	newMetrics := map[string]perfgate.SampleMetrics{
+		"Goldset/cell-a-2": {Name: "Goldset/cell-a-2"},
+		"Goldset/cell-b-2": {Name: "Goldset/cell-b-2"},
+	}
+	selected := map[string]bool{"Goldset/cell-a-2": true, "Goldset/cell-b-2": true}
+	pairedCSV := []byte("goos: linux\ngoarch: amd64\npkg: x\ncpu: fixture-runner-a\n" +
+		",old.txt,,,new.txt,,\n,sec/op,CI,sec/op,CI,vs base,P\n" +
+		"Goldset/cell-a-2,5e-06,1%,5e-06,1%,+0.00%,p=0.500 n=10\n" +
+		"Goldset/cell-b-2,6e-06,1%,6e-06,1%,+0.00%,p=0.500 n=10\n")
+
+	var gotOld, gotNew string
+	swapBenchstat(t, func(oldArg, newArg string) ([]byte, error) {
+		gotOld, gotNew = oldArg, newArg
+		return pairedCSV, nil
+	})
+
+	parsed, err := pairedBenchstat(oldPath, newPath, oldMetrics, newMetrics, selected)
+	require.NoError(t, err)
+	assert.Contains(t, parsed, "Goldset/cell-a-2", "a fully selected cell must be paired")
+	assert.Contains(t, parsed, "Goldset/cell-b-2", "a fully selected cell must be paired")
+	assert.Equal(t, oldPath, gotOld, "a complete selection over equal inventories uses the original old path")
+	assert.Equal(t, newPath, gotNew, "a complete selection over equal inventories uses the original candidate path")
+}

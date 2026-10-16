@@ -86,12 +86,16 @@ faster than its baseline SHALL pass at any margin, because failing a release for
 making the engine faster is the outcome ADR 0008 rejects when it declines a
 standing improvement gate. Byte and allocation-count checks are unaffected —
 they were already non-increasing, and a faster candidate that allocates more
-SHALL still fail. The bound SHALL remain two-sided in the two cases where the
+SHALL still fail. The bound SHALL remain two-sided in the one case where the
 paired runs are expected to measure the same cost rather than two releases: a
 data/output-dominated cell under first authorization, where the runs are the two
-evaluators of one commit and the cost is mode-invariant by classification, and a
-concurrent cell, whose timed figure may be a throughput measure whose sign
-convention is not yet stated.
+evaluators of one commit and the cost is mode-invariant by classification. A
+concurrent cell's timed figure SHALL be aggregate `sec/op`, lower better, and its
+5% throughput bound SHALL therefore be the reciprocal
+`candidate sec/op <= reference sec/op / 0.95`, which is one-sided on regression
+like every other tier. A concurrent cell SHALL be evaluated only when the separate
+untimed `-race` run is attested clean for that cell; an unattested cell SHALL fail
+the tier closed rather than pass without race evidence.
 
 #### Scenario: A faster candidate passes a non-regression cell
 
@@ -129,15 +133,26 @@ Passing the complete gate SHALL authorize YAGEL to enable `WithBytecode()`
 directly — no user-facing execution flag, no shadow run; rollback is a normal code
 or dependency revert. The improvement thresholds SHALL apply only to that first
 authorization: subsequent releases SHALL compare the candidate VM against the
-previous release's stored VM baseline as a non-regression check, so an Evaluator
-improvement cannot fail the gate. Passing SHALL NOT change go-lispico's global
+previous release's stored VM baseline as a non-regression check for every cell
+that baseline contains, so an Evaluator improvement cannot fail the gate. A
+configured cell the stored VM baseline does not contain SHALL instead be judged
+under first authorization against the current Evaluator supplied as that run's
+supplemental reference; missing required supplemental evidence SHALL refuse the
+run rather than pass on no evidence. A stored baseline that is present SHALL
+take precedence for its cell, including when its evidence is incomplete or the
+two runs are not comparable. Passing SHALL NOT change go-lispico's global
 Engine default and SHALL end VM-specific optimization until a gate cell fails or
 another consumer need is measured.
 
 #### Scenario: Post-authorization release
 
 - **WHEN** a release runs after the first authorization
-- **THEN** each cell SHALL be judged against the stored VM baseline as non-regression, not against the same-release Evaluator improvement thresholds
+- **THEN** each cell present in the stored VM baseline SHALL be judged against it as non-regression, not against the same-release Evaluator improvement thresholds
+
+#### Scenario: A configured cell absent from the stored VM baseline
+
+- **WHEN** a release run's stored VM baseline does not contain a configured cell
+- **THEN** that cell SHALL be judged under first authorization against the current Evaluator, with no repeated Evaluator-improvement requirement applied to any baseline-backed cell
 
 ### Requirement: Gate corpus dialect and recursion coverage
 

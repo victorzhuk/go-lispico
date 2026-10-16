@@ -4,14 +4,14 @@ status: accepted
 
 # go-lispico owns a gold-set performance gate; releases enforce it
 
-Consumers opt into the VM only after every known VM parity, state-cleanup, cache-freshness, and malformed-input panic defect is fixed, followed by a one-shot per-cell gate over the repo-owned gold set plus scale envelopes; Lua/goja parity does not authorize rollout. Each cell first checks an expected behavior or invariant, hand-derived from the language contract, against both Evaluator and VM runs; neither path is the correctness oracle. Passing the complete gate authorizes YAGEL to add `WithBytecode()` directly, without a user-facing execution flag or side-effecting shadow run; rollback is a normal code or dependency revert. After that first authorization, later releases keep the paired run but compare the candidate VM against the previous release's VM baseline as a non-regression check — the 15%/20% improvement thresholds apply once, so a later Evaluator improvement can never fail the gate by shrinking the delta.
+Consumers opt into the VM only after every known VM parity, state-cleanup, cache-freshness, and malformed-input panic defect is fixed, followed by a one-shot per-cell gate over the repo-owned gold set plus scale envelopes; Lua/goja parity does not authorize rollout. Each cell first checks an expected behavior or invariant, hand-derived from the language contract, against both Evaluator and VM runs; neither path is the correctness oracle. Passing the complete gate authorizes YAGEL to add `WithBytecode()` directly, without a user-facing execution flag or side-effecting shadow run; rollback is a normal code or dependency revert. After that first authorization, later releases keep the paired run but compare the candidate VM against the previous release's VM baseline as a non-regression check for every cell that baseline contains — the 15%/20% improvement thresholds apply once, so a later Evaluator improvement can never fail the gate by shrinking the delta. A configured cell that baseline does not contain is a first authorization against the current Evaluator, not a verdict on no evidence.
 
 ## Gate mechanics
 
 - Timed cells evaluate the rule-shaped gold fixtures through the engine with deterministic fixture data, retaining GoFunc call overhead; scheduler and bus flows stay in YAGEL as untimed end-to-end behavior checks outside this gate.
 - go-lispico owns the gate corpus as a gold set: rule-shaped fixtures with independent golden expected results, plus benchmark cells over them, committed in this repo (`internal/goldset`) and modeled on embedder rule workloads — dispatch, closure state, error handling, keyword lookups, macros, collection folds, rule loading. The release gate runs it self-contained — no consumer checkout, no revision pin, no cross-repo secret. Goldens are hand-derived from the language contract, never captured from either engine.
 - The authoritative performance run interleaves both execution modes in one hosted job with fixed concurrency and benchtime, at least ten samples, and benchstat confidence; ordinary pull requests run correctness and race checks only. Race-detector runs are separate and untimed — no timing threshold is evaluated under `-race`.
-- When a cell is inconclusive for a reason more data could settle, the whole paired run reruns once at doubled benchtime and every cell is re-judged from the rerun data. Still inconclusive after the rerun: improvement cells fail (the win was not demonstrated), non-regression cells pass (no regression was demonstrated). A cell inconclusive for a reason a rerun cannot change — a runner mismatch, or a cell the stored baseline never measured, neither of which a fresh candidate run affects — is resolved immediately instead, so a release does not spend a doubled-benchtime run it cannot learn from.
+- When a cell is inconclusive for a reason more data could settle, the whole paired run reruns once at doubled benchtime and every cell is re-judged from the rerun data. Still inconclusive after the rerun: improvement cells fail (the win was not demonstrated), non-regression cells pass (no regression was demonstrated). A cell inconclusive for a reason a rerun cannot change — a runner mismatch — is resolved immediately instead, so a release does not spend a doubled-benchtime run it cannot learn from. A cell the stored baseline never measured is not in that set: a rerun would still not supply the stored figure, so such a cell is settled against the current Evaluator reference instead.
 - Each scaled data dimension has three checked-in levels: shipped baseline, an operational knee, and its supported boundary; a lower CI proxy is allowed only when a separate load test covers the real boundary.
 
 ## Thresholds
@@ -20,10 +20,10 @@ This ADR is the single owner of the numbers; the PRD and glossary reference them
 
 - Engine-sensitive hot cells: at least 15% lower latency and 20% fewer allocated bytes, allocation count non-increasing.
 - Data/output-dominated hot cells: within 5% latency, bytes and allocation count non-increasing — subject to the per-cell bytes allowance every cell records in `internal/perfgate/tiers.json`'s `bytesAllowanceBOp`.
-- Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing, race detector clean in the separate untimed run.
+- Concurrent cells (distinct Rule closures on one Engine): within 5% throughput, bytes and allocation count non-increasing. The timed figure is aggregate `sec/op`, lower better, so the throughput bound is the reciprocal: `candidate sec/op <= reference sec/op / 0.95`. A concurrent cell is evaluated only with explicit clean-race attestation from the separate untimed `-race` run; an unattested cell fails the tier closed.
 - Startup and Rule-load cells: within 5%, or at most 1 ms and 256 KiB absolute overhead under benchstat, so sub-millisecond one-time work cannot fail on percentage alone; bytes and allocation count stay non-increasing regardless of which of those two latency paths the cell takes — the absolute-overhead escape excuses the latency percentage only, never allocation.
 
-"Within 5%" above is a bound on regression, matching this section's opening rule that no cell may *regress* beyond its tier's budget: a candidate that is faster than its baseline passes at any margin. Reading it as a two-sided band would fail a release for making the engine faster, which is the outcome this ADR rejects below under a standing improvement gate. Two exceptions, both because the two runs are then expected to measure the same cost rather than two releases. First, comparing the Evaluator and VM variants of one commit at first authorization, a data/output-dominated cost is mode-invariant by classification, so movement either way is a finding. Second, the concurrent tier's timed figure may be a throughput measure, where larger is better, so its bound stays two-sided until that sign convention is stated.
+"Within 5%" above is a bound on regression, matching this section's opening rule that no cell may *regress* beyond its tier's budget: a candidate that is faster than its baseline passes at any margin. Reading it as a two-sided band would fail a release for making the engine faster, which is the outcome this ADR rejects below under a standing improvement gate. The exception is a data/output-dominated cost compared at first authorization: the two runs are then the Evaluator and VM variants of one commit and the cost is mode-invariant by classification, so movement either way is a finding. The concurrent tier's bound is one-sided too, on its stated figure rather than on an open question: aggregate `sec/op`, lower better, bounded reciprocally at `candidate sec/op <= reference sec/op / 0.95`.
 
 Note (resolved-binding cells): the per-chunk global-read site cache adds one
 8-byte atomic pointer to every `Chunk`. A cell that recompiles a fresh chunk on
@@ -121,11 +121,14 @@ Both gaps below are current, known, and unexercised. Both are gaps in the
 timed workload corpus, not in correctness coverage: correctness goldens for
 Common Lisp and for distinct-closure sharing of one engine exist and pass
 today. Neither is a defect in the gate's machinery; each is a threshold or a
-coverage claim that no committed timed fixture can reach. Adding the missing
-timed fixtures is DEFERRED, not rejected. The gate's own guards block the
+coverage claim that no configured timed cell reaches. The timed fixtures now
+exist (`BenchmarkGoldsetCL`, `BenchmarkGoldsetCLParse`,
+`BenchmarkGoldsetConcurrent` in `internal/goldset/bench_test.go`), but no tier
+is configured for any of them, so the gate does not evaluate them. Promoting
+those measurements is DEFERRED, not rejected. The gate's own guards block the
 straightforward fix, and the evidence that would unblock it is a hosted
-capture, not an edit. Neither gap changes a tier, a threshold, or an exit
-code.
+classification capture, not an edit. Neither gap changes a tier, a threshold,
+or an exit code.
 
 ### The concurrent tier's 5% throughput threshold is configured but unexercised
 
@@ -133,20 +136,23 @@ code.
 data-dominated cells, and 1 startup cell. It configures zero concurrent
 cells. The concurrent threshold stated above (distinct Rule closures on one
 Engine, within 5% throughput, bytes and allocation count non-increasing,
-race detector clean in the separate untimed run) is therefore not enforced
-by any run, and cannot be. A candidate that regresses concurrent throughput
-by far more than 5% passes this gate today. Every gold-set benchmark family
-currently runs serially, so no timed cell measures shared-engine contention.
+clean-race attestation required) is therefore not enforced by any run, and
+cannot be. A candidate that regresses concurrent throughput by far more than
+5% passes this gate today. The `GoldsetConcurrent/distinct-closures` benchmark
+measures shared-engine contention, but it is unconfigured, so no cell verdict
+rests on it.
 
 ### Common Lisp, the shipped default dialect, has no timed workload coverage
 
-`internal/goldset/goldset.go:37-43` pins `runtime.WithDialect(clojure.Dialect())`
-for every fixture, so the timed corpus constructs the Clojure dialect. Only
+The timed corpus constructs the Clojure dialect for its configured cells. Only
 `stdlib` and `json` ship in `cmd/lispico`, so the dialect a consumer actually
 gets with no option is Common Lisp. A green workload gate therefore cannot
 establish non-regression for the shipped default, including its Lisp-2
 function resolution, where an operator and a variable live in separate
-namespaces. A regression in that resolution would not fail this gate today.
+namespaces. The CL fixtures (`GoldsetCL/function-cells`,
+`GoldsetCL/list-adapters`, and their parse cells) run for correctness and as
+capture input, but no tier is configured for them, so a regression in that
+resolution would not fail this gate today.
 
 ### Two independent guards block the straightforward fix
 
@@ -174,17 +180,26 @@ tiers.
 
 ### What a new cell would actually do to gate runs
 
-`ResolveGateMode` selects one mode for the entire run, from whether a stored
-baseline was found, and the workflow supplies a single reference dataset. Mode
-selection is a property of the run, not of a cell, so a new cell does not
-automatically receive first authorization on an ordinary non-regression run.
-Absent from the stored release baseline, such a cell reaches the
-missing-baseline branch of `cmd/perfgate/main.go:288-297`, is reported
-`INCONCLUSIVE` on its own report line with the reason `(no baseline figure
-for this cell)`, and receives no metric comparison at all on that path,
-including no allocation-count comparison. First authorization compares the
-current Evaluator against the current VM, and only when a whole run has no
-downloaded baseline at all.
+Baseline discovery is run-wide: `ResolveGateMode`
+(`internal/perfgate/gatemode.go:45-58`) selects one mode for the whole run from
+whether a stored `bench-vm.txt` baseline was downloaded, and the run supplies a
+primary reference dataset from `-old`. Cell mode is decided separately by
+`ResolveCellMode` (`internal/perfgate/gatemode.go:63-74`): under a
+first-authorization run every cell is first authorization, while under
+non-regression a cell whose exact raw name the stored baseline measured keeps
+non-regression and a configured cell the stored baseline does not contain is a
+first authorization. Reference selection follows the same split in
+`cmd/perfgate/main.go`: cells in the stored baseline compare against `-old`;
+cells absent from it are drawn from a second reference, the current Evaluator
+supplied by `-evaluator`, and their report line reads
+`mode=first-authorization reference=evaluator`. Required supplemental evidence
+that is absent refuses the gate with exit 3 rather than reading as a silent
+pass, and a stored baseline that is present always wins for a cell — including
+when its evidence is incomplete or the two runs are incomparable, which is the
+existing partial-evidence policy below. A classification-only run proves the
+capture prerequisites — that the corpus, both modes, the runner identity, and
+the artifacts exist — and authorizes no ordinary gate decision, because it
+produces no release verdict and writes no stored baseline.
 
 A cross-runner run is governed by the partial-evidence policy stated above:
 latency and allocated bytes stay undecided, allocation-count non-increase is
@@ -201,32 +216,30 @@ evidence, not an absence.
 
 Baseline evidence is checked on the same footing, and the two absences are
 distinct. A configured cell the stored baseline never measured is not a
-failure and not a zero: it takes the missing-baseline branch above, is
-reported `INCONCLUSIVE` on its own line, and is not counted as a comparison.
-A configured cell the stored baseline *did* measure but whose allocation
-samples are absent is refused with exit 3 before benchstat runs and before
-any verdict is formed, naming the cell and every absent unit in the error
-`compare samples for cell %q: missing allocation samples: ITEM[, ITEM...]`,
-where the items are the literals `baseline B/op`, `baseline allocs/op`,
-`candidate B/op`, and `candidate allocs/op`. Without that refusal an absent
-sample set would read as a zero median and a silent improvement against a
-real baseline. The candidate preflight above runs first, so a cell whose both
-arms are incomplete is reported through the candidate diagnostic rather than
-this one.
+failure and not a zero: it is a first authorization against the current
+Evaluator as described above, and it is not counted as a comparison against
+the stored baseline. A configured cell the stored baseline *did* measure but
+whose allocation samples are absent is refused with exit 3 before benchstat
+runs and before any verdict is formed, naming the cell and every absent unit
+in the error `compare samples for cell %q: missing allocation samples:
+ITEM[, ITEM...]`, where the items are the literals `baseline B/op`,
+`baseline allocs/op`, `candidate B/op`, and `candidate allocs/op`. Without
+that refusal an absent sample set would read as a zero median and a silent
+improvement against a real baseline. The candidate preflight above runs first,
+so a cell whose both arms are incomplete is reported through the candidate
+diagnostic rather than this one.
 
 On the same runner, benchstat pairs only the exact raw benchmark names
-present in both runs, processor suffix included. A cell measured by the
-candidate alone is filtered out of the paired run instead of reaching
-statistics, so it keeps its own missing-baseline `INCONCLUSIVE` line rather
-than aborting the run, and a cell the baseline alone measured is dropped from
-the comparison the same way. A common cell whose paired result carries no
-latency figure, or a zero sample count, is refused with exit 3 as `cell %q:
-missing paired sec/op comparison`: benchstat's `~` would otherwise let it
-read as an insignificant pass on no evidence. A run in which no cell reached
-an actual metric comparison -- for example a candidate whose every configured
-cell is missing from the stored baseline -- prints its per-cell report and
-then exits 3 with `no comparison was performed` on stderr instead of passing
-on aggregate evidence that compared nothing.
+present in both arms of one reference group, processor suffix included. A cell
+measured by one arm alone is filtered out of that group's statistics rather
+than aborting the run, and the cell then either takes the Evaluator reference
+described above or drops out of the comparison entirely. A common cell whose
+paired result carries no latency figure, or a zero sample count, is refused
+with exit 3 as `cell %q: missing paired sec/op comparison`: benchstat's `~`
+would otherwise let it read as an insignificant pass on no evidence. A run in
+which no cell reached an actual metric comparison prints its per-cell report
+and then exits 3 with `no comparison was performed` on stderr instead of
+passing on aggregate evidence that compared nothing.
 
 One delta token needs a second reading. The pinned benchstat renders a
 zero-baseline percentage change as `?`, because the ratio has no finite
