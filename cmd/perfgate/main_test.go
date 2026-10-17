@@ -1672,3 +1672,214 @@ func TestPairedBenchstat_CompleteSelectionUsesOriginalPaths(t *testing.T) {
 	assert.Equal(t, oldPath, gotOld, "a complete selection over equal inventories uses the original old path")
 	assert.Equal(t, newPath, gotNew, "a complete selection over equal inventories uses the original candidate path")
 }
+
+// uncertainCSV renders the controlled equal-latency row the rerun tests feed
+// through the swapped benchstat: identical distributions at p=0.500 n=10, so
+// no tier's significance gate fires and every listed cell is INCONCLUSIVE on
+// the timing axis while bytes and allocs stay decided by the raw files.
+func uncertainCSV(cells ...string) []byte {
+	rows := make([]string, len(cells))
+	for i, cell := range cells {
+		rows[i] = cell + ",1e-05,1%,1e-05,1%,~,p=0.500 n=10"
+	}
+	return []byte(pairedCSV("fixture-runner-a", rows...))
+}
+
+// swapReferenceInspectingBenchstat swaps the benchstat seam for one that
+// decides which reference reached statistics by reading the old-side file
+// content, never its temporary name: a stored-baseline pair carries the
+// baseline's own rows, a supplemental pair the current Evaluator's. Only then
+// does it return the controlled equal-latency CSV for that group's cells.
+func swapReferenceInspectingBenchstat(t *testing.T, baselineCells, evaluatorCells []string) {
+	t.Helper()
+
+	swapBenchstat(t, func(oldPath, _ string) ([]byte, error) {
+		oldBytes, err := os.ReadFile(oldPath)
+		require.NoError(t, err, "the seam must read the reference file the gate selected")
+		old := string(oldBytes)
+		for _, cell := range baselineCells {
+			if strings.Contains(old, "Benchmark"+cell) {
+				assert.NotContains(t, old, "20000 ns/op",
+					"a baseline-backed cell's reference samples must come from the stored baseline, not the current Evaluator: %s", old)
+				return uncertainCSV(baselineCells...), nil
+			}
+		}
+		for _, cell := range evaluatorCells {
+			if strings.Contains(old, "Benchmark"+cell) {
+				return uncertainCSV(evaluatorCells...), nil
+			}
+		}
+		t.Fatalf("benchstat ran on a reference file carrying no known cell: %s", old)
+		return nil, nil
+	})
+}
+
+// runUncertaintyGate invokes the real run entry point (never runGate, whose
+// seam forbids statistics) and returns the aggregate exit plus both streams.
+func runUncertaintyGate(t *testing.T, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+
+	var outBuf, errBuf bytes.Buffer
+	code = run(&outBuf, &errBuf, args)
+	return code, outBuf.String(), errBuf.String()
+}
+
+// TestRun_RerunUsesEffectiveCellMode characterizes the -rerun transition: a
+// still-inconclusive cell after the single allowed rerun collapses through
+// Resolve at its effective mode, not the run's mode. A baseline-backed
+// non-regression cell resolves PASS, while an engine-sensitive
+// first-authorization cell -- a run-wide first authorization or a new cell
+// the stored baseline never measured -- resolves FAIL with its Evaluator
+// provenance named. The seam proves which reference supplied each group's
+// samples before returning the controlled equal-latency CSV.
+func TestRun_RerunUsesEffectiveCellMode(t *testing.T) {
+	t.Run("stored baseline owns non-regression cell", func(t *testing.T) {
+		tiersPath := writeTiers(t, map[string]string{"Goldset/existing": "engine-sensitive"})
+		baseline := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		// The current Evaluator measures the same cell twice as slowly; the
+		// stored baseline must still own the reference selection.
+		evaluator := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  20000 ns/op  100 B/op  2 allocs/op"))
+		candidate := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		swapReferenceInspectingBenchstat(t, []string{"Goldset/existing-2"}, nil)
+
+		args := []string{"-old", baseline, "-evaluator", evaluator, "-candidate", candidate,
+			"-tiers", tiersPath, "-mode", "non-regression"}
+
+		code, stdout, stderr := runUncertaintyGate(t, args...)
+		assert.Equal(t, 2, code, "an uncertain non-regression cell raises the needs-rerun signal; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/existing-2: INCONCLUSIVE",
+			"the equal-latency cell must report inconclusive before the rerun; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on complete paired evidence: %s", stderr)
+
+		code, stdout, stderr = runUncertaintyGate(t, append(append([]string{}, args...), "-rerun")...)
+		assert.Equal(t, 0, code, "a non-refuted non-regression claim resolves PASS after the rerun; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/existing-2: PASS",
+			"the rerun must resolve the uncertain cell at its effective non-regression mode; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on the resolved rerun: %s", stderr)
+	})
+
+	t.Run("first-authorization run fails after rerun", func(t *testing.T) {
+		tiersPath := writeTiers(t, map[string]string{"Goldset/existing": "engine-sensitive"})
+		baseline := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		candidate := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		swapReferenceInspectingBenchstat(t, []string{"Goldset/existing-2"}, nil)
+
+		args := []string{"-old", baseline, "-candidate", candidate,
+			"-tiers", tiersPath, "-mode", "first-authorization"}
+
+		code, stdout, stderr := runUncertaintyGate(t, args...)
+		assert.Equal(t, 2, code, "an unproven improvement claim is inconclusive on the first attempt; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/existing-2: INCONCLUSIVE",
+			"the equal-latency cell must report inconclusive before the rerun; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on complete paired evidence: %s", stderr)
+
+		code, stdout, stderr = runUncertaintyGate(t, append(append([]string{}, args...), "-rerun")...)
+		assert.Equal(t, 1, code, "an engine-sensitive first-authorization claim fails when unproven; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/existing-2: FAIL",
+			"the rerun must collapse the improvement claim to FAIL; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on the resolved rerun: %s", stderr)
+	})
+
+	t.Run("new cell absent from stored baseline uses Evaluator", func(t *testing.T) {
+		tiersPath := writeTiers(t, map[string]string{"Goldset/new": "engine-sensitive"})
+		baseline := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		evaluator := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/new-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		candidate := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/new-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		swapReferenceInspectingBenchstat(t, nil, []string{"Goldset/new-2"})
+
+		args := []string{"-old", baseline, "-evaluator", evaluator, "-candidate", candidate,
+			"-tiers", tiersPath, "-mode", "non-regression"}
+
+		code, stdout, stderr := runUncertaintyGate(t, args...)
+		assert.Equal(t, 2, code, "an uncertain supplemental cell raises the needs-rerun signal; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/new-2: INCONCLUSIVE (mode=first-authorization reference=evaluator",
+			"the cell the stored baseline never measured must carry its Evaluator provenance; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on complete supplemental evidence: %s", stderr)
+
+		code, stdout, stderr = runUncertaintyGate(t, append(append([]string{}, args...), "-rerun")...)
+		assert.Equal(t, 1, code, "the new cell's effective mode is first authorization, so the rerun fails it; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/new-2: FAIL (mode=first-authorization reference=evaluator",
+			"the rerun must fail the supplemental cell at its effective first-authorization mode; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on the resolved rerun: %s", stderr)
+	})
+
+	t.Run("mixed cells resolve at their own effective modes", func(t *testing.T) {
+		tiersPath := writeTiers(t, map[string]string{
+			"Goldset/existing": "engine-sensitive",
+			"Goldset/new":      "engine-sensitive",
+		})
+		baseline := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		evaluator := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/new-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		candidate := writeBenchFile(t, "fixture-runner-a",
+			repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op")+
+				repeatLine("BenchmarkGoldset/new-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+		swapReferenceInspectingBenchstat(t, []string{"Goldset/existing-2"}, []string{"Goldset/new-2"})
+
+		args := []string{"-old", baseline, "-evaluator", evaluator, "-candidate", candidate,
+			"-tiers", tiersPath, "-mode", "non-regression"}
+
+		code, stdout, stderr := runUncertaintyGate(t, args...)
+		assert.Equal(t, 2, code, "both uncertain cells raise the needs-rerun signal; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/existing-2: INCONCLUSIVE",
+			"the baseline-backed cell must report inconclusive before the rerun; stdout: %s", stdout)
+		assert.Contains(t, stdout, "Goldset/new-2: INCONCLUSIVE (mode=first-authorization reference=evaluator",
+			"the supplemental cell must carry its Evaluator provenance; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on complete mixed evidence: %s", stderr)
+
+		code, stdout, stderr = runUncertaintyGate(t, append(append([]string{}, args...), "-rerun")...)
+		assert.Equal(t, 1, code, "the new cell's FAIL must fail the gate even as the existing cell passes; stderr: %s", stderr)
+		assert.Contains(t, stdout, "Goldset/existing-2: PASS",
+			"the rerun must resolve the baseline-backed cell at non-regression; stdout: %s", stdout)
+		assert.Contains(t, stdout, "Goldset/new-2: FAIL (mode=first-authorization reference=evaluator",
+			"the rerun must fail the supplemental cell at first authorization; stdout: %s", stdout)
+		assert.Empty(t, stderr, "no diagnostic may fire on the resolved rerun: %s", stderr)
+	})
+}
+
+// TestRun_FailureOutranksRerun pins the exit precedence: a definite
+// allocation-count failure outranks an unrelated cell's needs-rerun signal,
+// so the first attempt already exits 1 and the -rerun invocation cannot
+// reclassify the run as uncertain or resolved. The data-dominated cell's
+// bytes stay unchanged so the allocation growth alone decides its verdict.
+func TestRun_FailureOutranksRerun(t *testing.T) {
+	tiersPath := writeTiers(t, map[string]string{
+		"Goldset/existing":  "engine-sensitive",
+		"Goldset/allocfail": "data-dominated",
+	})
+	baseline := writeBenchFile(t, "fixture-runner-a",
+		repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op")+
+			repeatLine("BenchmarkGoldset/allocfail-2  100  10000 ns/op  100 B/op  2 allocs/op"))
+	candidate := writeBenchFile(t, "fixture-runner-a",
+		repeatLine("BenchmarkGoldset/existing-2  100  10000 ns/op  100 B/op  2 allocs/op")+
+			repeatLine("BenchmarkGoldset/allocfail-2  100  10000 ns/op  100 B/op  3 allocs/op"))
+	swapReferenceInspectingBenchstat(t, []string{"Goldset/existing-2", "Goldset/allocfail-2"}, nil)
+
+	args := []string{"-old", baseline, "-candidate", candidate,
+		"-tiers", tiersPath, "-mode", "non-regression"}
+
+	code, stdout, stderr := runUncertaintyGate(t, args...)
+	assert.Equal(t, 1, code, "a definite failure must outrank the unrelated uncertainty's needs-rerun signal; stderr: %s", stderr)
+	assert.Contains(t, stdout, "Goldset/allocfail-2: FAIL",
+		"the allocation growth must fail its cell on the first attempt; stdout: %s", stdout)
+	assert.Contains(t, stdout, "Goldset/existing-2: INCONCLUSIVE",
+		"the unrelated cell must stay inconclusive, not be collapsed early; stdout: %s", stdout)
+	assert.Empty(t, stderr, "no diagnostic may fire on complete paired evidence: %s", stderr)
+
+	code, stdout, stderr = runUncertaintyGate(t, append(append([]string{}, args...), "-rerun")...)
+	assert.Equal(t, 1, code, "a rerun cannot erase the definite allocation failure; stderr: %s", stderr)
+	assert.Contains(t, stdout, "Goldset/allocfail-2: FAIL",
+		"the definite failure must survive the rerun; stdout: %s", stdout)
+	assert.Contains(t, stdout, "Goldset/existing-2: PASS",
+		"the rerun resolves the uncertain cell without changing the aggregate; stdout: %s", stdout)
+	assert.Empty(t, stderr, "no diagnostic may fire on the resolved rerun: %s", stderr)
+}
