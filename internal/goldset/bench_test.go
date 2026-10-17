@@ -225,6 +225,16 @@ func BenchmarkGoldsetConcurrent(b *testing.B) {
 			{fn: "rule-b", want: core.Int{V: 102}, calls: b.N / 2},
 		}
 		args := []core.Value{core.Int{V: 100}}
+		for _, w := range workers {
+			got, err := eng.Call(ctx, w.fn, args...)
+			if err != nil {
+				b.Fatal(err)
+			}
+			gotInt, ok := got.(core.Int)
+			if !ok || gotInt != w.want {
+				b.Fatalf("%s: got %#v, want %#v", w.fn, got, w.want)
+			}
+		}
 		var ready, done sync.WaitGroup
 		start := make(chan struct{})
 		ready.Add(len(workers))
