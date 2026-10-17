@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The builder-to-spec migration table published with 0.15.0 remains the
+  current guide for replacing the fluent builder with a plain
+  `core.DialectSpec`: for example `d.WithAdapter(name, id, fn)` maps to
+  `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}`. No
+  adapter-related spec field changed since.
+
+## [0.17.0] - 2026-10-17
+
 ### Added
 
 - Five new gold-set timed cells measure what the gate corpus previously did
@@ -17,14 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They are correctness and capture inputs only. No tier is assigned to them
   and no hosted classification run has measured them, so none is promoted and
   the expanded gate is not claimed to pass.
-
-### Changed
-
-- The builder-to-spec migration table published with 0.15.0 remains the
-  current guide for replacing the fluent builder with a plain
-  `core.DialectSpec`: for example `d.WithAdapter(name, id, fn)` maps to
-  `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}`. No
-  adapter-related spec field changed since.
 
 ### Fixed
 
