@@ -340,6 +340,6 @@ The full suite, and any `-v` or `-race` run, can fail packages at the link step
 with `mapping output file failed: disk quota exceeded` (or `compile: writing
 output: ... disk quota exceeded`) — that reads like a test failure but isn't
 one. Point `TMPDIR` outside `/tmp` before a full-suite or race run, e.g.
-`TMPDIR=/home/zhuk/.cache/go-lispico-tmp go test ./... -race -count=1`. Not
+`TMPDIR=/var/tmp/go-lispico-tmp go test ./... -race -count=1`. Not
 wired into the Makefile: it's a condition of this machine, not the project —
 CI runners have ample `/tmp`, so hardcoding it there would be wrong.
