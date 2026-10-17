@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}`. No
   adapter-related spec field changed since.
 
+## [0.17.1] - 2026-10-17
+
+### Fixed
+
+- Version 0.17.0 was published with its release entries left under
+  `[Unreleased]`. Those entries are now recorded under 0.17.0.
+
 ## [0.17.0] - 2026-10-17
 
 ### Added
@@ -59,8 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a two-sided band. Concurrent evaluation also requires explicit
   clean-race evidence (`-race-clean=true`); an unset flag fails the tier
   closed.
-
-## [0.17.0] - 2026-10-17
 
 ## [0.16.1] - 2026-10-16
 
@@ -1678,7 +1683,8 @@ The next release therefore gates against the baseline stored by v0.15.0.
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.17.0...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/victorzhuk/go-lispico/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/victorzhuk/go-lispico/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/victorzhuk/go-lispico/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/victorzhuk/go-lispico/compare/v0.15.0...v0.16.0
