@@ -84,6 +84,10 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 		}
 	}
 
+	if err := validateTimeout(timeout); err != nil {
+		return nil, fmt.Errorf("exec/run: %w", err)
+	}
+
 	cmdCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	defer cancel()
 
@@ -95,11 +99,14 @@ func (p *Plugin) run(ctx context.Context, eval core.Evaluator, args []core.Value
 
 	cmd.Env = buildEnv(inheritEnv, extraEnv)
 
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr limitWriter
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err = cmd.Run()
+	if stdout.limited || stderr.limited {
+		return nil, core.NewResourceLimitError(fmt.Sprintf("exec/run: output of %q exceeded the %d-byte stdout/stderr cap", cmdName, outputLimit))
+	}
 
 	result := core.NewHashMap()
 	result, _, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: stdout.String()})
@@ -146,8 +153,15 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 			if err != nil {
 				return nil, err
 			}
+			if err := validateTimeout(t); err != nil {
+				return nil, fmt.Errorf("exec/pipe: %w", err)
+			}
 			timeout = t
 		}
+	}
+
+	if err := validateTimeout(timeout); err != nil {
+		return nil, fmt.Errorf("exec/pipe: %w", err)
 	}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
@@ -167,7 +181,7 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 		cmds[i+1].Stdin = stdout
 	}
 
-	var finalStdout, finalStderr bytes.Buffer
+	var finalStdout, finalStderr limitWriter
 	cmds[len(cmds)-1].Stdout = &finalStdout
 	cmds[len(cmds)-1].Stderr = &finalStderr
 
@@ -178,17 +192,28 @@ func (p *Plugin) pipe(ctx context.Context, eval core.Evaluator, args []core.Valu
 		}
 	}
 
+	var waitErr error
 	for _, cmd := range cmds {
-		if err := cmd.Wait(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				result := core.NewHashMap()
-				result, _, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: finalStdout.String()})
-				result, _, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: finalStderr.String()})
-				result, _, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: int64(exitErr.ExitCode())})
-				return result, nil
-			}
-			return nil, fmt.Errorf("wait for command: %w", err)
+		if err := cmd.Wait(); err != nil && waitErr == nil {
+			waitErr = err
 		}
+	}
+
+	// cmd.Wait also waits for the output-copy goroutines, so the final
+	// writers are finished for every started stage before they are read.
+	if finalStdout.limited || finalStderr.limited {
+		return nil, core.NewResourceLimitError(fmt.Sprintf("exec/pipe: final output exceeded the %d-byte stdout/stderr cap", outputLimit))
+	}
+
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			result := core.NewHashMap()
+			result, _, _ = result.Assoc(core.Keyword{V: "stdout"}, core.String{V: finalStdout.String()})
+			result, _, _ = result.Assoc(core.Keyword{V: "stderr"}, core.String{V: finalStderr.String()})
+			result, _, _ = result.Assoc(core.Keyword{V: "exit"}, core.Int{V: int64(exitErr.ExitCode())})
+			return result, nil
+		}
+		return nil, fmt.Errorf("wait for command: %w", waitErr)
 	}
 
 	result := core.NewHashMap()
@@ -338,4 +363,41 @@ func expectInt(v core.Value, name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be an integer, got %T", name, v)
 	}
 	return i.V, nil
+}
+
+const (
+	minTimeoutMs = 1
+	maxTimeoutMs = 300000
+	outputLimit  = 1 << 20 // 1 MiB cap per captured output stream
+)
+
+func validateTimeout(ms int64) error {
+	if ms < minTimeoutMs || ms > maxTimeoutMs {
+		return fmt.Errorf("timeout must be between %d and %d milliseconds, got %d", minTimeoutMs, maxTimeoutMs, ms)
+	}
+	return nil
+}
+
+// limitWriter caps a captured output stream at outputLimit bytes. Bytes past
+// the cap are discarded so the child keeps running to completion; the limited
+// flag lets the caller turn the capture into a resource-limit error instead of
+// returning a silently truncated stream.
+type limitWriter struct {
+	buf     bytes.Buffer
+	limited bool
+}
+
+func (w *limitWriter) String() string {
+	return w.buf.String()
+}
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if w.limited {
+		return len(p), nil
+	}
+	if w.buf.Len()+len(p) > outputLimit {
+		w.limited = true
+		return len(p), nil
+	}
+	return w.buf.Write(p)
 }

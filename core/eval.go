@@ -47,6 +47,10 @@ type engine struct {
 	// NewEvaluator (identity dialect), set by NewEvaluatorWithDialect.
 	dialect Dialect
 	meter   sessionMeter
+	// callableApplier, when set, dispatches callable values the tree walker
+	// has no native case for (a compiled VM closure). GoFunc, Lambda, and
+	// Keyword values never reach it.
+	callableApplier CallableApplier
 }
 
 // NewEvaluator constructs a tree-walking evaluator running the identity
@@ -714,6 +718,13 @@ func (e *engine) SetFallbackEvalMeter(m any) {
 	e.meter, _ = m.(sessionMeter)
 }
 
+// SetCallableApplier installs applier as the dispatch for callable values the
+// tree evaluator has no native case for, such as a compiled VM closure. It
+// must be set during engine construction, before any evaluation runs.
+func (e *engine) SetCallableApplier(applier CallableApplier) {
+	e.callableApplier = applier
+}
+
 func (e *engine) evalContext(ctx context.Context) context.Context {
 	if sessionMeterFromContext(ctx) == nil && e.meter != nil {
 		ctx = WithEvalMeter(ctx, e.meter)
@@ -954,6 +965,9 @@ func (e *engine) apply(ctx context.Context, fn Value, args []Value, env *Env) (V
 			}
 			return v, nil
 		default:
+			if e.callableApplier != nil && IsCallable(fn) {
+				return e.callableApplier(ctx, fn, args, env)
+			}
 			return nil, NewTypeError("function", fn)
 		}
 	}
@@ -982,7 +996,7 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 		return form, nil
 	}
 	items := list.ToSlice()
-	fn, ok := e.resolveHead(ctx, items[0], env)
+	fn, ok := e.resolveHead(items[0], env)
 	if !ok {
 		return form, nil
 	}
@@ -997,28 +1011,28 @@ func (e *engine) MacroExpand(ctx context.Context, form Value, env *Env) (Value, 
 	return e.MacroExpand(ctx, expanded, env)
 }
 
-// resolveHead resolves a form's head the way evalList does: under Lisp-2 the
-// function cell owns operator bindings, so a defmacro binding is invisible in
-// value position and the form would compile as a plain call.
-func (e *engine) resolveHead(ctx context.Context, head Value, env *Env) (Value, bool) {
+// resolveHead statically resolves the binding a form's head names, the way
+// evalList does: under Lisp-2 the function cell owns operator bindings, so a
+// defmacro binding is invisible in value position and the form would compile
+// as a plain call. It never evaluates: a computed head cannot name a macro,
+// and executing it during macro discovery would run its effects a second
+// time on top of the evaluation that follows.
+func (e *engine) resolveHead(head Value, env *Env) (Value, bool) {
 	sym, isSym := head.(Symbol)
-	if isSym && e.lisp2 {
-		if fn, ok := env.GetFunc(sym.V); ok {
-			return fn, true
-		}
-	}
-	if isSym {
-		// Special forms dispatch through evalList and are never values, so
-		// evaluating one here would only build an error to report "not a macro".
-		if _, special := e.forms[sym.V]; special {
-			return nil, false
-		}
-	}
-	fn, err := e.Eval(ctx, head, env)
-	if err != nil {
+	if !isSym {
 		return nil, false
 	}
-	return fn, true
+	if e.lisp2 {
+		fn, ok := env.GetFunc(sym.V)
+		return fn, ok
+	}
+	// Special forms dispatch through evalList and are never values, so a
+	// symbol bound to nothing can never name a macro either.
+	if _, special := e.forms[sym.V]; special {
+		return nil, false
+	}
+	v, ok := env.Get(sym.V)
+	return v, ok
 }
 
 // MacroExpandDeep expands macros at the head of form and in every nested
@@ -1106,7 +1120,10 @@ func (e *engine) expandDeepList(ctx context.Context, v List, env *Env, locals []
 		c, ok := e.dialect.CanonicalName(head.V)
 		special = ok
 		canonical = c
-		if !special {
+		// Under Lisp-2 a let/fn binding lands in the value cell while the
+		// head resolves through the function cell, so a value-local can
+		// never shadow a macro there — only Lisp-1's single namespace can.
+		if !special && !e.lisp2 {
 			for _, l := range locals {
 				if l == head.V {
 					shadowed = true

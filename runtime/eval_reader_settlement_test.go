@@ -226,7 +226,8 @@ func TestGuardedRead_ReloadSettlesOutsideTheEventContract(t *testing.T) {
 			if d := snap.TotalErrors - base.TotalErrors; d != 0 {
 				t.Fatalf("%s: TotalErrors delta = %d, want 0", ev.name, d)
 			}
-			if !strings.Contains(buf.String(), "parse file") {
+			// Source admission refuses before the reader runs, so the log names the read.
+			if !strings.Contains(buf.String(), "read file") {
 				t.Fatalf("%s: the refused reload was not reported through the log: %s", ev.name, buf.String())
 			}
 		})

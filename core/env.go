@@ -38,10 +38,10 @@ func (c *Cell) Version() uint64 { return c.version.Load() }
 // for installing the binding into env (via Set/SetCanonical/SetFunc/
 // SetFuncCanonical) before returning true, so later lookups hit the cell
 // directly and the layer is never consulted again for that name.
-//
-// TombstoneForDelete is called from env.Delete so a later miss does not
-// resurrect a name the caller explicitly removed. It is per-env state.
-//
+// BeginDelete opens the layer's deletion critical section for name before
+// env.Delete removes the cells, and returns the func that closes it. While
+// the section is open no admitted materialization may publish the name, so
+// a later miss does not resurrect a name the caller explicitly removed.
 // RegisterValue asks the layer to defer a Go binding instead of binding it
 // now; RegisterSource does the same for a pure-Lisp definition and reports
 // whether the layer accepted it (false means: bind/eval eagerly).
@@ -57,7 +57,7 @@ type LazyLayer interface {
 	// friends). The layer answers only in that namespace, so an installed
 	// binding never leaks across cells.
 	LookupAndMaterialize(env *Env, name string, funcNS bool) (Value, bool, bool)
-	TombstoneForDelete(env *Env, name string)
+	BeginDelete(env *Env, name string) func()
 	RegisterValue(env *Env, name string, val Value, canonical bool) error
 	RegisterSource(env *Env, name, source string) bool
 	ForceAll(env *Env)
@@ -192,9 +192,11 @@ func NewEnv(parent *Env) *Env {
 		vars:   make(map[string]*Cell),
 	}
 	if parent != nil {
+		parent.mu.RLock()
 		e.eval = parent.eval
 		e.maxRetainedBytes = parent.maxRetainedBytes
 		e.maxRetainedSlots = parent.maxRetainedSlots
+		parent.mu.RUnlock()
 	}
 	return e
 }
@@ -318,10 +320,29 @@ func (e *Env) SetBothCanonicalWithContext(ctx context.Context, name string, val 
 func (e *Env) setBoth(ctx context.Context, r *Registration, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	_, err := e.setBothLocked(ctx, r, name, val, canonical, false)
+	return err
+}
+
+// setBothIfVacant binds name in both cells only when neither cell holds a
+// live binding, with the checks and both writes inside one acquisition of the
+// write lock and one retained-capacity reservation. If either cell is live or
+// the reservation fails, neither cell is written. It reports whether the
+// binding was written.
+func (e *Env) setBothIfVacant(ctx context.Context, r *Registration, name string, val Value, canonical bool) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.setBothLocked(ctx, r, name, val, canonical, true)
+}
+
+func (e *Env) setBothLocked(ctx context.Context, r *Registration, name string, val Value, canonical, ifVacant bool) (bool, error) {
 	j := e.active(r)
 
 	varCell, varCellExists := e.vars[name]
 	funcCell, funcCellExists := e.funcs[name]
+	if ifVacant && ((varCellExists && varCell.v != nil) || (funcCellExists && funcCell.v != nil)) {
+		return false, nil
+	}
 	newSlots := int64(0)
 	if !varCellExists {
 		newSlots++
@@ -332,7 +353,7 @@ func (e *Env) setBoth(ctx context.Context, r *Registration, name string, val Val
 	b := retainedBindingBytes(name, val)
 	meter, st, pending, err := e.prepareFreshRetained(ctx, j, b*newSlots, newSlots)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	varKey := registrationKey{name: name}
@@ -373,7 +394,20 @@ func (e *Env) setBoth(ctx context.Context, r *Registration, name string, val Val
 	j.afterWrite(varKey, varCell, varReservedBytes, varReservedSlots)
 	j.afterWrite(funcKey, funcCell, funcReservedBytes, funcReservedSlots)
 
-	return nil
+	return true, nil
+}
+
+// SetBothIfUnoccupied binds name in both the value and function cells only
+// when neither cell holds a live binding. The occupancy checks and both
+// writes run under one acquisition of the env write lock with one retained
+// reservation, so a concurrent Set cannot land between them and be silently
+// overwritten, and a failed capacity reservation leaves both cells untouched.
+// It reports whether the binding was written.
+func (e *Env) SetBothIfUnoccupied(name string, val Value, canonical bool) (bool, error) {
+	if r := e.viewReg(); r != nil {
+		return r.root.setBothIfVacant(context.Background(), r, name, val, canonical)
+	}
+	return e.setBothIfVacant(context.Background(), nil, name, val, canonical)
 }
 
 // localCell returns the cell owning name in this scope, creating it if absent.
@@ -426,9 +460,26 @@ func (e *Env) SetWithContext(ctx context.Context, name string, val Value) error 
 func (e *Env) setVar(ctx context.Context, r *Registration, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	_, err := e.setVarLocked(ctx, r, name, val, canonical, false)
+	return err
+}
+
+// setVarIfVacant binds name only when this scope's value cell for it holds no
+// live binding, with the liveness check and the write inside one acquisition
+// of the write lock. It reports whether the binding was written.
+func (e *Env) setVarIfVacant(ctx context.Context, r *Registration, name string, val Value, canonical bool) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.setVarLocked(ctx, r, name, val, canonical, true)
+}
+
+func (e *Env) setVarLocked(ctx context.Context, r *Registration, name string, val Value, canonical, ifVacant bool) (bool, error) {
 	j := e.active(r)
 	key := registrationKey{name: name}
 	cell, ok := e.vars[name]
+	if ifVacant && ok && cell.v != nil {
+		return false, nil
+	}
 	b := retainedBindingBytes(name, val)
 	var meter sessionMeter
 	var st *evalState
@@ -437,7 +488,7 @@ func (e *Env) setVar(ctx context.Context, r *Registration, name string, val Valu
 		var err error
 		meter, st, pending, err = e.prepareFreshRetained(ctx, j, b, 1)
 		if err != nil {
-			return err
+			return false, err
 		}
 		j.beforeWrite(key, nil)
 		cell = e.localCell(name)
@@ -458,7 +509,19 @@ func (e *Env) setVar(ctx context.Context, r *Registration, name string, val Valu
 		reservedBytes, reservedSlots = b, 1
 	}
 	j.afterWrite(key, cell, reservedBytes, reservedSlots)
-	return nil
+	return true, nil
+}
+
+// SetIfUnoccupied binds name in this (local) scope's value cell only when the
+// cell still holds no live binding. The occupancy check and the write run
+// under one acquisition of the env write lock, so a concurrent Set cannot
+// land between them and be silently overwritten. It reports whether the
+// binding was written.
+func (e *Env) SetIfUnoccupied(name string, val Value, canonical bool) (bool, error) {
+	if r := e.viewReg(); r != nil {
+		return r.root.setVarIfVacant(context.Background(), r, name, val, canonical)
+	}
+	return e.setVarIfVacant(context.Background(), nil, name, val, canonical)
 }
 
 // ReplaceCell installs a fresh local value cell for name.
@@ -498,9 +561,10 @@ func (e *Env) replaceCell(ctx context.Context, r *Registration, name string, val
 		e.adoptRetainedCharge(ctx, j, old, cell)
 	}
 	e.vars[name] = cell
-	if !ok || old.v == nil {
-		e.newNameGen.Add(1)
-	}
+	// The replacement is a new cell identity: bump the generation even on the
+	// warm path (old was live), or a VM site cache keyed on the retired cell's
+	// unchanged version would keep serving its stale value forever.
+	e.newNameGen.Add(1)
 	if !ok {
 		recordFreshRetained(st, pending, e, cell, meter, b)
 	}
@@ -725,8 +789,9 @@ func (e *Env) FuncCellLocal(name string) (*Cell, bool) {
 }
 
 // NameGen returns this scope's name-binding generation counter, bumped each
-// time a name is newly bound (or revived from a tombstone) in vars. The VM
-// compares it against a cached value to detect a shadowing bind that
+// time a name is newly bound (or revived from a tombstone) in vars, and on
+// every ReplaceCell that swaps in a fresh cell identity for a live name. The
+// VM compares it against a cached value to detect a shadowing bind that
 // invalidates a cached cell resolution.
 func (e *Env) NameGen() uint64 { return e.owner().newNameGen.Load() }
 
@@ -788,9 +853,26 @@ func (e *Env) SetFuncWithContext(ctx context.Context, name string, val Value) er
 func (e *Env) setFuncCell(ctx context.Context, r *Registration, name string, val Value, canonical bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	_, err := e.setFuncCellLocked(ctx, r, name, val, canonical, false)
+	return err
+}
+
+// setFuncCellIfVacant binds name only when this scope's function cell for it
+// holds no live binding, with the liveness check and the write inside one
+// acquisition of the write lock. It reports whether the binding was written.
+func (e *Env) setFuncCellIfVacant(ctx context.Context, r *Registration, name string, val Value, canonical bool) (bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.setFuncCellLocked(ctx, r, name, val, canonical, true)
+}
+
+func (e *Env) setFuncCellLocked(ctx context.Context, r *Registration, name string, val Value, canonical, ifVacant bool) (bool, error) {
 	j := e.active(r)
 	key := registrationKey{name: name, fn: true}
 	cell, ok := e.funcs[name]
+	if ifVacant && ok && cell.v != nil {
+		return false, nil
+	}
 	b := retainedBindingBytes(name, val)
 	var meter sessionMeter
 	var st *evalState
@@ -799,7 +881,7 @@ func (e *Env) setFuncCell(ctx context.Context, r *Registration, name string, val
 		var err error
 		meter, st, pending, err = e.prepareFreshRetained(ctx, j, b, 1)
 		if err != nil {
-			return err
+			return false, err
 		}
 		j.beforeWrite(key, nil)
 		cell = e.localFuncCell(name)
@@ -817,7 +899,15 @@ func (e *Env) setFuncCell(ctx context.Context, r *Registration, name string, val
 		reservedBytes, reservedSlots = b, 1
 	}
 	j.afterWrite(key, cell, reservedBytes, reservedSlots)
-	return nil
+	return true, nil
+}
+
+// SetFuncIfUnoccupied is SetIfUnoccupied for the function cell (Lisp-2 only).
+func (e *Env) SetFuncIfUnoccupied(name string, val Value, canonical bool) (bool, error) {
+	if r := e.viewReg(); r != nil {
+		return r.root.setFuncCellIfVacant(context.Background(), r, name, val, canonical)
+	}
+	return e.setFuncCellIfVacant(context.Background(), nil, name, val, canonical)
 }
 
 // SetFuncCanonical binds name as a canonical operator in this scope's
@@ -938,7 +1028,7 @@ func (e *Env) ChildVariadic(params []Symbol, args []Value, variadic Symbol) (*En
 				return nil, err
 			}
 		}
-		if err := child.Set(variadic.V, NewList(args[len(params):])); err != nil {
+		if err := child.Set(variadic.V, NewList(append([]Value(nil), args[len(params):]...))); err != nil {
 			return nil, err
 		}
 	} else {
@@ -985,15 +1075,19 @@ func (e *Env) setEvaluator(r *Registration, eval Evaluator) {
 // No-op if name is not bound locally. The value cell is tombstoned rather
 // than removed from the map: a cell already cached by identity elsewhere
 // (e.g. the VM's site cache) must observe the binding disappear, not keep
-// serving a stale value.
+// serving a stale value. A lazy layer's BeginDelete opens the deletion
+// critical section before the cells are removed and the deferred release
+// closes it, so a materialization admitted before the delete cannot
+// publish the name afterwards.
 func (e *Env) Delete(name string) {
+	if layer := e.LazyLayer(); layer != nil {
+		release := layer.BeginDelete(e, name)
+		defer release()
+	}
 	if r := e.viewReg(); r != nil {
 		r.root.deleteName(r, name)
 	} else {
 		e.deleteName(nil, name)
-	}
-	if layer := e.LazyLayer(); layer != nil {
-		layer.TombstoneForDelete(e, name)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/victorzhuk/go-lispico/cl"
+	"github.com/victorzhuk/go-lispico/clojure"
 	"github.com/victorzhuk/go-lispico/core"
 )
 
@@ -73,23 +75,66 @@ func TestVMMacroExpansionNested(t *testing.T) {
 	}
 }
 
-// TestVMMacroExpansionNestedShadowedLocal checks the compile-time shadowing
-// guard: a local binding named like a global macro is a call on the local
-// value on both engines, never a macro expansion.
+// TestVMMacroExpansionNestedShadowedLocal pins value-local macro shadowing
+// per dialect. Clojure is Lisp-1: the let binding and the macro share one
+// namespace, so a local named m shadows the macro and (m) is a call on the
+// local value in both engines. Common Lisp is Lisp-2: let binds the value
+// cell while the head resolves through the function cell, so the value-local
+// and the macro coexist — m in value position is 5 and (m) still expands to 2.
 func TestVMMacroExpansionNestedShadowedLocal(t *testing.T) {
 	t.Parallel()
 
-	prog := "(defmacro m () 2) (let [m 5] (progn (m)))"
+	t.Run("clojure/value-local shadows macro", func(t *testing.T) {
+		t.Parallel()
 
-	tree, err := New(slog.Default(), WithTreeWalker())
-	require.NoError(t, err)
-	defer tree.Close()
-	_, treeErr := tree.Eval(t.Context(), "shadow", prog)
-	require.Error(t, treeErr, "reference: a non-callable local must fail")
+		prog := "(defmacro m () 2) (let [m 5] (do (m)))"
+		for _, tc := range []struct {
+			name    string
+			opts    []EngineOption
+			wantMsg string
+		}{
+			{
+				name:    "tree-walker",
+				opts:    []EngineOption{WithTreeWalker(), WithDialect(clojure.Dialect())},
+				wantMsg: "expected function, got core.Int",
+			},
+			{
+				name:    "bytecode",
+				opts:    []EngineOption{WithDialect(clojure.Dialect())},
+				wantMsg: "expected callable, got core.Int",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				eng, err := New(slog.Default(), tc.opts...)
+				require.NoError(t, err)
+				defer eng.Close()
+				_, err = eng.Eval(t.Context(), "shadow", prog)
+				require.Error(t, err, "expanding the global macro would silently return 2")
+				var le *core.LispicoError
+				require.ErrorAs(t, err, &le)
+				assert.Equal(t, "TypeError", le.Code)
+				assert.Equal(t, tc.wantMsg, le.Message)
+			})
+		}
+	})
 
-	eng, err := New(slog.Default())
-	require.NoError(t, err)
-	defer eng.Close()
-	_, err = eng.Eval(t.Context(), "shadow", prog)
-	require.Error(t, err, "expanding the global macro here would silently return 2")
+	t.Run("cl/value-local and macro coexist", func(t *testing.T) {
+		t.Parallel()
+
+		prog := "(defmacro m () 2) (let ((m 5)) (progn m (m)))"
+		for _, name := range []string{"tree-walker", "bytecode"} {
+			t.Run(name, func(t *testing.T) {
+				opts := []EngineOption{WithDialect(cl.Dialect())}
+				if name == "tree-walker" {
+					opts = append(opts, WithTreeWalker())
+				}
+				eng, err := New(slog.Default(), opts...)
+				require.NoError(t, err)
+				defer eng.Close()
+				got, err := eng.Eval(t.Context(), "cl-coexist", prog)
+				require.NoError(t, err, "under Lisp-2 the function cell owns the head, so (m) expands")
+				assert.Equal(t, core.Int{V: 2}, got)
+			})
+		}
+	})
 }

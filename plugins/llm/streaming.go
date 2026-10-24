@@ -49,32 +49,75 @@ func (c *HTTPClient) Stream(ctx context.Context, req LLMRequest) (<-chan LLMChun
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		defer func() { _ = resp.Body.Close() }()
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(respBody))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
 
 	go func() {
 		defer close(ch)
 		defer func() { _ = resp.Body.Close() }()
 
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
+		sendTerminal := func(err error) {
 			select {
-			case <-ctx.Done():
-				ch <- LLMChunk{Err: ctx.Err(), Done: true}
-				return
+			case ch <- LLMChunk{Err: err, Done: true}:
 			default:
+				select {
+				case <-ch:
+				default:
+				}
+				ch <- LLMChunk{Err: err, Done: true}
+			}
+		}
+
+		send := func(chunk LLMChunk) bool {
+			select {
+			case ch <- chunk:
+				return true
+			case <-ctx.Done():
+				sendTerminal(ctx.Err())
+				return false
+			}
+		}
+
+		scanRawLines := func(data []byte, atEOF bool) (int, []byte, error) {
+			if atEOF && len(data) == 0 {
+				return 0, nil, nil
+			}
+			if i := bytes.IndexByte(data, '\n'); i >= 0 {
+				return i + 1, data[:i+1], nil
+			}
+			if atEOF {
+				return len(data), data, nil
+			}
+			return 0, nil, nil
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBodyBytes)
+		scanner.Split(scanRawLines)
+		var total int
+		for scanner.Scan() {
+			if ctx.Err() != nil {
+				sendTerminal(ctx.Err())
+				return
 			}
 
-			line := scanner.Text()
+			raw := scanner.Bytes()
+			total += len(raw)
+			if total > maxResponseBodyBytes {
+				send(LLMChunk{Err: fmt.Errorf("stream exceeds %d bytes", maxResponseBodyBytes), Done: true})
+				return
+			}
+
+			line := string(bytes.TrimSuffix(bytes.TrimSuffix(raw, []byte("\n")), []byte("\r")))
 			if !strings.HasPrefix(line, "data: ") {
 				continue
 			}
 
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				ch <- LLMChunk{Done: true}
+				send(LLMChunk{Done: true})
 				return
 			}
 
@@ -95,14 +138,30 @@ func (c *HTTPClient) Stream(ctx context.Context, req LLMRequest) (<-chan LLMChun
 				content := event.Choices[0].Delta.Content
 				done := event.Choices[0].FinishReason != ""
 				if content != "" || done {
-					ch <- LLMChunk{Content: content, Done: done}
+					if !send(LLMChunk{Content: content, Done: done}) {
+						return
+					}
+					if done {
+						return
+					}
 				}
 			}
 		}
 
 		if err := scanner.Err(); err != nil {
-			ch <- LLMChunk{Err: fmt.Errorf("stream read: %w", err), Done: true}
+			if ctx.Err() == nil {
+				send(LLMChunk{Err: fmt.Errorf("stream read: %w", err), Done: true})
+			} else {
+				sendTerminal(ctx.Err())
+			}
+			return
 		}
+
+		if ctx.Err() != nil {
+			sendTerminal(ctx.Err())
+			return
+		}
+		sendTerminal(fmt.Errorf("stream ended without completion"))
 	}()
 
 	return ch, nil

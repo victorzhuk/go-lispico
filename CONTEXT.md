@@ -9,7 +9,7 @@ and docs, so that "evaluator", "plugin", and "sandbox" mean one thing.
 ### Execution
 
 **Evaluator**:
-The tree-walking interpreter in `core/eval.go` — the default and complete execution path for all special forms.
+The complete tree-walking interpreter in `core/eval.go`, used as the fallback for forms unsupported by the default VM or selected explicitly with `runtime.WithTreeWalker()`.
 _Avoid_: interpreter, VM, runtime
 
 **VM**:
@@ -21,7 +21,7 @@ Translates the AST into bytecode for the VM (`core/compiler`); unrelated to nati
 _Avoid_: transpiler
 
 **Consumer workload gate**:
-A per-cell release criterion over YAGEL's shipped rules across each **Scale envelope** that authorizes YAGEL's explicit VM opt-in, not a global Engine default flip; Lua and JavaScript engines remain reference points only.
+A per-cell release criterion over YAGEL's shipped rules across each **Scale envelope**, originally used to authorize YAGEL's VM adoption, not the global Engine default flip. The VM is now the Engine default; Lua and JavaScript engines remain reference points only.
 _Avoid_: global VM gate, dialect-wide gate, aggregate benchmark score, competitor parity, benchmark leaderboard
 
 **Scale envelope**:
@@ -45,7 +45,7 @@ Distinct Rule handlers sharing one Engine hold ADR 0008's throughput budget with
 _Avoid_: same-handler race, scheduler throughput, timing under the race detector
 
 **VM correctness floor**:
-All known VM parity, state-cleanup, cache-freshness, and no-panic defects are fixed before any consumer performance result can authorize opt-in.
+All known VM parity, state-cleanup, cache-freshness, and no-panic defects are fixed before any consumer performance result can authorize a VM release.
 _Avoid_: corpus-only correctness, known-defect waiver
 
 **Hot-cell tier**:
@@ -125,7 +125,11 @@ One Engine is the unit of trust isolation. Code from different trust levels runs
 _Avoid_: session, tenant, per-Eval isolation
 
 **Resource limits**:
-Per-Engine, construction-time ceilings that keep adversarial or accidental input from exhausting the host — reader nesting depth, evaluator structural depth (Vector/HashMap/quasiquote descent), collection length (`range`), chunk-cache entries/bytes/nodes, per-evaluation reductions and allocation bytes, and per-env retained bytes/slots. Fail-closed with a clean error, never a fatal stack overflow. Distinct from `MaxDepth`, which bounds function-call/macro depth per evaluation.
+Per-Engine, construction-time ceilings bound reader nesting, evaluated structural depth, collection length, chunk-cache occupancy, evaluation reductions and allocations, and retained environment capacity.
+Collection checks include `range`, string splits/lines, decoded JSON containers, and `io/ls` results.
+`MaxAllocationBytes` also caps each runtime-owned source file before parsing.
+Exceeding a ceiling returns a typed error, not a fatal stack overflow.
+These ceilings differ from `MaxDepth`, which bounds function-call and macro depth per evaluation.
 _Avoid_: quota, timeout (that is `WithTimeout`), sandbox
 
 **Evaluation deadline**:
@@ -170,7 +174,9 @@ The retained child env returned by `Engine.LoadScope`, captured by the handler c
 _Avoid_: routine env (the embedder-side name for the same thing)
 
 **Unfit chunk**:
-A compiled chunk that alone exceeds a cache ceiling or is denied by the Meter: it runs uncached; admission denial is never an evaluation error.
+A compiled chunk that alone exceeds a cache ceiling or is denied by the Meter runs uncached.
+An oversized candidate does not evict residents.
+Admission denial is not an evaluation error.
 _Avoid_: rejected chunk, oversized error
 
 ## Relationships
@@ -180,7 +186,7 @@ _Avoid_: rejected chunk, oversized error
 - YAGEL owns distinct load and dispatch **Evaluation deadlines** and uses `WithTimeout(0)` only after every path is covered; other embedders retain the Engine's safe default. See `docs/adr/0010-embedder-owned-evaluation-deadlines.md`.
 - The **Evaluator** handles **Special forms** and expands **Macros** directly, and calls **Builtins**.
 - The **Compiler** turns forms into bytecode; the **VM** runs it for a subset and otherwise defers to the **Evaluator**.
-- The **Consumer workload gate** decides whether YAGEL directly enables the **VM** with `WithBytecode()`; no user-facing mode flag or shadow execution is added, and a normal code/dependency revert is the rollback. It does not authorize a global Engine default change. See `docs/adr/0008-consumer-performance-gate.md`.
+- The **Consumer workload gate** originally authorized YAGEL's **VM** adoption with `WithBytecode()`, not the global Engine default flip. The **VM** is now the Engine default, with `WithTreeWalker()` selecting the **Evaluator** instead. See `docs/adr/0008-consumer-performance-gate.md`.
 - go-lispico owns the gate corpus as a **Gold set** — rule-shaped fixtures with hand-derived golden results plus benchmark cells, committed in `internal/goldset` and modeled on embedder rule workloads; the release gate runs it self-contained, with no consumer checkout or revision pin.
 - The improvement thresholds apply once. After the first authorization, later releases compare the candidate VM against the previous release's VM baseline as a non-regression check, so an Evaluator improvement cannot fail the gate.
 - The **VM correctness floor** precedes the **Consumer workload gate**; every gate cell then satisfies a **Behavior golden** under both execution paths before timing is considered. Scheduler and bus flows remain end-to-end correctness checks.
@@ -194,12 +200,12 @@ _Avoid_: rejected chunk, oversized error
 
 > **Dev:** "Is `+` a special form?"
 > **Designer:** "No — `+` is a **Builtin** from the stdlib **Plugin**; its arguments are evaluated first. `if` is a **Special form**: the **Evaluator** decides which branch to run. `defmacro` defines a **Macro**, which rewrites code before evaluation."
-> **Dev:** "When I turn on the **VM**, does it run everything?"
+> **Dev:** "Does the default **VM** run everything?"
 > **Designer:** "It runs a subset, but it now covers all dialects and caches compiled chunks per `Engine`. Anything it still can't compile defers to the **Evaluator** — the VM is an optimization for hot loops and repeated loads, not a replacement; it is the default since the bytecode-default flip, with `WithTreeWalker()` as the rollback."
 
 ## Flagged ambiguities
 
-- "evaluator" was used for both the tree-walker and the VM — resolved: the **Evaluator** is the tree-walker (default, complete); the **VM** is an opt-in subset executor. See `docs/adr/0002-bytecode-vm-disposition.md`.
+- "evaluator" was used for both the tree-walker and the VM — resolved: the **Evaluator** is the complete tree-walker fallback; the **VM** is the default subset executor, with `WithTreeWalker()` selecting tree-walker-only execution. See `docs/adr/0002-bytecode-vm-disposition.md`.
 - "immutable" was used unqualified for Values — resolved: immutability holds at the `Equals` level; `HashMap.Set` is an internal-only construction escape hatch, not public mutation.
 - "thread-safe" was read as concurrent evaluation on one **Engine** — resolved: that is the contract; per-evaluation depth and `recur` state must not be shared engine fields. See `docs/adr/0003-concurrency-model.md`.
 - "sandbox" was left undefined between a convenience guard and a boundary — resolved: it is a real security **boundary**.
@@ -212,16 +218,16 @@ _Avoid_: rejected chunk, oversized error
 - Host and scheduler work could hide interpreter costs in hot benchmarks — resolved: time the **Apply boundary** with deterministic fake Primitives; cover scheduler/bus behavior with untimed **Behavior goldens**.
 - Concurrency evidence could mean racing one mutable handler or timing the scheduler — resolved: benchmark distinct Rule closures sharing one Engine and require **Contention non-regression** plus race safety.
 - It was unclear whether passing the consumer gate merely started deeper VM work — resolved: it is the stop line; binding-cell and tagged-slot redesign waits for a failing gate cell or another measured consumer need.
-- A passing shipped corpus could have authorized VM use despite known defects outside that corpus — resolved: every known parity, stale-state/cache, and malformed-input panic bug belongs to the **VM correctness floor** and blocks opt-in.
+- A passing shipped corpus could have authorized VM use despite known defects outside that corpus — resolved: every known parity, stale-state/cache, and malformed-input panic bug belongs to the **VM correctness floor** and blocks a VM release.
 - YAGEL had both its lifecycle deadlines and the Engine's default load timer — resolved: once ADR 0042 covers every path, YAGEL owns those **Evaluation deadlines** and disables the redundant Engine timer; the safe default remains for other embedders.
 - Requiring the same percentage win from output-heavy and map-dominated Rules would measure shared work, not execution — resolved: each **Hot-cell tier** is profile-backed and checked in before candidate results; all cells remain no-regression gates.
 - VM-only scope would leave measured shared-path pathologies intact — resolved: include profile-proven **Shared-path fixes**, report them separately, and avoid a broad cleanup pass.
 - Cross-run hosted CI variance could make a 5% band flaky — resolved: use a same-job interleaved **Paired release run** with at least ten samples; PR CI remains correctness/race-only.
 - Scale inputs could be either toy baselines or exhaustive curves — resolved: each **Scale envelope** uses baseline, knee, and supported boundary, with a CI proxy only when a separate load test covers the real boundary.
-- A VM rollout flag or shadow mode would create two production paths or replay side effects — resolved: YAGEL enables `WithBytecode()` directly after the gate; rollback is a normal revert.
+- A VM rollout flag or shadow mode would create two production paths or replay side effects — resolved: the **VM** is the Engine default; `WithTreeWalker()` selects tree-walker-only execution without shadow evaluation.
 - Batched VM cancellation checks implied a new cross-engine instruction-budget contract — resolved: retain per-instruction polling and existing **Evaluation deadlines** unless a failing gate cell justifies both changes together.
 - Gate ownership was ambiguous between go-lispico, YAGEL, and the benchmark lab — resolved: go-lispico owns the **Gold set** and its tier assignments, independent of any consumer; release CI runs the committed gold set against the candidate.
-- The YAGEL gate was at risk of being treated as proof for every Dialect — resolved: passing it authorizes only YAGEL's explicit VM opt-in; a global default flip requires a separate dialect-wide gate.
+- The YAGEL gate was at risk of being treated as proof for every Dialect — resolved: it originally authorized only YAGEL's VM adoption; the global default flip was a separate decision. The **VM** is now the Engine default.
 - `cond` was described as Clojure-compatible while the Kernel parsed Common Lisp-style nested clauses — resolved: one dialect-owned **Form-shape rule** canonicalizes Clojure flat pairs or Common Lisp nested clauses for both Evaluator and Compiler without rewriting quoted data. See `docs/adr/0009-cond-clause-shape-is-dialect-owned.md`.
 - "bytecode-correct" could mean only matching the Evaluator — resolved: each gate cell has an independent **Behavior golden**, and both paths must satisfy it before comparison.
 - The gate could read as either one-shot authorization or a standing improvement bar against the same-release Evaluator that a faster Evaluator would fail — resolved: improvement thresholds apply once; later releases compare VM against the previous VM baseline as non-regression.

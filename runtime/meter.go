@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -80,8 +81,7 @@ func leaseCounter(counter *atomic.Int64, max, requested int64) int64 {
 		return 0
 	}
 	if max <= 0 {
-		counter.Add(requested)
-		return requested
+		max = math.MaxInt64
 	}
 	for {
 		used := counter.Load()
@@ -101,12 +101,11 @@ func chargeCounter(counter *atomic.Int64, max, n int64) error {
 		return nil
 	}
 	if max <= 0 {
-		counter.Add(n)
-		return nil
+		max = math.MaxInt64
 	}
 	for {
 		used := counter.Load()
-		if used+n > max {
+		if n > max-used {
 			return core.NewResourceLimitError("meter limit exceeded")
 		}
 		if counter.CompareAndSwap(used, used+n) {

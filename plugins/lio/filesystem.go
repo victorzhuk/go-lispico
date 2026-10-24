@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/victorzhuk/go-lispico/core"
 )
@@ -123,7 +125,7 @@ func (p *Plugin) exists(ctx context.Context, eval core.Evaluator, args []core.Va
 		return nil, fmt.Errorf("io/exists?: %w", err)
 	}
 
-	_, err = os.Stat(path)
+	_, err = p.sandbox.statWithin(path)
 	return core.Bool{V: err == nil}, nil
 }
 
@@ -145,17 +147,47 @@ func (p *Plugin) ls(ctx context.Context, eval core.Evaluator, args []core.Value,
 		return nil, fmt.Errorf("io/ls: %w", err)
 	}
 
-	entries, err := os.ReadDir(path)
+	limit := collectionLimit(eval)
+	bound := -1
+	if limit > 0 {
+		bound = math.MaxInt
+		if limit < math.MaxInt {
+			bound = limit + 1
+		}
+	}
+	entries, err := p.sandbox.readDirWithin(path, bound)
 	if err != nil {
 		return nil, fmt.Errorf("io/ls: read dir %s: %w", pathArg.V, err)
 	}
 
+	if limit > 0 && len(entries) > limit {
+		return nil, core.NewResourceLimitError(fmt.Sprintf("io/ls: %s has more than %d entries, exceeds collection limit %d", pathArg.V, limit, limit))
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
 	items := make([]core.Value, len(entries))
+	var resultBytes int64
 	for i, entry := range entries {
 		items[i] = core.String{V: entry.Name()}
+		resultBytes += int64(len(entry.Name()))
+	}
+	if err := chargeReadBytes(ctx, resultBytes); err != nil {
+		return nil, err
 	}
 
 	return core.NewList(items), nil
+}
+
+// collectionLimit resolves the active collection limit from the evaluator
+// using the stdlib convention; an evaluator without a limiter is unlimited.
+func collectionLimit(eval core.Evaluator) int {
+	if cl, ok := eval.(core.CollectionLimiter); ok {
+		return cl.CollectionLimit()
+	}
+	return 0
 }
 
 func (p *Plugin) mkdir(ctx context.Context, eval core.Evaluator, args []core.Value, env *core.Env) (core.Value, error) {
@@ -176,7 +208,7 @@ func (p *Plugin) mkdir(ctx context.Context, eval core.Evaluator, args []core.Val
 		return nil, fmt.Errorf("io/mkdir: %w", err)
 	}
 
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := p.sandbox.mkdirAllRooted(path, 0755); err != nil {
 		return nil, fmt.Errorf("io/mkdir: create %s: %w", pathArg.V, err)
 	}
 
@@ -201,7 +233,7 @@ func (p *Plugin) stat(ctx context.Context, eval core.Evaluator, args []core.Valu
 		return nil, fmt.Errorf("io/stat: %w", err)
 	}
 
-	info, err := os.Stat(path)
+	info, err := p.sandbox.statWithin(path)
 	if err != nil {
 		return nil, fmt.Errorf("io/stat: stat %s: %w", pathArg.V, err)
 	}

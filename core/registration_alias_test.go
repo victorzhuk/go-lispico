@@ -442,7 +442,7 @@ func (*aliasLazyLayer) LookupAndMaterialize(*Env, string, bool) (Value, bool, bo
 	return nil, false, false
 }
 
-func (*aliasLazyLayer) TombstoneForDelete(*Env, string) {}
+func (*aliasLazyLayer) BeginDelete(*Env, string) func() { return func() {} }
 
 func (*aliasLazyLayer) RegisterValue(*Env, string, Value, bool) error { return nil }
 

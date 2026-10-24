@@ -75,7 +75,7 @@ func TestLazyMaterialize_DeleteDuringPausedLookupDoesNotResurrect(t *testing.T) 
 	m := eng.(*engineImpl).lazyMaterializer
 
 	key, entry := lmPausedLookup(t, m, "reverse")
-	m.TombstoneForDelete(eng.RootEnv(), "reverse")
+	m.BeginDelete(eng.RootEnv(), "reverse")()
 
 	v, found, _ := m.materializeOne(eng.RootEnv(), key, entry, false)
 	assert.False(t, found, "paused lookup must not report a tombstoned entry")

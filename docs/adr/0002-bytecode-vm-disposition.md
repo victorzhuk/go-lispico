@@ -27,3 +27,11 @@ cannot compile fall back to the tree-walking Evaluator form-by-form. Use
 
 - Delete the VM entirely: rejected — it earns its place on hot loops.
 - Make the VM the default at full parity with a live cache: rejected for now — it fights the measured one-shot regression and requires parity work the subset does not yet have.
+
+## Amendment (2026-10-24): whole-form fallback interoperability
+
+The unsupported subset also includes quasiquoted maps with unquoted entries.
+They defer as whole forms rather than becoming constants that omit unquote effects.
+Bytecode engine construction configures the tree-walker's callable applier,
+so fallback forms can invoke previously compiled closures.
+Ordinary Lambdas, Go functions, and Keywords retain native tree-walker dispatch.

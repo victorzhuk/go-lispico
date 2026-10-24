@@ -1,6 +1,8 @@
 package stdlib
 
 import (
+	"unicode/utf8"
+
 	"context"
 	"fmt"
 	"strconv"
@@ -142,6 +144,9 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, typeErrorf("string/split: requires string arguments")
 			}
 
+			if err := checkSplitLimit(eval, "string/split", splitPartCount(s.V, sep.V)); err != nil {
+				return nil, err
+			}
 			parts := strings.Split(s.V, sep.V)
 			budget := core.NewBuiltinWorkBudget(ctx)
 			items := make([]core.Value, len(parts))
@@ -297,6 +302,9 @@ func (p *Plugin) registerStrings(env *core.Env) error {
 				return nil, typeErrorf("string/lines: requires string argument")
 			}
 
+			if err := checkSplitLimit(eval, "string/lines", strings.Count(s.V, "\n")+1); err != nil {
+				return nil, err
+			}
 			lines := strings.Split(s.V, "\n")
 			budget := core.NewBuiltinWorkBudget(ctx)
 			items := make([]core.Value, len(lines))
@@ -848,6 +856,26 @@ func chargeStringResult(ctx context.Context, subject, out string) error {
 // subject twice.
 func splitResultBytes(parts int) int64 {
 	return core.ListShallowBytes(parts) + int64(parts)*core.MeterStringHeaderBytes
+}
+
+// splitPartCount is the element count strings.Split will produce, counted
+// before any result storage is built so an over-limit split is refused up
+// front. An empty separator splits after each UTF-8 sequence.
+func splitPartCount(s, sep string) int {
+	if sep == "" {
+		return utf8.RuneCountInString(s)
+	}
+	return strings.Count(s, sep) + 1
+}
+
+// checkSplitLimit refuses a split whose element count exceeds the active
+// collection limit, before the result list is allocated.
+func checkSplitLimit(eval core.Evaluator, name string, parts int) error {
+	maxLen := collectionLimit(eval)
+	if parts > maxLen {
+		return core.NewResourceLimitError(fmt.Sprintf("%s length %d exceeds collection limit %d", name, parts, maxLen))
+	}
+	return nil
 }
 
 // parseQuoteFactor is what strconv.Quote expands a byte that is not valid

@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the architecture of go-lispico, a zero-dependency, pluggable Lisp interpreter for Go.
+This document describes the architecture of go-lispico, a pluggable Lisp interpreter for Go with zero external dependencies in its core.
 
 ## Overview
 
@@ -36,7 +36,7 @@ core/
 ├── types.go      # Value interface and 13 concrete types
 ├── env.go        # Lexical environment chain
 ├── reader.go     # Tokenizer and S-expression parser
-├── eval.go       # Tree-walking evaluator with TCO
+├── eval.go       # Tree-walking evaluator with explicit loop/recur TCO
 ├── dialect.go    # Dialect construction and name resolution
 ├── callable.go   # Callable marker and classification
 ├── registration.go # Registration view and write journal
@@ -142,9 +142,30 @@ Each environment:
   chunk keeps one binding alive instead of pinning the whole scope
 - Has optional parent for lookup chain
 - Carries a second, function-cell namespace used only by Lisp-2 dialects
-- Tracks its own retained bytes and slots (ADR 0012), released only by
-  `Rebuild()`
+- Tracks owned retained bytes and slots (ADR 0012). `Rebuild()` releases dead
+  backing broadly, while registration abort releases operation-owned dead cells.
 - Is thread-safe with RWMutex
+
+`SetIfUnoccupied(name, val, canonical)` and
+`SetFuncIfUnoccupied(name, val, canonical)` return `(bool, error)`.
+Each checks local cell liveness and writes under one environment write lock.
+They fill absent or tombstoned cells without replacing a live binding.
+Value and function namespaces are independent, not one atomic pair.
+Like `Set` and `SetFunc`, they route registration-view writes to the root
+and preserve registration journaling and retained-meter accounting.
+
+`SetBothIfUnoccupied(name, val, canonical)` returns `(bool, error)` and
+fills both namespaces only when neither local cell is live.
+It checks both cells and writes under one environment write lock,
+with one retained-capacity reservation. An occupied cell or reservation
+failure leaves both cells untouched. Registration-view routing, journaling,
+and retained-meter accounting also apply to this paired operation.
+
+Lazy publication uses these operations so a concurrent host binding wins.
+Go builtins that require both namespaces use `SetBothIfUnoccupied` for
+transactional publication, not two separate single-cell writes.
+Published lazy `Lambda` and `Macro` values capture the destination root
+`Env`, not the staging child, so later root rebinds and deletions remain visible.
 
 #### Reader
 
@@ -197,18 +218,48 @@ executions is sound for the same reason promotion is: the values are immutable
 and compared structurally. Literals containing a symbol or a nested call compile
 unchanged.
 
+Reader output remains zero-copy: unescaped `String`, `Symbol`, and `Keyword`
+payloads alias the source. Escaped literals own decoded storage.
+`runtime.EvalCached` detaches a compiled chunk tree only after a successful
+cache reservation and before publication. Declined, duplicate-hit, oversized,
+refused, and uncached candidates remain borrowed.
+
+Detachment covers chunk names, local names, nested chunks, and constants,
+including containers and `Macro`/`Lambda` prototypes. It preserves escaped
+payloads from the current read by storage identity, not content equality.
+Unknown macro-origin strings are conservatively copied. Retained accounting
+includes chunk names. Cache hits skip detachment. No public API changes.
+
+Gold-set allocation pins remain unchanged and measure true cache hits after warm-up.
+
+Constant interning indexes safe structural fingerprints and verifies collisions
+with equality. Values without safe fingerprints retain equality-based fallback
+lookup.
+
+Macro discovery resolves symbol heads without evaluating computed heads.
+Lexical value bindings hide macro names only under Lisp-1. Under Lisp-2,
+discovery resolves the function namespace independently of lexical values.
+
 A form the compiler refuses — a `defmacro` nested inside a larger form, a
 `def`/`defn` inside a lexical scope (a `fn` body, a `let`/`let*`/`loop` body,
-a `catch` handler), or `unquote-splicing` — falls back whole: the runtime
+a `catch` handler), `unquote-splicing`, or a quasiquoted map containing unquoted
+entries -- falls back whole: the runtime
 tree-walks the entire top-level form before any of its bytecode executes, so
 the form's side effects run exactly once and lexical definitions bind in their
 scope. This refusal keeps the closure architecture flat: unaffected compiled
 functions keep slot locals and captures, and the VM allocates no per-call
 lexical environment to mirror definitions.
 
-Tail-call optimization is explicit: `loop`/`recur` iterate without growing the Go
-stack (Clojure-style). Ordinary self-recursion is not auto-optimized; it is
-bounded by the configured max eval depth.
+The tree-walker keeps native dispatch for `GoFunc`, `Lambda`, and `Keyword`.
+Its optional `core.CallableApplier` handles only callable values without a
+native dispatch case, such as compiled VM closures. During bytecode engine
+construction, the runtime installs `bytecodeEvaluator.Apply` through
+`SetCallableApplier`. This lets a whole-form fallback invoke an existing
+compiled closure without redispatching ordinary Lambdas through the VM.
+
+Tail-call optimization applies only to explicit `loop`/`recur`, which iterate
+without growing the Go stack (Clojure-style). Ordinary self-recursion is not
+auto-optimized; it is bounded by the configured max eval depth.
 
 #### VM Frame Layout
 
@@ -349,6 +400,35 @@ defer scope.Rebuild() // compact dead backing when done
 
 Evaluator options are last-wins for mode selection.
 
+#### File Watching
+
+Each background reload owns one enclosing evaluation lifecycle. It detaches
+evaluation state inherited from the watcher context, then installs the engine's
+resource context and absolute deadline before reading. Parsing and every form
+share that lifecycle. `core.FinishEval` settles it once, including failed reads,
+failed forms, cancellation, and panic recovery. Background reloads publish no
+`OnEval` events.
+
+The reload boundary contains panics from reading and form execution, logs
+`PanicError`, and keeps the watch loop active. Initial lease-draw panics have a
+separate recovery boundary. Core settlement contains flush and retained-charge
+panics. The watcher's settlement wrapper also contains `ReturnEval` panics,
+logs the failure, and prevents publication.
+
+The watcher evaluates into a child environment and merges its bindings into
+the root only after successful evaluation, flush, and settlement. It records
+the file's mtime only after that merge succeeds. Failed versions therefore
+retry on later scans even when their mtimes do not change.
+
+A complete, uncanceled directory scan prunes stored mtimes for paths absent
+from its readable `.lisp` entries. A canceled scan or directory-read failure
+does not prune them. This bookkeeping does not delete root bindings.
+
+`EvalFile`, each `LoadDir` file, and watcher reloads acquire source through the
+shared bounded file reader. It buffers at most `MaxAllocationBytes` plus one
+byte and checks caller cancellation between reads. Oversized files fail before
+parsing. Caller-owned strings passed to `Eval` remain borrowed.
+
 ### cmd/
 
 The `cmd/lispico/` binary is the interactive REPL. It layers terminal handling
@@ -389,6 +469,21 @@ plugins/
 ├── net/       # HTTP client (frozen)
 └── exec/      # Shell execution + crypto (frozen)
 ```
+
+The built-in LLM HTTP client caps completion and embedding response bodies at
+8 MiB, and streaming at 8 MiB of scanned bytes, including framing. A stream
+completes on `[DONE]` or a nonempty `finish_reason`. A `finish_reason` followed
+by `[DONE]` produces exactly one terminal Done chunk, preserving any content
+in the finishing event. Clean upstream EOF before either signal produces
+`stream ended without completion`, not success.
+
+Cancellation is an error: public `llm/stream` returns the context error.
+For direct channel consumers, the client queues a terminal chunk containing
+`Done: true` and the context error without waiting for the consumer. If the
+buffer is full, it may discard unread canceled-stream data to queue that
+error. It then closes the response body and channel. Consumers that stop
+reading must cancel their context to release blocked delivery. Successful
+stream delivery and the 8 MiB bound are unchanged.
 
 ## Data Flow
 
@@ -448,11 +543,16 @@ over-limit literal is not rejected and the two evaluators agree. A folded
 all-constant literal carries its deep bytes and structural depth computed once
 at compile time, so loading it charges the ledger and checks the depth ceiling
 in O(1) without re-walking the value — the charge model is identical to the
-tree-walker's, only the walk is gone. `range` caps
-its result length (`MaxCollectionLen`) and checks `ctx` cooperatively; the
-per-engine bytecode chunk cache is bounded by entry, deep-byte, and
-expanded-node ceilings (`MaxCacheEntries`, `MaxCacheBytes`, `MaxCacheNodes`) and
-reclaims entries orphaned by a macro-epoch bump. `MaxReductions` counts macro
+tree-walker's, only the walk is gone. `range`, string splits, decoded JSON
+containers, and directory-list results enforce `MaxCollectionLen` before
+constructing their Lisp collections. `io/ls` also bounds host directory
+enumeration to the configured collection limit plus one entry.
+The bytecode chunk cache enforces entry, deep-byte,
+and expanded-node ceilings (`MaxCacheEntries`, `MaxCacheBytes`, `MaxCacheNodes`)
+and reclaims entries orphaned by a macro-epoch bump. Candidates that exceed a
+ceiling alone run uncached without evicting residents. Cache meter callbacks
+run outside cache locks, including reservation rollback and eviction releases.
+`MaxReductions` counts macro
 expansion, compiler emission, evaluator work, and `GoFunc` dispatch via the
 existing 128-step cancellation budget, while `MaxAllocationBytes` charges the
 fixed deterministic size table from ADR 0011 at reader, compiler, VM,
@@ -461,9 +561,10 @@ tree-walker, and `GoFunc` result boundaries. `MaxRetainedBytesPerEnv` and
 (ADR 0012): every `Env` on the engine path carries owned counters
 (bytes + slots), charged on new-slot binding writes using the same fixed
 size table. A breach does not occur; the write is rejected with a
-terminal `ResourceLimitError`. Dead backing is released only through
-`(*Env).Rebuild()`, which compacts in place with live cell pointers
-preserved. `(*Env).RetainedUsage()` probes the current counters.
+terminal `ResourceLimitError`. `(*Env).Rebuild()` releases dead backing broadly
+while preserving live cell pointers. Registration abort releases only the
+operation-owned capacity it removes, including settled meter charges.
+`(*Env).RetainedUsage()` probes the current counters.
 Resource-limit breaches are a hard safety boundary and are not catchable
 by `try`/`catch`.
 
@@ -534,6 +635,18 @@ changes, and existing `Fn`/`PinnedFn` handles keep working across a reload.
 A successful `UnloadPlugin` keeps its own last-writer ownership semantics —
 it is not a registration abort.
 
+Lazy materialization stages a deferred definition before publishing its binding.
+`LazyLayer.BeginDelete` acquires the same per-name mutex as publication and
+returns its release function. `Env.Delete` holds that critical section while
+removing cells. Publication rechecks the tombstone and plugin attachment after
+staging, so a concurrent delete or unload prevents an admitted definition from
+publishing afterward. Staging holds no per-name lock during definition execution
+and does not write the target binding into the root.
+
+If a process-level template build returns an error, the registry discards its
+incomplete layer. A later load rebuilds from scratch rather than retaining
+entries registered by the failed build. Completed shared layers remain intact.
+
 The guarantee is post-return, not during: readers may observe intermediate
 plugin definitions while `Init` is still running (no read isolation), and a
 host lookup racing the abort itself can briefly miss a name the operation
@@ -541,8 +654,9 @@ is in the middle of deleting.
 
 Out of rollback scope: plugin Go objects, external effects, writes through
 unrelated retained environment references, and ordinary `Eval` effects.
-Retained-meter charges for cells an abort removes still leak until the
-follow-up change `plugin-retained-rollback` lands.
+Registration abort refunds removed cells' retained-capacity counters and
+releases their settled meter charges outside environment and lazy-state locks.
+Pending charges for those removed cells are discarded before settlement.
 
 ## Key Design Decisions
 
@@ -582,15 +696,18 @@ This allows applications to include only needed functionality.
 
 ### 5. Tail-Call Optimization
 
-Recursive calls in tail position don't grow the stack:
+Only explicit `loop`/`recur` iteration avoids call-stack growth.
+Ordinary recursive calls remain subject to the configured call-depth ceiling.
+`recur` outside an active loop is an error.
+
+For example, under the Clojure dialect:
 
 ```lisp
-(defn factorial [n acc]
-  (if (<= n 1)
+(loop [n 100000 acc 0]
+  (if (= n 0)
     acc
-    (recur (- n 1) (* n acc))))
-
-(factorial 100000 1)  ; Won't overflow stack
+    (recur (- n 1) (+ acc 1))))
+; => 100000
 ```
 
 ## Adding a New Plugin
@@ -674,7 +791,7 @@ the error class. `Unwrap` exposes the cause for `errors.Is`/`errors.As`.
 | Code | Exported constant | Reported for |
 | --- | --- | --- |
 | `ReadError` | — | a tokenizer or parser failure |
-| `CompileError` | `compiler.CodeCompileError` | a form the bytecode compiler rejects |
+| `CompileError` | `compiler.CodeCompileError` | a form that fails arity or shape validation during bytecode compilation |
 | `ArityError` | — | a call with the wrong number of arguments |
 | `TypeError` | — | an argument of the wrong runtime type |
 | `EvalError` | — | a correctly typed argument outside the operation's domain |
@@ -684,11 +801,14 @@ the error class. `Unwrap` exposes the cause for `errors.Is`/`errors.As`.
 | `PanicError` | `core.CodePanic` | a panic recovered from an embedded `GoFunc` at a runtime boundary |
 | `ConcurrentUseError` | `core.CodeConcurrentUse` | a `PinnedFn` entered concurrently or re-entered from its own execution |
 | `VMStateError` | `core.CodeVMState` | a pinned call that left its private VM dirty; a full reset was applied |
+| `RegistrationActiveError` | `core.CodeRegistrationActive` | a registration begun on an environment that already has one active |
+| `RegistryConflictError` | `core.CodeRegistryConflict` | a plugin registry entry that changed during registration |
 
-Only the last four have exported constants. The rest are string literals inside
-their constructors (`core.NewReadError`, `core.NewArityError`,
-`core.NewTypeError`, `core.NewEvalError`, `core.NewUndefinedError`), so a host
-switching on them writes the literal.
+Six codes have exported constants in `core`: `CodeResourceLimit`,
+`CodePanic`, `CodeConcurrentUse`, `CodeVMState`, `CodeRegistrationActive`,
+and `CodeRegistryConflict`. `CompileError` has `compiler.CodeCompileError`.
+The remaining codes use string literals, so a host switching on them writes
+the literal.
 
 The `Code` is the contract; the `Message` is not. Message wording tracks the
 operation it describes and must never be matched on.

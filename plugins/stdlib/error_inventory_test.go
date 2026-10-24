@@ -154,6 +154,10 @@ var errorInventory = []errorSite{
 	{Family: "Strings", Fn: "string/length", File: fileStrings, Func: "registerStrings", Class: "TypeError", Reachable: true},
 	{Family: "Strings", Fn: "string/lines", File: fileStrings, Func: "registerStrings", Class: "ArityError", Reachable: true},
 	{Family: "Strings", Fn: "string/lines", File: fileStrings, Func: "registerStrings", Class: "TypeError", Reachable: true},
+	// The length-limit rows raise core.NewResourceLimitError, already Terminal
+	// (IsTerminalEvalError is true for CodeResourceLimit); they must never be
+	// flattened into a catchable EvalError.
+	{Family: "Strings", Fn: "string/split string/lines", File: fileStrings, Func: "checkSplitLimit", Class: "terminal-passthrough", Reachable: true},
 	{Family: "Strings", Fn: "string->int", File: fileStrings, Func: "registerStrings", Class: "ArityError", Reachable: true},
 	{Family: "Strings", Fn: "string->int", File: fileStrings, Func: "registerStrings", Class: "TypeError", Reachable: true},
 	{Family: "Strings", Fn: "string->int", File: fileStrings, Func: "registerStrings", Class: "external-conversion", Reachable: true},

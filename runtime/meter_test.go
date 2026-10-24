@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"sync"
 	"testing"
 
@@ -1369,4 +1371,188 @@ func TestMeter_InvisibleToLispBindings(t *testing.T) {
 			t.Fatalf("meter binding leaked: %s", name)
 		}
 	}
+}
+
+// ---- Checked meter arithmetic at int64 boundaries ----
+
+func TestMeter_UnlimitedCountersBoundAtMaxInt64(t *testing.T) {
+	m := NewLimitMeter(0, 0, 0, 0).(*limitMeter)
+
+	red, alloc, err := m.LeaseEval(math.MaxInt64, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("full lease on unlimited meter: %v", err)
+	}
+	if red != math.MaxInt64 || alloc != math.MaxInt64 {
+		t.Fatalf("full lease: got red=%d alloc=%d", red, alloc)
+	}
+	if _, _, err := m.LeaseEval(1, 0); err == nil {
+		t.Fatal("expected reduction exhaustion after MaxInt64 lease")
+	}
+	if _, _, err := m.LeaseEval(0, 1); err == nil {
+		t.Fatal("expected allocation exhaustion after MaxInt64 lease")
+	}
+	if err := m.ChargeRetained(math.MaxInt64, 0); err != nil {
+		t.Fatalf("charge MaxInt64 retained bytes on unlimited meter: %v", err)
+	}
+	if err := m.ChargeRetained(1, 0); err == nil {
+		t.Fatal("expected retained bytes exhaustion after MaxInt64 charge")
+	}
+	m.ReturnEval(math.MaxInt64, math.MaxInt64)
+	if used := m.usedRed.Load(); used != 0 {
+		t.Fatalf("usedRed after full return: %d", used)
+	}
+}
+
+func TestMeter_UnlimitedRetainedChargeBoundAtMaxInt64(t *testing.T) {
+	m := NewLimitMeter(0, 0, 0, 0).(*limitMeter)
+
+	if err := m.ChargeRetained(math.MaxInt64, 0); err != nil {
+		t.Fatalf("charge MaxInt64 bytes on unlimited meter: %v", err)
+	}
+	if err := m.ChargeRetained(1, 0); err == nil {
+		t.Fatal("expected retained bytes exhaustion at MaxInt64")
+	}
+	m.ReleaseRetained(math.MaxInt64, 0)
+
+	if err := m.ChargeRetained(0, math.MaxInt64); err != nil {
+		t.Fatalf("charge MaxInt64 slots on unlimited meter: %v", err)
+	}
+	if err := m.ChargeRetained(0, 1); err == nil {
+		t.Fatal("expected retained slots exhaustion at MaxInt64")
+	}
+	if used := m.retainedBytes.Load(); used != 0 {
+		t.Fatalf("retained bytes after release: %d", used)
+	}
+}
+
+func TestMeter_PartialLeaseAtLimit(t *testing.T) {
+	m := NewLimitMeter(10, 0, 0, 0).(*limitMeter)
+
+	grants := []int64{}
+	for range 3 {
+		red, _, err := m.LeaseEval(4, 0)
+		if err != nil {
+			grants = append(grants, red)
+			break
+		}
+		grants = append(grants, red)
+	}
+	if len(grants) != 3 || grants[0] != 4 || grants[1] != 4 || grants[2] != 2 {
+		t.Fatalf("partial lease grants: %v", grants)
+	}
+	if used := m.usedRed.Load(); used != 10 {
+		t.Fatalf("usedRed after partial lease: %d", used)
+	}
+}
+
+func TestMeter_ExcessiveReturnClampsToZero(t *testing.T) {
+	m := NewLimitMeter(10, 10, 0, 0).(*limitMeter)
+
+	if _, _, err := m.LeaseEval(5, 5); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	m.ReturnEval(100, 100)
+	if used := m.usedRed.Load(); used != 0 {
+		t.Fatalf("usedRed after excessive return: %d", used)
+	}
+	if used := m.usedAlloc.Load(); used != 0 {
+		t.Fatalf("usedAlloc after excessive return: %d", used)
+	}
+	if _, _, err := m.LeaseEval(10, 10); err != nil {
+		t.Fatalf("full lease after clamp: %v", err)
+	}
+}
+
+func TestMeter_ChargeRetainedSlotsFailureCompensatesBytes(t *testing.T) {
+	m := NewLimitMeter(0, 0, 100, 1).(*limitMeter)
+
+	if err := m.ChargeRetained(50, 1); err != nil {
+		t.Fatalf("first charge: %v", err)
+	}
+	if err := m.ChargeRetained(10, 1); err == nil {
+		t.Fatal("expected slots failure")
+	}
+	if used := m.retainedBytes.Load(); used != 50 {
+		t.Fatalf("retained bytes not compensated: %d", used)
+	}
+	if err := m.ChargeRetained(50, 0); err != nil {
+		t.Fatalf("bytes capacity lost after slots failure: %v", err)
+	}
+}
+
+func TestMeter_CappedChargeRejectsOverflowingRequest(t *testing.T) {
+	m := NewLimitMeter(0, 0, math.MaxInt64, 0).(*limitMeter)
+
+	if err := m.ChargeRetained(math.MaxInt64-1, 0); err != nil {
+		t.Fatalf("charge near ceiling: %v", err)
+	}
+	if err := m.ChargeRetained(2, 0); err == nil {
+		t.Fatal("expected overflow-spanning request to be rejected")
+	}
+	if used := m.retainedBytes.Load(); used != math.MaxInt64-1 {
+		t.Fatalf("retained bytes changed on rejected charge: %d", used)
+	}
+}
+
+func TestMeter_ConcurrentConservationNearCeiling(t *testing.T) {
+	t.Run("capped", func(t *testing.T) {
+		const maxRed = 1000
+		m := NewLimitMeter(maxRed, 0, 0, 0).(*limitMeter)
+		var wg sync.WaitGroup
+		for g := range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rng := rand.New(rand.NewPCG(uint64(g), 0))
+				for range 500 {
+					n := int64(1 + rng.IntN(10))
+					red, _, err := m.LeaseEval(n, 0)
+					if red > 0 {
+						m.ReturnEval(red, 0)
+					}
+					if err == nil && red != n {
+						t.Errorf("granted %d for request %d without error", red, n)
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		if used := m.usedRed.Load(); used != 0 {
+			t.Fatalf("usedRed not conserved: %d", used)
+		}
+	})
+
+	t.Run("unlimitedNearCeiling", func(t *testing.T) {
+		m := NewLimitMeter(0, 0, 0, 0).(*limitMeter)
+		m.usedRed.Store(math.MaxInt64 - 500)
+		m.retainedBytes.Store(math.MaxInt64 - 500)
+		var wg sync.WaitGroup
+		for g := range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rng := rand.New(rand.NewPCG(uint64(g), 1))
+				for range 200 {
+					n := int64(1 + rng.IntN(5))
+					red, _, err := m.LeaseEval(n, 0)
+					if red > 0 {
+						m.ReturnEval(red, 0)
+					} else if err == nil {
+						t.Error("zero grant without error near ceiling")
+					}
+					b := int64(1 + rng.IntN(5))
+					if err := m.ChargeRetained(b, 0); err == nil {
+						m.ReleaseRetained(b, 0)
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		if used := m.usedRed.Load(); used < math.MaxInt64-500 || used > math.MaxInt64 {
+			t.Fatalf("usedRed escaped bounds: %d", used)
+		}
+		if used := m.retainedBytes.Load(); used != math.MaxInt64-500 {
+			t.Fatalf("retainedBytes not conserved: %d", used)
+		}
+	})
 }

@@ -525,3 +525,23 @@ Rejecting incomplete candidate evidence SHALL NOT introduce an exit code outside
 
 - **WHEN** a configured cell exists in the tiers configuration and has no stored baseline, and the candidate evidence for that cell is otherwise complete
 - **THEN** the gate SHALL record the cell through the first-authorization path rather than failing it as incomplete candidate evidence
+
+### Requirement: Verdict timing excludes uncommitted benchmark families
+
+Verdict runs and inconclusive reruns SHALL select only `Goldset`, `GoldsetParse`, and `GoldsetCall` benchmark families.
+Classification-only capture MAY measure the broader inventory without authorizing its cells.
+
+#### Scenario: Verdict run uses the committed selector
+
+- **WHEN** release CI measures performance for a verdict
+- **THEN** it SHALL restrict timing to the three committed benchmark families
+
+#### Scenario: Inconclusive rerun preserves the selector
+
+- **WHEN** release CI repeats an inconclusive paired run
+- **THEN** it SHALL use the same restricted benchmark families
+
+#### Scenario: Classification capture does not authorize additional cells
+
+- **WHEN** classification-only capture measures additional families
+- **THEN** that capture SHALL NOT assign tiers or issue release verdicts for them

@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,7 +32,9 @@ jobs:
             echo "Run 'gofmt -w .' and commit the result." >&2
             exit 1
           fi
-      - run: go test -race -count=1 ./...
+      # Same process bounds as the release gate's race leg: fixed -p/-parallel
+      # so a runner-spec change cannot shift scheduling-sensitive tests.
+      - run: timeout 900s go test -race -timeout 10m -p 2 -parallel 2 -count=1 ./...
 
   # go.mod declares go 1.24.0. The test job above and the release gate both
   # select 1.27, so nothing else here exercises the declared floor: a change
@@ -47,6 +50,7 @@ jobs:
   # and by the release consumer gate.
   go-floor:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -55,10 +59,11 @@ jobs:
           cache: true
       - run: go build ./...
       - run: go vet ./...
-      - run: go test -count=1 -skip '^TestGoldsetVMAllocations$' ./...
+      - run: timeout 900s go test -timeout 10m -p 2 -parallel 2 -count=1 -skip '^TestGoldsetVMAllocations$' ./...
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

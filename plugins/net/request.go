@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/victorzhuk/go-lispico/core"
@@ -37,7 +38,7 @@ func (p *Plugin) buildRequest(method, urlStr string, opts *core.HashMap) (*http.
 
 	req, err := http.NewRequest(method, urlStr, body)
 	if err != nil {
-		return nil, fmt.Errorf("http: create request: %w", err)
+		return nil, fmt.Errorf("http: create request for %s: %w", redactURL(urlStr), ErrInvalidURL)
 	}
 
 	if opts != nil {
@@ -85,4 +86,11 @@ func (p *Plugin) buildRequest(method, urlStr string, opts *core.HashMap) (*http.
 	}
 
 	return req, nil
+}
+
+func redactURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return "[unparsed url]"
 }

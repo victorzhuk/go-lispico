@@ -16,6 +16,19 @@ type HTTPClient struct {
 	httpClient *http.Client
 }
 
+const maxResponseBodyBytes = 8 << 20
+
+func readBodyCapped(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", maxResponseBodyBytes)
+	}
+	return body, nil
+}
+
 func NewHTTPClient(baseURL, apiKey string) *HTTPClient {
 	return &HTTPClient{
 		baseURL: baseURL,
@@ -77,13 +90,13 @@ func (c *HTTPClient) Complete(ctx context.Context, req LLMRequest) (LLMResponse,
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBodyCapped(resp.Body)
 	if err != nil {
 		return LLMResponse{}, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return LLMResponse{}, fmt.Errorf("http %d: %s", resp.StatusCode, string(respBody))
+		return LLMResponse{}, fmt.Errorf("http %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -181,13 +194,13 @@ func (c *HTTPClient) Embed(ctx context.Context, text string, model string) ([]fl
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBodyCapped(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
 
 	var result struct {

@@ -42,6 +42,20 @@ var WorkPhases = []WorkPhase{
 		MaxWork: 256,
 	},
 	{
+		Families:    []string{"string"},
+		Fn:          "string/split string/lines",
+		File:        "plugins/stdlib/strings.go",
+		Func:        "checkSplitLimit",
+		PhaseLabel:  "message format",
+		Disposition: "bounded-exception",
+		Proof: "Its one fmt.Sprintf renders a registered builtin name and two " +
+			"%d verbs - a part count and the active limit - so the message " +
+			"renders in constant time and no operand is traversed. The count " +
+			"itself comes from a strings.Count pre-pass over the subject, " +
+			"linear and allocation-free, before any result storage is built.",
+		MaxWork: 256,
+	},
+	{
 		Families:    []string{"support"},
 		File:        "plugins/stdlib/errors.go",
 		Func:        "typeErrorf",

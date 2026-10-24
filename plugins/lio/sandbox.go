@@ -1,7 +1,9 @@
 package lio
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -100,7 +102,12 @@ func (s *Sandbox) openFileWithin(validated string, flag int, perm os.FileMode) (
 }
 
 func (s *Sandbox) mkdirAllWithin(validated string, perm os.FileMode) error {
-	dir := filepath.Dir(validated)
+	return s.mkdirAllRooted(filepath.Dir(validated), perm)
+}
+
+// mkdirAllRooted creates each component through the pinned root when one
+// applies, so a symlink swapped mid-creation cannot escape.
+func (s *Sandbox) mkdirAllRooted(dir string, perm os.FileMode) error {
 	if s.root == nil || (s.cfg.Mode != ModeStrict && !withinRoot(dir, s.rootDirAbs)) {
 		return os.MkdirAll(dir, perm)
 	}
@@ -124,6 +131,53 @@ func (s *Sandbox) mkdirAllWithin(validated string, perm os.FileMode) error {
 		}
 	}
 	return nil
+}
+
+// statWithin goes through the pinned root when one applies, so a symlink
+// swapped after Validate cannot make the stat reach outside the tree.
+func (s *Sandbox) statWithin(validated string) (os.FileInfo, error) {
+	if s.root == nil || (s.cfg.Mode != ModeStrict && !withinRoot(validated, s.rootDirAbs)) {
+		return os.Stat(validated)
+	}
+	rel, err := filepath.Rel(s.rootDirAbs, validated)
+	if err != nil {
+		return nil, err
+	}
+	return s.root.Stat(rel)
+}
+
+// readDirN is the directory enumeration seam; tests substitute it to
+// observe the bound passed to the kernel.
+var readDirN = (*os.File).ReadDir
+
+// readDirWithin lists at most n entries of a validated directory (n < 0
+// means all) through the pinned root when one applies, for the same
+// containment reason as statWithin.
+func (s *Sandbox) readDirWithin(validated string, n int) ([]os.DirEntry, error) {
+	var dir *os.File
+	if s.root == nil || (s.cfg.Mode != ModeStrict && !withinRoot(validated, s.rootDirAbs)) {
+		d, err := os.Open(validated)
+		if err != nil {
+			return nil, err
+		}
+		dir = d
+	} else {
+		rel, err := filepath.Rel(s.rootDirAbs, validated)
+		if err != nil {
+			return nil, err
+		}
+		d, err := s.root.Open(rel)
+		if err != nil {
+			return nil, err
+		}
+		dir = d
+	}
+	defer func() { _ = dir.Close() }()
+	entries, err := readDirN(dir, n)
+	if errors.Is(err, io.EOF) {
+		return entries, nil
+	}
+	return entries, err
 }
 
 func (s *Sandbox) Validate(path string, write bool) (string, error) {
@@ -228,10 +282,8 @@ func (s *Sandbox) validateRelaxed(path string, write bool) (string, error) {
 		list = s.cfg.AllowWrite
 	}
 
-	if len(list) == 0 {
-		return path, nil
-	}
-
+	// An empty applicable allowlist denies everything: relaxed mode grants
+	// access only through explicit allowlist entries, never by omission.
 	for _, allowed := range list {
 		absAllowed, err := filepath.Abs(allowed)
 		if err != nil {

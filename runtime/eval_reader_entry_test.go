@@ -333,7 +333,8 @@ func readerEntryReloadRefused(t *testing.T, bytecode bool, d readerEntryDialect,
 	_, hasReplacement := eng.RootEnv().Get("replacement")
 	assert.False(t, hasReplacement, "a refused reload must publish no new binding")
 	assert.NotContains(t, buf.String(), "reloaded file")
-	assert.Contains(t, buf.String(), "parse file")
+	// Source admission refuses before the reader runs, so the log names the read.
+	assert.Contains(t, buf.String(), "read file")
 }
 
 func readerEntryReloadPublishes(t *testing.T, bytecode bool, d readerEntryDialect, src readerEntryMeterSource) {

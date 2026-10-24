@@ -52,6 +52,17 @@ A map with:
 ; => {:status 200 :headers {...} :body {...}}
 ```
 
+## Redirects and Errors
+
+Requests do not follow redirects. A redirect returns its own status, headers,
+and body without contacting the destination in `Location`. No request option
+enables redirect following.
+
+Request-construction and transport errors omit URL user information, path,
+query, and fragment. Malformed URLs use a redacted placeholder.
+Request-construction errors wrap the package's `ErrInvalidURL` sentinel.
+These protections do not restrict the initial destination.
+
 ## Trust Model
 
 `http/get`, `http/post`, and `http/fetch` accept any URL with no allow/deny list.
@@ -62,5 +73,4 @@ scripts.
 
 Grant the `net` namespace only to scripts you trust. If untrusted Lisp can reach
 these functions, the embedder is responsible for restricting outbound network
-access (egress firewall, URL allowlisting at a proxy, or a custom
-`*http.Client`/transport passed when constructing the plugin).
+access (egress firewall or URL allowlisting at a proxy).

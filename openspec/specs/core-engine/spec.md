@@ -109,12 +109,9 @@ contract.
 
 ### Requirement: Global binding cells
 
-`Env` SHALL expose a stable binding cell per bound name: the cell created when a
-name is first bound in a scope SHALL remain the write-through target for every
-later rebind of that name in that scope, so a holder of the cell observes rebinds
-and deletions without re-walking the scope chain. Cell reads SHALL be safe under
-concurrent binds, guarded by a short read lock (not the full chain walk),
-preserving the concurrent evaluation safety requirement.
+`Env` SHALL preserve a binding cell across ordinary rebinds and deletions.
+Cell reads SHALL synchronize with writes through the owning environment.
+`ReplaceCell` MAY replace cell identity, but SHALL advance `NameGen` so VM caches resolve the new cell.
 
 #### Scenario: Cell observes rebind
 
@@ -130,6 +127,66 @@ preserving the concurrent evaluation safety requirement.
 
 - **WHEN** goroutines read through held cells while another goroutine rebinds the same names
 - **THEN** each read SHALL return either the prior or the new value and `go test -race` SHALL report no data race
+
+#### Scenario: Replacing a live cell invalidates cached resolution
+
+- **WHEN** `ReplaceCell` replaces an already-live binding after a VM lookup cached its cell
+- **THEN** `NameGen` SHALL advance and the next lookup SHALL resolve the replacement
+
+### Requirement: Atomic insertion into unoccupied binding cells
+
+`Env.SetIfUnoccupied` and `Env.SetFuncIfUnoccupied` SHALL check local cell liveness and write under one environment write lock.
+Each SHALL preserve live bindings and fill absent or tombstoned cells independently in its namespace.
+Both SHALL return `(bool, error)`, with the boolean reporting whether a write occurred.
+They SHALL route registration-view writes to the root and preserve the journal and retained-meter behavior of `Set` and `SetFunc`.
+
+#### Scenario: Concurrent host binding is not overwritten
+
+- **WHEN** a host write makes a local cell live before an insert-if-unoccupied operation checks it
+- **THEN** the operation SHALL return `false, nil` without changing the binding or its canonical marker
+
+#### Scenario: Tombstoned binding can be revived
+
+- **WHEN** an insert-if-unoccupied operation targets a tombstoned cell
+- **THEN** it SHALL write the value and canonical marker and return `true, nil`
+- **AND** it SHALL reuse the cell without charging new retained capacity
+
+#### Scenario: Value and function occupancy are independent
+
+- **WHEN** a name has a live value binding and an unoccupied function cell
+- **THEN** `SetIfUnoccupied` SHALL preserve the value binding
+- **AND** `SetFuncIfUnoccupied` SHALL be able to fill the function cell
+
+#### Scenario: Registration view preserves write ownership
+
+- **WHEN** either operation writes through a registration view
+- **THEN** it SHALL write to the registration root and journal the write
+- **AND** retained charges and rollback SHALL follow the corresponding ordinary setter's behavior
+
+### Requirement: Transactional insertion into both binding namespaces
+
+`Env.SetBothIfUnoccupied` SHALL check both local cells and write under one environment write lock with one retained-capacity reservation.
+It SHALL write both cells only when neither is live.
+An occupied cell or reservation failure SHALL leave both cells untouched.
+It SHALL return `(bool, error)`, reporting whether it wrote both cells.
+Registration-view writes SHALL target the root and preserve registration journaling and retained-meter accounting.
+
+#### Scenario: One occupied namespace prevents both writes
+
+- **WHEN** either local cell is live when `SetBothIfUnoccupied` checks occupancy
+- **THEN** it SHALL return `false, nil` without changing either cell
+
+#### Scenario: Paired insertion reserves capacity before either write
+
+- **WHEN** neither local cell is live but retained capacity cannot accommodate the paired insertion
+- **THEN** `SetBothIfUnoccupied` SHALL return `false` and the reservation error
+- **AND** neither cell SHALL change
+
+#### Scenario: Successful paired insertion preserves registration ownership
+
+- **WHEN** a registration view calls `SetBothIfUnoccupied` with both root cells unoccupied and sufficient retained capacity
+- **THEN** it SHALL write both root cells and return `true, nil`
+- **AND** it SHALL journal both writes and account for their retained capacity
 
 ### Requirement: Tree-walker batched cancellation observation
 
@@ -1279,3 +1336,47 @@ Aborting the operation SHALL, for each name the operation wrote, restore the pri
 
 - **WHEN** a cached lookup or macro expansion observed a definition the operation wrote and the operation aborts
 - **THEN** the next use SHALL observe the restored binding
+
+### Requirement: Macro discovery does not execute computed heads
+
+Macro discovery SHALL resolve symbol heads without evaluating computed heads.
+Lexical value bindings SHALL shadow macro names only under Lisp-1.
+Under Lisp-2, macro discovery SHALL resolve the function namespace independently of lexical value bindings.
+
+#### Scenario: Computed head runs only during evaluation
+
+- **WHEN** a call's computed head has observable effects
+- **THEN** macro discovery SHALL NOT execute those effects
+
+#### Scenario: Lisp-2 lexical value does not hide a macro
+
+- **WHEN** a lexical value binding shares a name with a function-cell macro under Lisp-2
+- **THEN** head-position macro expansion SHALL still resolve that macro
+
+### Requirement: Reader output preserves borrowed text
+
+Reader-produced unescaped `String`, `Symbol`, and `Keyword` payloads SHALL alias
+the source without copying. Escaped literals SHALL own their decoded storage.
+Cache-admission detachment SHALL NOT change this reader ownership contract.
+
+#### Scenario: Parsed text survives source retirement
+
+- **WHEN** a caller retains a parsed string, symbol, or keyword after discarding the source
+- **THEN** its payload SHALL remain valid
+- **AND** an unescaped payload MAY retain the complete source through its substring reference
+
+#### Scenario: Escaped literal owns decoded storage
+
+- **WHEN** the reader decodes an escaped literal
+- **THEN** the decoded payload SHALL own storage independent of the source
+
+### Requirement: Resource counters refuse overflow
+
+Reduction and allocation counters SHALL refuse charges that exceed their limits or overflow their numeric representation.
+A refused overflowing charge SHALL NOT make subsequent charges appear to have fresh credit.
+
+#### Scenario: Oversized charge does not restore budget
+
+- **WHEN** a reduction or allocation charge would overflow its counter
+- **THEN** charging SHALL return `ResourceLimitError`
+- **AND** subsequent positive charges SHALL NOT succeed because the counter wrapped

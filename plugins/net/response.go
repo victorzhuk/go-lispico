@@ -18,6 +18,10 @@ import (
 // raw *url.Error, whose message embeds the full URL including query secrets.
 var ErrTransport = errors.New("transport failure")
 
+// ErrInvalidURL marks a request construction failure where the URL could not
+// be used; the message never carries the raw URL or its query.
+var ErrInvalidURL = errors.New("invalid URL")
+
 // maxResponseBytes caps how much of a response body doRequest reads, so a
 // malicious or misbehaving server cannot exhaust memory via an unbounded
 // response.
@@ -48,8 +52,8 @@ func (p *Plugin) doRequest(ctx context.Context, req *http.Request, opts *core.Ha
 	if err != nil {
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) {
-			safe := urlErr.URL
-			if u, perr := url.Parse(safe); perr == nil {
+			safe := "[unparsed url]"
+			if u, perr := url.Parse(urlErr.URL); perr == nil && u.Host != "" {
 				safe = u.Scheme + "://" + u.Host
 			}
 			return nil, fmt.Errorf("http: request failed: %s %s: %w", urlErr.Op, safe, ErrTransport)

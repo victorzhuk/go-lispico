@@ -171,3 +171,19 @@ accounting for one dispatch SHALL NOT suppress the charges of later dispatches.
 
 - **WHEN** identical direct named-call threshold cases run under the Evaluator and VM
 - **THEN** both SHALL accept the exact result budget, reject one byte less, and report the specified result charge
+
+### Requirement: Decoded containers respect collection limits
+
+`json/decode` SHALL check every decoded array and object against the active collection limit before constructing Lisp result values.
+Oversized containers SHALL return `ResourceLimitError`.
+This check occurs after Go's JSON decoder constructs its intermediate representation.
+
+#### Scenario: Nested oversized container fails before Lisp conversion
+
+- **WHEN** any decoded array or object exceeds `MaxCollectionLen`, including below the root
+- **THEN** decoding SHALL fail before constructing the Lisp result
+
+#### Scenario: Containers at the limit remain valid
+
+- **WHEN** every decoded container fits `MaxCollectionLen` and other resource budgets suffice
+- **THEN** decoding SHALL preserve the existing numeric and container conversions

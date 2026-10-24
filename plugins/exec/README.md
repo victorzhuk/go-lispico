@@ -18,7 +18,7 @@ Execute a command and capture output.
 - `opts` (map) - Options map (optional)
 
 **Options:**
-- `:timeout` (int) - Timeout in milliseconds (default: 30000)
+- `:timeout` (int) - Timeout in milliseconds (default: 30000; must be between 1 and 300000)
 - `:dir` (string) - Working directory for the command
 - `:env` (map) - Additional environment variables
 - `:inherit-env` (bool) - Pass the full host environment to the child (default: `false`)
@@ -60,7 +60,7 @@ Chain multiple commands with pipes.
 - `opts` (map) - Options map (optional)
 
 **Options:**
-- `:timeout` (int) - Timeout in milliseconds (default: 30000)
+- `:timeout` (int) - Timeout in milliseconds (default: 30000; must be between 1 and 300000)
 
 **Returns:** A map with `:stdout`, `:stderr`, `:exit` (same as `exec/run`)
 
@@ -155,16 +155,17 @@ Commands are executed directly without shell interpretation. This prevents:
 
 ### Timeout Handling
 
-All commands have a default 30-second timeout. Long-running commands should specify an explicit timeout:
+All commands have a default 30-second timeout. `:timeout` must be between
+1 and 300000 ms (1 ms to 5 minutes); values outside this window are rejected
+with an error before any process is started. Long-running commands should
+specify an explicit timeout:
 
 ```lisp
 (exec/run "long-process" [] {:timeout 60000})  ; 60 seconds
 ```
 
-When a timeout occurs:
-- Process is killed immediately
-- Exit code is set to -1
-- No zombie processes are left
+When a timeout occurs, the command context requests process termination.
+An executed command killed by its timeout reports exit code -1.
 
 ### Context Cancellation
 
@@ -172,10 +173,10 @@ Processes respect Go context cancellation. If the parent context is cancelled, r
 
 ### Process Cleanup
 
-The plugin ensures proper cleanup:
-- All child processes are waited for (no zombies)
-- Resources (pipes, file descriptors) are released
-- Timeouts are enforced with process termination
+The plugin waits for `exec/run` to finish. A successful pipeline waits for each
+stage. If a later pipeline stage fails to start, the plugin kills and waits for
+the stages already started. A pipeline that returns early on a stage error does
+not guarantee that every remaining stage was waited for.
 
 ### Environment Isolation
 
@@ -200,6 +201,17 @@ variable, secrets included:
 (exec/run "env" [] {:inherit-env true})  ; child inherits everything
 ```
 
+### Output Limits
+
+For both `exec/run` and `exec/pipe`, captured stdout and captured stderr are
+each capped independently at 1 MiB (1,048,576 bytes). In a pipeline only the
+final stage's output is captured, under the same caps.
+
+If either stream would exceed its cap, the excess bytes are discarded, the
+process runs to completion, and the call fails with a `ResourceLimitError`
+instead of returning a truncated result. Output of exactly 1 MiB per stream
+succeeds in full.
+
 ### Trust Model
 
 `exec/run` and `exec/pipe` run arbitrary binaries with the interpreter's own
@@ -214,6 +226,8 @@ Functions return errors for invalid input:
 - Missing required arguments
 - Wrong argument types
 - Invalid command structure
+- `:timeout` outside the 1–300000 ms window (rejected before process start)
+- Captured stdout or stderr exceeding the 1 MiB per-stream cap (`ResourceLimitError`)
 
 Non-zero exit codes are NOT errors - they're returned in the `:exit` field:
 

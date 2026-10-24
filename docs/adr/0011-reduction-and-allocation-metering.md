@@ -344,8 +344,49 @@ Two limits bound that containment:
 - A meter that panics inside `ReturnEval` still unwinds into the caller. The
   recover runs before the lease is returned, which is what makes the lease
   return survive a panic on every path it does cover.
-- Containment covers the source-evaluation entry points only. The
-  `Engine.Call` family settles through `core.FinishEval` at `callBoundary` but
-  fires its `OnPluginCall` observers uncontained, and the hot-reload path
-  (`runtime/watch.go`) flushes pending state without settling through
-  `core.FinishEval` and publishes no event.
+- At this decision's original implementation, containment covered the
+  source-evaluation entry points only. The `Engine.Call` family settled through
+  `core.FinishEval` at `callBoundary` but fired its `OnPluginCall` observers
+  uncontained. Hot reload flushed pending state without `core.FinishEval` and
+  published no event. The amendment below supersedes that hot-reload behavior.
+
+### Amendment: Background reload settlement
+
+Each reload now starts one enclosing evaluation lifecycle before reading.
+It detaches inherited evaluation state from the watcher context and installs
+the engine resource context and absolute deadline. Parsing and all forms share
+that ledger. Once admitted, the lifecycle reaches `core.FinishEval` exactly
+once on success, read failure, form failure, cancellation, or panic recovery.
+Background reloads still publish no `OnEval` events.
+
+The watcher stages definitions in a child environment. It merges child bindings
+only after evaluation, pending-state flush, and settlement succeed. A failed
+settlement prevents publication, unlike an ordinary `Eval` whose writes already
+occurred. This gate does not roll back arbitrary host effects.
+
+The reload boundary contains panics from reading and form execution, logs a
+`PanicError`, and keeps the watch loop active. `startReloadEval` separately
+contains panics during the initial lease draw. The watcher's settlement wrapper
+also contains `ReturnEval` panics that escape core settlement. It logs those
+failures and prevents publication without terminating the watch loop.
+
+The scan records an mtime only after a successful reload and merge. Failed
+versions therefore retry even without another mtime change. After a complete,
+uncanceled scan, it prunes mtimes absent from the scan's readable `.lisp`
+entries. Cancellation and directory-read failure preserve stored mtimes.
+Pruning this bookkeeping does not remove root bindings.
+
+### Amendment (2026-10-24): bounded comparison and counter overflow
+
+Native VM equality involving collections now uses `core.EqualsBounded` through
+the shared builtin work budget. Comparison work consumes reductions and
+observes cancellation and evaluation deadlines. Scalar equality retains its
+direct comparison path.
+
+Reduction and allocation counters reject overflowing charges instead of
+admitting wrapped totals as new credit. This protects terminal refusal without
+changing the fixed size table.
+
+Cache retained-meter callbacks execute outside cache locks. Reservations occur
+before publication, and discarded reservations release only their own charges.
+An oversized candidate runs uncached without evicting resident entries.

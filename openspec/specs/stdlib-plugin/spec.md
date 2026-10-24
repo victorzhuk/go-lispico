@@ -662,3 +662,24 @@ contracts SHALL remain unchanged.
 
 - **WHEN** identical integer-extrema calls run through the public named-call or source-evaluation boundary under the Evaluator and VM
 - **THEN** both modes SHALL return the same exact integer value and type
+
+### Requirement: String splitting admits collection length before allocation
+
+`string/split` and `string/lines` SHALL compute result length before allocating split slices or Lisp result collections.
+Results exceeding `MaxCollectionLen` SHALL fail with `ResourceLimitError`.
+Empty-separator splitting SHALL count UTF-8 sequences.
+
+#### Scenario: Oversized split is refused
+
+- **WHEN** `string/split` would return more elements than `MaxCollectionLen`
+- **THEN** it SHALL return `ResourceLimitError` before allocating the split result
+
+#### Scenario: Oversized lines result is refused
+
+- **WHEN** `string/lines` would return more elements than `MaxCollectionLen`
+- **THEN** it SHALL return `ResourceLimitError` before allocating the split result
+
+#### Scenario: Empty separator preserves Unicode splitting
+
+- **WHEN** `string/split` receives an empty separator
+- **THEN** its length check SHALL count UTF-8 sequences rather than bytes

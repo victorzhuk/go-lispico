@@ -42,6 +42,7 @@ Constrains all file operations to a single root directory.
 - Path traversal (`../`) is blocked
 - Symlinks are resolved and validated
 - Operations outside root directory are rejected
+- All file operations (read, write, exists, ls, mkdir, stat) are pinned to the root directory via `os.Root`: a symlink swapped after validation cannot make an operation reach outside the tree
 
 ```go
 lio.Config{
@@ -56,8 +57,10 @@ Allows fine-grained control with separate read/write allow lists.
 
 **Security Guarantees:**
 - Read and write paths controlled independently
+- An empty or nil applicable allowlist denies every operation of that kind: access is granted only through explicit allowlist entries, never by omission
 - Path traversal blocked
 - Symlinks resolved and validated
+- Paths covered by an allowlist entry inside the plugin root go through the pinned `os.Root`, so a symlink swap after validation cannot escape the tree
 
 ```go
 lio.Config{
@@ -125,7 +128,14 @@ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 ```
 
-**Limitation:** Go's `os.ReadFile` does not support context cancellation at the syscall level. Context is checked before the call (pending operations cancel cleanly) but cannot interrupt an in-progress read.
+**Limitation:** Context checks do not interrupt a filesystem syscall already in progress.
+`io/read-file` reads at most 1 MiB plus one byte to detect oversized files.
+It returns `ResourceLimitError` instead of truncated content and charges successful result bytes to the evaluation ledger.
+
+`io/ls` reads at most `MaxCollectionLen + 1` directory entries when the active
+evaluator supplies a collection limit. It rejects oversized directories before
+allocating the Lisp result list. Evaluators without a collection limiter do not
+bound enumeration.
 
 ### 5. Environment Variables
 

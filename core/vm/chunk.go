@@ -96,6 +96,11 @@ type Chunk struct {
 	// so concurrent runs of a shared chunk never race on it. Nil until built —
 	// the VM then resolves globals through the ordinary chain walk.
 	sites atomic.Pointer[siteTable]
+	// constIdx buckets Constants by structural fingerprint for AddConstant.
+	// Lazy: nil buckets mean an unbuilt index over a possibly prepopulated
+	// pool. Rebuilt from scratch by copies (CopyTreeFreshSites leaves the
+	// zero value), never mutated by the VM.
+	constIdx constIndex
 }
 
 // CapDesc describes how OpClosure builds one entry of a sub-chunk's capture
@@ -249,15 +254,50 @@ func (c *Chunk) site(ip int) *siteCache {
 }
 
 // AddConstant interns v into the chunk's constant pool, returning its index.
-// An equal existing constant is reused rather than duplicated.
+// An equal existing constant is reused rather than duplicated. Candidates are
+// found through the structural fingerprint index; Equals stays authoritative
+// for collisions. Values without a safe fingerprint keep the full linear scan.
 func (c *Chunk) AddConstant(v core.Value) int {
-	for i, existing := range c.Constants {
-		if existing.Equals(v) {
-			return i
+	fp, ok := core.Fingerprint(v)
+	if !ok {
+		for i, existing := range c.Constants {
+			if existing.Equals(v) {
+				return i
+			}
+		}
+		c.Constants = append(c.Constants, v)
+		idx := len(c.Constants) - 1
+		if c.constIdx.buckets != nil {
+			c.constIdx.slow = append(c.constIdx.slow, idx)
+		}
+		return idx
+	}
+	c.ensureConstIndex()
+	if idx, found := c.findConstant(fp, v); found {
+		return idx
+	}
+	idx := len(c.Constants)
+	c.Constants = append(c.Constants, v)
+	c.indexConstant(idx, v)
+	return idx
+}
+
+// findConstant resolves v against the fingerprint bucket and the slow list of
+// un-fingerprintable entries. The len guards keep copies sharing one
+// Constants backing array safe if a sibling copy appended past the shared
+// length.
+func (c *Chunk) findConstant(fp uint64, v core.Value) (int, bool) {
+	for _, i := range c.constIdx.buckets[fp] {
+		if i < len(c.Constants) && c.Constants[i].Equals(v) {
+			return i, true
 		}
 	}
-	c.Constants = append(c.Constants, v)
-	return len(c.Constants) - 1
+	for _, i := range c.constIdx.slow {
+		if i < len(c.Constants) && c.Constants[i].Equals(v) {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // AddChargedConstant interns v and records its OpConstCharged allocation charge.

@@ -117,7 +117,10 @@ func (p *Plugin) stream(ctx context.Context, eval core.Evaluator, args []core.Va
 	req := p.parseRequestOptions(opts, env)
 	req.Stream = true
 
-	chunks, err := p.client.Stream(ctx, req)
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	chunks, err := p.client.Stream(sctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("llm/stream: %w", err)
 	}
@@ -135,6 +138,10 @@ func (p *Plugin) stream(ctx context.Context, eval core.Evaluator, args []core.Va
 		if err != nil {
 			return nil, fmt.Errorf("llm/stream handler: %w", err)
 		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("llm/stream: %w", err)
 	}
 
 	return core.Nil{}, nil

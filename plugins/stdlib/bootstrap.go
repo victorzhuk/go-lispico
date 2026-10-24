@@ -56,8 +56,8 @@ func (p *Plugin) loadBootstrap(env *core.Env) error {
 	ctx := context.Background()
 	for _, entry := range stdlibBootstrapEntries() {
 		// A lazy layer defers the definition behind first touch; the
-		// materializer executes this same source then (see
-		// stdlibLazyMaterializer.materializeBootstrap).
+		// materializer stages this same source then (see
+		// stdlibLazyMaterializer.stageBootstrap).
 		if env.RegisterSource(entry.name, entry.source) {
 			continue
 		}

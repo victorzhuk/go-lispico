@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `core.Env.SetIfUnoccupied` and `SetFuncIfUnoccupied` atomically fill only
+  unoccupied local cells in their respective namespaces. Both preserve
+  registration-view journaling and retained-meter accounting.
+- `core.Env.SetBothIfUnoccupied` atomically fills both namespaces only when
+  neither local cell is live. One retained-capacity reservation covers both
+  writes. An occupied cell or reservation failure leaves both cells untouched.
+
 ### Changed
 
 - The builder-to-spec migration table published with 0.15.0 remains the
@@ -14,6 +23,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `core.DialectSpec`: for example `d.WithAdapter(name, id, fn)` maps to
   `DialectSpec.Adapters[name] = core.Adapter{ID: id, Value: fn}`. No
   adapter-related spec field changed since.
+
+- **Breaking for embedders:** `core.LazyLayer` replaces
+  `TombstoneForDelete(env *Env, name string)` with
+  `BeginDelete(env *Env, name string) func()`. Implementations must exclude
+  publication for that name until the returned release function runs;
+  `Env.Delete` calls it before removing cells and defers the release.
+
+### Fixed
+
+- Evaluator/VM parity: computed call heads no longer run during macro
+  discovery, Lisp-2 value bindings no longer hide function-cell macros,
+  and tree-walker fallback can call compiled closures. Quasiquoted maps
+  with unquoted entries use the tree-walker instead of becoming constants.
+- Binding freshness and concurrency: replacing a live environment cell
+  invalidates VM lookup caches through `NameGen`, captured mutable locals
+  synchronize reads and writes per cell, and child environments read
+  inherited configuration under the parent lock.
+- Lazy plugin publication: deferred definitions are staged before
+  publication, so deletion or unload during initialization cannot resurrect
+  bindings. Atomic publication preserves concurrent host bindings.
+  Dual-namespace Go builtins publish transactionally, without leaving one cell
+  written if the other cannot be reserved. Published lazy Lambda/Macro values capture the
+  root environment, so later root rebinds and deletions remain visible.
+  Failed template builds discard partial registrations before retry.
+- Value ownership: compiled chunk trees detach source-backed text after a
+  successful cache reservation and before publication. Reader output remains
+  zero-copy for unescaped strings, symbols, and keywords. Escaped literals
+  keep their decoded storage. Declined, duplicate-hit, oversized, refused,
+  and uncached candidates remain borrowed. Detachment covers names, nested
+  chunks, containers, and Macro/Lambda prototypes without a public API change.
+  Retained accounting includes chunk names. Variadic argument lists no longer
+  alias caller storage, and pooled VMs clear stale operand and frame references.
+  Constant-pool interning uses structural fingerprints with equality checks
+  for collisions, avoiding repeated full scans for indexed constants.
+- Resource limits: native VM collection equality observes work budgets,
+  cancellation, and deadlines. String splits and lines, nested decoded JSON
+  containers, and `io/ls` results enforce collection limits before building
+  their Lisp collections. `io/ls` also bounds directory enumeration to the
+  collection limit plus one entry. Meter counters reject overflowing charges instead
+  of admitting them as fresh credit.
+- Runtime source files: `EvalFile`, each `LoadDir` file, and watcher reloads
+  reject files larger than `MaxAllocationBytes` before parsing. Bounded reads
+  check caller cancellation without buffering the full oversized file.
+- Bytecode cache: retained-meter reservation, rollback, and eviction
+  callbacks run outside cache locks. Candidates exceeding a cache ceiling
+  alone run uncached without evicting resident chunks.
+- Failed plugin registration refunds removed operation-owned cells' retained
+  capacity and releases their settled meter charges exactly once. Pending
+  charges for removed cells are discarded before settlement.
+- Watcher lifecycle: reloads share one evaluation budget across parsing and
+  all forms, settle before merging bindings, and contain meter panics.
+  Failed reloads retry even without a new timestamp; completed scans prune
+  timestamps for removed files.
+- Release gate: verdict runs and inconclusive reruns select only the
+  committed benchmark families. Classification-only capture keeps the
+  broader benchmark inventory separate.
+- Correctness gates compare VM and tree-walker runs with independent
+  environments. FSM concurrency checks retry only `already in progress`
+  contention errors, within a fixed retry bound. CI test jobs use explicit
+  deadlines and bounded package/test concurrency.
+- Documentation now distinguishes the default VM from tree-walker fallback,
+  limits tail-call optimization to explicit `loop`/`recur`, qualifies the
+  core-only dependency claim, and corrects the error-code inventory.
+
+- lio plugin: relaxed mode denies access when the applicable read or write
+  allowlist is empty. Directory creation, listing, and metadata operations
+  use the pinned sandbox root to prevent symlink-swap escapes.
+- LLM plugin: completion, embedding, and streaming responses are capped at
+  8 MiB, and provider error bodies are omitted from errors. Cancellation
+  returns the context error from `llm/stream`. Direct consumers receive a
+  terminal context-error chunk without blocking delivery, even with a full
+  buffer, which may require discarding unread canceled-stream data.
+  Clean upstream EOF before `[DONE]` or `finish_reason` returns
+  `stream ended without completion`. A `finish_reason` followed by `[DONE]`
+  emits exactly one terminal Done chunk. Successful-stream behavior is unchanged.
+- exec plugin: per-call timeouts must be between 1 and 300,000 milliseconds.
+  Captured stdout and stderr are each capped at 1 MiB, including the final
+  pipeline command; excess output returns a resource-limit error.
+- net plugin: redirects are not followed, including with per-request
+  timeouts. Malformed-URL and transport errors omit raw URLs that could
+  expose credentials or query secrets. Request-construction failures wrap
+  `net.ErrInvalidURL`.
 
 ## [0.17.1] - 2026-10-17
 

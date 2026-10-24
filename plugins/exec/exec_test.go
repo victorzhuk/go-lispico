@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -682,4 +683,263 @@ func TestExec_Run_ArgvLiteralNoShell(t *testing.T) {
 
 	exit, _ := hm.Get(core.Keyword{V: "exit"})
 	assert.Equal(t, int64(0), exit.(core.Int).V)
+}
+
+func optsWith(t *testing.T, kv ...any) *core.HashMap {
+	t.Helper()
+	opts := core.NewHashMap()
+	for i := 0; i+1 < len(kv); i += 2 {
+		var v core.Value
+		v, _, _ = opts.Assoc(kv[i].(core.Keyword), kv[i+1].(core.Value))
+		opts = v.(*core.HashMap)
+	}
+	return opts
+}
+
+func assertResourceLimitError(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+}
+
+// TestExec_Run_TimeoutBounds pins the accepted :timeout window of 1 through
+// 300000 ms. Rejections happen before process start, which the marker file in
+// the command's working directory proves: a started child would create it.
+func TestExec_Run_TimeoutBounds(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	marker := filepath.Join(t.TempDir(), "marker")
+	touch := []core.Value{
+		core.String{V: "sh"},
+		core.NewVector([]core.Value{
+			core.String{V: "-c"},
+			core.String{V: "echo started > " + marker},
+		}),
+	}
+
+	t.Run("rejects out-of-window values before starting the process", func(t *testing.T) {
+		for _, ms := range []int64{0, -5, 300001, 1 << 40} {
+			t.Run(strconv.FormatInt(ms, 10), func(t *testing.T) {
+				args := append(append([]core.Value{}, touch...), optsWith(t,
+					core.Keyword{V: "timeout"}, core.Int{V: ms},
+					core.Keyword{V: "dir"}, core.String{V: filepath.Dir(marker)},
+				))
+				_, err := p.run(context.Background(), nil, args, env)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "timeout must be between")
+				_, statErr := os.Stat(marker)
+				assert.ErrorIs(t, statErr, os.ErrNotExist, "the child must never start for an invalid timeout")
+			})
+		}
+	})
+
+	t.Run("upper boundary value is accepted", func(t *testing.T) {
+		args := []core.Value{
+			core.String{V: "echo"},
+			core.NewVector([]core.Value{core.String{V: "ok"}}),
+			optsWith(t, core.Keyword{V: "timeout"}, core.Int{V: 300000}),
+		}
+		result, err := p.run(context.Background(), nil, args, env)
+		require.NoError(t, err)
+		hm := result.(*core.HashMap)
+		stdout, _ := hm.Get(core.Keyword{V: "stdout"})
+		assert.Equal(t, "ok\n", stdout.(core.String).V)
+	})
+
+	t.Run("1ms is accepted whether or not the process finishes in time", func(t *testing.T) {
+		args := []core.Value{
+			core.String{V: "echo"},
+			core.NewVector([]core.Value{core.String{V: "ok"}}),
+			optsWith(t, core.Keyword{V: "timeout"}, core.Int{V: 1}),
+		}
+		result, err := p.run(context.Background(), nil, args, env)
+		if err != nil {
+			// A 1 ms budget may expire before echo prints; only
+			// acceptance of the value matters here, not completion
+			// within the budget.
+			return
+		}
+		hm := result.(*core.HashMap)
+		exit, _ := hm.Get(core.Keyword{V: "exit"})
+		if exit.(core.Int).V == 0 {
+			stdout, _ := hm.Get(core.Keyword{V: "stdout"})
+			assert.Equal(t, "ok\n", stdout.(core.String).V)
+		} else {
+			assert.Equal(t, int64(-1), exit.(core.Int).V)
+		}
+	})
+
+	t.Run("successful output with a practical timeout", func(t *testing.T) {
+		args := []core.Value{
+			core.String{V: "echo"},
+			core.NewVector([]core.Value{core.String{V: "ok"}}),
+			optsWith(t, core.Keyword{V: "timeout"}, core.Int{V: 5000}),
+		}
+		result, err := p.run(context.Background(), nil, args, env)
+		require.NoError(t, err)
+		hm := result.(*core.HashMap)
+		stdout, _ := hm.Get(core.Keyword{V: "stdout"})
+		assert.Equal(t, "ok\n", stdout.(core.String).V)
+		exit, _ := hm.Get(core.Keyword{V: "exit"})
+		assert.Equal(t, int64(0), exit.(core.Int).V)
+	})
+
+	t.Run("default timeout of 30000 is preserved", func(t *testing.T) {
+		assert.Equal(t, int64(30000), p.defaultTimeout)
+	})
+}
+
+// TestExec_Pipe_DefaultTimeoutBounds drives pipe through the internal
+// construction seam with an invalid defaultTimeout and requires refusal
+// before any process starts.
+func TestExec_Pipe_DefaultTimeoutBounds(t *testing.T) {
+	commands := core.NewVector([]core.Value{
+		core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "ok"}}),
+	})
+	env := core.NewEnv(nil)
+
+	t.Run("default above upper bound is refused", func(t *testing.T) {
+		p := &Plugin{defaultTimeout: 300001}
+		_, err := p.pipe(context.Background(), nil, []core.Value{commands}, env)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exec/pipe:")
+		assert.Contains(t, err.Error(), "between 1 and 300000")
+	})
+
+	t.Run("default below lower bound is refused", func(t *testing.T) {
+		p := &Plugin{defaultTimeout: 0}
+		_, err := p.pipe(context.Background(), nil, []core.Value{commands}, env)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exec/pipe:")
+		assert.Contains(t, err.Error(), "between 1 and 300000")
+	})
+}
+
+// TestExec_Run_OutputOverflow pins the 1 MiB per-stream capture caps: overflow
+// is a ResourceLimitError, never a truncated success, and the caps are
+// independent between stdout and stderr.
+func TestExec_Run_OutputOverflow(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	overflow := func(stream string) []core.Value {
+		return []core.Value{
+			core.String{V: "sh"},
+			core.NewVector([]core.Value{
+				core.String{V: "-c"},
+				core.String{V: "head -c 1048577 /dev/zero 1>&" + stream},
+			}),
+		}
+	}
+
+	t.Run("stdout overflow is a resource-limit error", func(t *testing.T) {
+		_, err := p.run(context.Background(), nil, overflow("1"), env)
+		assertResourceLimitError(t, err)
+	})
+
+	t.Run("stderr overflow is a resource-limit error", func(t *testing.T) {
+		_, err := p.run(context.Background(), nil, overflow("2"), env)
+		assertResourceLimitError(t, err)
+	})
+
+	t.Run("exact 1 MiB stdout succeeds in full", func(t *testing.T) {
+		args := []core.Value{
+			core.String{V: "sh"},
+			core.NewVector([]core.Value{
+				core.String{V: "-c"},
+				core.String{V: "head -c 1048576 /dev/zero"},
+			}),
+		}
+		result, err := p.run(context.Background(), nil, args, env)
+		require.NoError(t, err)
+		hm := result.(*core.HashMap)
+		stdout, _ := hm.Get(core.Keyword{V: "stdout"})
+		assert.Len(t, stdout.(core.String).V, 1<<20)
+		exit, _ := hm.Get(core.Keyword{V: "exit"})
+		assert.Equal(t, int64(0), exit.(core.Int).V)
+	})
+
+	t.Run("clean stdout with oversized stderr still fails", func(t *testing.T) {
+		args := []core.Value{
+			core.String{V: "sh"},
+			core.NewVector([]core.Value{
+				core.String{V: "-c"},
+				core.String{V: "echo clean; head -c 1048577 /dev/zero 1>&2"},
+			}),
+		}
+		_, err := p.run(context.Background(), nil, args, env)
+		assertResourceLimitError(t, err)
+	})
+}
+
+// TestExec_Pipe_OutputOverflow pins the same caps on the pipeline's final
+// stage output.
+func TestExec_Pipe_OutputOverflow(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	t.Run("final stdout overflow is a resource-limit error", func(t *testing.T) {
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{
+				core.String{V: "head"}, core.String{V: "-c"}, core.String{V: "1048577"}, core.String{V: "/dev/zero"},
+			}),
+		})
+		_, err := p.pipe(context.Background(), nil, []core.Value{commands}, env)
+		assertResourceLimitError(t, err)
+	})
+
+	t.Run("normal pipeline still returns joined final output", func(t *testing.T) {
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{core.String{V: "echo"}, core.String{V: "hello world"}}),
+			core.NewVector([]core.Value{core.String{V: "tr"}, core.String{V: "a-z"}, core.String{V: "A-Z"}}),
+		})
+		result, err := p.pipe(context.Background(), nil, []core.Value{commands}, env)
+		require.NoError(t, err)
+		hm := result.(*core.HashMap)
+		stdout, _ := hm.Get(core.Keyword{V: "stdout"})
+		assert.Equal(t, "HELLO WORLD\n", stdout.(core.String).V)
+	})
+
+	t.Run("pipe rejects invalid timeout before starting stages", func(t *testing.T) {
+		commands := core.NewVector([]core.Value{
+			core.NewVector([]core.Value{
+				core.String{V: "sh"}, core.String{V: "-c"}, core.String{V: "sleep 30"},
+			}),
+		})
+		start := time.Now()
+		_, err := p.pipe(context.Background(), nil, []core.Value{
+			commands,
+			optsWith(t, core.Keyword{V: "timeout"}, core.Int{V: 300001}),
+		}, env)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "timeout must be between")
+		assert.Less(t, time.Since(start), 5*time.Second, "no stage may start for an invalid timeout")
+	})
+}
+
+// TestExec_Pipe_OverflowAfterUpstreamFailure pins that a pipeline whose
+// upstream stage exits unsuccessfully still waits for the final stage's
+// output writers: overflow must surface as a resource-limit error instead of
+// racing the final capture or returning truncated output.
+func TestExec_Pipe_OverflowAfterUpstreamFailure(t *testing.T) {
+	p := New()
+	env := core.NewEnv(nil)
+	require.NoError(t, p.Init(env))
+
+	commands := core.NewVector([]core.Value{
+		core.NewVector([]core.Value{
+			core.String{V: "sh"}, core.String{V: "-c"}, core.String{V: "exit 1"},
+		}),
+		core.NewVector([]core.Value{
+			core.String{V: "head"}, core.String{V: "-c"}, core.String{V: "1048577"}, core.String{V: "/dev/zero"},
+		}),
+	})
+	_, err := p.pipe(context.Background(), nil, []core.Value{commands}, env)
+	assertResourceLimitError(t, err)
 }

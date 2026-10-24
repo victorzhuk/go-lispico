@@ -57,7 +57,7 @@ previous local layout.
 
 #### Scenario: Unsupported form defers to the tree-walker
 
-- **WHEN** a program uses a form the VM does not compile (a `defmacro` nested inside a larger form, or `unquote-splicing`)
+- **WHEN** a program uses nested `defmacro`, lexical `def`/`defn`, `unquote-splicing`, or a quasiquoted map containing unquoted entries
 - **THEN** compilation SHALL return a typed "unsupported in bytecode" error and the runtime SHALL evaluate that form with the tree-walker, never panicking
 
 #### Scenario: A top-level defmacro compiles
@@ -83,7 +83,7 @@ previous local layout.
 #### Scenario: Variadic functions bind rest arguments
 
 - **WHEN** a variadic `fn` is applied with more arguments than fixed parameters
-- **THEN** the rest arguments SHALL be bound as a list, matching `Env.ChildVariadic`
+- **THEN** the rest arguments SHALL be bound as an independently owned list, matching `Env.ChildVariadic` without aliasing caller or VM operand storage
 
 #### Scenario: Each evaluation is isolated
 
@@ -180,6 +180,7 @@ assert identical results, and the runtime SHALL be tested end to end through
 
 - **WHEN** the cross-validation corpus (all compiled special forms, closures, variadics, macros, `loop`/`recur`, `try`/`catch`/`throw` with a non-String throw, and empty-body functions) runs through both evaluators
 - **THEN** every program SHALL produce equal results or the same class of error under both
+- **AND** each execution mode SHALL use an independent environment so one run cannot seed the other's bindings
 
 #### Scenario: Runtime integration through WithBytecode
 
@@ -786,6 +787,31 @@ artifact map, statistics, or cache-control hooks.
 - **WHEN** multiple goroutines call `EvalCached` concurrently on one shared Engine, whether the cache is single-locked or sharded
 - **THEN** `go test -race` SHALL report no data race, and hit/miss/invalidation behavior SHALL match single-goroutine use for the same sequence of operations
 
+### Requirement: Cache admission detaches retained source text
+
+`runtime.EvalCached` SHALL detach a compiled chunk tree only after a successful
+cache reservation and before publication. Detachment SHALL leave the borrowed
+candidate unchanged. Retained accounting SHALL include chunk names. Cache hits
+SHALL skip detachment. This ownership boundary SHALL NOT change the public API.
+
+#### Scenario: Admitted tree owns retained text
+
+- **WHEN** a reserved compiled chunk is published
+- **THEN** its chunk names, local names, nested chunks, and constants SHALL NOT alias the source
+- **AND** this guarantee SHALL include text within containers and `Macro`/`Lambda` prototypes
+
+#### Scenario: Current-read escaped payload keeps its storage
+
+- **WHEN** detachment encounters an escaped payload from the current read
+- **THEN** it SHALL preserve that payload by storage identity, not content equality
+- **AND** it SHALL conservatively copy unknown macro-origin strings
+
+#### Scenario: Non-admitted candidate remains borrowed
+
+- **WHEN** a candidate is declined, encounters a duplicate hit, exceeds a cache ceiling, is refused, or runs uncached
+- **THEN** the candidate SHALL remain borrowed rather than receive parser-wide cloning
+- **AND** a failed detachment or publication SHALL release its reservation without publishing a partial tree
+
 ### Requirement: Lexical bindings preserve surrounding expression operands
 
 Compiled lexical bindings SHALL preserve the callee and every previously
@@ -1107,3 +1133,44 @@ The deep macro-expansion pre-pass SHALL expand macros inside the binding forms o
 
 - **WHEN** deep expansion is invoked on a binding form whose bindings operand is neither a vector of pairs nor a list of pairs
 - **THEN** expansion SHALL report the binding syntax error
+
+### Requirement: Captured mutable locals synchronize per cell
+
+Each captured mutable local SHALL synchronize reads and writes through its shared cell.
+Closures invoked concurrently SHALL NOT race on the captured value.
+
+#### Scenario: Concurrent closures access one captured local
+
+- **WHEN** closures sharing a mutable local read and write it concurrently
+- **THEN** each access SHALL synchronize through that local's cell
+
+### Requirement: Native collection equality observes evaluation budgets
+
+Native VM equality involving collections SHALL use bounded structural comparison.
+The comparison SHALL charge logical work and observe cancellation and evaluation deadlines through the shared evaluation state.
+
+#### Scenario: Collection comparison exhausts its budget
+
+- **WHEN** native equality traverses collections beyond the available reduction budget
+- **THEN** evaluation SHALL return `ResourceLimitError` instead of completing an uncharged comparison
+
+### Requirement: Constant interning indexes safe fingerprints
+
+Constant interning SHALL index values with safe structural fingerprints.
+Equality SHALL remain authoritative for fingerprint collisions.
+Values without safe fingerprints SHALL retain equality-based fallback lookup.
+
+#### Scenario: Fingerprint collision does not merge unequal constants
+
+- **WHEN** two unequal constants have the same fingerprint
+- **THEN** the pool SHALL retain distinct constants after equality checks
+
+### Requirement: Tree-walker fallback can invoke compiled closures
+
+Bytecode engine construction SHALL configure the tree-walker's callable applier for compiled closures.
+The tree-walker SHALL retain native dispatch for Go functions, ordinary Lambdas, and Keywords.
+
+#### Scenario: Unsupported form calls an existing compiled closure
+
+- **WHEN** a whole-form fallback invokes a closure compiled by an earlier evaluation
+- **THEN** the configured applier SHALL execute that closure without replacing native tree-walker dispatch

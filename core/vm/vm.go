@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,9 +29,24 @@ type Closure struct {
 // the binding site, written through on every mutation, referenced directly by
 // every closure over the variable. VM-internal: unlike core.Cell it carries no
 // canonical flag or version, since captured locals never participate in
-// name-keyed env lookup or site caching.
+// name-keyed env lookup or site caching. Each box guards its value with its
+// own mutex — closures escape the owning VM's single-threaded run loop via
+// reentrant host dispatches, so two goroutines may touch one box.
 type cellBox struct {
-	v core.Value
+	mu sync.Mutex
+	v  core.Value
+}
+
+func (b *cellBox) load() core.Value {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.v
+}
+
+func (b *cellBox) store(v core.Value) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.v = v
 }
 
 // cellBox sits in frame slots, so it must satisfy core.Value even though user
@@ -295,6 +311,12 @@ func (vm *VM) ResetIncremental() error {
 		vm.Reset()
 		return fmt.Errorf("vm: ResetIncremental invariant violated (stack len=%d, want 0)", l)
 	}
+	// The run/apply loop truncated the slices but left stale slots in the
+	// retained backing arrays; clear them so a pooled VM does not keep the
+	// last call's operand and frame object graphs reachable.
+	clear(vm.stack[:cap(vm.stack)])
+	clear(vm.frames[:cap(vm.frames)])
+	clear(vm.freezeStack[:cap(vm.freezeStack)])
 	vm.structDepthVal = 0
 	vm.structDepth = &vm.ownStructDepth
 	vm.callDepthVal = 0
@@ -981,7 +1003,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			if !ok {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("cell slot %d does not hold a cell", instr.A())}
 			}
-			vm.push(box.v)
+			vm.push(box.load())
 
 		case OpSetCell:
 			slot := base + instr.A()
@@ -996,7 +1018,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			if err != nil {
 				return nil, err
 			}
-			box.v = top
+			box.store(top)
 
 		case OpBindCell:
 			slot := base + instr.A()
@@ -1014,7 +1036,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			if idx < 0 || idx >= len(caps) {
 				return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("capture index %d out of range", idx)}
 			}
-			vm.push(caps[idx].v)
+			vm.push(caps[idx].load())
 
 		case OpSetCap:
 			idx := instr.A()
@@ -1025,7 +1047,7 @@ func (vm *VM) run(ctx context.Context) (result core.Value, err error) {
 			if err != nil {
 				return nil, err
 			}
-			caps[idx].v = top
+			caps[idx].store(top)
 
 		case OpGetGlobal:
 			sym := chunk.Constants[instr.A()].(core.Symbol)
@@ -1384,7 +1406,7 @@ func (vm *VM) dispatchNativeOp(ctx context.Context, env *core.Env, op Opcode, ar
 		rec := vm.freezeStack[len(vm.freezeStack)-1]
 		vm.freezeStack = vm.freezeStack[:len(vm.freezeStack)-1]
 		if rec.op == op {
-			return vm.execNativeFastFused(op, argc, env)
+			return vm.execNativeFastFused(ctx, op, argc, env)
 		}
 		if rec.val != nil {
 			// Splice the head-time operator under the args; vm.call expects
@@ -1416,7 +1438,7 @@ func (vm *VM) dispatchNativeOp(ctx context.Context, env *core.Env, op Opcode, ar
 // replacing them with the result (the operator head slot was already dropped).
 // The two-argument, both-Int shape dominates rule code, so it is special-cased
 // through nativeInt2 before falling back to the general N-ary/mixed-type path.
-func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
+func (vm *VM) execNativeFastFused(ctx context.Context, op Opcode, argc int, env *core.Env) error {
 	d := len(vm.stack) - argc
 	args := vm.stack[d:]
 
@@ -1428,6 +1450,14 @@ func (vm *VM) execNativeFastFused(op Opcode, argc int, env *core.Env) error {
 				result, handled = nativeInt2(op, a, b)
 			}
 		}
+	}
+	if !handled && op == OpEq && hasStructuralArg(args...) {
+		var err error
+		result, err = vm.boundedEqArgs(ctx, args...)
+		if err != nil {
+			return err
+		}
+		handled = true
 	}
 	if !handled {
 		eval := vm.eval
@@ -1481,7 +1511,7 @@ func (vm *VM) dispatchFusedNativeOp(ctx context.Context, chunk *Chunk, env *core
 	}
 
 	if canon {
-		result, err := vm.execFusedNative(fo.Op, a, b, env)
+		result, err := vm.execFusedNative(ctx, fo.Op, a, b, env)
 		if err != nil {
 			return err
 		}
@@ -1518,7 +1548,7 @@ func (vm *VM) readFusedOperand(base int, kind OperandKind, a int, chunk *Chunk) 
 		return nil, &core.LispicoError{Code: "BytecodeError", Message: fmt.Sprintf("local slot %d out of range", a)}
 	}
 	if box, isCell := vm.stack[slot].(*cellBox); isCell {
-		return box.v, nil
+		return box.load(), nil
 	}
 	return vm.stack[slot], nil
 }
@@ -1527,13 +1557,16 @@ func (vm *VM) readFusedOperand(base int, kind OperandKind, a int, chunk *Chunk) 
 // nativeInt2's fast path and execNative's general-case fallback unchanged —
 // the only difference from execNativeFastFused is that its operands never
 // sat on the value stack to begin with.
-func (vm *VM) execFusedNative(op Opcode, a, b core.Value, env *core.Env) (core.Value, error) {
+func (vm *VM) execFusedNative(ctx context.Context, op Opcode, a, b core.Value, env *core.Env) (core.Value, error) {
 	if ai, aOK := a.(core.Int); aOK {
 		if bi, bOK := b.(core.Int); bOK {
 			if result, handled := nativeInt2(op, ai, bi); handled {
 				return result, nil
 			}
 		}
+	}
+	if op == OpEq && hasStructuralArg(a, b) {
+		return vm.boundedEqArgs(ctx, a, b)
 	}
 	eval := vm.eval
 	if eval == nil {
@@ -1923,6 +1956,54 @@ func nativeEq(args []core.Value) (core.Value, error) {
 		if !args[0].Equals(arg) {
 			return core.BoxBool(false), nil
 		}
+	}
+	return core.BoxBool(true), nil
+}
+
+// hasStructuralArg reports whether any operand is a collection, whose Equals
+// walks the whole structure.
+func hasStructuralArg(values ...core.Value) bool {
+	for _, v := range values {
+		switch v.(type) {
+		case core.List, core.Vector, *core.HashMap:
+			return true
+		}
+	}
+	return false
+}
+
+// boundedEqArgs is nativeEq's shape for operand sets containing a collection:
+// the structural walk goes through core.EqualsBounded over the VM's re-entry
+// eval state — the same budget stdlib's = settles — so deep prebound
+// comparisons charge reductions, deadlines, and cancellation like any other
+// GoFunc work instead of traversing uncharged. Scalars keep nativeEq's direct
+// Equals path.
+func (vm *VM) boundedEqArgs(ctx context.Context, args ...core.Value) (core.Value, error) {
+	if len(args) == 0 {
+		return nil, arityErrorf("=: requires at least 1 argument")
+	}
+	reCtx, err := vm.reentrantCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	budget := core.NewBuiltinWorkBudget(reCtx)
+	if err := budget.Step(); err != nil {
+		return nil, budget.Finish(err)
+	}
+	for _, arg := range args[1:] {
+		eq, err := core.EqualsBounded(args[0], arg, budget)
+		if err != nil {
+			return nil, budget.Finish(err)
+		}
+		if !eq {
+			if ferr := budget.Flush(); ferr != nil {
+				return nil, ferr
+			}
+			return core.BoxBool(false), nil
+		}
+	}
+	if ferr := budget.Flush(); ferr != nil {
+		return nil, ferr
 	}
 	return core.BoxBool(true), nil
 }

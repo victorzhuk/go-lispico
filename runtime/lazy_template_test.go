@@ -259,7 +259,7 @@ func TestPublishedEntries_AllocsZeroOnCompleteLayer(t *testing.T) {
 // TestNewStdlibLazyEngineState_NoBookkeepingUntilFirstWrite pins task 3.1: an
 // engine that never loads a template-routed plugin must never allocate the
 // active/installed/tombstoned maps — only activate, recordInstall, and
-// TombstoneForDelete create them, on their own first write.
+// BeginDelete create them, on their own first write.
 func TestNewStdlibLazyEngineState_NoBookkeepingUntilFirstWrite(t *testing.T) {
 	t.Parallel()
 

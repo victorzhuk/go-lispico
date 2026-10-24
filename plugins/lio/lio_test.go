@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -354,16 +355,190 @@ func TestSandboxInvalidDenyPattern(t *testing.T) {
 
 func TestSandboxRelaxedEmptyAllowList(t *testing.T) {
 	tmpDir := t.TempDir()
-	sb, err := NewSandbox(Config{
-		Mode:      ModeRelaxed,
-		AllowRead: []string{},
+	path := filepath.Join(tmpDir, "test.txt")
+
+	t.Run("empty read allowlist denies reads", func(t *testing.T) {
+		sb, err := NewSandbox(Config{
+			Mode:      ModeRelaxed,
+			AllowRead: []string{},
+		})
+		require.NoError(t, err)
+
+		_, err = sb.Validate(path, false)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "read not allowed")
 	})
+
+	t.Run("nil write allowlist denies writes", func(t *testing.T) {
+		sb, err := NewSandbox(Config{
+			Mode:       ModeRelaxed,
+			AllowRead:  []string{tmpDir},
+			AllowWrite: nil,
+		})
+		require.NoError(t, err)
+
+		_, err = sb.Validate(path, true)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "write not allowed")
+	})
+
+	t.Run("both lists nil deny everything", func(t *testing.T) {
+		sb, err := NewSandbox(Config{Mode: ModeRelaxed})
+		require.NoError(t, err)
+
+		_, err = sb.Validate(path, false)
+		assert.Error(t, err)
+		_, err = sb.Validate(path, true)
+		assert.Error(t, err)
+	})
+}
+
+func TestSandboxModeNoneUnrestricted(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	sb, err := NewSandbox(Config{Mode: ModeNone})
 	require.NoError(t, err)
 
-	path := filepath.Join(tmpDir, "test.txt")
-	validated, err := sb.Validate(path, false)
-	assert.NoError(t, err)
-	assert.Equal(t, path, validated)
+	inside := filepath.Join(tmpDir, "inside.txt")
+	require.NoError(t, os.WriteFile(inside, []byte("inside"), 0o644))
+
+	t.Run("ModeNone bypasses all validation", func(t *testing.T) {
+		for _, path := range []string{inside, "/etc/hostname", filepath.Join(tmpDir, "missing.txt")} {
+			validated, verr := sb.Validate(path, true)
+			assert.NoError(t, verr)
+			assert.NotEmpty(t, validated)
+			_, verr = sb.Validate(path, false)
+			assert.NoError(t, verr)
+		}
+	})
+
+	t.Run("ModeNone plugin reads and stats any path", func(t *testing.T) {
+		plugin := NewUnsafe()
+
+		result, err := plugin.exists(nil, nil, []core.Value{core.String{V: inside}}, nil)
+		require.NoError(t, err)
+		assert.True(t, result.(core.Bool).V)
+
+		_, err = plugin.stat(nil, nil, []core.Value{core.String{V: inside}}, nil)
+		assert.NoError(t, err)
+
+		_, err = plugin.readFile(nil, nil, []core.Value{core.String{V: inside}}, nil)
+		assert.NoError(t, err)
+	})
+}
+
+func TestRootConfinedOpsSymlinkSwap(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "leaked.txt"), []byte("leaked"), 0o644))
+	require.NoError(t, os.Mkdir(filepath.Join(root, "d"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "d", "note.txt"), []byte("inside"), 0o644))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+
+	validatedNote := filepath.Join(root, "d", "note.txt")
+	_, err = sb.Validate(validatedNote, false)
+	require.NoError(t, err)
+
+	// Swap the validated directory component for a symlink to the outside
+	// tree after Validate, reproducing the TOCTOU window for every op.
+	require.NoError(t, os.Rename(filepath.Join(root, "d"), filepath.Join(root, "d.real")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "d")))
+
+	t.Run("exists never confirms outside content", func(t *testing.T) {
+		plugin, err := New(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		// After the swap the path resolves outside the root: validation
+		// rejects it, or root-confined stat reports it as absent. Either
+		// way it must never report the outside file as existing.
+		result, err := plugin.exists(nil, nil, []core.Value{core.String{V: validatedNote}}, nil)
+		if err == nil {
+			assert.False(t, result.(core.Bool).V,
+				"exists must not confirm the swapped outside target")
+		} else {
+			assert.Contains(t, err.Error(), "io/exists?")
+		}
+	})
+
+	t.Run("ls never lists outside entries", func(t *testing.T) {
+		plugin, err := New(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		result, err := plugin.ls(nil, nil, []core.Value{core.String{V: filepath.Join(root, "d")}}, nil)
+		if err == nil {
+			for _, item := range result.(core.List).ToSlice() {
+				assert.NotEqual(t, "leaked.txt", item.(core.String).V,
+					"ls must not read entries through the swapped symlink")
+			}
+		} else {
+			assert.Contains(t, err.Error(), "io/ls")
+		}
+	})
+
+	t.Run("stat never reports outside file", func(t *testing.T) {
+		plugin, err := New(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		_, err = plugin.stat(nil, nil, []core.Value{core.String{V: filepath.Join(root, "d", "secret.txt")}}, nil)
+		assert.Error(t, err, "stat through root must refuse the swapped symlink")
+	})
+
+	t.Run("mkdir never creates outside", func(t *testing.T) {
+		plugin, err := New(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		_, err = plugin.mkdir(nil, nil, []core.Value{core.String{V: filepath.Join(root, "d", "sub")}}, nil)
+		assert.Error(t, err)
+
+		_, err = os.Stat(filepath.Join(outside, "sub"))
+		assert.True(t, os.IsNotExist(err), "mkdir must not create inside the outside tree")
+	})
+
+	t.Run("read through swapped symlink never returns outside content", func(t *testing.T) {
+		plugin, err := New(Config{Mode: ModeStrict, RootDir: root})
+		require.NoError(t, err)
+
+		result, err := plugin.readFile(nil, nil, []core.Value{core.String{V: validatedNote}}, nil)
+		if err == nil {
+			assert.NotEqual(t, "secret", result.(core.String).V,
+				"read must not observe outside content via the swapped symlink")
+		}
+	})
+}
+
+func TestNoContentEscapeThroughValidatedPath(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("top secret"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "inside.txt"), []byte("inside"), 0o644))
+
+	sb, err := NewSandbox(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+
+	validated, err := sb.Validate(filepath.Join(root, "inside.txt"), false)
+	require.NoError(t, err)
+
+	// Turn the validated path's leaf into a symlink pointing outside after
+	// validation: openFileWithin must refuse, never read the outside file.
+	require.NoError(t, os.Rename(filepath.Join(root, "inside.txt"), filepath.Join(root, "inside.real")))
+	require.NoError(t, os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "inside.txt")))
+
+	f, err := sb.openFileWithin(validated, os.O_RDONLY, 0)
+	if err == nil {
+		content, rerr := io.ReadAll(f)
+		_ = f.Close()
+		require.NoError(t, rerr)
+		assert.Equal(t, "inside", string(content), "read must stay on the pinned inode")
+		return
+	}
+
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: root})
+	require.NoError(t, err)
+	_, rerr := plugin.readFile(nil, nil, []core.Value{core.String{V: validated}}, nil)
+	require.Error(t, rerr, "content must never come from the swapped outside target")
 }
 
 func TestSandboxRelaxedReadBlocked(t *testing.T) {
@@ -966,5 +1141,176 @@ func TestReadFileSizeCap(t *testing.T) {
 		var lerr *core.LispicoError
 		require.ErrorAs(t, err, &lerr)
 		assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+	})
+}
+
+func TestLsCollectionLimit(t *testing.T) {
+	tmpDir := t.TempDir()
+	outside := t.TempDir()
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	names := []string{"a.txt", "b.txt", "c.txt"}
+	for _, name := range names {
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), []byte(name), 0o644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644))
+
+	limiter := func(n int) core.Evaluator {
+		ev := core.NewEvaluator()
+		ev.MaxCollectionLen = n
+		return ev
+	}
+
+	t.Run("at limit succeeds in order", func(t *testing.T) {
+		result, err := plugin.ls(context.Background(), limiter(len(names)), []core.Value{core.String{V: tmpDir}}, nil)
+		require.NoError(t, err)
+		got := result.(core.List).ToSlice()
+		require.Len(t, got, len(names))
+		for i, name := range names {
+			assert.Equal(t, name, got[i].(core.String).V)
+		}
+	})
+
+	t.Run("above limit fails closed before returning entries", func(t *testing.T) {
+		err := evalLsErr(t, plugin, limiter(len(names)-1), tmpDir)
+		require.Error(t, err)
+		var lerr *core.LispicoError
+		require.ErrorAs(t, err, &lerr)
+		assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+		assert.ErrorContains(t, err, "exceeds collection limit 2")
+		assert.ErrorContains(t, err, tmpDir)
+	})
+
+	t.Run("unlimited evaluator is unchanged", func(t *testing.T) {
+		_, err := plugin.ls(context.Background(), limiter(0), []core.Value{core.String{V: tmpDir}}, nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("containment unchanged under a limit", func(t *testing.T) {
+		err := evalLsErr(t, plugin, limiter(2), outside)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "io/ls")
+		assert.NotContains(t, err.Error(), "collection limit",
+			"outside path must fail validation, not the collection limit")
+	})
+}
+
+func TestLsBoundedEnumeration(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), []byte(name), 0o644))
+	}
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = 2
+
+	orig := readDirN
+	t.Cleanup(func() { readDirN = orig })
+	var requested int
+	readDirN = func(f *os.File, n int) ([]os.DirEntry, error) {
+		requested = n
+		return orig(f, n)
+	}
+
+	err = evalLsErr(t, plugin, ev, tmpDir)
+	require.Error(t, err)
+	var lerr *core.LispicoError
+	require.ErrorAs(t, err, &lerr)
+	assert.Equal(t, core.CodeResourceLimit, lerr.Code)
+	assert.ErrorContains(t, err, "exceeds collection limit 2")
+	assert.Equal(t, 3, requested, "enumeration must stop at limit+1 entries")
+}
+
+func TestLsLimitAtMaxInt(t *testing.T) {
+	tmpDir := t.TempDir()
+	names := []string{"a.txt", "b.txt"}
+	for _, name := range names {
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), []byte(name), 0o644))
+	}
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = math.MaxInt
+
+	orig := readDirN
+	t.Cleanup(func() { readDirN = orig })
+	var requested []int
+	readDirN = func(f *os.File, n int) ([]os.DirEntry, error) {
+		assert.GreaterOrEqual(t, n, 0, "ReadDir count must never be negative")
+		requested = append(requested, n)
+		return orig(f, n)
+	}
+
+	result, err := plugin.ls(context.Background(), ev, []core.Value{core.String{V: tmpDir}}, nil)
+	require.NoError(t, err)
+	got := result.(core.List).ToSlice()
+	require.Len(t, got, len(names))
+	assert.Equal(t, names[0], got[0].(core.String).V)
+	assert.Equal(t, names[1], got[1].(core.String).V)
+	require.NotEmpty(t, requested)
+	assert.NotContains(t, requested, -1)
+}
+
+func evalLsErr(t *testing.T, plugin *Plugin, eval core.Evaluator, dir string) error {
+	t.Helper()
+	_, err := plugin.ls(context.Background(), eval, []core.Value{core.String{V: dir}}, nil)
+	return err
+}
+
+func TestLsEmptyDirUnderLimiter(t *testing.T) {
+	tmpDir := t.TempDir()
+	emptyDir := filepath.Join(tmpDir, "empty")
+	require.NoError(t, os.Mkdir(emptyDir, 0o755))
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	ev := core.NewEvaluator()
+	ev.MaxCollectionLen = 2
+
+	result, err := plugin.ls(context.Background(), ev, []core.Value{core.String{V: emptyDir}}, nil)
+	require.NoError(t, err)
+	got := result.(core.List).ToSlice()
+	assert.Empty(t, got)
+}
+
+func TestLsSortedOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	plugin, err := New(Config{Mode: ModeStrict, RootDir: tmpDir})
+	require.NoError(t, err)
+
+	names := []string{"z.txt", "a.txt", "m.txt"}
+	for _, name := range names {
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, name), nil, 0o644))
+	}
+	sorted := []string{"a.txt", "m.txt", "z.txt"}
+
+	limiter := func(n int) core.Evaluator {
+		ev := core.NewEvaluator()
+		ev.MaxCollectionLen = n
+		return ev
+	}
+
+	t.Run("limited", func(t *testing.T) {
+		result, err := plugin.ls(context.Background(), limiter(len(names)), []core.Value{core.String{V: tmpDir}}, nil)
+		require.NoError(t, err)
+		got := result.(core.List).ToSlice()
+		require.Len(t, got, len(sorted))
+		for i, name := range sorted {
+			assert.Equal(t, name, got[i].(core.String).V)
+		}
+	})
+
+	t.Run("unlimited", func(t *testing.T) {
+		result, err := plugin.ls(context.Background(), limiter(0), []core.Value{core.String{V: tmpDir}}, nil)
+		require.NoError(t, err)
+		got := result.(core.List).ToSlice()
+		require.Len(t, got, len(sorted))
+		for i, name := range sorted {
+			assert.Equal(t, name, got[i].(core.String).V)
+		}
 	})
 }

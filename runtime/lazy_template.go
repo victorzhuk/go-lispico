@@ -90,7 +90,7 @@ var stdlibLazyTemplateRegistry = &stdlibTemplateRegistry{
 type stdlibLazyEngineState struct {
 	mu sync.Mutex
 	// active, installed, and tombstoned are nil until their first write
-	// (activate, recordInstall, TombstoneForDelete respectively) — an engine
+	// (activate, recordInstall, BeginDelete respectively) — an engine
 	// that never loads a template-routed plugin never allocates them. Reads
 	// and deletes need no guard: both are legal on a nil map in Go.
 	active       map[string]string // pluginName -> pluginVersion, the plugins currently attached on this engine
@@ -307,12 +307,30 @@ func (r *stdlibTemplateRegistry) ensureLayer(key stdlibTemplateKey, eager bool, 
 			return nil, nil
 		}
 		if buildErr := build(); buildErr != nil {
+			// The build may have registered entries before failing; drop
+			// the incomplete layer so a retry starts clean instead of
+			// publishing stale names alongside fresh ones. A concurrently
+			// completed layer is left alone, and single-flight keeps any
+			// other lazy build for this key from racing the delete.
+			r.discardLayer(key)
 			return nil, buildErr
 		}
 		r.markComplete(key)
 		return nil, nil
 	})
 	return err
+}
+
+// discardLayer drops key's layer after a failed build so a retry rebuilds
+// from scratch rather than onto names the failed build registered. Safe
+// under r.mu: an incomplete layer was never published, so no attached
+// engine holds its entries.
+func (r *stdlibTemplateRegistry) discardLayer(key stdlibTemplateKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l, ok := r.layers[key]; ok && !l.complete {
+		delete(r.layers, key)
+	}
 }
 
 // stdlibLazyMaterializer is the core.LazyLayer installed on an engine's root
@@ -492,66 +510,210 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, key stdlibTemplat
 	// Per-name mutex: concurrent first-touch of one name serializes (the
 	// loser observes the installed binding), disjoint names proceed in
 	// parallel, and no global lock is held across env writes or execution.
+	// It is never held across bootstrap execution: the definition is staged
+	// without it so BeginDelete and UnloadPlugin can complete while a
+	// deferred definition runs.
 	nameMu := m.state.getNameMutex(entry.name)
-	nameMu.Lock()
-	defer nameMu.Unlock()
 
-	// Revalidate under the name lock: the selection this lookup performed ran
-	// before the lock, so a deletion or an unload completing in the window
-	// must not be resurrected by a stale install.
+	// Admission: revalidate under the name lock, because the selection the
+	// lookup performed ran before the lock. The in-flight registration is
+	// part of the same state.mu critical section as the opFor check: fence
+	// closes op.closed under this mutex before its Wait, so an admitted
+	// materialization is always counted before fence can observe the
+	// counter, and WaitGroup's admission-at-nonzero contract holds.
+	nameMu.Lock()
 	m.state.mu.Lock()
-	_, live := m.state.installed[entry.name]
-	_, dead := m.state.tombstoned[entry.name]
-	stale := m.state.active[key.pluginName] != key.pluginVersion
+	live := m.stateInstalled(entry.name)
+	stale := m.stateStale(key)
 	op := m.opFor(env)
-	if dead || stale {
-		m.state.mu.Unlock()
-		return nil, false, false
-	}
-	if op == nil {
-		env = m.engine.rootEnv
-	} else {
+	if op != nil {
 		op.inflight.Add(1)
 	}
 	m.state.mu.Unlock()
-	if op != nil {
+	nameMu.Unlock()
+	if op == nil {
+		env = m.engine.rootEnv
+	} else {
 		defer op.inflight.Done()
 	}
-	if live {
-		if funcNS {
-			if v, ok, canon := env.GetMaterializedFuncCanonical(entry.name); ok {
-				return v, true, canon
-			}
-			return nil, false, false
-		}
-		v, ok, canon := env.GetMaterializedCanonical(entry.name)
-		if ok {
-			return v, true, canon
+	if live || stale {
+		if live {
+			return m.materializedValue(env, entry.name, funcNS)
 		}
 		return nil, false, false
 	}
 
-	switch entry.kind {
-	case stdlibTemplateGoValue:
-		if err := m.installValue(env, pluginName, entry); err != nil {
-			m.logMaterializeFailure(entry, err)
-			return nil, false, false
-		}
-		if funcNS {
-			if v, ok, canon := env.GetMaterializedFuncCanonical(entry.name); ok {
-				return v, true, canon
-			}
-			return nil, false, false
-		}
-		if v, ok, canon := env.GetMaterializedCanonical(entry.name); ok {
-			return v, true, canon
-		}
-		return nil, false, false
-	case stdlibTemplateBootstrap:
-		return m.materializeBootstrap(env, pluginName, entry, funcNS)
-	default:
+	// Staging: execute the deferred definition without the name lock and
+	// without publishing into env, so an UnloadPlugin or Delete that
+	// completes while the definition runs is still honored by the
+	// publication check below.
+	staged, stagedFunc, stagedCanon, ok := m.stageEntry(env, pluginName, entry)
+	if !ok {
 		return nil, false, false
 	}
+
+	// Publication: a short critical section on the name's mutex. BeginDelete
+	// takes this same mutex before tombstoning, so a delete or unload that
+	// completed since admission is observed here and the staged binding is
+	// discarded. The rollback never removes cells: nothing was written into
+	// env during staging, so newer host state cannot be repaired away.
+	nameMu.Lock()
+	defer nameMu.Unlock()
+	m.state.mu.Lock()
+	live = m.stateInstalled(entry.name)
+	dead := m.stateTombstoned(entry.name)
+	stale = m.stateStale(key)
+	m.state.mu.Unlock()
+	if dead || stale {
+		return nil, false, false
+	}
+	if live {
+		return m.materializedValue(env, entry.name, funcNS)
+	}
+	if err := m.publishStaged(env, pluginName, entry, staged, stagedFunc, stagedCanon); err != nil {
+		m.logMaterializeFailure(entry, err)
+		return nil, false, false
+	}
+	return m.materializedValue(env, entry.name, funcNS)
+}
+
+// materializedValue answers from the materialized cells in the caller's
+// namespace only.
+func (m *stdlibLazyMaterializer) materializedValue(env *core.Env, name string, funcNS bool) (core.Value, bool, bool) {
+	if funcNS {
+		v, ok, canon := env.GetMaterializedFuncCanonical(name)
+		return v, ok, canon
+	}
+	v, ok, canon := env.GetMaterializedCanonical(name)
+	return v, ok, canon
+}
+
+// stateInstalled reports whether name is recorded installed. Separate
+// helpers keep the state map reads dead-code-free at the admission and
+// publication sites without widening the critical sections.
+func (m *stdlibLazyMaterializer) stateInstalled(name string) bool {
+	_, live := m.state.installed[name]
+	return live
+}
+
+func (m *stdlibLazyMaterializer) stateTombstoned(name string) bool {
+	_, dead := m.state.tombstoned[name]
+	return dead
+}
+
+func (m *stdlibLazyMaterializer) stateStale(key stdlibTemplateKey) bool {
+	return m.state.active[key.pluginName] != key.pluginVersion
+}
+
+// stageEntry produces the binding a deferred entry yields without writing
+// into env: a Go builtin stages itself; a bootstrap definition is evaluated
+// in a staging child scope and read back from there. The staged result is
+// (value, bound in the function cell, canonical).
+func (m *stdlibLazyMaterializer) stageEntry(env *core.Env, pluginName string, entry *stdlibTemplateEntry) (core.Value, bool, bool, bool) {
+	switch entry.kind {
+	case stdlibTemplateGoValue:
+		return entry.value, entry.fn, entry.canonical, true
+	case stdlibTemplateBootstrap:
+		return m.stageBootstrap(env, entry)
+	default:
+		return nil, false, false, false
+	}
+}
+
+// stageBootstrap executes a deferred defmacro/defn form through the env's
+// installed evaluator (its core.BootstrapDefiner capability) in a staging
+// child scope, exactly as the eager bootstrap loader does but without
+// publishing into env. The defining form's body is not evaluated at
+// definition time, so execution never re-enters materialization for the
+// same name.
+func (m *stdlibLazyMaterializer) stageBootstrap(env *core.Env, entry *stdlibTemplateEntry) (core.Value, bool, bool, bool) {
+	owner := env.Evaluator()
+	definer, ok := owner.(core.BootstrapDefiner)
+	if !ok {
+		m.logMaterializeFailure(entry, fmt.Errorf("stdlib bootstrap: installed evaluator %T does not implement core.BootstrapDefiner", owner))
+		return nil, false, false, false
+	}
+	stage := env.Child()
+	if _, err := definer.DefineBootstrap(context.Background(), entry.source, stage); err != nil {
+		m.logMaterializeFailure(entry, err)
+		return nil, false, false, false
+	}
+	if v, ok, canon := stage.GetMaterializedCanonical(entry.name); ok {
+		return v, false, canon, true
+	}
+	if v, ok, canon := stage.GetMaterializedFuncCanonical(entry.name); ok {
+		return v, true, canon, true
+	}
+	m.logMaterializeFailure(entry, fmt.Errorf("stdlib bootstrap: definer bound no cell for %s", entry.name))
+	return nil, false, false, false
+}
+
+// publishStaged installs a staged binding into env. Every destination cell is
+// filled only when still unoccupied, in each namespace independently: a host
+// binding that landed while the staged bootstrap definition executed (the
+// name mutex is not held across staging) wins, exactly as a user def/defun
+// wins over the eager load. Occupancy and write run as one env-level
+// insert-if-unoccupied operation, so a concurrent host write cannot slip
+// between the check and the write even outside the name mutex.
+func (m *stdlibLazyMaterializer) publishStaged(env *core.Env, pluginName string, entry *stdlibTemplateEntry, staged core.Value, stagedFunc, stagedCanon bool) error {
+	if entry.kind == stdlibTemplateGoValue {
+		return m.installValue(env, pluginName, entry)
+	}
+	staged = rebindStagedClosure(staged, env)
+	var err error
+	if stagedFunc {
+		_, err = env.SetFuncIfUnoccupied(entry.name, staged, stagedCanon)
+	} else {
+		_, err = env.SetIfUnoccupied(entry.name, staged, stagedCanon)
+		if err == nil {
+			lisp2 := false
+			if axis, ok := env.Evaluator().(interface{ IsLisp2() bool }); ok {
+				lisp2 = axis.IsLisp2()
+			}
+			if lisp2 {
+				_, err = env.SetFuncIfUnoccupied(entry.name, staged, false)
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	m.recordInstall(env, pluginName, entry.name)
+	return nil
+}
+
+// rebindStagedClosure retargets a staged defn/defmacro closure from the
+// staging child scope to the destination env. The staging child exists only
+// so the defining form evaluates without publishing into env; a published
+// Lambda or Macro must capture the destination like its eager twin does, or
+// an escaped recursive function keeps resolving through the private staged
+// definition cell after the root binding is replaced or deleted.
+func rebindStagedClosure(v core.Value, dest *core.Env) core.Value {
+	switch c := v.(type) {
+	case core.Lambda:
+		if c.Env != dest {
+			c.Env = dest
+			return c
+		}
+	case *core.Lambda:
+		if c.Env != dest {
+			cp := *c
+			cp.Env = dest
+			return &cp
+		}
+	case core.Macro:
+		if c.Env != dest {
+			c.Env = dest
+			return c
+		}
+	case *core.Macro:
+		if c.Env != dest {
+			cp := *c
+			cp.Env = dest
+			return &cp
+		}
+	}
+	return v
 }
 
 // installValue binds a deferred Go builtin; caller holds the name's mutex.
@@ -560,47 +722,15 @@ func (m *stdlibLazyMaterializer) materializeOne(env *core.Env, key stdlibTemplat
 // materialization must reproduce that order by filling only cells that are
 // still empty.
 func (m *stdlibLazyMaterializer) installValue(env *core.Env, pluginName string, entry *stdlibTemplateEntry) error {
-	valueMissing := !env.HasLive(entry.name)
-	funcMissing := entry.fn && !env.HasLiveFunc(entry.name)
-
-	if valueMissing && funcMissing {
-		if entry.canonical {
-			if err := env.SetBothCanonical(entry.name, entry.value); err != nil {
-				return err
-			}
-		} else {
-			if err := env.SetBoth(entry.name, entry.value); err != nil {
-				return err
-			}
+	if entry.fn {
+		if _, err := env.SetBothIfUnoccupied(entry.name, entry.value, entry.canonical); err != nil {
+			return err
 		}
-		m.recordInstall(env, pluginName, entry.name)
-		return nil
-	}
-
-	if valueMissing {
-		if entry.canonical {
-			if err := env.SetCanonical(entry.name, entry.value); err != nil {
-				return err
-			}
-		} else {
-			if err := env.Set(entry.name, entry.value); err != nil {
-				return err
-			}
+	} else {
+		if _, err := env.SetIfUnoccupied(entry.name, entry.value, entry.canonical); err != nil {
+			return err
 		}
 	}
-
-	if funcMissing {
-		if entry.canonical {
-			if err := env.SetFuncCanonical(entry.name, entry.value); err != nil {
-				return err
-			}
-		} else {
-			if err := env.SetFunc(entry.name, entry.value); err != nil {
-				return err
-			}
-		}
-	}
-
 	m.recordInstall(env, pluginName, entry.name)
 	return nil
 }
@@ -621,25 +751,6 @@ func (m *stdlibLazyMaterializer) recordInstall(env *core.Env, pluginName, name s
 	m.state.materialized++
 }
 
-// materializeBootstrap executes a deferred defmacro/defn form through the
-// env's installed evaluator (its core.BootstrapDefiner capability), exactly
-// as the eager bootstrap loader does. The defining form's body is not
-// evaluated at definition time, so execution never re-enters materialization
-// for the same name.
-func (m *stdlibLazyMaterializer) materializeBootstrap(env *core.Env, pluginName string, entry *stdlibTemplateEntry, funcNS bool) (core.Value, bool, bool) {
-	owner := env.Evaluator()
-	definer, ok := owner.(core.BootstrapDefiner)
-	if !ok {
-		m.logMaterializeFailure(entry, fmt.Errorf("stdlib bootstrap: installed evaluator %T does not implement core.BootstrapDefiner", owner))
-		return nil, false, false
-	}
-	if _, err := definer.DefineBootstrap(context.Background(), entry.source, env); err != nil {
-		m.logMaterializeFailure(entry, err)
-		return nil, false, false
-	}
-	return m.publishBootstrap(env, pluginName, entry.name, funcNS)
-}
-
 // logMaterializeFailure surfaces a deferred-definition failure the miss path
 // cannot propagate (lookup APIs return values, not errors). The name stays
 // uninstalled, so the next touch retries; eager load fails Use() instead.
@@ -647,56 +758,21 @@ func (m *stdlibLazyMaterializer) logMaterializeFailure(entry *stdlibTemplateEntr
 	m.engine.logger.Warn("lazy stdlib materialization failed", "name", entry.name, "error", err)
 }
 
-// publishBootstrap reads the binding the installed owner produced and,
-// under a Lisp-2 owner only, fills an empty function cell so head-position
-// resolution works; under Lisp-1 the value cell is the single namespace and
-// must not gain a func-cell mirror. HasLive probes pick the cell without
-// consulting the lazy layer, so the read can never re-enter materializeOne
-// for the name this call is materializing. The result comes from the
-// requested namespace only: a cell the owner did not bind reports not-found.
-func (m *stdlibLazyMaterializer) publishBootstrap(env *core.Env, pluginName, name string, funcNS bool) (core.Value, bool, bool) {
-	var v core.Value
-	var ok bool
-	switch {
-	case env.HasLive(name):
-		v, ok = env.Get(name)
-	case env.HasLiveFunc(name):
-		v, ok = env.GetFunc(name)
-	}
-	if !ok {
-		return nil, false, false
-	}
-	lisp2 := false
-	if axis, ok := env.Evaluator().(interface{ IsLisp2() bool }); ok {
-		lisp2 = axis.IsLisp2()
-	}
-	if lisp2 && !env.HasLiveFunc(name) {
-		if err := env.SetFunc(name, v); err != nil {
-			m.logMaterializeFailure(&stdlibTemplateEntry{name: name}, err)
-			return nil, false, false
-		}
-	}
-	m.recordInstall(env, pluginName, name)
-	if funcNS {
-		if v, ok, canon := env.GetMaterializedFuncCanonical(name); ok {
-			return v, true, canon
-		}
-		return nil, false, false
-	}
-	if v, ok, canon := env.GetMaterializedCanonical(name); ok {
-		return v, true, canon
-	}
-	return nil, false, false
-}
-
-// TombstoneForDelete records an explicit env.Delete so a later miss does not
-// resurrect the name from the template. Tombstones persist until the plugin
-// is re-Used (activation clears them); one made through the open operation's
-// view is undone when the operation fails.
-func (m *stdlibLazyMaterializer) TombstoneForDelete(env *core.Env, name string) {
+// BeginDelete opens the deletion critical section for name: it takes the
+// name's mutex, tombstones the name so no later miss resurrects it from the
+// template, and returns the release func that closes the section. Env.Delete
+// calls it before removing the cells and defers the release, so a
+// materialization admitted before the delete cannot publish past it: the
+// publication section in materializeOne takes this same mutex and re-checks
+// the tombstone. Tombstones persist until the plugin is re-Used (activation
+// clears them); one taken through the open operation's view is undone when
+// the operation fails.
+func (m *stdlibLazyMaterializer) BeginDelete(env *core.Env, name string) func() {
 	if m == nil {
-		return
+		return func() {}
 	}
+	nameMu := m.state.getNameMutex(name)
+	nameMu.Lock()
 	m.state.mu.Lock()
 	m.noteLocked(env, name)
 	if m.state.tombstoned == nil {
@@ -705,6 +781,7 @@ func (m *stdlibLazyMaterializer) TombstoneForDelete(env *core.Env, name string) 
 	m.state.tombstoned[name] = struct{}{}
 	delete(m.state.installed, name)
 	m.state.mu.Unlock()
+	return nameMu.Unlock
 }
 
 // deferKey returns the template key a registration through env defers into.

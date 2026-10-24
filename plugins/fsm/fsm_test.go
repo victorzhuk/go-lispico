@@ -3,7 +3,9 @@ package fsm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1600,6 +1602,32 @@ func TestStateMachine_Concurrent_Transitions(t *testing.T) {
 	assert.Equal(t, State("running"), sm.Current())
 }
 
+// transitionInProgress reports whether err is the explicit
+// already-in-progress contention error the state machine fails fast with
+// while another transition or reset holds the slot.
+func transitionInProgress(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "already in progress")
+}
+
+// retryTransition calls attempt up to maxContentionRetries times, retrying
+// only the already-in-progress contention error; any other error fails
+// immediately, and exhausting the budget surfaces the last contention error.
+func retryTransition[T any](t *testing.T, attempt func() (T, error)) (T, error) {
+	t.Helper()
+	const maxContentionRetries = 10000
+	for range maxContentionRetries {
+		res, err := attempt()
+		if !transitionInProgress(err) {
+			return res, err
+		}
+		// Yield so the goroutine holding the slot can finish; retrying
+		// without yielding starves it for the whole budget.
+		runtime.Gosched()
+	}
+	var zero T
+	return zero, errors.New("fsm: transition stayed in progress after retries")
+}
+
 func TestStateMachine_Concurrent_Serialize(t *testing.T) {
 	sm := &StateMachine{
 		id:      "test",
@@ -1626,31 +1654,33 @@ func TestStateMachine_Concurrent_Serialize(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			if idx%2 == 0 {
-				result, err := sm.Transition(Event("confirm"), nil)
+				result, err := retryTransition(t, func() (TransitionResult, error) {
+					return sm.Transition(Event("confirm"), nil)
+				})
 				if err != nil {
-					if !strings.Contains(err.Error(), "already in progress") {
-						mu.Lock()
-						errors = append(errors, err)
-						mu.Unlock()
-					}
+					mu.Lock()
+					errors = append(errors, err)
+					mu.Unlock()
 				} else if result.Valid && result.Committed {
 					atomic.AddInt32(&successCount, 1)
 					assert.Equal(t, State("confirmed"), result.State)
 				}
 			} else {
-				_, err := sm.Serialize()
+				_, err := retryTransition(t, func() ([]byte, error) {
+					return sm.Serialize()
+				})
 				if err != nil {
 					mu.Lock()
 					errors = append(errors, err)
 					mu.Unlock()
 				}
 			}
-			if _, resetErr := sm.Reset(); resetErr != nil {
-				if !strings.Contains(resetErr.Error(), "already in progress") {
-					mu.Lock()
-					errors = append(errors, resetErr)
-					mu.Unlock()
-				}
+			if _, resetErr := retryTransition(t, func() (State, error) {
+				return sm.Reset()
+			}); resetErr != nil {
+				mu.Lock()
+				errors = append(errors, resetErr)
+				mu.Unlock()
 			} else {
 				atomic.AddInt32(&resetOKCount, 1)
 			}
@@ -1713,11 +1743,11 @@ func TestPlugin_Concurrent_MultipleMachines(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			machineID := fmt.Sprintf("machine-%d", idx%5)
-			res, err := p.transition(ctx, eval, []core.Value{core.Keyword{V: machineID}, core.Keyword{V: "confirm"}}, env)
+			res, err := retryTransition(t, func() (core.Value, error) {
+				return p.transition(ctx, eval, []core.Value{core.Keyword{V: machineID}, core.Keyword{V: "confirm"}}, env)
+			})
 			if err != nil {
-				if !strings.Contains(err.Error(), "already in progress") {
-					atomic.AddInt32(&errCount, 1)
-				}
+				atomic.AddInt32(&errCount, 1)
 			} else if m, ok := res.(*core.HashMap); ok {
 				if v, ok := m.Get(core.Keyword{V: "valid"}); ok && v == (core.Bool{V: true}) {
 					perMu.Lock()
@@ -1725,11 +1755,11 @@ func TestPlugin_Concurrent_MultipleMachines(t *testing.T) {
 					perMu.Unlock()
 				}
 			}
-			_, resetErr := p.reset(ctx, eval, []core.Value{core.Keyword{V: machineID}}, env)
+			_, resetErr := retryTransition(t, func() (core.Value, error) {
+				return p.reset(ctx, eval, []core.Value{core.Keyword{V: machineID}}, env)
+			})
 			if resetErr != nil {
-				if !strings.Contains(resetErr.Error(), "already in progress") {
-					atomic.AddInt32(&resetErrCount, 1)
-				}
+				atomic.AddInt32(&resetErrCount, 1)
 			} else {
 				atomic.AddInt32(&resetOKCount, 1)
 			}

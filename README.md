@@ -1,6 +1,6 @@
 # go-lispico
 
-A zero-dependency, pluggable Lisp interpreter designed as an embeddable scripting kernel for Go applications.
+A pluggable Lisp interpreter designed as an embeddable scripting kernel for Go applications, with zero external dependencies in its core.
 
 ## Features
 
@@ -12,7 +12,7 @@ A zero-dependency, pluggable Lisp interpreter designed as an embeddable scriptin
   CL dialect they are renamed: `do`→`progn`, `set!`→`setq`, etc.
 
 - **Bytecode VM** (default) — compiled execution with per-form tree-walker fallback
-- **Tree-walking evaluator** with `loop`/`recur` tail-call optimization for fallback path
+- **Tree-walking evaluator** with tail-call optimization only through explicit `loop`/`recur` for the fallback path
 - **Hot-reload** via `eng.Watch(ctx, dir)` — `Stop`/`Close` request cancellation and return immediately; watcher cleanup finishes after any in-flight reload or host call returns
 - **Plugin system** for extending functionality
 
@@ -370,7 +370,9 @@ truthiness is unchanged — `(if '() 1 2)` evaluates to `1`, `(if nil 1 2)` to
 
 ## Bytecode VM
 
-`runtime.New()` defaults to bytecode VM execution. The VM compiles supported forms and defers unsupported forms to the tree-walking evaluator form-by-form (namely a `defmacro` nested inside a larger form, and `unquote-splicing`).
+`runtime.New()` defaults to bytecode VM execution. Unsupported forms defer to the tree-walker as whole top-level forms before bytecode executes.
+These include nested `defmacro`, lexical `def`/`defn`, `unquote-splicing`, and quasiquoted maps containing unquoted entries.
+The fallback can invoke previously compiled closures.
 
 A `Vector`, `HashMap`, or list literal whose elements are all compile-time
 constants is folded into a single shared chunk constant, so a function returning
@@ -394,17 +396,27 @@ resource ceilings before construction:
 | --- | ---: | --- |
 | `MaxReaderDepth` | 1024 | Maximum nesting depth of s-expressions |
 | `MaxStructuralDepth` | 1024 | Maximum structural depth of evaluated / compiled `Vector`, `HashMap`, and quasiquote `List` literals |
-| `MaxCollectionLen` | 10,000,000 | Maximum length of `range`-produced lists; may not exceed 2,147,483,647, the `Vector` length cap |
+| `MaxCollectionLen` | 10,000,000 | Maximum collection length, including `range`, string splits/lines, decoded JSON containers, and `io/ls` results. May not exceed 2,147,483,647, the `Vector` length cap |
 | `MaxCacheEntries` | 4096 | Maximum bytecode chunk cache entries |
 | `MaxCacheBytes` | 64 MiB | Maximum retained deep bytes across bytecode chunk cache entries |
 | `MaxCacheNodes` | 1,000,000 | Maximum expanded AST nodes across bytecode chunk cache entries |
 | `MaxReductions` | 10,000,000 | Maximum reductions charged to one evaluation across reader bridge, macro expansion, compiler, evaluator, and `GoFunc` dispatch |
-| `MaxAllocationBytes` | 64 MiB | Maximum shallow allocation bytes charged to one evaluation |
+| `MaxAllocationBytes` | 64 MiB | Maximum allocation bytes charged to one evaluation. Also caps each runtime-owned source file before parsing |
 | `MaxRetainedBytesPerEnv` | 32 MiB | Maximum retained binding backing bytes per engine-owned `Env` |
 | `MaxRetainedSlotsPerEnv` | 100,000 | Maximum retained binding slots per engine-owned `Env` |
 
 A non-positive field selects the default. Ceilings are immutable after `New`.
 Exceeding one returns a `*core.LispicoError` with `Code: "ResourceLimitError"`.
+
+`EvalFile`, each `LoadDir` file, and watcher reloads reject source files larger
+than `MaxAllocationBytes`. Acquisition buffers at most the ceiling plus one
+byte and checks caller cancellation between bounded reads. This source-size
+ceiling is separate from reader allocation charges, not a Go heap-use bound.
+Caller-owned strings passed to `Eval` remain borrowed.
+
+An oversized bytecode cache candidate runs uncached without evicting resident
+chunks. Cache retained-meter callbacks execute outside cache locks.
+
 Structural depth is enforced at evaluation time in both evaluators so
 a dead-branch over-limit literal (`(if false <deep> 1)`) is not rejected.
 Reductions piggyback the existing 128-step cancellation budget in both

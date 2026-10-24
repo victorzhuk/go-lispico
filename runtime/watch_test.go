@@ -655,3 +655,115 @@ func TestWatch_ReentrantShutdown_Control(t *testing.T) {
 	}
 	require.NoError(t, eng.Stop())
 }
+
+func TestFileWatcher_PrunesRemovedFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	eng, err := New(slog.Default())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	file := filepath.Join(dir, "gone.lisp")
+	require.NoError(t, os.WriteFile(file, []byte("(def x 1)"), 0o644))
+
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
+	w.ctx = context.Background()
+
+	w.scan()
+	require.Contains(t, w.mtimes, file)
+
+	require.NoError(t, os.Remove(file))
+	w.scan()
+	assert.NotContains(t, w.mtimes, file)
+}
+
+func TestFileWatcher_RecreatedFileReloaded(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	eng, err := New(slog.Default())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	file := filepath.Join(dir, "churn.lisp")
+	require.NoError(t, os.WriteFile(file, []byte("(def x 1)"), 0o644))
+
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
+	w.ctx = context.Background()
+
+	w.scan()
+	require.NoError(t, os.Remove(file))
+	w.scan()
+
+	require.NoError(t, os.WriteFile(file, []byte("(def x 2)"), 0o644))
+	w.scan()
+
+	val, ok := eng.RootEnv().Get("x")
+	require.True(t, ok)
+	assert.Equal(t, int64(2), val.(core.Int).V)
+	assert.Contains(t, w.mtimes, file)
+}
+
+func TestFileWatcher_IncompleteScanKeepsMtimes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	eng, err := New(slog.Default())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	file := filepath.Join(dir, "kept.lisp")
+	require.NoError(t, os.WriteFile(file, []byte("(def x 1)"), 0o644))
+
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
+	w.ctx = context.Background()
+
+	w.scan()
+	require.Contains(t, w.mtimes, file)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w.ctx = ctx
+	w.scan()
+
+	assert.Contains(t, w.mtimes, file)
+}
+
+func TestFileWatcher_RetriesUnchangedFailedFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	eng, err := New(slog.Default())
+	require.NoError(t, err)
+	defer eng.Close()
+
+	file := filepath.Join(dir, "flaky.lisp")
+	require.NoError(t, os.WriteFile(file, []byte("(def x (undefined-symbol))"), 0o644))
+	failedInfo, err := os.Stat(file)
+	require.NoError(t, err)
+
+	impl := eng.(*engineImpl)
+	w := newFileWatcher(impl, dir, 10*time.Millisecond)
+	w.ctx = context.Background()
+
+	w.scan()
+	_, hasX := eng.RootEnv().Get("x")
+	assert.False(t, hasX)
+	assert.NotContains(t, w.mtimes, file)
+
+	require.NoError(t, os.WriteFile(file, []byte("(def x 7)"), 0o644))
+	// Pin the mtime back to the failed version's, proving the retry comes
+	// from the missing stored mtime, not from a changed timestamp.
+	require.NoError(t, os.Chtimes(file, failedInfo.ModTime(), failedInfo.ModTime()))
+
+	w.scan()
+
+	val, ok := eng.RootEnv().Get("x")
+	require.True(t, ok)
+	assert.Equal(t, int64(7), val.(core.Int).V)
+	assert.Contains(t, w.mtimes, file)
+}

@@ -429,6 +429,70 @@ bindings — SHALL remain per-engine.
 - **WHEN** one engine unloads a plugin whose layer it shares with other engines, after materializing some of its names
 - **THEN** the published entry set SHALL be unchanged, and every other engine sharing it SHALL resolve the plugin's names exactly as before
 
+### Requirement: Tree fallback invokes compiled callables without rerouting Lambdas
+
+The tree evaluator MAY install a `core.CallableApplier` for callable values without native dispatch.
+The runtime SHALL install its bytecode applier during bytecode engine construction.
+`GoFunc`, `Lambda`, and `Keyword` SHALL retain native tree-evaluator dispatch.
+
+#### Scenario: Whole-form fallback calls a compiled closure
+
+- **WHEN** an unsupported top-level form falls back to the tree evaluator and invokes an existing compiled closure
+- **THEN** the installed applier SHALL execute that closure
+
+#### Scenario: Ordinary Lambda keeps native dispatch
+
+- **WHEN** a tree-evaluator call targets a `core.Lambda` with an applier installed
+- **THEN** the tree evaluator SHALL execute that Lambda without invoking the applier
+
+### Requirement: Lazy deletion coordinates with publication
+
+`LazyLayer.BeginDelete` SHALL exclude publication for a name until its release function runs after `Env.Delete` removes cells.
+Materialization SHALL recheck deletion and plugin attachment before publication.
+Deferred execution SHALL NOT hold the publication mutex.
+Single-cell publication SHALL preserve live bindings.
+Dual-namespace Go builtins SHALL publish transactionally with `SetBothIfUnoccupied`.
+Published `Lambda` and `Macro` values SHALL capture the destination root `Env`, not the staging child.
+
+#### Scenario: Delete completes during staged definition execution
+
+- **WHEN** deletion completes while an admitted deferred definition executes
+- **THEN** publication SHALL discard the staged binding instead of resurrecting the deleted name
+
+#### Scenario: Unload completes during staged definition execution
+
+- **WHEN** plugin unload completes before a staged binding reaches publication
+- **THEN** publication SHALL discard the binding
+
+#### Scenario: Host binding wins during staged definition execution
+
+- **WHEN** a host binds a deferred name while its staged definition executes
+- **THEN** publication SHALL preserve that live host binding
+- **AND** publication MAY fill the other namespace if its cell remains unoccupied
+
+#### Scenario: Dual-namespace Go builtin publication is transactional
+
+- **WHEN** a deferred Go builtin requires both namespaces
+- **THEN** publication SHALL write both cells only when neither cell is live and the retained-capacity reservation succeeds
+- **AND** an occupied cell or reservation failure SHALL leave both cells untouched
+
+#### Scenario: Published closure follows root binding changes
+
+- **WHEN** a published lazy `Lambda` or `Macro` resolves a name after the root binding changes or is deleted
+- **THEN** resolution SHALL follow the destination root environment
+- **AND** resolution SHALL NOT use a private definition cell in the staging child
+
+### Requirement: Failed template construction discards incomplete entries
+
+When a process-level template build returns an error, the registry SHALL discard its incomplete layer.
+A later load SHALL rebuild that layer from scratch.
+Discard SHALL NOT remove a completed shared layer.
+
+#### Scenario: Retry omits names from a failed build
+
+- **WHEN** an initial build registers a name and fails, and a retry omits that name
+- **THEN** the completed layer SHALL NOT contain the failed build's name
+
 ### Requirement: Evaluation reductions and cumulative allocation are metered
 
 The runtime SHALL extend `ResourceLimits` with `MaxReductions` and
@@ -773,6 +837,50 @@ failing file version SHALL NOT stop the watch loop.
 - **WHEN** a watched file is reloaded and its evaluation triggers a `GoFunc` panic
 - **THEN** the reload SHALL report the failure as an error and the host process SHALL keep running
 - **AND** the watcher SHALL remain active for subsequent file changes
+
+### Requirement: Background reload owns one settlement lifecycle
+
+Each reload SHALL use one enclosing evaluation lifecycle for parsing and all forms.
+It SHALL settle that lifecycle once after successful admission, including failure and panic paths.
+The watcher SHALL merge child bindings only after successful evaluation, flush, and settlement.
+Background reloads SHALL NOT publish `OnEval` events.
+
+#### Scenario: Parse or form failure returns the reload lease
+
+- **WHEN** a reload fails during parsing or form evaluation
+- **THEN** the watcher SHALL settle the enclosing lifecycle without merging the child bindings
+
+#### Scenario: Settlement failure prevents publication
+
+- **WHEN** all forms succeed but settlement fails
+- **THEN** the watcher SHALL report the failure without merging the child bindings
+
+#### Scenario: Reload does not emit public evaluation events
+
+- **WHEN** a background reload completes with registered `OnEval` callbacks
+- **THEN** the reload SHALL NOT invoke those callbacks
+
+### Requirement: Watcher records only successful file versions
+
+The watcher SHALL record a file's mtime only after its reload successfully merges child bindings.
+A failed reload SHALL leave the stored mtime unchanged.
+After a complete uncanceled directory scan, the watcher SHALL prune mtimes absent from its readable `.lisp` entries.
+A canceled scan or directory-read failure SHALL NOT prune mtimes.
+
+#### Scenario: Unchanged failed version retries
+
+- **WHEN** a file reload fails and its mtime remains unchanged
+- **THEN** a later scan SHALL retry that file
+
+#### Scenario: Removed path loses its stored mtime
+
+- **WHEN** a complete uncanceled scan no longer observes a previously recorded path
+- **THEN** the watcher SHALL remove its stored mtime without deleting root bindings
+
+#### Scenario: Incomplete scan preserves stored mtimes
+
+- **WHEN** directory reading fails or the scan observes cancellation
+- **THEN** the watcher SHALL preserve its stored mtimes
 
 ### Requirement: ListPlugins reports real lifecycle status
 
@@ -1164,3 +1272,38 @@ A plugin's owned bindings SHALL be attributed from the writes it made through it
 
 - **WHEN** `Stop` or `Close` is called more than once on one engine
 - **THEN** every call SHALL return without an error and without waiting for watcher completion
+
+### Requirement: Runtime source acquisition is size-bounded
+
+`EvalFile`, each `LoadDir` file, and watcher reloads SHALL reject source larger than the resolved `MaxAllocationBytes`.
+Acquisition SHALL buffer at most the ceiling plus one byte and check caller cancellation between bounded reads.
+Source-size admission SHALL remain separate from reader allocation charges.
+Caller-owned strings passed to `Eval` SHALL remain borrowed.
+
+#### Scenario: Oversized file fails before parsing
+
+- **WHEN** a runtime-owned source file exceeds `MaxAllocationBytes`
+- **THEN** acquisition SHALL return `ResourceLimitError` identifying the file and ceiling
+- **AND** no form from that file SHALL execute
+
+#### Scenario: Caller cancellation stops source acquisition
+
+- **WHEN** caller cancellation becomes observable between source reads
+- **THEN** acquisition SHALL stop with the caller's context error
+
+### Requirement: Cache meter callbacks do not hold cache locks
+
+Cache admission and eviction SHALL invoke retained-meter callbacks outside cache locks.
+An unpublished reservation SHALL release only its own retained charge.
+An oversized candidate SHALL run uncached without evicting resident entries.
+
+#### Scenario: Oversized candidate preserves residents
+
+- **WHEN** a candidate alone exceeds the cache byte or node ceiling
+- **THEN** admission SHALL refuse it before evicting resident entries
+- **AND** the candidate SHALL remain executable without caching
+
+#### Scenario: Meter callback reenters the cache
+
+- **WHEN** a cache retained-meter callback enters another engine cache operation
+- **THEN** the callback SHALL NOT encounter a cache lock held by its own caller

@@ -218,3 +218,110 @@ func TestLazyFenceSettlesInFlightMaterializationOnSuccess(t *testing.T) {
 	assert.Equal(t, before+1, impl.lazyMaterializer.MaterializeCount(), "the settled materialization of -> must count once")
 	assert.Equal(t, active+1, eng.Stats().ActivePlugins, "successful Use must add one active plugin")
 }
+
+// lfGoValueEntry finds any registered Go-builtin entry so a view lookup can
+// materialize without touching the probe.
+func lfGoValueEntry(t *testing.T, m *stdlibLazyMaterializer) (stdlibTemplateKey, *stdlibTemplateEntry) {
+	t.Helper()
+	for _, key := range m.activeKeys() {
+		layer, ok := stdlibLazyTemplateRegistry.layerFor(key)
+		if !ok {
+			continue
+		}
+		for _, entry := range layer.publishedEntries() {
+			if entry.kind == stdlibTemplateGoValue {
+				return key, entry
+			}
+		}
+	}
+	require.FailNow(t, "no Go-value template entry registered")
+	return stdlibTemplateKey{}, nil
+}
+
+// lfFenceParked waits until the open operation is closed and then proves the
+// concurrent fence stays parked while the admitted materialization is held.
+func lfFenceParked(t *testing.T, impl *engineImpl, fenceDone <-chan struct{}) {
+	t.Helper()
+	state := impl.lazyMaterializer.state
+	deadline := time.Now().Add(lfGuard)
+	for {
+		state.mu.Lock()
+		closed := state.op != nil && state.op.closed
+		state.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "fence did not close admission within the guard")
+		}
+		goruntime.Gosched()
+	}
+	for range 100 {
+		select {
+		case <-fenceDone:
+			require.FailNow(t, "fence settled before the admitted materialization finished")
+		default:
+		}
+		goruntime.Gosched()
+	}
+}
+
+// Once an operation is fenced, a lookup through its view can no longer admit
+// work, and the admission of an already-running materialization is counted in
+// the same critical section that selected it, so the fence waits for it.
+func TestLazyFenceClosedOperationAdmitsNoNewViewWork(t *testing.T) {
+	t.Parallel()
+
+	eng, impl, p := lfArmed(t)
+	m := impl.lazyMaterializer
+	root := eng.RootEnv()
+
+	view := root.Child()
+	m.beginOp(view, "lf", "1.0.0", false)
+	key, entry := lmPausedLookup(t, m, "->")
+	inFlight := make(chan struct{})
+	go func() {
+		defer close(inFlight)
+		m.materializeOne(view, key, entry, false)
+	}()
+	select {
+	case <-p.entered:
+	case <-time.After(lfGuard):
+		require.FailNow(t, "view materialization of -> never reached the probe")
+	}
+
+	fenceDone := make(chan struct{})
+	go func() {
+		defer close(fenceDone)
+		m.fence()
+	}()
+	lfFenceParked(t, impl, fenceDone)
+	p.unblock()
+	lfWait(t, fenceDone, "fence waiting for the admitted materialization")
+	lfWait(t, inFlight, "view materialization of ->")
+	m.endOp(true)
+
+	// The fenced view admits nothing: the lookup falls to the root env, and
+	// a later fence observes a zero counter and returns at once.
+	gk, gentry := lfGoValueEntry(t, m)
+	_, ok, _ := m.materializeOne(view, gk, gentry, false)
+	require.True(t, ok, "post-fence lookup must still materialize through the root env")
+	if gentry.fn {
+		_, got, _ := root.GetMaterializedFuncCanonical(gentry.name)
+		assert.True(t, got, "post-fence lookup must publish into the root env func cell")
+	} else {
+		_, got, _ := root.GetMaterializedCanonical(gentry.name)
+		assert.True(t, got, "post-fence lookup must publish into the root env value cell")
+	}
+
+	zero := make(chan struct{})
+	go func() {
+		defer close(zero)
+		m.fence()
+	}()
+	lfWait(t, zero, "idempotent fence with no admitted work")
+	state := m.state
+	state.mu.Lock()
+	assert.True(t, state.op == nil || state.op.closed, "no operation may admit after the fence")
+	state.mu.Unlock()
+}

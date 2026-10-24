@@ -121,7 +121,7 @@ type cacheEntry struct {
 
 func newBytecodeEvaluator(globals *core.Env, maxDepth int, timeout time.Duration, limits ResourceLimits, treeWalker core.Evaluator, dialect core.Dialect, meter Meter, stripeOverride int) *bytecodeEvaluator {
 	// Stripe maps are lazily allocated on each stripe's first admit (see
-	// cacheAdmitLocked) rather than here, so an engine that never populates
+	// publishCacheEntry) rather than here, so an engine that never populates
 	// the chunk cache pays for the stripes slice alone, not N empty maps.
 	stripes := make([]cacheStripe, resolveCacheStripes(limits.MaxCacheEntries, stripeOverride))
 	be := &bytecodeEvaluator{
@@ -180,30 +180,122 @@ func (s *cacheStripe) cacheGetLocked(key cacheKey) (*vm.Chunk, bool) {
 	return entry.chunk, true
 }
 
-// cacheAdmitLocked admits chunk into stripe s. The aggregate ceiling holds
-// exactly, with no tolerance term: cacheFitsAlone checks the true undivided
-// limits (never divided by stripe count), bounded local pre-eviction makes
-// room by evicting only from s's own tail, and the CAS-charge against
-// bytecodeEvaluator's global counters is the only way an entry becomes
-// visible — refusal is the sole failure mode, nothing is ever inserted
-// speculatively.
-func (be *bytecodeEvaluator) cacheAdmitLocked(s *cacheStripe, key cacheKey, chunk *vm.Chunk) bool {
+// reserveCacheOccupancy charges a candidate's budget counters and retained
+// slot before publication, holding no cache lock, so a meter that reenters
+// the cache cannot deadlock against a stripe mutex. It reports whether the
+// reservation succeeded; a ChargeRetained error or panic rolls the budget
+// charge back before returning.
+func (be *bytecodeEvaluator) reserveCacheOccupancy(chunk *vm.Chunk) (reserved bool) {
 	if !be.cacheFitsAlone(chunk) {
 		return false
-	}
-	// s.tail != nil bounds the loop: one big LRU rarely empties mid-eviction,
-	// but an N-way split one does routinely once other stripes hold the budget.
-	for s.tail != nil && be.cacheBudgetExceeded(chunk) {
-		be.evictCacheEntryLocked(s, s.tail)
 	}
 	if err := be.chargeCacheBudget(chunk); err != nil {
 		return false
 	}
-	if be.engineMeter != nil {
-		if err := be.engineMeter.ChargeRetained(chunk.DeepBytes, 1); err != nil {
-			be.releaseCacheBudget(chunk.DeepBytes, chunk.NodeCount)
-			return false
-		}
+	if be.engineMeter == nil {
+		return true
+	}
+	err := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				be.releaseCacheBudget(chunk.DeepBytes, chunk.NodeCount)
+				panic(r)
+			}
+		}()
+		return be.engineMeter.ChargeRetained(chunk.DeepBytes, 1)
+	}()
+	if err != nil {
+		be.releaseCacheBudget(chunk.DeepBytes, chunk.NodeCount)
+		return false
+	}
+	return true
+}
+
+// releaseCacheReservation rolls back an unpublished reservation: the retained
+// slot outside every cache lock, then the budget counters — which run even if
+// the meter release panics. Only the caller's own charge is released; a
+// winning duplicate's is never touched.
+func (be *bytecodeEvaluator) releaseCacheReservation(chunk *vm.Chunk) {
+	defer be.releaseCacheBudget(chunk.DeepBytes, chunk.NodeCount)
+	be.releaseDetached([]int64{chunk.DeepBytes})
+}
+
+// releaseDetached invokes ReleaseRetained for every detached victim outside
+// all cache locks. Every release is attempted before the first panic is
+// re-raised, so one misbehaving meter cannot strand the rest.
+func (be *bytecodeEvaluator) releaseDetached(deepBytes []int64) {
+	if be.engineMeter == nil || len(deepBytes) == 0 {
+		return
+	}
+	var first any
+	for _, b := range deepBytes {
+		func() {
+			defer func() {
+				if r := recover(); r != nil && first == nil {
+					first = r
+				}
+			}()
+			be.engineMeter.ReleaseRetained(b, 1)
+		}()
+	}
+	if first != nil {
+		panic(first)
+	}
+}
+
+// cacheBudgetShort reports whether a not-yet-charged candidate would push
+// any of the three global counters past its ceiling — the pre-eviction test
+// planCacheAdmission applies before the candidate's reservation exists.
+func (be *bytecodeEvaluator) cacheBudgetShort(chunk *vm.Chunk) bool {
+	return be.cacheEntries.Load()+1 > int64(be.maxCacheEntries) ||
+		be.cacheBytes.Load()+chunk.DeepBytes > int64(be.maxCacheBytes) ||
+		be.cacheNodes.Load()+int64(chunk.NodeCount) > int64(be.maxCacheNodes)
+}
+
+// planCacheAdmission checks the duplicate key and the macro epoch and makes
+// room by detaching victims from s's tail, all under s's lock. Victim
+// retained slots come back for the caller to release outside every cache
+// lock. A non-nil dup means a winner already published this key. eligible
+// reports whether the candidate may proceed to reservation and detachment:
+// a stale macro epoch or an oversized candidate refuses planning outright, so
+// the caller skips the reservation and runs the borrowed chunk instead of
+// detaching a candidate publication would refuse anyway. The publication-time
+// epoch recheck still covers an epoch bump raced after planning.
+func (be *bytecodeEvaluator) planCacheAdmission(s *cacheStripe, key cacheKey, chunk *vm.Chunk) (dup *vm.Chunk, eligible bool, detached []int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.cacheGetLocked(key); ok {
+		return cached, false, nil
+	}
+	if key.macroEpoch != be.globals.MacroEpoch() {
+		return nil, false, nil
+	}
+	// An oversized candidate can never fit, even in an empty stripe; skip
+	// eviction so it cannot drain residents it would never displace usefully.
+	if !be.cacheFitsAlone(chunk) {
+		return nil, false, nil
+	}
+	// s.tail != nil bounds the loop: one big LRU rarely empties mid-eviction,
+	// but an N-way split one does routinely once other stripes hold the budget.
+	for s.tail != nil && be.cacheBudgetShort(chunk) {
+		detached = append(detached, be.detachCacheEntryLocked(s, s.tail))
+	}
+	return nil, true, detached
+}
+
+// publishReservedCacheEntry inserts the caller's already-reserved chunk under
+// s's lock. It rechecks the duplicate key and the macro epoch so a candidate
+// that raced a winner or an epoch bump loses cleanly — the caller then rolls
+// back only its own reservation — and refuses when siblings charged budget
+// between planning and publishing.
+func (be *bytecodeEvaluator) publishReservedCacheEntry(s *cacheStripe, key cacheKey, chunk *vm.Chunk) (dup *vm.Chunk, published bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cached, ok := s.cacheGetLocked(key); ok {
+		return cached, false
+	}
+	if key.macroEpoch != be.globals.MacroEpoch() || be.cacheBudgetExceeded(chunk) {
+		return nil, false
 	}
 	if s.cache == nil {
 		s.cache = make(map[cacheKey]*cacheEntry)
@@ -211,7 +303,7 @@ func (be *bytecodeEvaluator) cacheAdmitLocked(s *cacheStripe, key cacheKey, chun
 	entry := &cacheEntry{key: key, chunk: chunk}
 	s.cache[key] = entry
 	s.insertCacheEntryHeadLocked(entry)
-	return true
+	return nil, true
 }
 
 func (be *bytecodeEvaluator) cacheFitsAlone(chunk *vm.Chunk) bool {
@@ -227,14 +319,15 @@ func (be *bytecodeEvaluator) cacheFitsAlone(chunk *vm.Chunk) bool {
 	return be.maxCacheNodes >= chunk.NodeCount
 }
 
-// cacheBudgetExceeded reports whether admitting chunk would push any of the
-// three global counters past its ceiling — the same used+n>max test
-// chargeCacheBudget applies, checked ahead of time so pre-eviction can make
-// room before the charge is attempted.
+// cacheBudgetExceeded reports whether the counters, with the caller's own
+// already-charged reservation excluded, leave no room for chunk — the same
+// used+n>max test chargeCacheBudget applies, expressed against counters that
+// include the candidate. This is the pre-eviction and post-eviction test
+// inside publishCacheEntry.
 func (be *bytecodeEvaluator) cacheBudgetExceeded(chunk *vm.Chunk) bool {
-	return be.cacheEntries.Load()+1 > int64(be.maxCacheEntries) ||
-		be.cacheBytes.Load()+chunk.DeepBytes > int64(be.maxCacheBytes) ||
-		be.cacheNodes.Load()+int64(chunk.NodeCount) > int64(be.maxCacheNodes)
+	return be.cacheEntries.Load() > int64(be.maxCacheEntries) ||
+		be.cacheBytes.Load() > int64(be.maxCacheBytes) ||
+		be.cacheNodes.Load() > int64(be.maxCacheNodes)
 }
 
 // chargeCacheBudget CAS-charges the three global counters in order,
@@ -296,30 +389,34 @@ func (s *cacheStripe) unlinkCacheEntryLocked(entry *cacheEntry) {
 	entry.next = nil
 }
 
-func (be *bytecodeEvaluator) evictCacheEntryLocked(s *cacheStripe, entry *cacheEntry) {
+// detachCacheEntryLocked removes entry from stripe s under the stripe lock,
+// updating links and the global budget counters, and returns the victim's
+// retained bytes. The caller releases the retained slot via releaseDetached
+// after every cache lock is dropped — a meter that reenters the cache must
+// never run against a held stripe mutex.
+func (be *bytecodeEvaluator) detachCacheEntryLocked(s *cacheStripe, entry *cacheEntry) int64 {
 	if entry == nil {
-		return
+		return 0
 	}
 	delete(s.cache, entry.key)
 	s.unlinkCacheEntryLocked(entry)
 	be.releaseCacheBudget(entry.chunk.DeepBytes, entry.chunk.NodeCount)
-	if be.engineMeter != nil {
-		be.engineMeter.ReleaseRetained(entry.chunk.DeepBytes, 1)
-	}
+	return entry.chunk.DeepBytes
 }
 
 // flushCacheEpochLocked reclaims entries older than epoch. The test is < and
 // not != because a sweep for an older epoch can still be walking stripes when
 // a redefinition bumps past it: != would let that in-flight sweep delete an
 // entry a newer epoch just admitted into a stripe it had not yet reached.
-func (be *bytecodeEvaluator) flushCacheEpochLocked(s *cacheStripe, epoch int) {
+func (be *bytecodeEvaluator) flushCacheEpochLocked(s *cacheStripe, epoch int) (detached []int64) {
 	for entry := s.tail; entry != nil; {
 		prev := entry.prev
 		if entry.key.macroEpoch < epoch {
-			be.evictCacheEntryLocked(s, entry)
+			detached = append(detached, be.detachCacheEntryLocked(s, entry))
 		}
 		entry = prev
 	}
+	return detached
 }
 
 // flushStaleEpoch reclaims stale-epoch entries across every stripe, gated by
@@ -341,22 +438,39 @@ func (be *bytecodeEvaluator) flushStaleEpoch(epoch int64) {
 		for i := range be.stripes {
 			st := &be.stripes[i]
 			st.mu.Lock()
-			be.flushCacheEpochLocked(st, int(epoch))
+			detached := be.flushCacheEpochLocked(st, int(epoch))
 			st.mu.Unlock()
+			be.releaseDetached(detached)
 		}
 		return
 	}
 }
 
-func (be *bytecodeEvaluator) flushCache() {
+// flushCache detaches every entry across all stripes, then releases the
+// retained slots outside all cache locks. A meter panic aborts nothing: every
+// release is attempted, and the first one surfaces as the returned error so
+// Close can propagate it.
+func (be *bytecodeEvaluator) flushCache() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if perr, ok := r.(error); ok {
+				err = perr
+			} else {
+				err = fmt.Errorf("chunk cache release: %v", r)
+			}
+		}
+	}()
+	var detached []int64
 	for i := range be.stripes {
 		s := &be.stripes[i]
 		s.mu.Lock()
 		for s.tail != nil {
-			be.evictCacheEntryLocked(s, s.tail)
+			detached = append(detached, be.detachCacheEntryLocked(s, s.tail))
 		}
 		s.mu.Unlock()
 	}
+	be.releaseDetached(detached)
+	return nil
 }
 
 func (be *bytecodeEvaluator) cacheStats() CacheStats {
@@ -492,7 +606,7 @@ func (be *bytecodeEvaluator) ConstructionDepthLimit() int { return be.maxStructu
 // and compiles only on a miss, then runs via a pooled VM. A form the compiler
 // refuses with CodeUnsupported never reaches the VM: the tree-walker evaluates
 // the whole expanded form instead.
-func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash sourceHash, formIndex int) (core.Value, error) {
+func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, env *core.Env, sourceHash sourceHash, formIndex int, input string) (core.Value, error) {
 	ctx = be.evalResourceContext(ctx)
 	if err := core.PollEvalState(ctx); err != nil {
 		return nil, err
@@ -510,6 +624,15 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 	s.mu.Unlock()
 
 	if !hit {
+		// Record, before expansion, which decoded payloads of this read
+		// already own their storage (escaped literals): the detacher must
+		// not recopy them, while unescaped payloads alias the input and
+		// must be cloned before publication.
+		owned, oerr := ownedStringIdentities(ctx, form, input)
+		if oerr != nil {
+			return nil, oerr
+		}
+
 		// Expand only on a miss. A cached chunk was compiled from the
 		// expansion, so re-expanding to reach it is work whose result is
 		// thrown away — and an expander with side effects would re-run
@@ -548,14 +671,33 @@ func (be *bytecodeEvaluator) EvalCached(ctx context.Context, form core.Value, en
 			return nil, err
 		}
 
-		s.mu.Lock()
-		if cached, dup := s.cacheGetLocked(key); dup {
-			chunk = cached
+		// Plan under the stripe lock (duplicate/epoch check, victim
+		// detach), release victims outside all cache locks, reserve the
+		// candidate outside all locks, then reacquire and recheck before
+		// publishing. A planning refusal (stale epoch, oversized) skips the
+		// reservation entirely: the borrowed chunk still runs. A losing
+		// candidate releases only its own reservation.
+		dup, eligible, detached := be.planCacheAdmission(s, key, chunk)
+		be.releaseDetached(detached)
+		if dup != nil {
+			chunk = dup
 			hit = true
-		} else if be.cacheAdmitLocked(s, key, chunk) {
-			hit = false
+		} else if eligible && be.reserveCacheOccupancy(chunk) {
+			// Only a successfully reserved candidate is detached. A
+			// detachment or publication failure releases the reservation
+			// and publishes nothing: the borrowed candidate still runs.
+			pub, raced, derr := be.detachPublish(ctx, s, key, chunk, owned)
+			if derr != nil {
+				if core.IsTerminalEvalError(derr) {
+					return nil, derr
+				}
+			} else if raced != nil {
+				chunk = raced
+				hit = true
+			} else if pub != nil {
+				chunk = pub
+			}
 		}
-		s.mu.Unlock()
 	}
 
 	// The site cache pays off only across repeated runs, so build it the first
@@ -583,6 +725,43 @@ func (be *bytecodeEvaluator) runVM(ctx context.Context, chunk *vm.Chunk, env *co
 	result, err := v.Run(ctx, chunk)
 	be.vmPool.Put(v)
 	return result, err
+}
+
+// detachPublish detaches the reserved candidate and publishes it, so the
+// retained tree never aliases the Eval input. Any failure path — detachment
+// refusal, meter panic, lost publication race — releases the reservation and
+// leaves nothing published. The reservation has exactly one cleanup owner:
+// reserved tracks whether it still belongs to this call, every explicit
+// failure path clears it before releasing, and ownership transfers to the
+// stripe only after publication succeeds — so a ReleaseRetained panic that
+// unwinds into the recover below can never release the same reservation (or
+// its budget charge) twice. The panic itself still propagates.
+func (be *bytecodeEvaluator) detachPublish(ctx context.Context, s *cacheStripe, key cacheKey, chunk *vm.Chunk, owned map[stringIdentity]core.Value) (published *vm.Chunk, raced *vm.Chunk, err error) {
+	reserved := true
+	release := func(c *vm.Chunk) {
+		if reserved {
+			reserved = false
+			be.releaseCacheReservation(c)
+		}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			release(chunk)
+			panic(r)
+		}
+	}()
+	ownedChunk, derr := be.detachCachedChunk(ctx, chunk, owned)
+	if derr != nil {
+		release(chunk)
+		return nil, nil, derr
+	}
+	raced, ok := be.publishReservedCacheEntry(s, key, ownedChunk)
+	if !ok {
+		release(ownedChunk)
+		return raced, nil, nil
+	}
+	reserved = false
+	return ownedChunk, nil, nil
 }
 
 // isUnsupportedInBytecode reports whether err is the compiler's typed
@@ -743,7 +922,7 @@ func (e *engineImpl) Eval(ctx context.Context, source, input string) (result cor
 		result = core.Nil{}
 		sourceHash := sha256Hash(input)
 		for i, form := range forms {
-			result, err = be.EvalCached(ctx, form, env, sourceHash, i)
+			result, err = be.EvalCached(ctx, form, env, sourceHash, i, input)
 			if err != nil {
 				if ferr := core.FlushEvalState(ctx); ferr != nil && core.IsTerminalEvalError(ferr) {
 					err = ferr
@@ -785,7 +964,7 @@ func sha256Hash(s string) sourceHash {
 func (e *engineImpl) EvalFile(path string) (core.Value, error) {
 	e.logger.Info("loading file", "path", path)
 
-	content, err := os.ReadFile(path)
+	content, err := e.readSourceFile(context.Background(), path)
 	if err != nil {
 		return nil, fmt.Errorf("read file %s: %w", path, err)
 	}

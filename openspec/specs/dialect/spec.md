@@ -62,12 +62,15 @@ Two Engines running different Dialects in one process SHALL NOT share special-fo
 - **WHEN** two Engines are constructed with different Dialects
 - **THEN** a form present in one Dialect and absent in the other SHALL resolve only on the Engine whose Dialect defines it
 
-### Requirement: Default Engine behavior is preserved
-An Engine created without a Dialect option SHALL evaluate the identity Dialect, reproducing the special-form behavior of the interpreter prior to this change.
+### Requirement: Default Engine dialect is Common Lisp
 
-#### Scenario: No option selects the identity Dialect
+An Engine created without a Dialect option SHALL use `cl.Dialect()`.
+The zero `core.Dialect` SHALL remain the identity Dialect for explicit construction.
+
+#### Scenario: No option selects the Common Lisp Dialect
+
 - **WHEN** an Engine is created with no Dialect option
-- **THEN** the special forms `if`, `def`, `defn`, `let`, `quote`, `cond`, `loop`, and `recur` SHALL behave as they did before this change
+- **THEN** its forms, reader syntax, vocabulary, and namespace axis SHALL follow `cl.Dialect()`
 
 ### Requirement: Symbol namespaces are a Dialect axis
 A Dialect SHALL set the namespace axis to Lisp-1 (a single binding namespace) or Lisp-2 (a separate function cell). Under Lisp-2 a symbol MAY name a function and a value simultaneously; under Lisp-1 a symbol names one binding.

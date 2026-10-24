@@ -185,9 +185,16 @@ jobs:
         env:
           GOMAXPROCS: ${{ env.GOMAXPROCS }}
         run: |
+          # Verdict legs measure only the committed Goldset/GoldsetParse/
+          # GoldsetCall families; classification capture (classification_only
+          # dispatch) keeps the full -bench . sweep for uncommitted cells.
+          bench_sel='^Benchmark(Goldset|GoldsetParse|GoldsetCall)$'
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.classification_only }}" = "true" ]; then
+            bench_sel='.'
+          fi
           for _ in $(seq "${{ env.BENCH_COUNT }}"); do
-            GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-evaluator.txt
-            GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench . -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-vm.txt
+            GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench "$bench_sel" -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-evaluator.txt
+            GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench "$bench_sel" -benchtime="${{ env.BENCHTIME }}" -count=1 -benchmem >> bench-vm.txt
           done
 
       - name: Render classification comparison CSV
@@ -347,8 +354,8 @@ jobs:
           doubled=$(awk -v bt="${{ env.BENCHTIME }}" 'BEGIN{match(bt,/^[0-9.]+/);n=substr(bt,RSTART,RLENGTH);s=substr(bt,RSTART+RLENGTH);printf "%s%s", n*2, s}')
           rm -f bench-evaluator.txt bench-vm.txt
           for _ in $(seq "${{ env.BENCH_COUNT }}"); do
-            GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench . -benchtime="$doubled" -count=1 -benchmem >> bench-evaluator.txt
-            GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench . -benchtime="$doubled" -count=1 -benchmem >> bench-vm.txt
+            GOLDSET_MODE="eval" go test ./internal/goldset/ -run '^$' -bench '^Benchmark(Goldset|GoldsetParse|GoldsetCall)$' -benchtime="$doubled" -count=1 -benchmem >> bench-evaluator.txt
+            GOLDSET_MODE="vm" go test ./internal/goldset/ -run '^$' -bench '^Benchmark(Goldset|GoldsetParse|GoldsetCall)$' -benchtime="$doubled" -count=1 -benchmem >> bench-vm.txt
           done
 
       - name: Resolve inconclusive cells after rerun

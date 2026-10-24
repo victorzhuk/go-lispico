@@ -350,6 +350,35 @@ func TestCache_UnfitChunkRunsUncached(t *testing.T) {
 	assert.Equal(t, 0, cacheStats(t, e).Entries)
 }
 
+func TestCache_OversizeCandidateKeepsResidents(t *testing.T) {
+	profile := cacheProfile(t, "1")
+	big := "(quote " + vectorLiteral("9", 64) + ")"
+	require.Greater(t, int(cacheProfile(t, big).Bytes), 2*int(profile.Bytes), "oversize fixture must exceed the resident-set ceiling")
+
+	m := &recordingMeter{}
+	e, err := New(nil, WithBytecode(), WithDialect(clojure.Dialect()), WithEngineMeter(m),
+		WithResourceLimits(ResourceLimits{MaxCacheEntries: 10, MaxCacheBytes: 2 * int(profile.Bytes), MaxCacheNodes: 1 << 30, MaxCollectionLen: 1 << 30}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	evalCacheSource(t, e, "1")
+	evalCacheSource(t, e, "2")
+	m.reset()
+
+	evalCacheSource(t, e, big)
+	assert.False(t, cacheContainsSource(t, e, big), "oversized candidate must not be published")
+	assert.Equal(t, 0, m.snapshot().chargeCalls, "oversized candidate must be rejected before admission reaches the meter")
+	assert.Equal(t, 0, m.snapshot().releaseCalls, "oversized candidate must not detach residents for release")
+
+	assert.True(t, cacheContainsSource(t, e, "1"), "oversized candidate must not evict a resident")
+	assert.True(t, cacheContainsSource(t, e, "2"), "oversized candidate must not evict a resident")
+	assert.Equal(t, 2, cacheStats(t, e).Entries)
+
+	v := evalCacheSource(t, e, "1")
+	assert.True(t, core.Int{V: 1}.Equals(v))
+	assert.Equal(t, 0, m.snapshot().chargeCalls, "resident re-evaluation must hit the cache, not re-admit")
+}
+
 func TestCache_MeterChargeAndRelease(t *testing.T) {
 	t.Run("MacroEpochFlushAndClose", func(t *testing.T) {
 		m := &recordingMeter{}

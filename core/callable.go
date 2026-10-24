@@ -1,5 +1,7 @@
 package core
 
+import "context"
+
 // Callable marks a value the evaluator can already call that is not a
 // GoFunc, Lambda, or Keyword (the marker the VM closure carries). It is a
 // classification marker only: implementing it does not add a new
@@ -21,3 +23,8 @@ func IsCallable(v Value) bool {
 		return false
 	}
 }
+
+// CallableApplier applies a callable value the tree evaluator has no native
+// dispatch case for. fn is guaranteed IsCallable and never a GoFunc, Lambda,
+// or Keyword, so installing an applier cannot reroute ordinary Lambdas.
+type CallableApplier func(ctx context.Context, fn Value, args []Value, env *Env) (Value, error)

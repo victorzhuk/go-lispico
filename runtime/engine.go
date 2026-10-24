@@ -361,6 +361,9 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 		rootEnv.SetEvaluator(be)
 		evaluator = be
 		e.bytecodeEvaluator = be
+		if s, ok := any(treeWalker).(interface{ SetCallableApplier(core.CallableApplier) }); ok {
+			s.SetCallableApplier(be.Apply)
+		}
 	} else {
 		rootEnv.SetEvaluator(treeWalker)
 		evaluator = treeWalker
@@ -382,7 +385,9 @@ func New(log *slog.Logger, opts ...EngineOption) (Engine, error) {
 func (e *engineImpl) Close() error {
 	e.stopWatcher()
 	if e.bytecodeEvaluator != nil {
-		e.bytecodeEvaluator.flushCache()
+		if err := e.bytecodeEvaluator.flushCache(); err != nil {
+			return err
+		}
 	}
 	e.logger.Debug("engine closed")
 	return nil

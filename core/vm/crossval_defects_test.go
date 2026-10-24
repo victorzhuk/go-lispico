@@ -21,7 +21,7 @@ import (
 func TestVMVsTreeWalker_When_NestedPositions(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -34,7 +34,7 @@ func TestVMVsTreeWalker_When_NestedPositions(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -42,7 +42,7 @@ func TestVMVsTreeWalker_When_NestedPositions(t *testing.T) {
 func TestVMVsTreeWalker_SetLexical_NestedClosureAndLocal(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -58,7 +58,7 @@ func TestVMVsTreeWalker_SetLexical_NestedClosureAndLocal(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -66,7 +66,7 @@ func TestVMVsTreeWalker_SetLexical_NestedClosureAndLocal(t *testing.T) {
 func TestVMVsTreeWalker_TryCatchLocals_InLoopAndFn(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -82,7 +82,7 @@ func TestVMVsTreeWalker_TryCatchLocals_InLoopAndFn(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -93,7 +93,7 @@ func TestVMVsTreeWalker_TryCatchLocals_InLoopAndFn(t *testing.T) {
 func TestVMVsTreeWalker_KeywordApplication(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -107,7 +107,7 @@ func TestVMVsTreeWalker_KeywordApplication(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }

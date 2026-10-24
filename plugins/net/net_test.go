@@ -640,6 +640,19 @@ func TestPlugin_ErrorRedactsURL(t *testing.T) {
 	assert.Contains(t, msg, "http://127.0.0.1:1")
 }
 
+func TestPlugin_MalformedURLRedacted(t *testing.T) {
+	p := New()
+	raw := "http://example.com/pa\x07th?secret=TOPSECRET"
+	_, err := p.get(context.Background(), nil, []core.Value{core.String{V: raw}}, nil)
+	require.Error(t, err)
+
+	msg := err.Error()
+	assert.NotContains(t, msg, "TOPSECRET")
+	assert.NotContains(t, msg, "example.com")
+	assert.NotContains(t, msg, "secret=")
+	assert.ErrorIs(t, err, ErrInvalidURL)
+}
+
 func TestPlugin_RedirectNotFollowedWithTimeout(t *testing.T) {
 	targetHits := 0
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

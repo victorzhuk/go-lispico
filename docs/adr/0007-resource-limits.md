@@ -20,3 +20,13 @@ Adversarial or accidental input can exhaust the host through paths that the exis
 - Hardcoded constants at each site: rejected — the values are a security contract an embedder needs to set per deployment, and burying them makes the fail-closed guarantee invisible at the API surface.
 - `ctx`-cancellation only, no hard caps: rejected — a tight recursive descent overflows the Go stack before any `ctx.Err()` check can fire, so cancellation alone does not fix the reader crash.
 - Rely on the OS/cgroup memory limit: rejected — an OOM kill is the same host-availability failure this ADR exists to prevent, just one layer down, and gives no clean error to the embedder.
+
+## Amendment (2026-10-24): source acquisition admits under `MaxAllocationBytes`
+
+The earlier source-acquisition exemption no longer applies.
+`EvalFile`, each `LoadDir` file, and watcher reloads bound source size by the resolved `MaxAllocationBytes` before parsing.
+The shared reader in `runtime/source_reader.go` buffers at most the ceiling plus one byte.
+It reads in bounded chunks and checks caller cancellation between reads.
+An oversized file returns terminal `ResourceLimitError` identifying the file and ceiling.
+
+This is a source-size admission ceiling, not a claim that Go heap use equals the deterministic allocation ledger, and it does not change the ledger itself: source text admitted under the ceiling still flows through the reader's own allocation and reduction checks, and caller-owned strings passed to `Eval` remain borrowed and uncharged for source length.

@@ -969,7 +969,7 @@ func chunkDeepBytesContext(ctx context.Context, chunk *vm.Chunk) (int64, error) 
 	if chunk == nil {
 		return 0, nil
 	}
-	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + int64(len(chunk.Fused))*core.MeterFusedOpBytes + core.ValueSlotsBytes(len(chunk.Constants))
+	bytes := int64(len(chunk.Code))*core.MeterInstructionBytes + int64(len(chunk.Fused))*core.MeterFusedOpBytes + core.ValueSlotsBytes(len(chunk.Constants)) + core.StringShallowBytes(len(chunk.Name))
 	for _, name := range chunk.LocalNames {
 		bytes += core.StringShallowBytes(len(name))
 	}
@@ -1286,13 +1286,11 @@ func (c *Compiler) compileQuasiquoteValue(v core.Value) error {
 		if ok, err := c.compileConstantCollection(val, true); ok || err != nil {
 			return err
 		}
-		d := literalDepth(val, 0)
-		if d < 0 {
-			return core.NewResourceLimitError("compile depth limit exceeded")
-		}
-		c.emit(vm.OpStructEnter, d)
-		c.emit(vm.OpConst, c.chunk.AddConstant(val))
-		c.emit(vm.OpStructLeave, d)
+		// A map the constant folder refused carries template positions
+		// (unquoted keys or values). Emitting it as one constant would
+		// silently drop their evaluation; refuse so the runtime falls back
+		// to the tree-walker for the whole form.
+		return unsupportedErr("quasiquoted map with non-constant entries")
 	default:
 		c.emit(vm.OpConst, c.chunk.AddConstant(val))
 	}

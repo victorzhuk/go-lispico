@@ -76,6 +76,9 @@ func (p *Plugin) decode(ctx context.Context, eval core.Evaluator, args []core.Va
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, fmt.Errorf("json/decode: invalid character after top-level value")
 	}
+	if err := checkJSONContainerLens(raw, jsonCollectionLimit(eval)); err != nil {
+		return nil, err
+	}
 	res, err := fromJSONValue(raw)
 	if err != nil {
 		return nil, err
@@ -109,6 +112,45 @@ func (p *Plugin) prettyEncode(ctx context.Context, eval core.Evaluator, args []c
 		return nil, fmt.Errorf("json/pretty-encode: %w", err)
 	}
 	return core.String{V: string(b)}, nil
+}
+
+// jsonCollectionLimit resolves the active collection limit from the evaluator
+// using the stdlib convention; an evaluator without a limiter is unlimited.
+func jsonCollectionLimit(eval core.Evaluator) int {
+	if cl, ok := eval.(core.CollectionLimiter); ok {
+		if n := cl.CollectionLimit(); n > 0 {
+			return n
+		}
+	}
+	return math.MaxInt
+}
+
+// checkJSONContainerLens refuses a decoded JSON value in which any array or
+// object, at any nesting depth, holds more elements than maxLen. It walks the
+// raw decoded tree before any Lisp value is allocated, so a refusal publishes
+// no result storage.
+func checkJSONContainerLens(v any, maxLen int) error {
+	switch x := v.(type) {
+	case map[string]any:
+		if len(x) > maxLen {
+			return core.NewResourceLimitError(fmt.Sprintf("json/decode: object length %d exceeds collection limit %d", len(x), maxLen))
+		}
+		for _, val := range x {
+			if err := checkJSONContainerLens(val, maxLen); err != nil {
+				return err
+			}
+		}
+	case []any:
+		if len(x) > maxLen {
+			return core.NewResourceLimitError(fmt.Sprintf("json/decode: array length %d exceeds collection limit %d", len(x), maxLen))
+		}
+		for _, val := range x {
+			if err := checkJSONContainerLens(val, maxLen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func fromJSONValue(v any) (core.Value, error) {

@@ -4,7 +4,7 @@ This file provides guidance to coding agents working in this repository.
 
 ## Project
 
-**go-lispico** is a zero-dependency, pluggable Lisp interpreter designed as an embeddable scripting kernel for Go applications.
+**go-lispico** is a pluggable Lisp interpreter designed as an embeddable scripting kernel for Go applications, with zero external dependencies in its core.
 
 ## Status
 

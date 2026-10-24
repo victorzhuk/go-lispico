@@ -87,6 +87,11 @@ func (w *fileWatcher) scan() {
 		return
 	}
 
+	// present tracks every .lisp path seen with a readable info in this
+	// scan. Pruning runs only after a complete uncanceled pass, so a
+	// canceled scan or a directory-read error never drops stored mtimes.
+	present := make(map[string]struct{}, len(entries))
+
 	for _, entry := range entries {
 		if w.ctx.Err() != nil {
 			return
@@ -106,40 +111,82 @@ func (w *fileWatcher) scan() {
 			w.engine.logger.Error("get file info", "path", path, "error", err)
 			continue
 		}
+		present[path] = struct{}{}
 
 		mtime := info.ModTime()
 		lastMtime, seen := w.mtimes[path]
 
 		if !seen || !mtime.Equal(lastMtime) {
-			w.mtimes[path] = mtime
-			w.reloadFile(path)
+			if w.reloadFile(path) {
+				w.mtimes[path] = mtime
+			}
+		}
+	}
+
+	if w.ctx.Err() != nil {
+		return
+	}
+	for path := range w.mtimes {
+		if _, ok := present[path]; !ok {
+			delete(w.mtimes, path)
 		}
 	}
 }
 
-func (w *fileWatcher) reloadFile(path string) {
-	start := time.Now()
+// startReloadEval draws the reload's enclosing evaluation lease with the
+// same panic containment the settlement gets: a host meter may panic from
+// the initial lease draw, and the panic must surface as an error, not kill
+// the watch loop.
+func startReloadEval(ctx context.Context) (top bool, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			top, err = false, core.NewPanicError("start eval", recovered)
+		}
+	}()
+	return core.StartEval(ctx)
+}
 
-	content, err := os.ReadFile(path)
-	if err != nil {
-		w.engine.logger.Error("read file", "path", path, "error", err)
-		return
-	}
+// reloadFile returns true only after a complete successful application:
+// all forms evaluated, eval state flushed, and the child env merged into
+// the root. Any earlier exit leaves the stored mtime untouched so the
+// unchanged file retries on the next scan.
+func (w *fileWatcher) reloadFile(path string) (ok bool) {
+	start := time.Now()
 
 	ctx := w.engine.evalResourceContext(core.DetachEvalState(w.ctx))
 	if d := w.engine.evalDeadline(ctx, start); !d.IsZero() {
 		ctx = core.WithEvalDeadline(ctx, d)
 	}
-	forms, err := w.engine.readForms(ctx, string(content))
+	top, err := startReloadEval(ctx)
 	if err != nil {
-		w.engine.logger.Error("parse file", "path", path, "error", err)
-		return
+		w.engine.logger.Error("start eval in file", "path", path, "error", err)
+		return false
 	}
-
-	childEnv := w.engine.rootEnv.Child()
-
+	settled := false
+	// settle is panic-contained on its own: FinishEval recovers meter panics
+	// from the flush and the retained charge, but a host meter panicking from
+	// ReturnEval escapes FinishEval's defer, and the watch loop must survive
+	// that too.
+	settle := func() (ok bool) {
+		settled = true
+		defer func() {
+			if r := recover(); r != nil {
+				w.engine.logger.Error("settle eval in file", "path", path, "error", core.NewPanicError("settlement", r))
+				ok = false
+			}
+		}()
+		if ferr := core.FinishEval(ctx, top); ferr != nil {
+			w.engine.logger.Error("settle eval in file", "path", path, "error", ferr)
+			return false
+		}
+		return true
+	}
 	defer func() {
-		if recovered := recover(); recovered != nil {
+		recovered := recover()
+		if !settled {
+			settle()
+		}
+		if recovered != nil {
 			w.engine.logger.Error(
 				"eval form in file",
 				"path", path,
@@ -148,27 +195,45 @@ func (w *fileWatcher) reloadFile(path string) {
 		}
 	}()
 
+	content, err := w.engine.readSourceFile(ctx, path)
+	if err != nil {
+		w.engine.logger.Error("read file", "path", path, "error", err)
+		return false
+	}
+	forms, err := w.engine.readForms(ctx, string(content))
+	if err != nil {
+		w.engine.logger.Error("parse file", "path", path, "error", err)
+		return false
+	}
+
+	childEnv := w.engine.rootEnv.Child()
+
 	for _, form := range forms {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		_, err := w.engine.evaluator.Eval(ctx, form, childEnv)
 		if err != nil {
 			w.engine.logger.Error("eval form in file", "path", path, "error", err)
-			return
+			return false
 		}
 	}
 	if err := core.FlushEvalState(ctx); err != nil {
 		w.engine.logger.Error("eval form in file", "path", path, "error", err)
-		return
+		return false
 	}
 
 	if ctx.Err() != nil {
-		return
+		return false
+	}
+	// A failed settlement must leave the stored mtime and the root env
+	// untouched, so the unchanged file retries on the next scan.
+	if !settle() {
+		return false
 	}
 	if err := childEnv.MergeInto(w.engine.rootEnv); err != nil {
 		w.engine.logger.Error("merge file env", "path", path, "error", err)
-		return
+		return false
 	}
 	// MergeInto copies cells but not scope counters: the child's epoch bump
 	// from a reloaded defmacro stays on the child. Chunk-cache keys carry the
@@ -184,6 +249,7 @@ func (w *fileWatcher) reloadFile(path string) {
 		"forms", len(forms),
 		"duration", time.Since(start),
 	)
+	return true
 }
 
 func (e *engineImpl) Watch(ctx context.Context, dir string) error {

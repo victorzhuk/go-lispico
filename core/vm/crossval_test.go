@@ -295,10 +295,6 @@ result`
 	}
 
 	vmEnv := newCrossValEnv()
-	for _, form := range forms {
-		// Need to set up the same env for tree-walker
-		treeEval.Eval(context.Background(), form, vmEnv)
-	}
 
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
@@ -360,23 +356,27 @@ func TestVMVsTreeWalker_AllTypes(t *testing.T) {
 	}
 }
 
-func compare(t *testing.T, env *core.Env, src string) {
+// compare runs src on the tree-walker and on the bytecode VM, each against
+// its own equivalently seeded env from newEnv, so neither evaluator's
+// mutations pre-seed the other's environment.
+func compare(t *testing.T, newEnv func() *core.Env, src string) {
 	t.Helper()
 
 	forms, err := core.Read(src)
 	require.NoError(t, err, "read source")
 
+	treeEnv := newEnv()
 	treeEval := core.NewEvaluator()
 	var treeResult core.Value = core.Nil{}
 	for _, form := range forms {
-		treeResult, err = treeEval.Eval(context.Background(), form, env)
+		treeResult, err = treeEval.Eval(context.Background(), form, treeEnv)
 		require.NoError(t, err, "tree-walker eval")
 	}
 
 	chunks, err := compiler.CompileAll(forms)
 	require.NoError(t, err, "compile")
 
-	v := vm.New(env)
+	v := vm.New(newEnv())
 	var vmResult core.Value = core.Nil{}
 	for _, chunk := range chunks {
 		vmResult, err = v.Run(context.Background(), chunk)
@@ -388,7 +388,9 @@ func compare(t *testing.T, env *core.Env, src string) {
 		vmResult, vmResult, treeResult, treeResult)
 }
 
-func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src string) {
+// compareDialect mirrors compare for a dialect-specific compiler: each
+// evaluator gets its own env from newEnv.
+func compareDialect(t *testing.T, newEnv func() *core.Env, dialect core.Dialect, src string) {
 	t.Helper()
 
 	forms, err := core.Read(src)
@@ -396,9 +398,10 @@ func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src strin
 
 	treeEval, err := core.NewEvaluatorWithDialect(dialect)
 	require.NoError(t, err, "new evaluator with dialect")
+	treeEnv := newEnv()
 	var treeResult core.Value = core.Nil{}
 	for _, form := range forms {
-		treeResult, err = treeEval.Eval(context.Background(), form, env)
+		treeResult, err = treeEval.Eval(context.Background(), form, treeEnv)
 		require.NoError(t, err, "tree-walker eval")
 	}
 
@@ -412,7 +415,7 @@ func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src strin
 	comp.Chunk().EnsureSites()
 	comp.MarkCaptures()
 
-	v := vm.New(env)
+	v := vm.New(newEnv())
 	vmResult, err := v.Run(context.Background(), comp.Chunk())
 	require.NoError(t, err, "vm run")
 
@@ -424,7 +427,7 @@ func compareDialect(t *testing.T, env *core.Env, dialect core.Dialect, src strin
 func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -449,20 +452,20 @@ func TestVMVsTreeWalker_CondAndOrNot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 	// §3.1: Clojure flat cond under dialect
 	t.Run("cond clojure flat", func(t *testing.T) {
 		t.Parallel()
-		compareDialect(t, env, mustDialect(t, spec{FlatCond: true}), "(cond (< 1 2) :yes :else :no)")
+		compareDialect(t, newEnv, mustDialect(t, spec{FlatCond: true}), "(cond (< 1 2) :yes :else :no)")
 	})
 }
 
 func TestVMVsTreeWalker_LoopRecur(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -473,7 +476,7 @@ func TestVMVsTreeWalker_LoopRecur(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 
@@ -491,7 +494,7 @@ func TestVMVsTreeWalker_LoopRecur(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				t.Parallel()
-				compareDialect(t, newCrossValEnv(), cl.Dialect(), tt.src)
+				compareDialect(t, newCrossValEnv, cl.Dialect(), tt.src)
 			})
 		}
 	})
@@ -500,7 +503,7 @@ func TestVMVsTreeWalker_LoopRecur(t *testing.T) {
 func TestVMVsTreeWalker_TryCatch(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -511,7 +514,7 @@ func TestVMVsTreeWalker_TryCatch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -1004,7 +1007,7 @@ func TestVMVsTreeWalker_TerminalErrorNotCaught(t *testing.T) {
 func TestVMVsTreeWalker_WhenValuePosition(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -1017,7 +1020,7 @@ func TestVMVsTreeWalker_WhenValuePosition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -1025,19 +1028,19 @@ func TestVMVsTreeWalker_WhenValuePosition(t *testing.T) {
 func TestVMVsTreeWalker_SetLexical(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	src := `(def g 0)
                 (def bump (fn [x] (let [h (fn [] x)] (set! g (+ g 1)))))
                 (bump 0)
                 (bump 0)
                 g`
-	compare(t, env, src)
+	compare(t, newEnv, src)
 }
 
 func TestVMVsTreeWalker_TryCatchLocals(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -1051,7 +1054,7 @@ func TestVMVsTreeWalker_TryCatchLocals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -1081,7 +1084,7 @@ func TestVMVsTreeWalker_SetUndefined(t *testing.T) {
 func TestVMVsTreeWalker_Variadic(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -1093,7 +1096,7 @@ func TestVMVsTreeWalker_Variadic(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -1101,7 +1104,7 @@ func TestVMVsTreeWalker_Variadic(t *testing.T) {
 func TestVMVsTreeWalker_LetStar(t *testing.T) {
 	t.Parallel()
 
-	env := newCrossValEnv()
+	newEnv := newCrossValEnv
 	tests := []struct {
 		name string
 		src  string
@@ -1112,7 +1115,7 @@ func TestVMVsTreeWalker_LetStar(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, env, tt.src)
+			compare(t, newEnv, tt.src)
 		})
 	}
 }
@@ -1564,7 +1567,7 @@ func TestVMVsTreeWalker_Promotion(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, stdlibEnv(), tt.src)
+			compare(t, stdlibEnv, tt.src)
 		})
 	}
 }
@@ -1588,7 +1591,7 @@ func TestVMVsTreeWalker_ComparisonChains(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, stdlibEnv(), tt.src)
+			compare(t, stdlibEnv, tt.src)
 		})
 	}
 }
@@ -1648,14 +1651,17 @@ func TestVMVsTreeWalker_DivisionByZero(t *testing.T) {
 func TestVMVsTreeWalker_ReboundPlus(t *testing.T) {
 	t.Parallel()
 
-	env := stdlibEnv()
-	// Rebound + at global level
-	env.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
-		return core.Int{V: 999}, nil
-	}})
+	newEnv := func() *core.Env {
+		env := stdlibEnv()
+		// Rebound + at global level
+		env.Set("+", core.GoFunc{Name: "+", Fn: func(_ context.Context, _ core.Evaluator, args []core.Value, _ *core.Env) (core.Value, error) {
+			return core.Int{V: 999}, nil
+		}})
+		return env
+	}
 
 	// Using stdlib + directly: (+ 1 2) → 999 since + is rebound
-	compare(t, env, "(+ 1 2)")
+	compare(t, newEnv, "(+ 1 2)")
 }
 
 func TestVMVsTreeWalker_ErrorPropagation(t *testing.T) {
@@ -1764,7 +1770,7 @@ func TestVMVsTreeWalker_ClosureCapture(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			compare(t, newCrossValEnv(), tt.src)
+			compare(t, newCrossValEnv, tt.src)
 		})
 	}
 }
@@ -1931,8 +1937,7 @@ func TestVMVsTreeWalker_Lisp2RecursiveHeadRebindMidRun(t *testing.T) {
 func TestVM_MultipleNativeOpSitesResolveConsistently(t *testing.T) {
 	t.Parallel()
 
-	env := stdlibEnv()
-	compare(t, env, "(let [a 1 b 2 c 3 d 4] (+ (+ a b) (+ c d)))")
+	compare(t, stdlibEnv, "(let [a 1 b 2 c 3 d 4] (+ (+ a b) (+ c d)))")
 }
 
 // TestVM_RecursiveNativeOpsNeverCallGoFunc proves a recursive function whose

@@ -563,10 +563,10 @@ func TestLazyMaterialize_ConcurrentTombstoneFirstWrite(t *testing.T) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("TombstoneForDelete panicked: %v", r)
+					t.Errorf("BeginDelete panicked: %v", r)
 				}
 			}()
-			impl.lazyMaterializer.TombstoneForDelete(impl.rootEnv, fmt.Sprintf("name-%d", i))
+			impl.lazyMaterializer.BeginDelete(impl.rootEnv, fmt.Sprintf("name-%d", i))()
 		}(i)
 	}
 	wg.Wait()
@@ -1005,4 +1005,90 @@ func TestLazyMaterialize_ReloadIdenticalFirstAndSecondEngine(t *testing.T) {
 		require.NoError(t, err, name)
 		assert.True(t, core.Int{V: 10}.Equals(v), name)
 	}
+}
+
+// residueStubPlugin is a stdlib-identity (Name "") stub so its registrations
+// defer into the process-shared template layer. A unique version per run
+// keeps the global registry clean under -count>1.
+type residueStubPlugin struct {
+	version string
+	init    func(env *core.Env) error
+}
+
+func (p *residueStubPlugin) Name() string { return "" }
+
+func (p *residueStubPlugin) Init(env *core.Env) error {
+	if p.init != nil {
+		return p.init(env)
+	}
+	return nil
+}
+
+func (p *residueStubPlugin) Metadata() core.PluginMeta {
+	return core.PluginMeta{Version: p.version, Description: "residue stub"}
+}
+
+var lazyResidueTestSeq atomic.Int64
+
+// TestLazyMaterialize_FailedBuildLeavesNoTemplateResidue pins M7: a template
+// build that registers entries and then fails must leave no residue for the
+// retry. After the failed Use, a retry that registers only fresh names must
+// publish a layer where the stale names (value and source) are absent — on
+// the retrying engine and on a sibling attaching the shared layer.
+func TestLazyMaterialize_FailedBuildLeavesNoTemplateResidue(t *testing.T) {
+	t.Parallel()
+
+	version := fmt.Sprintf("0.%d.residue", lazyResidueTestSeq.Add(1))
+	dialect := clojure.Dialect()
+
+	eng, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	failing := &residueStubPlugin{version: version, init: func(env *core.Env) error {
+		if err := env.RegisterValue("stale-lazy-x", core.Int{V: 1}, false); err != nil {
+			return err
+		}
+		if !env.RegisterSource("stale-lazy-src-x", "(defn stale-lazy-src-x [] 1)") {
+			return errors.New("RegisterSource refused to defer")
+		}
+		return errors.New("build failed after registrations")
+	}}
+	require.Error(t, eng.Use(failing))
+
+	fresh := &residueStubPlugin{version: version, init: func(env *core.Env) error {
+		return env.RegisterValue("fresh-lazy-x", core.Int{V: 42}, false)
+	}}
+	require.NoError(t, eng.Use(fresh))
+
+	impl := eng.(*engineImpl)
+	key := stdlibTemplateKey{
+		dialectFP:     impl.lazyMaterializer.dialectFP,
+		pluginName:    "",
+		pluginVersion: version,
+	}
+	for _, name := range []string{"stale-lazy-x", "stale-lazy-src-x"} {
+		_, ok := stdlibLazyTemplateRegistry.entryFor(key, name)
+		assert.False(t, ok, "stale name %q must not survive the failed build", name)
+	}
+
+	v, err := eng.Eval(context.Background(), "fresh", "fresh-lazy-x")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 42}.Equals(v))
+	_, err = eng.Eval(context.Background(), "stale-value", "stale-lazy-x")
+	assert.ErrorContains(t, err, "undefined")
+	_, err = eng.Eval(context.Background(), "stale-src", "(stale-lazy-src-x)")
+	assert.ErrorContains(t, err, "undefined")
+
+	sibling, err := New(nil, WithBytecode(), WithDialect(dialect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sibling.Close() })
+	require.NoError(t, sibling.Use(&residueStubPlugin{version: version, init: func(env *core.Env) error {
+		return env.RegisterValue("fresh-lazy-x", core.Int{V: 42}, false)
+	}}))
+	v, err = sibling.Eval(context.Background(), "fresh", "fresh-lazy-x")
+	require.NoError(t, err)
+	assert.True(t, core.Int{V: 42}.Equals(v))
+	_, err = sibling.Eval(context.Background(), "stale-value", "stale-lazy-x")
+	assert.ErrorContains(t, err, "undefined")
 }
