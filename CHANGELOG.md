@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-24
+
 ### Added
 
 - `core.Env.SetIfUnoccupied` and `SetFuncIfUnoccupied` atomically fill only
@@ -1774,7 +1776,8 @@ The next release therefore gates against the baseline stored by v0.15.0.
   environment), `net` (HTTP client), `exec` (shell execution and crypto),
   `data` (JSON), `fsm` (finite state machines).
 
-[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.17.1...HEAD
+[unreleased]: https://github.com/victorzhuk/go-lispico/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/victorzhuk/go-lispico/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/victorzhuk/go-lispico/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/victorzhuk/go-lispico/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/victorzhuk/go-lispico/compare/v0.16.0...v0.16.1
